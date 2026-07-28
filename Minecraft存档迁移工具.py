@@ -29,6 +29,8 @@ import zipfile
 import queue
 from tendo import singleton
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 CONFIG_FILE = Path.home() / ".minecraft_migrate_config.json"
 
@@ -314,10 +316,7 @@ class SplashScreen:
             # 状态文字（分段渲染 emoji + 中文）
             import re
             status = self.status_texts[self.text_index]
-            emoji_pattern = re.compile(
-                "[\U0001F300-\U0001F5FF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]",
-                re.UNICODE
-            )
+            emoji_pattern = re.compile("[\U0001F300-\U0001F5FF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]",re.UNICODE)
             parts = emoji_pattern.split(status)
             emojis = emoji_pattern.findall(status)
             x_offset = bar_x
@@ -418,6 +417,57 @@ class ProgressWindow:
 
     def close(self):
         self.win.destroy()
+
+class ScanProgressWindow:
+    """扫描模组差异进度窗口（自动居中）"""
+    def __init__(self, parent, total_files):
+        self.parent = parent
+        self.total_files = total_files
+        self.closed = False
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("扫描模组差异进度")
+        self.win.transient(parent)
+        self.win.grab_set()
+        self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
+
+        self.file_label = tk.Label(self.win, text="准备扫描...", anchor="w")
+        self.file_label.pack(fill="x", padx=10, pady=5)
+
+        self.progress = ttk.Progressbar(self.win, length=460, mode='determinate')
+        self.progress.pack(padx=10, pady=5)
+
+        self.stats_label = tk.Label(self.win, text="0 / 0 个文件", anchor="w")
+        self.stats_label.pack(fill="x", padx=10, pady=5)
+
+        # 更新窗口以获取实际尺寸，然后居中
+        self.win.update()
+        win_width = self.win.winfo_width()
+        win_height = self.win.winfo_height()
+        screen_width = self.win.winfo_screenwidth()
+        screen_height = self.win.winfo_screenheight()
+        x = (screen_width - win_width) // 2
+        y = (screen_height - win_height) // 2
+        self.win.geometry(f"+{x}+{y}")
+
+    def update_progress(self, current, filename):
+        """更新进度（在主线程调用）"""
+        self.file_label.config(text=f"正在解析: {filename}")
+        if self.total_files > 0:
+            percent = (current / self.total_files) * 100
+            self.progress['value'] = percent
+        self.stats_label.config(text=f"{current} / {self.total_files} 个文件")
+        self.win.update_idletasks()
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.win.destroy()
+
+    def on_cancel(self):
+        # 不允许用户关闭，提示等待
+        messagebox.showwarning("提示", "扫描正在进行，请等待完成。")
+
 class MigrationGUI:
     def clear_log(self):
         """清空日志区域，只保存用户主动触发的有效操作记录"""
@@ -495,15 +545,6 @@ class MigrationGUI:
             self._saved_logs.append(message + "\n")
 
         self.root.after(0, _log)
-
-    def clear_log(self):
-        """清空日志区域，只保存用户主动触发的有效操作记录"""
-        if not hasattr(self, '_saved_logs') or not self._saved_logs:
-            self.log_text.configure(state="normal")
-            self.log_text.delete("1.0", tk.END)
-            self.log_text.configure(state="disabled")
-            self.log("📋 日志已清空（无有效操作记录）", level="INFO", save=False)
-            return
 
         # 保存有效操作记录
         log_file = Path.home() / ".minecraft_migrate_last_log.txt"
@@ -883,8 +924,8 @@ class MigrationGUI:
         except Exception:
             return None, None, None
 
-    def scan_mod_differences(self):
-        """扫描源和目标 mods 目录，返回差异列表（含元数据），带缓存加速"""
+    def scan_mod_differences(self, progress_queue=None, total=0):
+        """扫描源和目标 mods 目录，返回差异列表（含元数据），带缓存加速，支持并行解析和进度反馈"""
         src = self.source_path.get().strip()
         tgt = self.target_path.get().strip()
         if src == tgt:
@@ -926,53 +967,76 @@ class MigrationGUI:
         src_cache = load_cache(src_cache_file)
         tgt_cache = load_cache(tgt_cache_file)
 
-        # ---- 读取源 ----
         src_files = {}
-        for f in src_mods.glob("*.jar"):
-            modid, version, mod_type = self.get_mod_metadata(f)
-            stat = f.stat()
-            src_files[f.name] = {
-                "path": f,
+        tgt_files = {}
+
+        # 准备文件列表
+        src_paths = list(src_mods.glob("*.jar"))
+        tgt_paths = list(tgt_mods.glob("*.jar"))
+        total_files = len(src_paths) + len(tgt_paths)
+        # 如果外部传入 total 则使用，否则用计算值
+        if total == 0:
+            total = total_files
+
+        # 定义解析单个文件的函数（线程安全）
+        def parse_jar(file_path, is_source):
+            modid, version, mod_type = self.get_mod_metadata(file_path)
+            stat = file_path.stat()
+            return {
+                "name": file_path.name,
+                "path": file_path,
                 "size": stat.st_size,
                 "mtime": stat.st_mtime,
-                "norm": self.normalize_mod_name(f.name),
+                "norm": self.normalize_mod_name(file_path.name),
                 "modid": modid,
                 "version": version,
                 "mod_type": mod_type
             }
+
+        # ---- 并行解析源 ----
+        current = 0
+        lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_path = {executor.submit(parse_jar, p, True): p for p in src_paths}
+            for future in as_completed(future_to_path):
+                with lock:
+                    current += 1
+                    result = future.result()
+                    src_files[result["name"]] = result
+                    # 更新缓存
+                    key = result["name"]
+                    fingerprint = f"{result['mtime']}_{result['size']}"
+                    src_cache[key] = {
+                        "fingerprint": fingerprint,
+                        "modid": result["modid"],
+                        "version": result["version"],
+                        "mod_type": result["mod_type"]
+                    }
+                    if progress_queue:
+                        progress_queue.put((current, result["name"]))
         save_cache(src_cache_file, src_cache)
 
-        # ---- 读取目标 ----
-        tgt_files = {}
-        for f in tgt_mods.glob("*.jar"):
-            stat = f.stat()
-            key = f.name
-            fingerprint = f"{stat.st_mtime}_{stat.st_size}"
-            if key in tgt_cache and tgt_cache[key].get("fingerprint") == fingerprint:
-                cached = tgt_cache[key]
-                modid = cached.get("modid")
-                version = cached.get("version")
-                mod_type = cached.get("mod_type", "未知")  # 必须读取 mod_type
-            else:
-                modid, version, mod_type = self.get_mod_metadata(f)  # 三个变量接收
-                tgt_cache[key] = {
-                    "fingerprint": fingerprint,
-                    "modid": modid,
-                    "version": version,
-                    "mod_type": mod_type
-                }
-            tgt_files[f.name] = {
-                "path": f,
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "norm": self.normalize_mod_name(f.name),
-                "modid": modid,
-                "version": version,
-                "mod_type": mod_type
-            }
+        # ---- 并行解析目标 ----
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_path = {executor.submit(parse_jar, p, False): p for p in tgt_paths}
+            for future in as_completed(future_to_path):
+                with lock:
+                    current += 1
+                    result = future.result()
+                    tgt_files[result["name"]] = result
+                    key = result["name"]
+                    fingerprint = f"{result['mtime']}_{result['size']}"
+                    tgt_cache[key] = {
+                        "fingerprint": fingerprint,
+                        "modid": result["modid"],
+                        "version": result["version"],
+                        "mod_type": result["mod_type"]
+                    }
+                    if progress_queue:
+                        progress_queue.put((current, result["name"]))
         save_cache(tgt_cache_file, tgt_cache)
 
-        # ---- 后续比对逻辑（与之前完全相同） ----
+        # ---- 后续比对逻辑（与之前相同） ----
         src_by_modid = {info["modid"]: name for name, info in src_files.items() if info["modid"]}
         tgt_by_modid = {info["modid"]: name for name, info in tgt_files.items() if info["modid"]}
         src_by_norm = {info["norm"]: name for name, info in src_files.items()}
@@ -984,13 +1048,20 @@ class MigrationGUI:
         for src_name, src_info in src_files.items():
             matched = False
             tgt_name = None
+            # 1. 精确文件名匹配
             if src_name in tgt_files:
                 tgt_name = src_name
                 matched = True
+            # 2. 按 modId 匹配（必须 mod_type 相同）
             elif src_info["modid"] and src_info["modid"] in tgt_by_modid:
-                tgt_name = tgt_by_modid[src_info["modid"]]
-                matched = True
-            elif src_info["norm"] in tgt_by_norm:
+                potential_tgt_name = tgt_by_modid[src_info["modid"]]
+                potential_tgt_info = tgt_files[potential_tgt_name]
+                if potential_tgt_info.get("mod_type") == src_info.get("mod_type"):
+                    tgt_name = potential_tgt_name
+                    matched = True
+                # 如果 mod_type 不同，则不匹配，继续尝试标准化名匹配
+            # 3. 按标准化名匹配
+            if not matched and src_info["norm"] in tgt_by_norm:
                 tgt_name = tgt_by_norm[src_info["norm"]]
                 matched = True
 
@@ -1049,21 +1120,68 @@ class MigrationGUI:
                     tgt_info["mod_type"] or "未知"
                 ))
 
+        if progress_queue:
+            progress_queue.put(None)  # 结束信号
         return results
 
+    def _poll_scan_progress(self):
+        """定期检查扫描进度队列并更新进度窗口和按钮"""
+        try:
+            while True:
+                msg = self._scan_progress_queue.get_nowait()
+                if msg is None:
+                    # 扫描结束，关闭进度窗口
+                    if hasattr(self, 'scan_progress_window'):
+                        self.scan_progress_window.close()
+                        delattr(self, 'scan_progress_window')
+                    return
+                current, filename = msg
+                total = getattr(self, '_scan_total', 0)
+                # 更新按钮简短状态
+                if total > 0:
+                    self.scan_btn.itemconfig(self.scan_btn.text_id, text=f"⏳ 解析中 ({current}/{total})")
+                else:
+                    self.scan_btn.itemconfig(self.scan_btn.text_id, text=f"⏳ 解析中...")
+                # 更新进度窗口
+                if hasattr(self, 'scan_progress_window'):
+                    self.scan_progress_window.update_progress(current, filename)
+        except queue.Empty:
+            pass
+        self.root.after(100, self._poll_scan_progress)
+
     def action_scan_mod_diff(self):
-        """点击扫描差异按钮：防重复，异步扫描，更新 Canvas 文字"""
+        """点击扫描差异按钮：防重复，异步扫描，显示进度弹窗"""
         if hasattr(self, '_scanning') and self._scanning:
             return
         self._scanning = True
-        # 修改 Canvas 上的文本
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 扫描中…")
         self.log("🔍 开始扫描模组差异，请稍候...", level="INFO")
         self.root.update_idletasks()
 
+        # 创建进度窗口（先统计总文件数）
+        src = self.source_path.get().strip()
+        tgt = self.target_path.get().strip()
+        total = 0
+        if src:
+            src_mods = Path(src) / "mods"
+            if src_mods.exists():
+                total += sum(1 for _ in src_mods.glob("*.jar"))
+        if tgt:
+            tgt_mods = Path(tgt) / "mods"
+            if tgt_mods.exists():
+                total += sum(1 for _ in tgt_mods.glob("*.jar"))
+        self._scan_total = total
+
+        # 创建进度窗口
+        self.scan_progress_window = ScanProgressWindow(self.root, total)
+
+        # 创建进度队列
+        progress_queue = queue.Queue()
+        self._scan_progress_queue = progress_queue
+
         def scan_task():
             try:
-                data = self.scan_mod_differences()
+                data = self.scan_mod_differences(progress_queue, self._scan_total)
             except Exception as e:
                 data = None
                 error_msg = str(e)
@@ -1071,12 +1189,19 @@ class MigrationGUI:
                 error_msg = None
             self.root.after(0, lambda: self._finish_scan(data, error_msg))
 
+        # 启动进度轮询
+        self._poll_scan_progress()
         threading.Thread(target=scan_task, daemon=True).start()
 
     def _finish_scan(self, data, error_msg):
-        """扫描完成回调：恢复按钮文字，重置标志"""
+        """扫描完成回调：恢复按钮文字，重置标志，关闭进度窗口"""
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="🔍 扫描模组差异")
         self._scanning = False
+
+        # 确保进度窗口关闭
+        if hasattr(self, 'scan_progress_window'):
+            self.scan_progress_window.close()
+            delattr(self, 'scan_progress_window')
 
         if error_msg:
             self.log(f"❌ 扫描出错: {error_msg}", level="ERROR")
@@ -1095,14 +1220,21 @@ class MigrationGUI:
         self._show_diff_window(data)
 
     def _show_diff_window(self, data):
-        """显示差异选择窗口（含水平和垂直滚动条，纯 grid 布局）"""
+        """显示差异选择窗口（含水平和垂直滚动条，纯 grid 布局，居中显示）"""
         diff_win = tk.Toplevel(self.root)
         diff_win.title("智能模组差异扫描（元数据级）")
-        diff_win.geometry("1200x600")
+        width, height = 1200, 600
+        diff_win.geometry(f"{width}x{height}")
         diff_win.transient(self.root)
 
+        # ---- 居中显示 ----
+        diff_win.update()
+        x = (diff_win.winfo_screenwidth() - width) // 2
+        y = (diff_win.winfo_screenheight() - height) // 2
+        diff_win.geometry(f"+{x}+{y}")
+
         # 顶部说明（放在第0行）
-        tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组：", font=("微软雅黑", 10)).grid(row=0, column=0, columnspan=2, pady=5, sticky="w", padx=10)
+        tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组：", font=("微软雅黑", 10)).grid(row=0,column=0,columnspan=2,pady=5,sticky="w",padx=10)
 
         # ---- Treeview 和滚动条 ----
         columns = ("选择", "文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)", "备注")
@@ -1115,6 +1247,7 @@ class MigrationGUI:
         tree.heading("大小(KB)", text="大小(KB)")
         tree.heading("备注", text="备注")
         tree.heading("类型", text="类型")
+        # ... 其余代码保持不变 ...
         # 列宽设置
         tree.column("选择", width=60, anchor="center", minwidth=60)
         tree.column("文件名", width=250, minwidth=150)
@@ -1969,15 +2102,14 @@ class MigrationGUI:
             if is_file:
                 shutil.copy2(src, dst)
             else:
-                if dst.exists() and overwrite:
-                    shutil.rmtree(dst)
+                # 使用 dirs_exist_ok 直接合并，不先删除
                 shutil.copytree(src, dst, dirs_exist_ok=True)
             return True, "复制成功"
         except PermissionError:
             return False, f"权限不足：无法写入 {dst}"
         except OSError as e:
             if "No space left" in str(e):
-                return False, f"磁盘空间不足"
+                return False, "磁盘空间不足"
             return False, f"系统错误：{e}"
         except Exception as e:
             return False, f"未知错误：{e}"
@@ -2223,6 +2355,15 @@ def main():
                 root.iconbitmap(icon_path)
             except:
                 pass
+
+        # 设置窗口大小并居中
+        width, height = 1000, 1080
+        root.geometry(f"{width}x{height}")
+        root.update()
+        x = (root.winfo_screenwidth() - width) // 2
+        y = (root.winfo_screenheight() - height) // 2
+        root.geometry(f"+{x}+{y}")
+
         app = MigrationGUI(root)
 
         def on_closing():
@@ -2253,8 +2394,8 @@ def main():
             else:
                 app.save_config()
                 root.destroy()
-        root.protocol("WM_DELETE_WINDOW", on_closing)
 
+        root.protocol("WM_DELETE_WINDOW", on_closing)
         root.mainloop()
 
     splash = SplashScreen(create_main_app)
