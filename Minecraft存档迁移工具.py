@@ -419,11 +419,12 @@ class ProgressWindow:
         self.win.destroy()
 
 class ScanProgressWindow:
-    """扫描模组差异进度窗口（自动居中）"""
-    def __init__(self, parent, total_files):
+    """扫描模组差异进度窗口（自动居中，跟随主题）"""
+    def __init__(self, parent, total_files, theme):
         self.parent = parent
         self.total_files = total_files
         self.closed = False
+        self.theme = theme
 
         self.win = tk.Toplevel(parent)
         self.win.title("扫描模组差异进度")
@@ -431,17 +432,35 @@ class ScanProgressWindow:
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
 
-        self.file_label = tk.Label(self.win, text="准备扫描...", anchor="w")
-        self.file_label.pack(fill="x", padx=10, pady=5)
+        # 应用主题背景
+        self.win.configure(bg=self.theme["bg"])
 
-        self.progress = ttk.Progressbar(self.win, length=460, mode='determinate')
+        self.file_label = tk.Label(self.win, text="准备扫描...", anchor="w",
+                                   bg=self.theme["bg"], fg=self.theme["fg"])
+        self.file_label.pack(fill="x", padx=10, pady=5)
+        # ---- 固定蓝色进度条样式（不随主题改变） ----
+        style = ttk.Style()
+        style.configure(
+            "FixedBlue.Horizontal.TProgressbar",
+            background="#4fc3f7",     # 亮蓝色
+            troughcolor="#3a3a3a",    # 轨道深色
+            borderwidth=0,
+            relief='flat'
+        )
+        self.progress = ttk.Progressbar(
+            self.win,
+            length=460,
+            mode='determinate',
+            style="FixedBlue.Horizontal.TProgressbar"
+        )
         self.progress.pack(padx=10, pady=5)
 
-        self.stats_label = tk.Label(self.win, text="0 / 0 个文件", anchor="w")
+        self.stats_label = tk.Label(self.win, text="0 / 0 个文件", anchor="w",
+                                    bg=self.theme["bg"], fg=self.theme["fg"])
         self.stats_label.pack(fill="x", padx=10, pady=5)
 
-        # 更新窗口以获取实际尺寸，然后居中
         self.win.update()
+        # 居中
         win_width = self.win.winfo_width()
         win_height = self.win.winfo_height()
         screen_width = self.win.winfo_screenwidth()
@@ -465,9 +484,8 @@ class ScanProgressWindow:
             self.win.destroy()
 
     def on_cancel(self):
-        # 不允许用户关闭，提示等待
+        """禁止用户关闭进度窗口（扫描中）"""
         messagebox.showwarning("提示", "扫描正在进行，请等待完成。")
-
 class MigrationGUI:
     def clear_log(self):
         """清空日志区域，只保存用户主动触发的有效操作记录"""
@@ -1150,15 +1168,32 @@ class MigrationGUI:
         self.root.after(100, self._poll_scan_progress)
 
     def action_scan_mod_diff(self):
-        """点击扫描差异按钮：防重复，异步扫描，显示进度弹窗"""
+        # 如果差异窗口已存在，激活它并返回
+        if hasattr(self, 'diff_window') and self.diff_window is not None and self.diff_window.winfo_exists():
+            self.diff_window.lift()
+            self.diff_window.focus_force()
+            return
+
         if hasattr(self, '_scanning') and self._scanning:
             return
+
+        src = self.source_path.get().strip()
+        tgt = self.target_path.get().strip()
+        if not src or not tgt:
+            messagebox.showerror("错误", "请先选择源和目标路径")
+            return
+
+        # 防同实例
+        if Path(src).resolve() == Path(tgt).resolve():
+            messagebox.showinfo("提示", "源目录和目标目录相同，无需比较。")
+            return
+
         self._scanning = True
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 扫描中…")
         self.log("🔍 开始扫描模组差异，请稍候...", level="INFO")
         self.root.update_idletasks()
 
-        # 创建进度窗口（先统计总文件数）
+        # 统计总文件数
         src = self.source_path.get().strip()
         tgt = self.target_path.get().strip()
         total = 0
@@ -1173,7 +1208,7 @@ class MigrationGUI:
         self._scan_total = total
 
         # 创建进度窗口
-        self.scan_progress_window = ScanProgressWindow(self.root, total)
+        self.scan_progress_window = ScanProgressWindow(self.root, total, self.theme)
 
         # 创建进度队列
         progress_queue = queue.Queue()
@@ -1189,7 +1224,6 @@ class MigrationGUI:
                 error_msg = None
             self.root.after(0, lambda: self._finish_scan(data, error_msg))
 
-        # 启动进度轮询
         self._poll_scan_progress()
         threading.Thread(target=scan_task, daemon=True).start()
 
@@ -1220,21 +1254,34 @@ class MigrationGUI:
         self._show_diff_window(data)
 
     def _show_diff_window(self, data):
-        """显示差异选择窗口（含水平和垂直滚动条，纯 grid 布局，居中显示）"""
+        """显示差异选择窗口（含水平和垂直滚动条，纯 grid 布局，主题适配）"""
         diff_win = tk.Toplevel(self.root)
         diff_win.title("智能模组差异扫描（元数据级）")
         width, height = 1200, 600
         diff_win.geometry(f"{width}x{height}")
         diff_win.transient(self.root)
+        diff_win.configure(bg=self.theme["bg"])
 
-        # ---- 居中显示 ----
+        # ---- 保存窗口引用 ----
+        self.diff_window = diff_win
+
+        # ---- 窗口关闭时清空引用 ----
+        def on_diff_destroy(event):
+            if event.widget == diff_win:
+                self.diff_window = None
+
+        diff_win.bind("<Destroy>", on_diff_destroy)
+
+        # 居中
         diff_win.update()
         x = (diff_win.winfo_screenwidth() - width) // 2
         y = (diff_win.winfo_screenheight() - height) // 2
         diff_win.geometry(f"+{x}+{y}")
 
-        # 顶部说明（放在第0行）
-        tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组：", font=("微软雅黑", 10)).grid(row=0,column=0,columnspan=2,pady=5,sticky="w",padx=10)
+        # ---- 顶部说明（应用主题） ----
+        tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组：",
+                 font=("微软雅黑", 10), bg=self.theme["bg"], fg=self.theme["fg"]).grid(
+            row=0, column=0, columnspan=2, pady=5, sticky="w", padx=10)
 
         # ---- Treeview 和滚动条 ----
         columns = ("选择", "文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)", "备注")
@@ -1242,41 +1289,57 @@ class MigrationGUI:
         tree.heading("选择", text="选择")
         tree.heading("文件名", text="文件名")
         tree.heading("状态", text="状态")
+        tree.heading("类型", text="类型")
         tree.heading("Mod ID", text="Mod ID")
         tree.heading("版本", text="版本")
         tree.heading("大小(KB)", text="大小(KB)")
         tree.heading("备注", text="备注")
-        tree.heading("类型", text="类型")
-        # ... 其余代码保持不变 ...
+
         # 列宽设置
         tree.column("选择", width=60, anchor="center", minwidth=60)
         tree.column("文件名", width=250, minwidth=150)
         tree.column("状态", width=100, minwidth=80)
+        tree.column("类型", width=80, anchor="center", minwidth=60)
         tree.column("Mod ID", width=150, minwidth=100)
         tree.column("版本", width=120, minwidth=80)
         tree.column("大小(KB)", width=90, anchor="center", minwidth=80)
         tree.column("备注", width=300, minwidth=200)
-        tree.column("类型", width=60, anchor="center", minwidth=60)
 
         # 滚动条
         vsb = ttk.Scrollbar(diff_win, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        # 使用 grid 放置 tree 和滚动条（第1行）
+        # 使用 grid 放置 tree 和滚动条
         tree.grid(row=1, column=0, sticky="nsew")
         vsb.grid(row=1, column=1, sticky="ns")
         hsb.grid(row=2, column=0, sticky="ew")
 
-        # 让 tree 可随窗口拉伸
         diff_win.grid_rowconfigure(1, weight=1)
         diff_win.grid_columnconfigure(0, weight=1)
+
+        # ---- 适配 Treeview 主题 ----
+        style = ttk.Style()
+        if style.theme_use() != 'clam':
+            try:
+                style.theme_use('clam')
+            except:
+                pass
+        style.configure("Treeview",
+                        background=self.theme["bg"],
+                        foreground=self.theme["fg"],
+                        fieldbackground=self.theme["bg"])
+        style.configure("Treeview.Heading",
+                        background=self.theme["button_bg"],
+                        foreground=self.theme["fg"])
+        style.configure("Treeview", rowheight=24)
+        tree.configure(style="Treeview")
 
         # ---- 选择状态存储 ----
         selection_state = {}
 
         for display_name, status, real_name, size_kb, note, modid, version, mod_type in data:
-            default_checked = status in ["新增"]
+            default_checked = status == "新增"
             checked_char = "☑" if default_checked else "☐"
             tags = ()
             if status == "新增":
@@ -1298,9 +1361,9 @@ class MigrationGUI:
             ), tags=tags)
             selection_state[item_id] = default_checked
 
-        tree.tag_configure("new", background="#e6ffe6")
-        tree.tag_configure("update", background="#ffffe0")
-        tree.tag_configure("target_only", background="#f0f0f0")
+        tree.tag_configure("new", background="#d4edda" if self.current_theme == "light" else "#2d4a2d")
+        tree.tag_configure("update", background="#fff3cd" if self.current_theme == "light" else "#4a3d2d")
+        tree.tag_configure("target_only", background="#f8f9fa" if self.current_theme == "light" else "#3a3a3a")
 
         def toggle_selection(event):
             item_id = tree.focus()
@@ -1313,8 +1376,8 @@ class MigrationGUI:
 
         tree.bind("<ButtonRelease-1>", toggle_selection)
 
-        # ---- 底部按钮（第3行） ----
-        btn_frame = tk.Frame(diff_win)
+        # ---- 底部按钮 ----
+        btn_frame = tk.Frame(diff_win, bg=self.theme["bg"])
         btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
 
         def select_all():
@@ -1342,17 +1405,25 @@ class MigrationGUI:
             self.save_config()
             diff_win.destroy()
 
-        tk.Button(btn_frame, text="☑ 全选", command=select_all, width=10).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="☐ 取消全选", command=deselect_all, width=10).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="✅ 应用所选到清单", command=apply_selection, bg="lightgreen", width=20).pack(side="left", padx=20)
-        tk.Button(btn_frame, text="关闭", command=diff_win.destroy, width=10).pack(side="right", padx=5)
+        tk.Button(btn_frame, text="☑ 全选", command=select_all, width=10,
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="☐ 取消全选", command=deselect_all, width=10,
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="✅ 应用所选到清单", command=apply_selection,
+                  bg="lightgreen" if self.current_theme == "light" else "#2d6a2d", fg="white", width=20).pack(
+            side="left", padx=20)
+        tk.Button(btn_frame, text="关闭", command=diff_win.destroy, width=10,
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right", padx=5)
 
-        # ---- 底部统计（第4行） ----
+        # ---- 底部统计 ----
         total = len(data)
         new_count = sum(1 for _, status, _, _, _, _, _, _ in data if status == "新增")
         update_count = sum(1 for _, status, _, _, _, _, _, _ in data if status == "更新")
         target_only_count = sum(1 for _, status, _, _, _, _, _, _ in data if status == "目标独有")
-        tk.Label(diff_win,text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",font=("微软雅黑", 9), fg="gray").grid(row=4, column=0, columnspan=2, pady=5)
+        tk.Label(diff_win,
+                 text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
+                 font=("微软雅黑", 9), bg=self.theme["bg"], fg=self.theme["fg"]).grid(row=4, column=0, columnspan=2,
+                                                                                      pady=5)
     def __init__(self, root):
         self.root = root
         self.root.title("Minecraft 整合包迁移工具 - 增强版 v2")
@@ -1389,7 +1460,7 @@ class MigrationGUI:
         self.progress_window = None
         self.after_id = None
         self._migration_running = False
-
+        self.diff_window = None  # 用于跟踪差异窗口
         # 新增：在主题应用后刷新路径状态颜色
         self.on_path_change()
 
