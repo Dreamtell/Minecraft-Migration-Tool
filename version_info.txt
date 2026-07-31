@@ -1,0 +1,37 @@
+# UTF-8
+#
+# 适用于 PyInstaller 的版本信息文件
+# 保存为 version_info.txt 并在 auto-py-to-exe 中指定
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '080404B0',
+          [
+            StringStruct('CompanyName', 'Dreamtell'),
+            StringStruct('FileDescription', 'Minecraft 整合包迁移工具'),
+            StringStruct('FileVersion', '2.0.0'),
+            StringStruct('InternalName', 'Minecraft存档迁移工具'),
+            StringStruct('LegalCopyright', 'Copyright (c) 2026 Dreamtell. MIT License'),
+            StringStruct('OriginalFilename', 'Minecraft存档迁移工具.exe'),
+            StringStruct('ProductName', 'Minecraft 存档迁移工具'),
+            StringStruct('ProductVersion', '3.2.0')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [0x0804, 0x04B0])])
+  ]
+)
