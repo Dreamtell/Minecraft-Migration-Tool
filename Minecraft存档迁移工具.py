@@ -333,11 +333,14 @@ class ProgressWindow:
         self.cancelled = False
 
         self.win = tk.Toplevel(parent)
+        self.win.withdraw()  # 先隐藏
+
         self.win.title("迁移进度")
         self.win.geometry("500x200")
         self.win.transient(parent)
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        set_window_icon(self.win)  # 隐藏后设置图标
 
         self.file_label = tk.Label(self.win, text="准备中...", anchor="w")
         self.file_label.pack(fill="x", padx=10, pady=5)
@@ -350,6 +353,7 @@ class ProgressWindow:
 
         self.cancel_btn = tk.Button(self.win, text="取消迁移", command=self.on_cancel, bg="lightcoral")
         self.cancel_btn.pack(pady=10)
+
         self.hint_label = tk.Label(
             self.win,
             text="⚠️ 迁移进行中，请勿关闭主窗口！",
@@ -357,8 +361,8 @@ class ProgressWindow:
             font=("微软雅黑", 9, "bold")
         )
         self.hint_label.pack(pady=2)
-        self.win.update()
-        self.win.withdraw()
+
+        # 居中
         self.win.update_idletasks()
         win_width = self.win.winfo_width()
         win_height = self.win.winfo_height()
@@ -367,7 +371,8 @@ class ProgressWindow:
         x = (screen_width - win_width) // 2
         y = (screen_height - win_height) // 2
         self.win.geometry(f"+{x}+{y}")
-        self.win.deiconify()
+
+        self.win.deiconify()  # 显示
 
     def on_cancel(self):
         self.cancelled = True
@@ -389,7 +394,7 @@ class ProgressWindow:
         self.win.destroy()
 
 class ScanProgressWindow:
-    """扫描模组差异进度窗口（不变）"""
+    """扫描模组差异进度窗口（紧凑居中）"""
     def __init__(self, parent, total_files, theme):
         self.parent = parent
         self.total_files = total_files
@@ -397,15 +402,22 @@ class ScanProgressWindow:
         self.theme = theme
 
         self.win = tk.Toplevel(parent)
+        self.win.withdraw()
+
+        # 调整尺寸：宽度 420，高度 150
+        self.win.geometry("420x100")
+        self.win.resizable(False, False)
         self.win.title("扫描模组差异进度")
         self.win.transient(parent)
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
         self.win.configure(bg=self.theme["bg"])
+        set_window_icon(self.win)
 
         self.file_label = tk.Label(self.win, text="准备扫描...", anchor="w",
                                    bg=self.theme["bg"], fg=self.theme["fg"])
         self.file_label.pack(fill="x", padx=10, pady=5)
+
         style = ttk.Style()
         style.configure(
             "FixedBlue.Horizontal.TProgressbar",
@@ -416,7 +428,7 @@ class ScanProgressWindow:
         )
         self.progress = ttk.Progressbar(
             self.win,
-            length=460,
+            length=380,          # 配合宽度 420
             mode='determinate',
             style="FixedBlue.Horizontal.TProgressbar"
         )
@@ -426,16 +438,9 @@ class ScanProgressWindow:
                                     bg=self.theme["bg"], fg=self.theme["fg"])
         self.stats_label.pack(fill="x", padx=10, pady=5)
 
-        self.win.update()
-        self.win.withdraw()
+        # 居中（Tk 内置命令）
         self.win.update_idletasks()
-        win_width = self.win.winfo_width()
-        win_height = self.win.winfo_height()
-        screen_width = self.win.winfo_screenwidth()
-        screen_height = self.win.winfo_screenheight()
-        x = (screen_width - win_width) // 2
-        y = (screen_height - win_height) // 2
-        self.win.geometry(f"+{x}+{y}")
+        self.win.tk.eval('tk::PlaceWindow %s center' % self.win.winfo_pathname(self.win.winfo_id()))
         self.win.deiconify()
 
     def update_progress(self, current, filename):
@@ -981,6 +986,7 @@ class MigrationGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("从变更日志提取模组清单")
         dialog.geometry("800x600")
+        set_window_icon(dialog)
         tk.Label(dialog, text="请粘贴完整的变更日志文本（包含 'Added mods:' 和 'Updated mods:' 部分）：").pack(pady=5)
         text_widget = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, height=20)
         text_widget.pack(fill="both", expand=True, padx=10, pady=5)
@@ -1360,7 +1366,7 @@ class MigrationGUI:
         hist_win.title("迁移历史记录")
         hist_win.geometry("900x500")
         hist_win.transient(self.root)
-
+        set_window_icon(hist_win)
         tk.Label(hist_win, text=f"目标实例：{target_path}", font=("微软雅黑", 9, "bold")).pack(pady=5)
 
         columns = ("时间", "来源", "模组数", "Config数", "状态")
@@ -1625,11 +1631,14 @@ class MigrationGUI:
 
     def _show_diff_window(self, data):
         diff_win = tk.Toplevel(self.root)
+        diff_win.withdraw()  # 先隐藏
+
         diff_win.title("智能模组差异扫描（元数据级）")
         width, height = 1200, 600
         diff_win.geometry(f"{width}x{height}")
         diff_win.transient(self.root)
         diff_win.configure(bg=self.theme["bg"])
+        set_window_icon(diff_win)
 
         self.diff_window = diff_win
 
@@ -1638,10 +1647,6 @@ class MigrationGUI:
                 self.diff_window = None
 
         diff_win.bind("<Destroy>", on_diff_destroy)
-
-        x = (diff_win.winfo_screenwidth() - width) // 2
-        y = (diff_win.winfo_screenheight() - height) // 2
-        diff_win.geometry(f"{width}x{height}+{x}+{y}")
 
         tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组：",
                  font=("微软雅黑", 10), bg=self.theme["bg"], fg=self.theme["fg"]).grid(
@@ -1785,6 +1790,16 @@ class MigrationGUI:
                  text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
                  font=("微软雅黑", 9), bg=self.theme["bg"], fg=self.theme["fg"]).grid(row=4, column=0, columnspan=2,
                                                                                       pady=5)
+
+        # ---- 窗口居中（在控件布局完成后） ----
+        diff_win.update_idletasks()  # 确保布局完成
+        cur_width = diff_win.winfo_width()
+        cur_height = diff_win.winfo_height()
+        x = (diff_win.winfo_screenwidth() // 2) - (cur_width // 2)
+        y = (diff_win.winfo_screenheight() // 2) - (cur_height // 2)
+        diff_win.geometry(f"{cur_width}x{cur_height}+{x}+{y}")
+        diff_win.deiconify()  # 显示窗口
+
         diff_win.focus_force()
         tree.focus_set()
         children = tree.get_children()
@@ -2104,20 +2119,14 @@ class MigrationGUI:
             pass
 
     def open_big_view(self, source_text, title):
-        """打开大窗口查看清单内容，支持搜索、编辑、主题同步，窗口居中，编辑切换不重置"""
         win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏
+
         win.title(f"大窗口查看 - {title}")
         win.geometry("700x550")
         win.transient(self.root)
         win.configure(bg=self.theme["bg"])
-
-        # ---- 窗口居中 ----
-        win.update_idletasks()  # 确保窗口尺寸已经计算
-        width = win.winfo_width()
-        height = win.winfo_height()
-        x = (win.winfo_screenwidth() // 2) - (width // 2)
-        y = (win.winfo_screenheight() // 2) - (height // 2)
-        win.geometry(f"{width}x{height}+{x}+{y}")
+        set_window_icon(win)
 
         # ---- 主文本框 ----
         text_area = scrolledtext.ScrolledText(win, wrap=tk.NONE, font=("Consolas", 10),
@@ -2125,15 +2134,11 @@ class MigrationGUI:
                                               insertbackground=self.theme["fg"])
         text_area.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # 复制内容（初始为只读）
         content = source_text.get("1.0", tk.END)
         text_area.insert("1.0", content)
         text_area.configure(state="disabled")
-
-        # 高亮 tag
         text_area.tag_configure("highlight", background="yellow", foreground="black")
 
-        # ---- 定义保存函数 ----
         def save_big_view():
             new_content = text_area.get("1.0", tk.END).rstrip('\n')
             source_text.configure(state=tk.NORMAL)
@@ -2149,7 +2154,6 @@ class MigrationGUI:
         toolbar = tk.Frame(win, bg=self.theme["bg"])
         toolbar.pack(fill="x", padx=5, pady=5)
 
-        # 搜索
         tk.Label(toolbar, text="搜索:", bg=self.theme["bg"], fg=self.theme["fg"]).pack(side="left")
         search_var = tk.StringVar()
         search_entry = tk.Entry(toolbar, textvariable=search_var, width=30,
@@ -2160,24 +2164,20 @@ class MigrationGUI:
                               bg=self.theme["button_bg"], fg=self.theme["button_fg"])
         clear_btn.pack(side="left", padx=2)
 
-        # 编辑模式开关（仅影响放大窗口）
         edit_var = tk.BooleanVar(value=False)
         edit_cb = tk.Checkbutton(toolbar, text="启用编辑", variable=edit_var,
                                  bg=self.theme["bg"], fg=self.theme["fg"],
                                  selectcolor=self.theme["bg"])
         edit_cb.pack(side="left", padx=20)
 
-        # 保存按钮（初始禁用）
         save_btn = tk.Button(toolbar, text="💾 保存并同步", command=save_big_view,
                              bg=self.theme["button_bg"], fg=self.theme["button_fg"],
                              state=tk.DISABLED)
         save_btn.pack(side="left", padx=10)
 
-        # 关闭按钮
         tk.Button(toolbar, text="关闭", command=win.destroy,
                   bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right", padx=5)
 
-        # ---- 搜索函数 ----
         def search(*args):
             query = search_var.get().strip()
             text_area.tag_remove("highlight", "1.0", tk.END)
@@ -2203,7 +2203,6 @@ class MigrationGUI:
         search_var.trace("w", search)
         search_entry.bind("<Return>", lambda e: search())
 
-        # ---- 编辑模式切换（修复：取消时不重置，只切换只读状态） ----
         def toggle_edit():
             if edit_var.get():
                 text_area.configure(state="normal")
@@ -2211,18 +2210,14 @@ class MigrationGUI:
             else:
                 text_area.configure(state="disabled")
                 save_btn.config(state=tk.DISABLED)
-                # 取消编辑时，仅锁定内容，不丢弃修改
-                # 保留 win._modified 标记，关闭窗口时仍会提示保存
 
         edit_cb.config(command=toggle_edit)
 
-        # 标记修改
         def on_modify(event):
             win._modified = True
 
         text_area.bind("<Key>", on_modify)
 
-        # ---- 窗口关闭时提醒 ----
         def on_closing():
             if hasattr(win, '_modified') and win._modified and edit_var.get():
                 if messagebox.askyesno("未保存", "内容已修改但未保存，是否放弃修改？", parent=win):
@@ -2232,11 +2227,18 @@ class MigrationGUI:
 
         win.protocol("WM_DELETE_WINDOW", on_closing)
 
-        # ---- 自动聚焦搜索框 ----
         search_entry.focus()
-
-        # 记录当前编辑状态
         win._modified = False
+
+        # ---- 居中 ----
+        win.update_idletasks()
+        width = win.winfo_width()
+        height = win.winfo_height()
+        x = (win.winfo_screenwidth() // 2) - (width // 2)
+        y = (win.winfo_screenheight() // 2) - (height // 2)
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
+        win.deiconify()  # 显示
 
     def _on_double_click_delete(self, event, text_widget, list_name):
         index = text_widget.index("@%d,%d" % (event.x, event.y))
@@ -2657,6 +2659,14 @@ def get_icon_path():
     if os.path.exists(icon_path):
         return icon_path
     return None
+def set_window_icon(window):
+    """为指定的窗口设置图标（如果图标文件存在）"""
+    icon_path = get_icon_path()
+    if icon_path:
+        try:
+            window.iconbitmap(icon_path)
+        except:
+            pass
 
 def main():
     try:
