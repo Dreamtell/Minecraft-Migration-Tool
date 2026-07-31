@@ -92,7 +92,7 @@
 
 > *（建议在此处插入一张程序运行截图，命名为 `screenshot.png` 放在仓库根目录）*
 
-![主界面截图](screenshot.png)![img.png](img.png)
+![主界面截图](screenshot.png)
 
 ---
 
