@@ -2096,13 +2096,12 @@ class MigrationGUI:
             self.config_magnify_btn.config(bg=self.theme["button_bg"], fg=self.theme["button_fg"])
 
     def _is_text_overflow(self, text_widget):
+        """判断文本框内容是否溢出（存在滚动条）"""
         try:
-            last_line = int(text_widget.index("end-1c").split('.')[0])
-            height = text_widget.winfo_height()
-            if height <= 0:
-                return False
-            last_visible = int(text_widget.index(f"@0,{height - 2}").split('.')[0])
-            return last_line > last_visible
+            # yview() 返回 (first, last) 分数，表示当前可视区域占总内容的比例
+            # 如果 last < 1.0，说明内容超出可视区域，存在滚动条
+            first, last = text_widget.yview()
+            return last < 1.0
         except Exception:
             return False
 
