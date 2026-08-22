@@ -5,7 +5,7 @@
 [![GitHub issues](https://img.shields.io/github/issues/Dreamtell/Minecraft-Migration-Tool)](https://github.com/Dreamtell/Minecraft-Migration-Tool/issues)
 [![GitHub stars](https://img.shields.io/github/stars/Dreamtell/Minecraft-Migration-Tool)](https://github.com/Dreamtell/Minecraft-Migration-Tool/stargazers)
 
-**版本：v3.3** · 开源 · 免费 · 纯中文界面
+**版本：v3.4** · 开源 · 免费 · 纯中文界面
 
 > 一款用于在不同 Minecraft 整合包实例之间迁移 **模组、配置文件、存档和设置** 的图形化工具。  
 > 由 Dreamtell 与 AI DeepSeek 协作完成，源码完全开源。
