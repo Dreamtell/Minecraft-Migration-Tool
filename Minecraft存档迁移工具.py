@@ -759,38 +759,58 @@ class MigrationGUI:
         # ---- 选项和迁移按钮 ----
         opt_frame = tk.Frame(self.root)
         opt_frame.pack(fill="x", padx=10, pady=5)
-        self.dry_run_cb = tk.Checkbutton(opt_frame, text="模拟运行（仅显示操作）", variable=self.dry_run,command=self.save_config)
+        self.dry_run_cb = tk.Checkbutton(opt_frame, text="模拟运行（仅显示操作）", variable=self.dry_run, command=self.save_config)
         self.dry_run_cb.pack(side="left")
-        self.overwrite_cb = tk.Checkbutton(opt_frame, text="覆盖已存在的模组", variable=self.overwrite_mods,command=self.save_config)
+        self.overwrite_cb = tk.Checkbutton(opt_frame, text="覆盖已存在的模组", variable=self.overwrite_mods, command=self.save_config)
         self.overwrite_cb.pack(side="left", padx=20)
+
+        # ----- 右侧按钮组（统一大小、对齐） -----
+        btn_group = tk.Frame(opt_frame, bg=self.theme["bg"])
+        btn_group.pack(side="right")
+
+        # 开始迁移按钮（保持不变）
         self.start_btn = create_gradient_button(
-            parent=opt_frame,
+            parent=btn_group,
             text="🚀 开始迁移",
             command=self.start_migration,
-            colors=("#00c853", "#00e676"),  # 亮绿色渐变
-            hover_colors=("#00e676", "#00c853"),  # 悬停反转
+            colors=("#00c853", "#00e676"),
+            hover_colors=("#00e676", "#00c853"),
             width=180,
             height=38,
             font=("微软雅黑", 12, "bold")
         )
         self.start_btn.pack(side="right", padx=5)
 
+        # 回滚按钮（统一高度和宽度）
         self.rollback_btn = tk.Button(
-            opt_frame,
+            btn_group,
             text="⚠️ 回滚",
             command=self.action_rollback,
             font=("微软雅黑", 10, "bold"),
             relief=tk.RAISED,
             bd=3,
             padx=10,
-            pady=3,
-            cursor="hand2"
+            pady=5,
+            cursor="hand2",
+            width=12,          # 固定宽度（字符数）
+            height=1           # 保持文本行高
         )
-
-        self.rollback_btn.pack(side="right", padx=5)
         self.rollback_btn.config(bg="#d32f2f", fg="white", activebackground="#b71c1c", activeforeground="white")
-        tk.Button(opt_frame, text="📋 查看历史", command=self.action_show_history, bg="lightgray", width=10).pack(
-            side="right", padx=5)
+        self.rollback_btn.pack(side="right", padx=5)
+
+        # 查看历史按钮（统一宽度）
+        tk.Button(
+            btn_group,
+            text="📋 查看历史",
+            command=self.action_show_history,
+            bg=self.theme["button_bg"],
+            fg=self.theme["button_fg"],
+            font=("微软雅黑", 10),
+            width=12,
+            height=1,
+            padx=10,
+            pady=5
+        ).pack(side="right", padx=5)
         # ---- 日志区域 ----
         frame_log = tk.LabelFrame(self.root, text="执行日志", padx=5, pady=5)
         frame_log.pack(fill="both", expand=True, padx=10, pady=5)
@@ -1631,7 +1651,7 @@ class MigrationGUI:
 
     def _show_diff_window(self, data):
         diff_win = tk.Toplevel(self.root)
-        diff_win.withdraw()  # 先隐藏
+        diff_win.withdraw()
 
         diff_win.title("智能模组差异扫描（元数据级）")
         width, height = 1200, 600
@@ -1654,15 +1674,8 @@ class MigrationGUI:
 
         columns = ("选择", "文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)", "备注")
         tree = ttk.Treeview(diff_win, columns=columns, show="headings", height=18)
-        tree.heading("选择", text="选择")
-        tree.heading("文件名", text="文件名")
-        tree.heading("状态", text="状态")
-        tree.heading("类型", text="类型")
-        tree.heading("Mod ID", text="Mod ID")
-        tree.heading("版本", text="版本")
-        tree.heading("大小(KB)", text="大小(KB)")
-        tree.heading("备注", text="备注")
-
+        for col in columns:
+            tree.heading(col, text=col)
         tree.column("选择", width=60, anchor="center", minwidth=60)
         tree.column("文件名", width=250, minwidth=150)
         tree.column("状态", width=100, minwidth=80)
@@ -1675,7 +1688,6 @@ class MigrationGUI:
         vsb = ttk.Scrollbar(diff_win, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
         tree.grid(row=1, column=0, sticky="nsew")
         vsb.grid(row=1, column=1, sticky="ns")
         hsb.grid(row=2, column=0, sticky="ew")
@@ -1699,10 +1711,13 @@ class MigrationGUI:
         style.configure("Treeview", rowheight=24)
         tree.configure(style="Treeview")
 
+        # 数据元组结构: (display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path)
+        all_data = data[:]
         selection_state = {}
 
-        for display_name, status, real_name, size_kb, note, modid, version, mod_type in data:
-            default_checked = status == "新增"
+        for idx, item in enumerate(all_data):
+            display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
+            default_checked = (status == "新增")
             checked_char = "☑" if default_checked else "☐"
             tags = ()
             if status == "新增":
@@ -1712,7 +1727,8 @@ class MigrationGUI:
             else:
                 tags = ("target_only",)
 
-            item_id = tree.insert("", "end", values=(
+            iid = str(idx)
+            tree.insert("", "end", iid=iid, values=(
                 checked_char,
                 display_name,
                 status,
@@ -1722,12 +1738,13 @@ class MigrationGUI:
                 size_kb,
                 note
             ), tags=tags)
-            selection_state[item_id] = default_checked
+            selection_state[iid] = default_checked
 
         tree.tag_configure("new", background="#d4edda" if self.current_theme == "light" else "#2d4a2d")
         tree.tag_configure("update", background="#fff3cd" if self.current_theme == "light" else "#4a3d2d")
         tree.tag_configure("target_only", background="#f8f9fa" if self.current_theme == "light" else "#3a3a3a")
 
+        # ---- 点击切换勾选 ----
         def toggle_selection(event):
             item_id = tree.focus()
             if not item_id:
@@ -1739,74 +1756,257 @@ class MigrationGUI:
 
         tree.bind("<ButtonRelease-1>", toggle_selection)
 
-        btn_frame = tk.Frame(diff_win, bg=self.theme["bg"])
-        btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
+        # ---- 双击查看详情 ----
+        def on_double_click(event):
+            item_id = tree.focus()
+            if not item_id:
+                return
+            idx = int(item_id)
+            if idx < len(all_data):
+                file_path = all_data[idx][8]
+                if file_path and os.path.exists(file_path):
+                    self.show_mod_detail(file_path)
+                else:
+                    messagebox.showerror("错误", "找不到模组文件")
+
+        tree.bind("<Double-1>", on_double_click)
+
+        # ---- 排序功能 ----
+        sort_field = tk.StringVar(value="文件名")
+        sort_reverse = tk.BooleanVar(value=False)
+
+        def get_sort_key(field):
+            field_map = {
+                "文件名": 0,
+                "状态": 1,
+                "类型": 7,
+                "Mod ID": 5,
+                "版本": 6,
+                "大小(KB)": 3,
+            }
+            idx = field_map.get(field, 0)
+            if field == "大小(KB)":
+                def key_func(item):
+                    try:
+                        return float(item[idx])
+                    except:
+                        return 0.0
+                return key_func
+            elif field == "状态":
+                status_order = {"新增": 1, "更新": 0, "目标独有": 2}
+                def key_func(item):
+                    return status_order.get(item[idx], 999)
+                return key_func
+            else:
+                def key_func(item):
+                    return str(item[idx]).lower()
+                return key_func
+
+        def sort_items():
+            key_func = get_sort_key(sort_field.get())
+            sorted_indices = sorted(range(len(all_data)), key=lambda i: key_func(all_data[i]), reverse=sort_reverse.get())
+            for child in tree.get_children():
+                tree.delete(child)
+            for new_pos, idx in enumerate(sorted_indices):
+                iid = str(idx)
+                item = all_data[idx]
+                display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
+                checked = "☑" if selection_state.get(iid, False) else "☐"
+                tags = ()
+                if status == "新增":
+                    tags = ("new",)
+                elif status == "更新":
+                    tags = ("update",)
+                else:
+                    tags = ("target_only",)
+                tree.insert("", "end", iid=iid, values=(
+                    checked,
+                    display_name,
+                    status,
+                    mod_type,
+                    modid,
+                    version,
+                    size_kb,
+                    note
+                ), tags=tags)
+                if selection_state.get(iid, False):
+                    tree.selection_add(iid)
+            sort_btn.config(text="▼ 降序" if sort_reverse.get() else "▲ 升序")
+
+        def toggle_sort_direction():
+            sort_reverse.set(not sort_reverse.get())
+            sort_items()
+
+        # ---- 工具栏 ----
+        toolbar_frame = tk.Frame(diff_win, bg=self.theme["bg"])
+        toolbar_frame.grid(row=3, column=0, columnspan=2, pady=10, sticky="ew")
+
+        # 左侧排序区域
+        sort_frame = tk.Frame(toolbar_frame, bg=self.theme["bg"])
+        sort_frame.pack(side="left", padx=10, fill="x")
+
+        tk.Label(sort_frame, text="排序依据：", bg=self.theme["bg"], fg=self.theme["fg"]).pack(side="left")
+        field_combo = ttk.Combobox(sort_frame, textvariable=sort_field,
+                                   values=["文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)"],
+                                   state="readonly", width=10)
+        field_combo.pack(side="left", padx=5)
+        field_combo.bind("<<ComboboxSelected>>", lambda e: sort_items())
+        sort_btn = tk.Button(sort_frame, text="▲ 升序", command=toggle_sort_direction,
+                             bg=self.theme["button_bg"], fg=self.theme["button_fg"],
+                             relief=tk.RAISED, width=8)
+        sort_btn.pack(side="left", padx=5)
+
+        # 右侧按钮区域
+        btn_frame = tk.Frame(toolbar_frame, bg=self.theme["bg"])
+        btn_frame.pack(side="right", padx=10)
+
+        def select_by_status(status):
+            for iid, item in enumerate(all_data):
+                if item[1] == status:
+                    selection_state[str(iid)] = True
+                    tree.set(str(iid), "选择", "☑")
+                    tree.selection_add(str(iid))
 
         def select_all():
-            for item_id in selection_state.keys():
-                selection_state[item_id] = True
-                tree.set(item_id, "选择", "☑")
+            for iid in selection_state.keys():
+                selection_state[iid] = True
+                tree.set(iid, "选择", "☑")
+                tree.selection_add(iid)
 
         def deselect_all():
-            for item_id in selection_state.keys():
-                selection_state[item_id] = False
-                tree.set(item_id, "选择", "☐")
+            for iid in selection_state.keys():
+                selection_state[iid] = False
+                tree.set(iid, "选择", "☐")
+                tree.selection_remove(iid)
 
         def apply_selection():
             selected_files = []
-            for item_id, checked in selection_state.items():
+            for iid, checked in selection_state.items():
                 if checked:
-                    values = tree.item(item_id, "values")
+                    values = tree.item(iid, "values")
                     selected_files.append(values[1])
             if not selected_files:
                 messagebox.showwarning("提示", "没有勾选任何模组")
                 return
-
             self.mod_text.configure(state=tk.NORMAL)
             self.mod_text.delete(1.0, tk.END)
             self.mod_text.insert(tk.END, "\n".join(selected_files))
             self.mod_text.edit_reset()
             self._update_text_states()
-
             self.log(f"✅ 从差异扫描中导入了 {len(selected_files)} 个模组", level="SUCCESS")
             self.save_config()
             diff_win.destroy()
 
-        tk.Button(btn_frame, text="☑ 全选", command=select_all, width=10,
-                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="☐ 取消全选", command=deselect_all, width=10,
-                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="✅ 应用所选到清单", command=apply_selection,
-                  bg="lightgreen" if self.current_theme == "light" else "#2d6a2d", fg="white", width=20).pack(
-            side="left", padx=20)
-        tk.Button(btn_frame, text="关闭", command=diff_win.destroy, width=10,
-                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right", padx=5)
+        # 添加按状态全选按钮
+        tk.Button(btn_frame, text="✅ 全选新增", command=lambda: select_by_status("新增"),
+                  bg="#d4edda", width=10).pack(side="left", padx=2)
+        tk.Button(btn_frame, text="🔄 全选更新", command=lambda: select_by_status("更新"),
+                  bg="#fff3cd", width=10).pack(side="left", padx=2)
+        tk.Button(btn_frame, text="📌 全选目标独有", command=lambda: select_by_status("目标独有"),
+                  bg="#f8f9fa", width=14).pack(side="left", padx=2)
 
-        total = len(data)
-        new_count = sum(1 for _, status, _, _, _, _, _, _ in data if status == "新增")
-        update_count = sum(1 for _, status, _, _, _, _, _, _ in data if status == "更新")
-        target_only_count = sum(1 for _, status, _, _, _, _, _, _ in data if status == "目标独有")
+        tk.Button(btn_frame, text="☑ 全选", command=select_all, width=8,
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="left", padx=2)
+        tk.Button(btn_frame, text="☐ 取消全选", command=deselect_all, width=10,
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="left", padx=2)
+        tk.Button(btn_frame, text="✅ 应用所选", command=apply_selection,
+                  bg="lightgreen" if self.current_theme == "light" else "#2d6a2d", fg="white", width=12).pack(
+            side="left", padx=10)
+        tk.Button(btn_frame, text="关闭", command=diff_win.destroy, width=8,
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right", padx=2)
+
+        # ---- 底部统计 ----
+        total = len(all_data)
+        new_count = sum(1 for item in all_data if item[1] == "新增")
+        update_count = sum(1 for item in all_data if item[1] == "更新")
+        target_only_count = sum(1 for item in all_data if item[1] == "目标独有")
         tk.Label(diff_win,
                  text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
                  font=("微软雅黑", 9), bg=self.theme["bg"], fg=self.theme["fg"]).grid(row=4, column=0, columnspan=2,
                                                                                       pady=5)
 
-        # ---- 窗口居中（在控件布局完成后） ----
-        diff_win.update_idletasks()  # 确保布局完成
+        # ---- 窗口居中 ----
+        diff_win.update_idletasks()
         cur_width = diff_win.winfo_width()
         cur_height = diff_win.winfo_height()
         x = (diff_win.winfo_screenwidth() // 2) - (cur_width // 2)
         y = (diff_win.winfo_screenheight() // 2) - (cur_height // 2)
         diff_win.geometry(f"{cur_width}x{cur_height}+{x}+{y}")
-        diff_win.deiconify()  # 显示窗口
-
+        diff_win.deiconify()
         diff_win.focus_force()
         tree.focus_set()
         children = tree.get_children()
         if children:
             tree.selection_set(children[0])
             tree.focus(children[0])
+    def get_full_mod_metadata(self, jar_path):
+        import json
+        import re
+        info = {
+            "modid": "未知",
+            "version": "未知",
+            "mod_type": "未知",
+            "name": "未知",
+            "description": "无",
+            "authors": "无",
+            "dependencies": "无"
+        }
+        try:
+            with zipfile.ZipFile(jar_path, 'r') as zf:
+                if 'fabric.mod.json' in zf.namelist():
+                    with zf.open('fabric.mod.json') as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                        try:
+                            data = json.loads(content)
+                            info["modid"] = data.get("id", "未知")
+                            info["version"] = data.get("version", "未知")
+                            info["name"] = data.get("name", "未知")
+                            info["description"] = data.get("description", "无")
+                            info["authors"] = ", ".join(data.get("authors", [])) if data.get("authors") else "无"
+                            info["dependencies"] = ", ".join(data.get("depends", {}).keys()) if data.get("depends") else "无"
+                            info["mod_type"] = "Fabric"
+                        except:
+                            pass
+                elif 'META-INF/mods.toml' in zf.namelist():
+                    with zf.open('META-INF/mods.toml') as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                        modid = re.search(r'modId\s*=\s*"([^"]+)"', content)
+                        version = re.search(r'version\s*=\s*"([^"]+)"', content)
+                        name = re.search(r'displayName\s*=\s*"([^"]+)"', content)
+                        desc = re.search(r'description\s*=\s*"([^"]+)"', content)
+                        author = re.search(r'author\s*=\s*"([^"]+)"', content)
+                        info["modid"] = modid.group(1) if modid else "未知"
+                        info["version"] = version.group(1) if version else "未知"
+                        info["name"] = name.group(1) if name else "未知"
+                        info["description"] = desc.group(1) if desc else "无"
+                        info["authors"] = author.group(1) if author else "无"
+                        info["mod_type"] = "Forge"
+        except Exception as e:
+            info["description"] = f"读取错误: {e}"
+        return info
 
+    def show_mod_detail(self, jar_path):
+        info = self.get_full_mod_metadata(jar_path)
+        win = tk.Toplevel(self.root)
+        win.title(f"模组详情 - {os.path.basename(jar_path)}")
+        win.geometry("600x450")
+        win.transient(self.root)
+        set_window_icon(win)
+        tk.Label(win, text=f"文件: {os.path.basename(jar_path)}", font=("微软雅黑", 10, "bold")).pack(pady=5)
+        details = [
+            f"模组名称: {info['name']}",
+            f"Mod ID: {info['modid']}",
+            f"版本: {info['version']}",
+            f"类型: {info['mod_type']}",
+            f"作者: {info['authors']}",
+            f"描述: {info['description']}",
+            f"依赖: {info['dependencies']}"
+        ]
+        text = scrolledtext.ScrolledText(win, wrap=tk.WORD, height=15, width=70)
+        text.pack(padx=10, pady=10, fill="both", expand=True)
+        text.insert(tk.END, "\n".join(details))
+        text.config(state=tk.DISABLED)
+        tk.Button(win, text="关闭", command=win.destroy).pack(pady=5)
     # ---------- 扫描模组差异（元数据） ----------
     def normalize_mod_name(self, name):
         if name.startswith("[") and "]" in name:
@@ -2045,7 +2245,8 @@ class MigrationGUI:
                         ", ".join(update_reason),
                         src_info["modid"] or "?",
                         src_info["version"] or "?",
-                        src_info["mod_type"] or "未知"
+                        src_info["mod_type"] or "未知",
+                        str(src_info["path"])  # 源文件路径
                     ))
             else:
                 results.append((
@@ -2056,7 +2257,8 @@ class MigrationGUI:
                     "仅存在于源目录",
                     src_info["modid"] or "?",
                     src_info["version"] or "?",
-                    src_info["mod_type"] or "未知"
+                    src_info["mod_type"] or "未知",
+                    str(src_info["path"])
                 ))
 
         for tgt_name, tgt_info in tgt_files.items():
@@ -2073,7 +2275,8 @@ class MigrationGUI:
                     "仅存在于目标（建议保留）",
                     tgt_info["modid"] or "?",
                     tgt_info["version"] or "?",
-                    tgt_info["mod_type"] or "未知"
+                    tgt_info["mod_type"] or "未知",
+                    str(tgt_info["path"])
                 ))
 
         if progress_queue:
