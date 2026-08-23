@@ -25,7 +25,7 @@ from core.migrator import (
 from core.scanner import scan_mod_differences
 from ui.dialogs import ProgressWindow, ScanProgressWindow
 from ui.diff_window import show_diff_window
-
+from ui.diff_window import show_diff_window, update_diff_theme
 
 class MigrationGUI:
     def __init__(self, root):
@@ -134,6 +134,79 @@ class MigrationGUI:
                 apply_recursive(child)
 
         self.root.configure(bg=self.theme["bg"])
+        # 配置 ttk 样式
+        style = ttk.Style()
+        # 使用 'clam' 主题以支持更多自定义
+        if style.theme_use() != 'clam':
+            try:
+                style.theme_use('clam')
+            except:
+                pass
+
+        # Treeview 样式
+        style.configure(
+            "Treeview",
+            background=self.theme["ttk_bg"],
+            foreground=self.theme["ttk_fg"],
+            fieldbackground=self.theme["ttk_bg"],
+            selectbackground=self.theme["ttk_select_bg"],
+            selectforeground=self.theme["ttk_select_fg"],
+            borderwidth=0
+        )
+        style.map(
+            "Treeview",
+            background=[('selected', self.theme["ttk_select_bg"])],
+            foreground=[('selected', self.theme["ttk_select_fg"])]
+        )
+
+        # Treeview.Heading（列标题）
+        style.configure(
+            "Treeview.Heading",
+            background=self.theme["button_bg"],
+            foreground=self.theme["fg"],
+            relief="flat"
+        )
+
+        # Progressbar 样式
+        style.configure(
+            "Horizontal.TProgressbar",
+            background=self.theme["ttk_progress_bg"],
+            troughcolor=self.theme["ttk_trough_bg"],
+            bordercolor=self.theme["bg"],
+            lightcolor=self.theme["ttk_progress_bg"],
+            darkcolor=self.theme["ttk_progress_bg"]
+        )
+
+        # Combobox 样式
+        style.configure(
+            "TCombobox",
+            fieldbackground=self.theme["ttk_field_bg"],
+            background=self.theme["ttk_bg"],
+            foreground=self.theme["ttk_fg"],
+            arrowcolor=self.theme["ttk_fg"]
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[('readonly', self.theme["ttk_field_bg"])],
+            background=[('readonly', self.theme["ttk_bg"])],
+            foreground=[('readonly', self.theme["ttk_fg"])]
+        )
+
+        # Scrollbar 样式
+        style.configure(
+            "Vertical.TScrollbar",
+            background=self.theme["button_bg"],
+            troughcolor=self.theme["bg"],
+            arrowcolor=self.theme["fg"],
+            bordercolor=self.theme["bg"]
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            background=self.theme["button_bg"],
+            troughcolor=self.theme["bg"],
+            arrowcolor=self.theme["fg"],
+            bordercolor=self.theme["bg"]
+        )
         apply_recursive(self.root)
 
         if hasattr(self, 'bottom_frame'):
@@ -165,6 +238,11 @@ class MigrationGUI:
         self.save_config()
         self.log(f"主题已切换为{'深色' if self.current_theme == 'dark' else '浅色'}模式", level="SUCCESS", save=False)
 
+        # 更新已打开的差异窗口
+        if hasattr(self, 'diff_window') and self.diff_window is not None:
+            if self.diff_window.winfo_exists():
+                from ui.diff_window import update_diff_theme
+                update_diff_theme(self.diff_window, self.theme, self.current_theme)
     # ---------- 工具函数 ----------
     def create_tooltip(self, widget, text):
         def enter(event):
@@ -179,18 +257,148 @@ class MigrationGUI:
         widget.bind("<Enter>", enter)
         widget.bind("<Leave>", leave)
 
+    def _is_valid_instance(self, path_str):
+        """
+        严格检查路径是否为有效的 Minecraft 整合包实例（借鉴 PCL2 验证逻辑）
+        返回: (is_valid, reason, details_dict)
+        """
+        p = Path(path_str)
+        details = {}
+
+        # ----- 第1层：基础路径检查 -----
+        if not p.exists():
+            return False, "路径不存在", details
+        if not p.is_dir():
+            return False, "不是目录", details
+
+        # 检查读写权限（尝试创建临时文件）
+        try:
+            test_file = p / ".permission_test"
+            test_file.touch()
+            test_file.unlink()
+            details["read_write"] = True
+        except:
+            details["read_write"] = False
+            return False, "无读写权限，请以管理员身份运行", details
+
+        # 检查路径是否包含中文（警告级别）
+        has_chinese = any('\u4e00' <= char <= '\u9fff' for char in str(p))
+        if has_chinese:
+            details["has_chinese"] = True
+            # 不是致命错误，但给出警告
+
+        # ----- 第2层：核心标识文件检查 -----
+        # 2.1 检查关键子目录
+        has_mods = (p / "mods").exists() and (p / "mods").is_dir()
+        has_config = (p / "config").exists() and (p / "config").is_dir()
+        has_saves = (p / "saves").exists() and (p / "saves").is_dir()
+        has_libraries = (p / "libraries").exists() and (p / "libraries").is_dir()
+        has_versions = (p / "versions").exists() and (p / "versions").is_dir()
+
+        details["has_mods"] = has_mods
+        details["has_config"] = has_config
+        details["has_saves"] = has_saves
+        details["has_libraries"] = has_libraries
+
+        # 2.2 检查 Minecraft 核心标识文件
+        has_options = (p / "options.txt").exists()
+        has_launcher_profiles = (p / "launcher_profiles.json").exists()
+
+        details["has_options"] = has_options
+        details["has_launcher_profiles"] = has_launcher_profiles
+
+        # 2.3 检查版本目录下的核心文件
+        version_dirs = []
+        if has_versions:
+            for v_dir in (p / "versions").iterdir():
+                if v_dir.is_dir():
+                    version_json = v_dir / "version.json"
+                    if version_json.exists():
+                        version_dirs.append(v_dir.name)
+            details["valid_versions"] = version_dirs
+
+        # 2.4 检查 Fabric/Forge 标识（如果存在 mods 目录）
+        if has_mods:
+            mods_dir = p / "mods"
+            jar_files = list(mods_dir.glob("*.jar"))
+            details["mod_count"] = len(jar_files)
+            # 检查是否有 Fabric 或 Forge 模组
+            fabric_mods = list(mods_dir.glob("*fabric*.jar")) + list(mods_dir.glob("*.fabric.mod.json*"))
+            forge_mods = list(mods_dir.glob("*forge*.jar"))
+            details["fabric_mods"] = len(fabric_mods) > 0
+            details["forge_mods"] = len(forge_mods) > 0
+
+        # 2.5 检查 PCL2 特有标识
+        has_pcl_ini = (p / "PCL.ini").exists()
+        details["has_pcl_ini"] = has_pcl_ini
+
+        # ----- 第3层：综合判断 -----
+        # 判断标准：
+        # 1. 必须有 mods 和 config（整合包基本要素）
+        if not has_mods:
+            return False, "缺少 mods 目录（不是有效的整合包）", details
+        if not has_config:
+            return False, "缺少 config 目录（不是有效的整合包）", details
+
+        # 2. mods 目录不能为空
+        if details.get("mod_count", 0) == 0:
+            return False, "mods 目录为空（没有模组文件）", details
+
+        # 3. 必须有至少一个有效版本（有 version.json）
+        if not version_dirs:
+            # 如果没有 version.json，但 options.txt 存在，可能是旧版整合包
+            if not has_options:
+                return False, "缺少 version.json 或 options.txt，无法识别为有效实例", details
+
+        # 通过所有检查
+        details["is_valid"] = True
+        return True, "✅ 有效实例目录", details
+
     def validate_path(self, path_str, status_label, label_text):
+        """
+        验证路径是否为有效的 Minecraft 整合包实例（增强版）
+        """
         if not path_str:
             status_label.config(text="（未选择）", fg="gray")
             return
-        p = Path(path_str)
-        if not p.exists():
-            status_label.config(text="❌ 路径不存在", fg="red")
-            return
-        if (p / "mods").exists() or (p / "saves").exists():
-            status_label.config(text="✅ 有效实例目录", fg="green")
+
+        is_valid, reason, details = self._is_valid_instance(path_str)
+
+        # 构建详细状态信息
+        status_text = reason
+        if is_valid:
+            # 显示更多细节
+            details_text = []
+            if details.get("has_saves"):
+                details_text.append("有存档")
+            if details.get("mod_count", 0) > 0:
+                details_text.append(f"{details['mod_count']}个模组")
+            if details.get("valid_versions"):
+                details_text.append(f"版本: {', '.join(details['valid_versions'][:3])}")
+            if details.get("has_launcher_profiles"):
+                details_text.append("✅ 官方启动器")
+            if details.get("has_pcl_ini"):
+                details_text.append("✅ PCL2")
+            if details.get("fabric_mods"):
+                details_text.append("Fabric")
+            if details.get("forge_mods"):
+                details_text.append("Forge")
+
+            # 如果有警告信息（如中文路径），在状态标签中显示
+            if details.get("has_chinese"):
+                status_text = "✅ 有效（⚠️ 路径含中文，建议改为纯英文）"
+            elif details_text:
+                status_text = f"✅ 有效 ({', '.join(details_text[:4])})"
+            else:
+                status_text = "✅ 有效实例目录"
+
+            status_label.config(text=status_text, fg="green")
+
+            # 记录详细验证信息到日志（可选）
+            # self.log(f"路径验证通过: {path_str}", level="INFO")
+            # self.log(f"  详细信息: {details}", level="INFO")
         else:
-            status_label.config(text="⚠️ 未找到 mods 或 saves 子目录", fg="orange")
+            status_label.config(text=f"❌ {reason}", fg="red")
 
     def on_path_change(self, *args):
         src = self.source_path.get().strip()
@@ -806,6 +1014,34 @@ class MigrationGUI:
 
         columns = ("时间", "来源", "模组数", "Config数", "状态")
         tree = ttk.Treeview(hist_win, columns=columns, show="headings", height=18)
+        # 配置 Treeview 样式（使用当前主题）
+        style = ttk.Style()
+        if style.theme_use() != 'clam':
+            try:
+                style.theme_use('clam')
+            except:
+                pass
+        style.configure(
+            "History.Treeview",
+            background=self.theme["ttk_bg"],
+            foreground=self.theme["ttk_fg"],
+            fieldbackground=self.theme["ttk_bg"],
+            selectbackground=self.theme["ttk_select_bg"],
+            selectforeground=self.theme["ttk_select_fg"]
+        )
+        style.configure(
+            "History.Treeview.Heading",
+            background=self.theme["button_bg"],
+            foreground=self.theme["fg"]
+        )
+
+        tree = ttk.Treeview(
+            hist_win,
+            columns=columns,
+            show="headings",
+            height=18,
+            style="History.Treeview"
+        )
         tree.heading("时间", text="迁移时间")
         tree.heading("来源", text="来源路径")
         tree.heading("模组数", text="模组数")
@@ -1015,7 +1251,7 @@ class MigrationGUI:
             self.save_config()
 
         # 调用 show_diff_window 并保存窗口引用
-        self.diff_window = show_diff_window(self.root, data, self.theme, apply_callback)
+        self.diff_window = show_diff_window(self.root, data, self.theme, self.current_theme, apply_callback)
 
     # ---------- 迁移 ----------
     def start_migration(self):
@@ -1144,11 +1380,11 @@ class MigrationGUI:
         return total_files, total_size
 
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist, dry_run):
-        def progress_callback(file_index, file_name, copied_bytes):
+        def progress_callback(file_index, file_name, copied_bytes, step=None):
             if file_index is None:
                 return
             if self.progress_queue:
-                self.progress_queue.put((file_index, file_name, copied_bytes))
+                self.progress_queue.put((file_index, file_name, copied_bytes, step))
 
         def check_cancel():
             return self.progress_window and self.progress_window.cancelled

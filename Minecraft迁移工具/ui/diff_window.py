@@ -6,12 +6,13 @@ from utils.helpers import set_window_icon
 from ui.dialogs import show_mod_detail
 
 
-def show_diff_window(parent, data, theme, apply_callback):
+def show_diff_window(parent, data, theme, current_theme, apply_callback):
     """
     显示差异列表窗口
     parent: 父窗口
     data: 差异数据列表
-    theme: 主题字典
+    theme: 主题字典（用于 ttk 样式）
+    current_theme: 字符串 "light" 或 "dark"（用于行标签颜色）
     apply_callback: 应用所选的回调函数 (selected_files)
     """
     diff_win = tk.Toplevel(parent)
@@ -23,19 +24,78 @@ def show_diff_window(parent, data, theme, apply_callback):
     diff_win.transient(parent)
     diff_win.configure(bg=theme["bg"])
     set_window_icon(diff_win)
-    parent_ref = parent
+
     def on_diff_destroy(event):
         if hasattr(parent, 'diff_window'):
             parent.diff_window = None
 
     diff_win.bind("<Destroy>", on_diff_destroy)
 
+    # ---- 顶部提示 ----
     tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组：",
              font=("微软雅黑", 10), bg=theme["bg"], fg=theme["fg"]).grid(
         row=0, column=0, columnspan=2, pady=5, sticky="w", padx=10)
 
+    # ---- 配置 Treeview 样式（使用独立样式名） ----
+    style = ttk.Style()
+    if style.theme_use() != 'clam':
+        try:
+            style.theme_use('clam')
+        except:
+            pass
+
+    # 配置 Treeview 主体样式
+    style.configure(
+        "Diff.Treeview",
+        background=theme["ttk_bg"],
+        foreground=theme["ttk_fg"],
+        selectbackground=theme["ttk_select_bg"],
+        selectforeground=theme["ttk_select_fg"],
+        borderwidth=0,
+        rowheight=24
+    )
+
+    # 配置 Treeview 列标题样式
+    style.configure(
+        "Diff.Treeview.Heading",
+        background=theme["button_bg"],
+        foreground=theme["fg"],
+        relief="flat",
+        borderwidth=0,
+        font=("微软雅黑", 9, "bold")
+    )
+    style.map(
+        "Diff.Treeview.Heading",
+        background=[('active', theme["button_bg"])]
+    )
+
+    # 配置滚动条样式
+    style.configure(
+        "Diff.Vertical.TScrollbar",
+        background=theme["button_bg"],
+        troughcolor=theme["bg"],
+        arrowcolor=theme["fg"],
+        bordercolor=theme["bg"]
+    )
+    style.configure(
+        "Diff.Horizontal.TScrollbar",
+        background=theme["button_bg"],
+        troughcolor=theme["bg"],
+        arrowcolor=theme["fg"],
+        bordercolor=theme["bg"]
+    )
+
+    # ---- 创建 Treeview（指定样式） ----
     columns = ("选择", "文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)", "备注")
-    tree = ttk.Treeview(diff_win, columns=columns, show="headings", height=18)
+    tree = ttk.Treeview(
+        diff_win,
+        columns=columns,
+        show="headings",
+        height=18,
+        style="Diff.Treeview"
+    )
+    # 禁用内置选择，完全由 tag 控制
+    tree.configure(selectmode="none")
     for col in columns:
         tree.heading(col, text=col)
     tree.column("选择", width=60, anchor="center", minwidth=60)
@@ -47,8 +107,8 @@ def show_diff_window(parent, data, theme, apply_callback):
     tree.column("大小(KB)", width=90, anchor="center", minwidth=80)
     tree.column("备注", width=300, minwidth=200)
 
-    vsb = ttk.Scrollbar(diff_win, orient="vertical", command=tree.yview)
-    hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview)
+    vsb = ttk.Scrollbar(diff_win, orient="vertical", command=tree.yview, style="Diff.Vertical.TScrollbar")
+    hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview, style="Diff.Horizontal.TScrollbar")
     tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
     tree.grid(row=1, column=0, sticky="nsew")
     vsb.grid(row=1, column=1, sticky="ns")
@@ -57,23 +117,18 @@ def show_diff_window(parent, data, theme, apply_callback):
     diff_win.grid_rowconfigure(1, weight=1)
     diff_win.grid_columnconfigure(0, weight=1)
 
-    style = ttk.Style()
-    if style.theme_use() != 'clam':
-        try:
-            style.theme_use('clam')
-        except:
-            pass
-    style.configure("Treeview",
-                    background=theme["bg"],
-                    foreground=theme["fg"],
-                    fieldbackground=theme["bg"])
-    style.configure("Treeview.Heading",
-                    background=theme["button_bg"],
-                    foreground=theme["fg"])
-    style.configure("Treeview", rowheight=24)
-    tree.configure(style="Treeview")
+    # ---- 定义高亮 tag 颜色 ----
+    def update_highlight_color():
+        # 根据主题设置 highlight 颜色（使用明显的高亮色）
+        if current_theme == "light":
+            tree.tag_configure("highlight", background=theme["ttk_select_bg"], foreground=theme["ttk_select_fg"])
+        else:
+            # 深色模式下使用更亮的颜色以突出显示
+            tree.tag_configure("highlight", background="#4a6a8a", foreground="#ffffff")  # 亮蓝灰色
 
-    # 数据元组结构: (display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path)
+    update_highlight_color()
+
+    # ---- 数据加载 ----
     all_data = data[:]
     selection_state = {}
 
@@ -81,13 +136,17 @@ def show_diff_window(parent, data, theme, apply_callback):
         display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
         default_checked = (status == "新增")
         checked_char = "☑" if default_checked else "☐"
-        tags = ()
+        # 基础标签（状态）
+        tags = []
         if status == "新增":
-            tags = ("new",)
+            tags.append("new")
         elif status == "更新":
-            tags = ("update",)
+            tags.append("update")
         else:
-            tags = ("target_only",)
+            tags.append("target_only")
+        # 如果默认勾选，添加高亮标签
+        if default_checked:
+            tags.append("highlight")
 
         iid = str(idx)
         tree.insert("", "end", iid=iid, values=(
@@ -99,21 +158,47 @@ def show_diff_window(parent, data, theme, apply_callback):
             version,
             size_kb,
             note
-        ), tags=tags)
+        ), tags=tuple(tags))
         selection_state[iid] = default_checked
 
-    tree.tag_configure("new", background="#d4edda" if theme == "light" else "#2d4a2d")
-    tree.tag_configure("update", background="#fff3cd" if theme == "light" else "#4a3d2d")
-    tree.tag_configure("target_only", background="#f8f9fa" if theme == "light" else "#3a3a3a")
+    # 配置状态标签颜色（与高亮分开）
+    if current_theme == "light":
+        tree.tag_configure("new", background="#d4edda", foreground="#000000")
+        tree.tag_configure("update", background="#fff3cd", foreground="#000000")
+        tree.tag_configure("target_only", background="#f8f9fa", foreground="#000000")
+    else:
+        tree.tag_configure("new", background="#2d4a2d", foreground="#ffffff")
+        tree.tag_configure("update", background="#4a3d2d", foreground="#ffffff")
+        tree.tag_configure("target_only", background="#3a3a3a", foreground="#ffffff")
 
+    # ---- 核心函数：同步高亮 ----
+    def update_highlight():
+        """根据 selection_state 更新每行的 tags，并强制刷新"""
+        for iid, checked in selection_state.items():
+            # 获取当前行的现有 tags
+            current_tags = list(tree.item(iid, "tags"))
+            # 确保 "highlight" 存在或移除
+            if checked:
+                if "highlight" not in current_tags:
+                    current_tags.append("highlight")
+            else:
+                if "highlight" in current_tags:
+                    current_tags.remove("highlight")
+            # 更新 tags（保留其他状态标签）
+            tree.item(iid, tags=tuple(current_tags))
+        # 强制刷新
+        tree.update_idletasks()
+
+    # ---- 交互事件 ----
     def toggle_selection(event):
-        item_id = tree.focus()
-        if not item_id:
+        row_id = tree.identify_row(event.y)
+        if not row_id:
             return
-        current = selection_state.get(item_id, False)
+        current = selection_state.get(row_id, False)
         new_state = not current
-        selection_state[item_id] = new_state
-        tree.set(item_id, "选择", "☑" if new_state else "☐")
+        selection_state[row_id] = new_state
+        tree.set(row_id, "选择", "☑" if new_state else "☐")
+        update_highlight()
 
     tree.bind("<ButtonRelease-1>", toggle_selection)
 
@@ -131,7 +216,7 @@ def show_diff_window(parent, data, theme, apply_callback):
 
     tree.bind("<Double-1>", on_double_click)
 
-    # 排序功能
+    # ---- 排序功能 ----
     sort_field = tk.StringVar(value="文件名")
     sort_reverse = tk.BooleanVar(value=False)
 
@@ -165,20 +250,27 @@ def show_diff_window(parent, data, theme, apply_callback):
     def sort_items():
         key_func = get_sort_key(sort_field.get())
         sorted_indices = sorted(range(len(all_data)), key=lambda i: key_func(all_data[i]), reverse=sort_reverse.get())
+
+        # 清空 Treeview
         for child in tree.get_children():
             tree.delete(child)
+
+        # 重新插入
         for new_pos, idx in enumerate(sorted_indices):
             iid = str(idx)
             item = all_data[idx]
             display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
             checked = "☑" if selection_state.get(iid, False) else "☐"
-            tags = ()
+            # 构建 tags
+            tags = []
             if status == "新增":
-                tags = ("new",)
+                tags.append("new")
             elif status == "更新":
-                tags = ("update",)
+                tags.append("update")
             else:
-                tags = ("target_only",)
+                tags.append("target_only")
+            if selection_state.get(iid, False):
+                tags.append("highlight")
             tree.insert("", "end", iid=iid, values=(
                 checked,
                 display_name,
@@ -188,16 +280,17 @@ def show_diff_window(parent, data, theme, apply_callback):
                 version,
                 size_kb,
                 note
-            ), tags=tags)
-            if selection_state.get(iid, False):
-                tree.selection_add(iid)
+            ), tags=tuple(tags))
+
+        # 强制刷新
+        tree.update_idletasks()
         sort_btn.config(text="▼ 降序" if sort_reverse.get() else "▲ 升序")
 
     def toggle_sort_direction():
         sort_reverse.set(not sort_reverse.get())
         sort_items()
 
-    # 工具栏
+    # ---- 工具栏 ----
     toolbar_frame = tk.Frame(diff_win, bg=theme["bg"])
     toolbar_frame.grid(row=3, column=0, columnspan=2, pady=10, sticky="ew")
 
@@ -225,19 +318,22 @@ def show_diff_window(parent, data, theme, apply_callback):
             if item[1] == status:
                 selection_state[str(iid)] = True
                 tree.set(str(iid), "选择", "☑")
-                tree.selection_add(str(iid))
+            else:
+                selection_state[str(iid)] = False
+                tree.set(str(iid), "选择", "☐")
+        update_highlight()
 
     def select_all():
         for iid in selection_state.keys():
             selection_state[iid] = True
             tree.set(iid, "选择", "☑")
-            tree.selection_add(iid)
+        update_highlight()
 
     def deselect_all():
         for iid in selection_state.keys():
             selection_state[iid] = False
             tree.set(iid, "选择", "☐")
-            tree.selection_remove(iid)
+        update_highlight()
 
     def apply_selection():
         selected_files = []
@@ -251,25 +347,25 @@ def show_diff_window(parent, data, theme, apply_callback):
         apply_callback(selected_files)
         diff_win.destroy()
 
-    # 添加按状态全选按钮
+    # 按状态全选按钮
     tk.Button(btn_frame, text="✅ 全选新增", command=lambda: select_by_status("新增"),
-              bg="#d4edda", width=10).pack(side="left", padx=2)
+              bg="#d4edda" if current_theme == "light" else "#2d4a2d", fg=theme["fg"], width=10).pack(side="left", padx=2)
     tk.Button(btn_frame, text="🔄 全选更新", command=lambda: select_by_status("更新"),
-              bg="#fff3cd", width=10).pack(side="left", padx=2)
+              bg="#fff3cd" if current_theme == "light" else "#4a3d2d", fg=theme["fg"], width=10).pack(side="left", padx=2)
     tk.Button(btn_frame, text="📌 全选目标独有", command=lambda: select_by_status("目标独有"),
-              bg="#f8f9fa", width=14).pack(side="left", padx=2)
+              bg="#f8f9fa" if current_theme == "light" else "#3a3a3a", fg=theme["fg"], width=14).pack(side="left", padx=2)
 
     tk.Button(btn_frame, text="☑ 全选", command=select_all, width=8,
               bg=theme["button_bg"], fg=theme["button_fg"]).pack(side="left", padx=2)
     tk.Button(btn_frame, text="☐ 取消全选", command=deselect_all, width=10,
               bg=theme["button_bg"], fg=theme["button_fg"]).pack(side="left", padx=2)
     tk.Button(btn_frame, text="✅ 应用所选", command=apply_selection,
-              bg="lightgreen" if theme == "light" else "#2d6a2d", fg="white", width=12).pack(
+              bg="lightgreen" if current_theme == "light" else "#2d6a2d", fg="white", width=12).pack(
         side="left", padx=10)
     tk.Button(btn_frame, text="关闭", command=diff_win.destroy, width=8,
               bg=theme["button_bg"], fg=theme["button_fg"]).pack(side="right", padx=2)
 
-    # 底部统计
+    # ---- 底部统计 ----
     total = len(all_data)
     new_count = sum(1 for item in all_data if item[1] == "新增")
     update_count = sum(1 for item in all_data if item[1] == "更新")
@@ -288,8 +384,94 @@ def show_diff_window(parent, data, theme, apply_callback):
     diff_win.deiconify()
     diff_win.focus_force()
     tree.focus_set()
-    children = tree.get_children()
-    if children:
-        tree.selection_set(children[0])
-        tree.focus(children[0])
     return diff_win
+
+
+def update_diff_theme(diff_win, theme, current_theme):
+    """更新已打开的差异窗口的主题"""
+    diff_win.configure(bg=theme["bg"])
+
+    def update_widgets(widget):
+        try:
+            if isinstance(widget, tk.Label):
+                widget.configure(bg=theme["bg"], fg=theme["fg"])
+            elif isinstance(widget, tk.Button):
+                text = widget.cget("text")
+                if text in ("✅ 全选新增", "🔄 全选更新", "📌 全选目标独有"):
+                    if current_theme == "light":
+                        bg_map = {"✅ 全选新增": "#d4edda", "🔄 全选更新": "#fff3cd", "📌 全选目标独有": "#f8f9fa"}
+                    else:
+                        bg_map = {"✅ 全选新增": "#2d4a2d", "🔄 全选更新": "#4a3d2d", "📌 全选目标独有": "#3a3a3a"}
+                    widget.configure(bg=bg_map.get(text, theme["button_bg"]), fg=theme["fg"])
+                elif text in ("☑ 全选", "☐ 取消全选", "关闭"):
+                    widget.configure(bg=theme["button_bg"], fg=theme["button_fg"])
+                elif text == "✅ 应用所选":
+                    widget.configure(bg="lightgreen" if current_theme == "light" else "#2d6a2d", fg="white")
+                else:
+                    widget.configure(bg=theme["button_bg"], fg=theme["button_fg"])
+            elif isinstance(widget, tk.Frame):
+                widget.configure(bg=theme["bg"])
+            elif isinstance(widget, ttk.Combobox):
+                style = ttk.Style()
+                style.configure("TCombobox",
+                                fieldbackground=theme["ttk_field_bg"],
+                                background=theme["ttk_bg"],
+                                foreground=theme["ttk_fg"])
+            elif isinstance(widget, ttk.Treeview):
+                style = ttk.Style()
+                style.configure("Diff.Treeview",
+                                background=theme["ttk_bg"],
+                                foreground=theme["ttk_fg"],
+                                selectbackground=theme["ttk_select_bg"],
+                                selectforeground=theme["ttk_select_fg"])
+                style.configure("Diff.Treeview.Heading",
+                                background=theme["button_bg"],
+                                foreground=theme["fg"])
+                # 更新高亮 tag 颜色
+                if current_theme == "light":
+                    widget.tag_configure("highlight", background=theme["ttk_select_bg"], foreground=theme["ttk_select_fg"])
+                else:
+                    widget.tag_configure("highlight", background="#4a6a8a", foreground="#ffffff")
+                # 更新状态标签颜色
+                if current_theme == "light":
+                    widget.tag_configure("new", background="#d4edda", foreground="#000000")
+                    widget.tag_configure("update", background="#fff3cd", foreground="#000000")
+                    widget.tag_configure("target_only", background="#f8f9fa", foreground="#000000")
+                else:
+                    widget.tag_configure("new", background="#2d4a2d", foreground="#ffffff")
+                    widget.tag_configure("update", background="#4a3d2d", foreground="#ffffff")
+                    widget.tag_configure("target_only", background="#3a3a3a", foreground="#ffffff")
+                # 强制刷新 Treeview
+                widget.update_idletasks()
+            elif isinstance(widget, ttk.Scrollbar):
+                style = ttk.Style()
+                style_name = widget.cget("style")
+                if "Vertical" in style_name:
+                    style.configure(style_name,
+                                    background=theme["button_bg"],
+                                    troughcolor=theme["bg"],
+                                    arrowcolor=theme["fg"])
+                elif "Horizontal" in style_name:
+                    style.configure(style_name,
+                                    background=theme["button_bg"],
+                                    troughcolor=theme["bg"],
+                                    arrowcolor=theme["fg"])
+        except:
+            pass
+        for child in widget.winfo_children():
+            update_widgets(child)
+
+    update_widgets(diff_win)
+
+    # 更新顶部标签（特殊处理，在grid中）
+    for child in diff_win.grid_slaves(row=0):
+        if isinstance(child, tk.Label):
+            child.configure(bg=theme["bg"], fg=theme["fg"])
+
+    # 更新底部统计标签
+    for child in diff_win.grid_slaves(row=4):
+        if isinstance(child, tk.Label):
+            child.configure(bg=theme["bg"], fg=theme["fg"])
+
+    # 强制刷新整个窗口
+    diff_win.update_idletasks()

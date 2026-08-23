@@ -4,6 +4,7 @@ from tkinter import ttk, messagebox, scrolledtext
 import os
 from utils.helpers import set_window_icon
 from core.scanner import get_full_mod_metadata
+from utils.theme import LIGHT_THEME  # 新增导入
 
 
 class ProgressWindow:
@@ -18,16 +19,47 @@ class ProgressWindow:
         self.win.withdraw()
 
         self.win.title("迁移进度")
-        self.win.geometry("500x200")
+        self.win.geometry("500x240")  # 稍微增高一点容纳步骤标签
         self.win.transient(parent)
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
         set_window_icon(self.win)
 
+        # 步骤标签（显示当前操作阶段）
+        self.step_label = tk.Label(
+            self.win,
+            text="准备中...",
+            anchor="w",
+            font=("微软雅黑", 9, "bold"),
+            fg="#4fc3f7"
+        )
+        self.step_label.pack(fill="x", padx=10, pady=(10, 0))
+
         self.file_label = tk.Label(self.win, text="准备中...", anchor="w")
         self.file_label.pack(fill="x", padx=10, pady=5)
 
-        self.progress = ttk.Progressbar(self.win, length=460, mode='determinate')
+        # 从父窗口获取主题
+        if hasattr(parent, 'theme'):
+            theme = parent.theme
+        else:
+            theme = LIGHT_THEME
+
+        # 配置进度条样式
+        style = ttk.Style()
+        style.configure(
+            "Custom.Horizontal.TProgressbar",
+            background=theme.get("ttk_progress_bg", "#4fc3f7"),
+            troughcolor=theme.get("ttk_trough_bg", "#e0e0e0"),
+            bordercolor=theme.get("bg", "#f0f0f0"),
+            lightcolor=theme.get("ttk_progress_bg", "#4fc3f7"),
+            darkcolor=theme.get("ttk_progress_bg", "#4fc3f7")
+        )
+        self.progress = ttk.Progressbar(
+            self.win,
+            length=460,
+            mode='determinate',
+            style="Custom.Horizontal.TProgressbar"
+        )
         self.progress.pack(padx=10, pady=5)
 
         self.stats_label = tk.Label(self.win, text="0 / 0 个文件  |  0.0 MB / 0.0 MB", anchor="w")
@@ -60,7 +92,9 @@ class ProgressWindow:
         self.cancelled = True
         self.cancel_btn.config(state=tk.DISABLED, text="正在取消...")
 
-    def update_progress(self, file_index, file_name, copied_bytes):
+    def update_progress(self, file_index, file_name, copied_bytes, step=None):
+        if step is not None:
+            self.step_label.config(text=f"📦 {step}")
         self.file_label.config(text=f"正在复制: {file_name}")
         if self.total_size > 0:
             percent = min(100, (copied_bytes / self.total_size) * 100)

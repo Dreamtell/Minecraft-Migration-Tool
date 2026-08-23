@@ -216,16 +216,15 @@ def run_migration(
     configlist,
     dry_run,
     overwrite,
-    progress_callback=None,   # 接收 (file_index, file_name, copied_bytes)
-    log_callback=None,        # 接收 (message, level)
-    check_cancel=None,        # 返回 True 表示已取消
+    progress_callback=None,
+    log_callback=None,
+    check_cancel=None,
     add_history=True
 ):
     """
     执行迁移主流程
     返回: 是否成功完成
     """
-    # 将路径转为 Path 对象
     src_path = Path(src_path)
     tgt_path = Path(tgt_path)
 
@@ -233,9 +232,9 @@ def run_migration(
         if log_callback:
             log_callback(msg, level)
 
-    def progress(file_index, file_name, copied_bytes):
+    def progress(file_index, file_name, copied_bytes, step=None):
         if progress_callback:
-            progress_callback(file_index, file_name, copied_bytes)
+            progress_callback(file_index, file_name, copied_bytes, step)
 
     try:
         copied_bytes = 0
@@ -263,7 +262,8 @@ def run_migration(
             success = 0
             skipped = 0
             failed = []
-            for item in modlist:
+            total_mods = len(modlist)
+            for idx, item in enumerate(modlist):
                 if check_cancel and check_cancel():
                     log("⚠️ 用户取消了迁移", "WARNING")
                     return False
@@ -281,11 +281,12 @@ def run_migration(
                         success += 1
                         file_index += 1
                         copied_bytes += src_file.stat().st_size
-                        progress(file_index, matched, copied_bytes)
                         if dry_run:
                             log(f"[模拟] 将复制: {matched}", "SIMULATE")
                         else:
                             log(f"✅ 已复制: {matched}", "SUCCESS")
+                        step = f"复制模组 ({idx + 1}/{total_mods})"
+                        progress(file_index, matched, copied_bytes, step)
                     else:
                         failed.append((item, msg))
                         log(f"❌ 复制失败 {matched}: {msg}", "ERROR")
@@ -307,9 +308,9 @@ def run_migration(
             if ok:
                 file_index += 1
                 copied_bytes += src_opts.stat().st_size
-                progress(file_index, "options.txt", copied_bytes)
                 log(f"{'[模拟]' if dry_run else '✅'} 已复制 options.txt",
                     "SUCCESS" if not dry_run else "SIMULATE")
+                progress(file_index, "options.txt", copied_bytes, "复制 options.txt")
             else:
                 log(f"❌ 复制 options.txt 失败: {msg}", "ERROR")
         else:
@@ -330,7 +331,7 @@ def run_migration(
                 dst_world.parent.mkdir(parents=True, exist_ok=True)
             world_files = list(src_world.rglob("*"))
             total_world_files = sum(1 for f in world_files if f.is_file())
-            for src_file in world_files:
+            for idx, src_file in enumerate(world_files):
                 if not src_file.is_file():
                     continue
                 rel = src_file.relative_to(src_world)
@@ -339,9 +340,10 @@ def run_migration(
                 if ok:
                     file_index += 1
                     copied_bytes += src_file.stat().st_size
-                    progress(file_index, f"存档/{rel}", copied_bytes)
                     if not dry_run:
                         log(f"✅ 复制存档文件: {rel}", "SUCCESS")
+                    step = f"复制存档 ({idx + 1}/{total_world_files})"
+                    progress(file_index, f"存档/{rel}", copied_bytes, step)
                 else:
                     log(f"❌ 复制存档文件 {rel} 失败: {msg}", "ERROR")
             log(f"✅ 存档 {world_name} 已{'模拟' if dry_run else ''}复制完成，共 {total_world_files} 个文件", "SUCCESS")
@@ -364,7 +366,8 @@ def run_migration(
 
             success_cfg = 0
             failed_cfg = []
-            for entry in configlist:
+            total_config_entries = len(configlist)
+            for idx, entry in enumerate(configlist):
                 if check_cancel and check_cancel():
                     log("⚠️ 用户取消了迁移", "WARNING")
                     return False
@@ -386,11 +389,12 @@ def run_migration(
                         success_cfg += 1
                         file_index += 1
                         copied_bytes += src_entry.stat().st_size
-                        progress(file_index, f"config/{entry}", copied_bytes)
                         if dry_run:
                             log(f"[模拟] 将复制 config: {entry}", "SIMULATE")
                         else:
                             log(f"✅ 已复制 config: {entry}", "SUCCESS")
+                        step = f"复制 config ({idx + 1}/{total_config_entries})"
+                        progress(file_index, f"config/{entry}", copied_bytes, step)
                     else:
                         failed_cfg.append((entry, msg))
                         log(f"❌ 复制 config 失败 {entry}: {msg}", "ERROR")
@@ -406,7 +410,6 @@ def run_migration(
                             success_cfg += 1
                             file_index += 1
                             copied_bytes += src_file.stat().st_size
-                            progress(file_index, f"config/{entry}/{rel}", copied_bytes)
                             if not dry_run:
                                 log(f"✅ 复制 config 文件: {entry}/{rel}", "SUCCESS")
                         else:
@@ -430,7 +433,7 @@ def run_migration(
             log("实际复制完成，请检查日志中的错误信息。", "INFO")
 
         if progress_callback:
-            progress_callback(None, None, None)  # 发送结束信号
+            progress_callback(None, None, None)
 
         return True
 

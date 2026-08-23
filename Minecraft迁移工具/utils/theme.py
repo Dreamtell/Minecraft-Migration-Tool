@@ -18,7 +18,15 @@ LIGHT_THEME = {
     "warning_fg": "#ff0000",
     "bottom_bg": "#ffffff",
     "bottom_fg": "gray",
-    "tooltip_bg": "#ffffe0"
+    "tooltip_bg": "#ffffe0",
+    # ttk 样式颜色
+    "ttk_bg": "#f0f0f0",
+    "ttk_fg": "#000000",
+    "ttk_select_bg": "#d0d0d0",
+    "ttk_select_fg": "#000000",
+    "ttk_field_bg": "#ffffff",
+    "ttk_progress_bg": "#4fc3f7",
+    "ttk_trough_bg": "#e0e0e0"
 }
 
 DARK_THEME = {
@@ -40,5 +48,13 @@ DARK_THEME = {
     "warning_fg": "#ff8888",
     "bottom_bg": "#2e2e2e",
     "bottom_fg": "#aaaaaa",
-    "tooltip_bg": "#3e3e3e"
+    "tooltip_bg": "#3e3e3e",
+    # ttk 样式颜色
+    "ttk_bg": "#2e2e2e",
+    "ttk_fg": "#ffffff",
+    "ttk_select_bg": "#3a3a3a",
+    "ttk_select_fg": "#ffffff",
+    "ttk_field_bg": "#3e3e3e",
+    "ttk_progress_bg": "#4fc3f7",
+    "ttk_trough_bg": "#3a3a3a"
 }
