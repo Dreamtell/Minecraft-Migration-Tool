@@ -42,7 +42,7 @@ LIGHT_THEME = {
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     "ok_fg": "#2e7d32", "fail_fg": "#c62828", "muted_fg": "#808080",
     "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
-    "sel_bg": "#a6d0f5", "sel_fg": "#000000"
+    "sel_bg": "#66bb6a", "sel_fg": "#ffffff"
 }
 
 DARK_THEME = {
@@ -85,7 +85,7 @@ DARK_THEME = {
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     "ok_fg": "#7ee787", "fail_fg": "#ff6b6b", "muted_fg": "#aaaaaa",
     "badge_rollback_bg": "#5a2d2d", "badge_normal_bg": "#3a3a3a",
-    "sel_bg": "#4a6a8a", "sel_fg": "#ffffff"
+    "sel_bg": "#2e7d32", "sel_fg": "#ffffff"
 }
 
 

@@ -194,8 +194,10 @@ def _configure_mod_detail_styles(theme):
     style.configure(
         "Detail.Treeview",
         background=theme["ttk_bg"], fieldbackground=theme["ttk_bg"],
-        foreground=theme["ttk_fg"], selectbackground=theme["ttk_select_bg"],
-        selectforeground=theme["ttk_select_fg"], borderwidth=0, rowheight=22
+        foreground=theme["ttk_fg"],
+        selectbackground=theme.get("sel_bg", "#a5d6a7"),
+        selectforeground=theme.get("sel_fg", "#000000"),
+        borderwidth=0, rowheight=22
     )
     style.configure(
         "Detail.Treeview.Heading",
@@ -225,8 +227,14 @@ def update_mod_detail_theme(win, theme):
                              foreground=theme.get("warn_fg", "#000000"))
             st.tag_configure("odd", background=theme.get("neutral_bg", "#f8f9fa"),
                              foreground=theme.get("neutral_fg", "#000000"))
-            st.tag_configure("sel", background=theme.get("sel_bg", "#a6d0f5"),
+            st.tag_configure("sel", background=theme.get("sel_bg", "#a5d6a7"),
                              foreground=theme.get("sel_fg", "#000000"))
+        # 恢复在线搜索区里"特意设置了颜色"的提示标签（apply_theme_to_widget_tree 会把它们改成 label_fg）
+        if hasattr(win, '_search_muted_hint'):
+            win._search_muted_hint.config(fg=theme.get("muted_fg", "gray"))
+        if hasattr(win, '_search_status'):
+            win._search_status.config(fg=getattr(win._search_status, '_last_fg', theme.get("ok_fg", "green")))
+
         win.update_idletasks()
     except Exception:
         pass
@@ -237,9 +245,9 @@ def show_mod_detail(parent, jar_path, theme):
     info = get_full_mod_metadata(jar_path)
     win = tk.Toplevel(parent)
     win.title(f"模组详情 - {os.path.basename(jar_path)}")
-    win.geometry("880x720")
-    win.minsize(820, 640)
+    win.minsize(700, 540)
     win.transient(parent)
+    win.withdraw()   # 先隐藏，等构建完再居中显示，避免"闪现-居中"闪动
     set_window_icon(win)
     _configure_mod_detail_styles(theme)
     fail = theme.get("fail_fg", "red")
@@ -273,11 +281,15 @@ def show_mod_detail(parent, jar_path, theme):
     search_entry.pack(side="left", padx=5)
     search_btn = tk.Button(top, text="🔍 联网搜索")
     search_btn.pack(side="left", padx=5)
-    tk.Label(top, text="（自动置顶最匹配项）",
-             fg=theme.get("muted_fg", "gray")).pack(side="left", padx=8)
+    muted_hint = tk.Label(top, text="（自动置顶最匹配项）",
+                          fg=theme.get("muted_fg", "gray"))
+    muted_hint.pack(side="left", padx=8)
+    win._search_muted_hint = muted_hint
 
     status_lbl = tk.Label(search_frame, text="可修改搜索词后回车或点击“联网搜索”。", anchor="w", fg=ok)
+    status_lbl._last_fg = ok  # 记录当前状态色，主题刷新时按此恢复（避免被重点名地改成黑色）
     status_lbl.pack(fill="x", pady=(0, 2))
+    win._search_status = status_lbl
 
     columns = ("name", "author", "downloads", "version", "slug")
     # 结果表格放进独立子框并撑满，避免下方"操作行"被横向挤掉
@@ -285,6 +297,7 @@ def show_mod_detail(parent, jar_path, theme):
     tree_frame.pack(fill="both", expand=True, pady=2)
     tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=7,
                         style="Detail.Treeview")
+    tree.configure(selectmode="none")  # 用自定义绿色选中标签，避免 ttk 灰色选中盖掉颜色
     for col, txt, wd, anc in (("name", "名称", 230, "w"), ("author", "作者", 105, "w"),
                               ("downloads", "下载量", 80, "e"), ("version", "最新版本", 150,
                                                               "w"),
@@ -297,7 +310,7 @@ def show_mod_detail(parent, jar_path, theme):
                        foreground=theme.get("warn_fg", "#000000"))
     tree.tag_configure("odd", background=theme.get("neutral_bg", "#f8f9fa"),
                        foreground=theme.get("neutral_fg", "#000000"))
-    tree.tag_configure("sel", background=theme.get("sel_bg", "#a6d0f5"),
+    tree.tag_configure("sel", background=theme.get("sel_bg", "#a5d6a7"),
                        foreground=theme.get("sel_fg", "#000000"))
     vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview,
                         style="Detail.Vertical.TScrollbar")
@@ -305,7 +318,7 @@ def show_mod_detail(parent, jar_path, theme):
     tree.pack(side="left", fill="both", expand=True, padx=5)
     vsb.pack(side="right", fill="y")
     tree.bind("<Double-1>", lambda e: open_project_page())
-    tree.bind("<<TreeviewSelect>>", lambda e: on_select())
+    tree.bind("<ButtonRelease-1>", lambda e: on_row_click(e))
     win._search_tree = tree
 
     act = tk.Frame(search_frame)
@@ -325,25 +338,34 @@ def show_mod_detail(parent, jar_path, theme):
     msg_queue = queue.Queue()
     search_state = {"running": False}
     result_items = {}
+    base_tag = {}     # iid -> 基础标签（match/update/odd/''），供取消选中时恢复
 
     def set_status(msg, color=ok):
+        status_lbl._last_fg = color
         status_lbl.config(text=msg, fg=color)
 
     def selected():
-        sel = tree.selection()
-        return result_items.get(sel[0]) if sel else None
+        # 用自己维护的当前选中行，避免 ttk 灰色选中态盖掉颜色
+        iid = current_sel[0]
+        return result_items.get(iid) if iid else None
 
-    def on_select(event=None):
-        """让选中行高亮成明显的选中色，取消选中时恢复底色。"""
+    def on_row_click(event):
+        """点击结果行 -> 该行单独标绿色选中标签，其余恢复基础标签（不触发 ttk 灰色选中态）。"""
         try:
-            sel_set = set(tree.selection())
+            row = tree.identify_row(event.y)
+            if not row:
+                return
+            current_sel[0] = row
             for iid in tree.get_children():
-                tags = [t for t in tree.item(iid, "tags") if t != "sel"]
-                if iid in sel_set:
-                    tags.append("sel")
-                tree.item(iid, tags=tuple(tags))
+                if iid == row:
+                    tree.item(iid, tags=("sel",))
+                else:
+                    bt = base_tag.get(iid, "")
+                    tree.item(iid, tags=(bt,) if bt else ())
         except Exception:
             pass
+
+    current_sel = [None]
 
     def _norm(s):
         """归一化：小写、去括号内容、非字母数字合并为空格，便于相似度比较。"""
@@ -398,6 +420,7 @@ def show_mod_detail(parent, jar_path, theme):
             tree.insert("", "end", iid=iid, values=(
                 title, r["author"], format_downloads(r["downloads"]),
                 "获取中…", r.get("slug", "")), tags=(tag,) if tag else ())
+            base_tag[iid] = tag
             result_items[iid] = r
         # 后台并发拉取各候选最新版本（使用排序后位置，与 iid 一致）
         for pos, (score, orig_i, r) in enumerate(scored):
@@ -430,12 +453,19 @@ def show_mod_detail(parent, jar_path, theme):
         updatable = bool(vnum) and bool(local_ver) and vnum != local_ver
         disp = (vnum + " ⬆") if updatable else (vnum or "未知")
         tree.set(iid, "version", disp)
-        if is_match:
+        # 若该行正被选中，保持绿色选中标签；否则按 最相似/可更新/斑马纹 恢复
+        if current_sel[0] == iid:
+            tree.item(iid, tags=("sel",))
+        elif is_match:
+            base_tag[iid] = "match"
             tree.item(iid, tags=("match",))
         elif updatable:
+            base_tag[iid] = "update"
             tree.item(iid, tags=("update",))
         else:
-            tree.item(iid, tags=("odd",) if (i % 2) else ())
+            base_tag[iid] = "odd" if (i % 2) else ""
+            bt = base_tag[iid]
+            tree.item(iid, tags=(bt,) if bt else ())
 
     def show_error(msg):
         search_state["running"] = False
@@ -538,5 +568,18 @@ def show_mod_detail(parent, jar_path, theme):
             pass
 
     win.bind("<Destroy>", _unregister)
+
+    # 按内容自适应大小并居中显示
+    try:
+        win.withdraw()
+        win.update_idletasks()
+        w = min(win.winfo_reqwidth(), 940)
+        h = min(win.winfo_reqheight(), 780)
+        x = max(0, (win.winfo_screenwidth() // 2) - (w // 2))
+        y = max(0, (win.winfo_screenheight() // 2) - (h // 2))
+        win.geometry(f"{w}x{h}+{x}+{y}")
+        win.deiconify()
+    except Exception:
+        pass
 
     return win

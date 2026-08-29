@@ -8,6 +8,7 @@ import os
 import sys
 import queue
 import threading
+import shutil
 from pathlib import Path
 import subprocess
 import re
@@ -196,7 +197,7 @@ class MigrationGUI:
                 if bv.winfo_exists():
                     bv.tag_configure("missing", background=self.theme.get("danger_bg", "#ffb3b3"),
                                      foreground=self.theme.get("danger_fg", "#8b0000"))
-                    bv.tag_configure("checked", background=self.theme.get("sel_bg", "#a6d0f5"),
+                    bv.tag_configure("checked", background=self.theme.get("sel_bg", "#a5d6a7"),
                                      foreground=self.theme.get("sel_fg", "#000000"))
                     bv.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
                                      foreground=self.theme.get("warn_fg", "#000000"))
@@ -570,6 +571,11 @@ class MigrationGUI:
         self.mod_text.pack(fill="both", expand=True, padx=5, pady=5)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
+        # 本会话新添加的模组（文件名小写），主清单用黄色高亮提示
+        self._new_mod_keys = set()
+        self.mod_text.tag_configure(
+            "new", background=self.theme.get("warn_bg", "#ffeaa7"),
+            foreground=self.theme.get("warn_fg", "#000000"))
         # 支持从资源管理器拖拽 .jar 到清单
         try:
             from tkinterdnd2 import DND_FILES
@@ -977,6 +983,7 @@ class MigrationGUI:
             self._update_text_states()
             self.config_text.edit_reset()
             self.config_text.edit_modified(False)
+            self._notify_config_change()
             messagebox.showinfo("导入成功", f"✅ 已从源 config 导入 {len(entries)} 个条目。",
                                parent=self.root)
         else:
@@ -1018,6 +1025,7 @@ class MigrationGUI:
         self.log(f"✅ 已添加 config 条目: {rel_path}", level="SUCCESS")
         self.save_config()
         self._update_text_states()
+        self._notify_config_change()
         messagebox.showinfo("添加成功", f"✅ 已添加 config 条目：{rel_path}", parent=self.root)
 
     def browse_add_config_file(self):
@@ -1058,6 +1066,7 @@ class MigrationGUI:
         self.log(f"✅ 已添加 config 条目: {rel_path}", level="SUCCESS")
         self.save_config()
         self._update_text_states()
+        self._notify_config_change()
         messagebox.showinfo("添加成功", f"✅ 已添加 config 条目：{rel_path}", parent=self.root)
 
     # ---------- 历史记录 ----------
@@ -1370,6 +1379,28 @@ class MigrationGUI:
             messagebox.showwarning("提示", "模组清单和 config 清单均为空，没有可迁移的内容。")
             return
 
+        # 计算要复制的文件数与总大小
+        total_files, total_size = self._calculate_migration_stats(
+            src_path, tgt_path, world, modlist, configlist)
+        self.log(f"📦 待迁移文件 {total_files} 个，总大小 {total_size / 1024 / 1024:.1f} MB",
+                 level="INFO")
+
+        if total_files == 0:
+            messagebox.showinfo("提示", "没有找到需要复制的文件，请检查清单。")
+            return
+
+        # 磁盘空间检查（目标盘需容纳 迁移数据 + 目标备份，附带余量）
+        ok, free, needed = self._check_disk_space(tgt_path, total_size)
+        if free < 0:
+            self.log("⚠️ 无法读取目标磁盘信息，已跳过空间检查", level="WARNING")
+        elif not ok:
+            messagebox.showerror(
+                "磁盘空间不足",
+                f"目标磁盘剩余空间 {free / 1024 / 1024:.1f} MB，"
+                f"本次迁移约需 {needed / 1024 / 1024:.1f} MB（含备份余量）。\n"
+                "空间不足，请清理目标磁盘后重试。")
+            return
+
         # 模拟模式
         if self.dry_run.get():
             self.log("========== 开始迁移（模拟） ==========", level="INFO")
@@ -1392,14 +1423,6 @@ class MigrationGUI:
         except Exception as e:
             self.log(f"❌ 备份失败：{e}", level="ERROR")
             messagebox.showerror("备份错误", f"备份目标实例失败：{e}\n迁移已取消。")
-            return
-
-        # 计算文件总数和大小
-        total_files, total_size = self._calculate_migration_stats(src_path, tgt_path,
-                                                                  world, modlist, configlist)
-
-        if total_files == 0:
-            messagebox.showinfo("提示", "没有找到需要复制的文件，请检查清单。")
             return
 
         self.progress_queue = queue.Queue()
@@ -1454,6 +1477,32 @@ class MigrationGUI:
                         total_size += f.stat().st_size
 
         return total_files, total_size
+
+    def _dir_size(self, path):
+        """递归计算目录下所有文件大小。"""
+        total = 0
+        try:
+            for f in Path(path).rglob("*"):
+                if f.is_file():
+                    try:
+                        total += f.stat().st_size
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+        return total
+
+    def _check_disk_space(self, tgt_path, total_size):
+        """检查目标磁盘空间是否足够（迁移数据 + 目标备份，附加余量）。
+        返回 (ok, free_bytes, needed_bytes)；无法读取磁盘时返回 (True, -1, -1)。"""
+        try:
+            free = shutil.disk_usage(str(tgt_path)).free
+        except Exception:
+            return True, -1, -1
+        # 备份需容纳目标实例当前大小，迁移需写入 total_size；加 1.2 倍余量 + 100MB 缓冲。
+        target_size = self._dir_size(tgt_path)
+        needed = int((total_size + target_size) * 1.2) + 100 * 1024 * 1024
+        return free >= needed, free, needed
 
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist,
                               dry_run):
@@ -1582,11 +1631,28 @@ class MigrationGUI:
         self.mod_text.configure(state=tk.NORMAL)
         self.mod_text.delete("1.0", tk.END)
         self.mod_text.insert("1.0", merged + ("\n" if merged else ""))
+        # 记录本次新添加的模组（文件名小写），主清单用黄色高亮
+        self._new_mod_keys.update(Path(p).name.lower() for p in new)
+        self._apply_mod_new_tags()
         self.save_config()
         self._update_text_states()
         self.log(f"✅ 已添加 {len(new)} 个模组", level="SUCCESS")
         self._notify_modlist_change()
         return len(new)
+
+    def _apply_mod_new_tags(self):
+        """给主模组清单中"本会话新添加"的行重新染上黄色高亮。"""
+        try:
+            self.mod_text.tag_remove("new", "1.0", tk.END)
+            if not self._new_mod_keys:
+                return
+            lines = self.mod_text.get("1.0", tk.END).splitlines()
+            for i, ln in enumerate(lines):
+                base = Path(ln.strip()).name.lower()
+                if base in self._new_mod_keys:
+                    self.mod_text.tag_add("new", f"{i + 1}.0", f"{i + 1}.end")
+        except Exception:
+            pass
 
     def _mod_add_result(self, files, added):
         """模组添加后的成功/失败提示。"""
@@ -1645,6 +1711,8 @@ class MigrationGUI:
                 added += 1
         self.save_config()
         self._update_text_states()
+        if added:
+            self._notify_config_change()
         return added, failed
 
     def _on_config_drop(self, event):
@@ -1665,6 +1733,7 @@ class MigrationGUI:
         """清空模组清单。"""
         self.mod_text.configure(state=tk.NORMAL)
         self.mod_text.delete("1.0", tk.END)
+        self._new_mod_keys.clear()   # 清空后不再保留"新添加"高亮
         self.save_config()
         self._update_text_states()
         self._notify_modlist_change()
@@ -1675,11 +1744,19 @@ class MigrationGUI:
         self.config_text.delete("1.0", tk.END)
         self.save_config()
         self._update_text_states()
+        self._notify_config_change()
 
     def _notify_modlist_change(self):
         """通知已打开的"放大查看"刷新模组清单。"""
         try:
             self.mod_text.event_generate("<<ModlistChanged>>")
+        except Exception:
+            pass
+
+    def _notify_config_change(self):
+        """通知已打开的"放大查看"刷新 config 清单。"""
+        try:
+            self.config_text.event_generate("<<ConfigChanged>>")
         except Exception:
             pass
 
@@ -1714,7 +1791,7 @@ class MigrationGUI:
         tree.configure(selectmode="none")
         tree.tag_configure("missing", background=self.theme.get("danger_bg", "#ffb3b3"),
                            foreground=self.theme.get("danger_fg", "#8b0000"))
-        tree.tag_configure("checked", background=self.theme.get("sel_bg", "#a6d0f5"),
+        tree.tag_configure("checked", background=self.theme.get("sel_bg", "#a5d6a7"),
                            foreground=self.theme.get("sel_fg", "#000000"))
         tree.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
                            foreground=self.theme.get("warn_fg", "#000000"))
@@ -1735,6 +1812,7 @@ class MigrationGUI:
         checked = {}       # 条目内容(完整路径/文件名) -> bool，用勾选做多选（按内容而非行位置，避免排序/刷新后错位）
         new_keys = set()   # 本次会话新添加的模组（文件名），染黄色高亮提示
         order = list(range(len(entries)))   # 当前显示顺序（entries 索引），含排序+过滤
+        order_index = {idx: pos for pos, idx in enumerate(order)}  # idx->当前位置，供 poll 快速定位(O(1))
         sort_state = {"col": None, "rev": False}
 
         mods_dir = None
@@ -1826,7 +1904,7 @@ class MigrationGUI:
                 return ("odd",)
             return ()
 
-        def scan_row(pos, idx):
+        def scan_row(idx):
             e = entries[idx]
             try:
                 r = resolve(e)
@@ -1849,17 +1927,39 @@ class MigrationGUI:
                              "path": str(e), "type": "?", "modid": "?", "version": "?", "size": "?"}
             msg_queue.put(idx)
 
+        # 有界扫描线程池：避免为每条目单开线程导致几千并发的线程爆炸/磁盘抖动
+        scan_queue = queue.Queue()
+        _SCAN_WORKERS = 6
+
+        def scan_worker():
+            while True:
+                try:
+                    idx = scan_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                try:
+                    scan_row(idx)
+                except Exception:
+                    pass
+                finally:
+                    scan_queue.task_done()
+
+        for _ in range(_SCAN_WORKERS):
+            threading.Thread(target=scan_worker, daemon=True).start()
+
         def rebuild(rescan=True):
             if not win.winfo_exists():
                 return
             tree.delete(*tree.get_children())
             order[:] = compute_order()
+            order_index.clear()
+            order_index.update({idx: pos for pos, idx in enumerate(order)})
             for pos, idx in enumerate(order):
                 iid = str(pos)
                 tree.insert("", "end", iid=iid, values=row_values(pos, idx),
                             tags=row_tags(pos, idx))
                 if rescan and idx not in meta:
-                    threading.Thread(target=scan_row, args=(pos, idx), daemon=True).start()
+                    scan_queue.put(idx)
             total = len(entries)
             shown = len(order)
             count_lbl.config(text=(f"显示 {shown}/{total} 项"
@@ -1874,6 +1974,9 @@ class MigrationGUI:
             source_text.edit_separator()
             self._update_text_states()
             self.save_config()
+            # 主模组清单被重写后，重新应用"新添加"黄色高亮
+            if is_mod:
+                self._apply_mod_new_tags()
 
         def add_mods():
             files = filedialog.askopenfilenames(title="选择要添加的模组（可多选）",
@@ -1942,16 +2045,18 @@ class MigrationGUI:
             rebuild(rescan=False)
 
         def poll():
+            # 每次尽量只处理一小批消息，避免几千条积压时一次循环卡死 UI
+            batch = 40
             try:
-                while True:
+                while batch > 0:
                     idx = msg_queue.get_nowait()
-                    for pos, eidx in enumerate(order):
-                        if eidx == idx:
-                            iid = str(pos)
-                            if tree.exists(iid):
-                                tree.item(iid, values=row_values(pos, idx),
-                                          tags=row_tags(pos, idx))
-                            break
+                    pos = order_index.get(idx)
+                    if pos is not None:
+                        iid = str(pos)
+                        if tree.exists(iid):
+                            tree.item(iid, values=row_values(pos, idx),
+                                      tags=row_tags(pos, idx))
+                    batch -= 1
             except queue.Empty:
                 pass
             except Exception:
@@ -1987,7 +2092,16 @@ class MigrationGUI:
                                 bg=self.theme["entry_bg"], fg=self.theme["entry_fg"],
                                 insertbackground=self.theme["fg"])
         search_entry.pack(side="left", padx=4)
-        search_var.trace("w", lambda *a: rebuild(rescan=False))
+        # 搜索防抖：停止输入 250ms 后再重建，避免每个按键都全量重建导致卡顿
+        _search_after = [None]
+        def on_search_changed(*a):
+            if _search_after[0] is not None:
+                try:
+                    win.after_cancel(_search_after[0])
+                except Exception:
+                    pass
+            _search_after[0] = win.after(250, lambda: rebuild(rescan=False))
+        search_var.trace("w", on_search_changed)
         search_entry.bind("<Return>", lambda e: rebuild(rescan=False))
         detect_btn = create_gradient_button(top, "🔍 检测存在性", detect,
                                             colors=("#43a047", "#66bb6a"),
@@ -2016,16 +2130,18 @@ class MigrationGUI:
         tk.Button(top, text="关闭", command=win.destroy,
                   bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right")
 
-        # 当主界面清单被外部修改（如差异"应用"）时，自动重载并保留勾选高亮
+        # 当主界面清单被外部修改（如差异"应用"/config导入/浏览添加/拖拽/清空）时，自动重载并保留勾选高亮
+        def reload_entries():
+            if not win.winfo_exists():
+                return
+            entries[:] = [ln.strip() for ln in source_text.get(
+                "1.0", tk.END).splitlines() if ln.strip()]
+            meta.clear()
+            rebuild(rescan=True)
         if is_mod:
-            def reload_entries():
-                if not win.winfo_exists():
-                    return
-                entries[:] = [ln.strip() for ln in source_text.get(
-                    "1.0", tk.END).splitlines() if ln.strip()]
-                meta.clear()
-                rebuild(rescan=True)
             source_text.bind("<<ModlistChanged>>", lambda e: reload_entries())
+        else:
+            source_text.bind("<<ConfigChanged>>", lambda e: reload_entries())
 
         rebuild(rescan=True)
         poll()
