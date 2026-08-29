@@ -4,7 +4,8 @@ import os
 import sys
 from pathlib import Path
 
-def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"), hover_colors=None, width=180, height=32, font=("微软雅黑", 10, "bold")):
+def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
+                           hover_colors=None, width=180, height=32, font=("微软雅黑", 10, "bold")):
     if hover_colors is None:
         def lighten(hex_color, amount=40):
             r = min(255, int(hex_color[1:3], 16) + amount)
@@ -13,7 +14,8 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             return f"#{r:02x}{g:02x}{b:02x}"
         hover_colors = (lighten(colors[0]), lighten(colors[1]))
 
-    canvas = tk.Canvas(parent, width=width, height=height, highlightthickness=0, bg=parent.cget("bg"))
+    canvas = tk.Canvas(parent, width=width, height=height, highlightthickness=0,
+                       bg=parent.cget("bg"))
     canvas.pack_propagate(False)
 
     def draw_bg(hover=False):
@@ -29,7 +31,8 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
 
     def draw_text():
         canvas.delete("text")
-        canvas.text_id = canvas.create_text(width//2, height//2, text=text, fill="white", font=font, tags="text")
+        canvas.text_id = canvas.create_text(width//2, height//2, text=text,
+                                            fill="white", font=font, tags="text")
 
     def on_enter(e):
         draw_bg(True)

@@ -1,4 +1,7 @@
 # utils/theme.py
+import tkinter as tk
+from tkinter import scrolledtext
+
 LIGHT_THEME = {
     "bg": "#f0f0f0",
     "fg": "#000000",
@@ -26,7 +29,20 @@ LIGHT_THEME = {
     "ttk_select_fg": "#000000",
     "ttk_field_bg": "#ffffff",
     "ttk_progress_bg": "#4fc3f7",
-    "ttk_trough_bg": "#e0e0e0"
+    "ttk_trough_bg": "#e0e0e0",
+    # 语义色（按钮/标签/徽章，跟随主题统一）
+    "success_bg": "#d4edda", "success_fg": "#000000",
+    "warn_bg": "#ffeaa7", "warn_fg": "#000000",
+    "neutral_bg": "#f8f9fa", "neutral_fg": "#000000",
+    "info_bg": "#d0f0f0", "info_fg": "#000000",
+    "accent_bg": "#b3d9ff", "accent_fg": "#000000",
+    "highlight_bg": "#cce5ff", "highlight_fg": "#000000",
+    "lightgray_bg": "#d3d3d3",
+    "danger_bg": "#ffc7c7", "danger_fg": "#8b0000",
+    "edit_bg": "#ff9800", "edit_fg": "#000000",
+    "ok_fg": "#2e7d32", "fail_fg": "#c62828", "muted_fg": "#808080",
+    "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
+    "sel_bg": "#a6d0f5", "sel_fg": "#000000"
 }
 
 DARK_THEME = {
@@ -56,5 +72,51 @@ DARK_THEME = {
     "ttk_select_fg": "#ffffff",
     "ttk_field_bg": "#3e3e3e",
     "ttk_progress_bg": "#4fc3f7",
-    "ttk_trough_bg": "#3a3a3a"
+    "ttk_trough_bg": "#3a3a3a",
+    # 语义色（按钮/标签/徽章，跟随主题统一）
+    "success_bg": "#2d4a2d", "success_fg": "#ffffff",
+    "warn_bg": "#4a3d2d", "warn_fg": "#ffffff",
+    "neutral_bg": "#3a3a3a", "neutral_fg": "#ffffff",
+    "info_bg": "#2d3d4a", "info_fg": "#ffffff",
+    "accent_bg": "#3a4a5a", "accent_fg": "#ffffff",
+    "highlight_bg": "#4a6a8a", "highlight_fg": "#ffffff",
+    "lightgray_bg": "#4e4e4e",
+    "danger_bg": "#5a2d2d", "danger_fg": "#ffb3b3",
+    "edit_bg": "#ff9800", "edit_fg": "#000000",
+    "ok_fg": "#7ee787", "fail_fg": "#ff6b6b", "muted_fg": "#aaaaaa",
+    "badge_rollback_bg": "#5a2d2d", "badge_normal_bg": "#3a3a3a",
+    "sel_bg": "#4a6a8a", "sel_fg": "#ffffff"
 }
+
+
+def apply_theme_to_widget_tree(widget, theme):
+    """将主题颜色递归应用到控件树（含 Toplevel 子窗口），供各窗口创建/切换时复用"""
+    try:
+        if isinstance(widget, tk.Toplevel):
+            widget.configure(bg=theme["bg"])
+        elif isinstance(widget, tk.LabelFrame):
+            # LabelFrame 是 Frame 的子类，需先判断，否则标题颜色不会设置
+            widget.configure(bg=theme["labelframe_bg"], fg=theme["labelframe_fg"])
+        elif isinstance(widget, tk.Frame):
+            widget.configure(bg=theme["bg"])
+        elif isinstance(widget, tk.Label):
+            widget.configure(bg=theme["label_bg"], fg=theme["label_fg"])
+        elif isinstance(widget, tk.Button):
+            widget.configure(bg=theme["button_bg"], fg=theme["button_fg"],
+                             activebackground=theme["button_bg"])
+        elif isinstance(widget, tk.Entry):
+            widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"],
+                             insertbackground=theme["fg"])
+        elif isinstance(widget, scrolledtext.ScrolledText):
+            widget.configure(bg=theme["text_bg"], fg=theme["text_fg"])
+            widget.vbar.configure(bg=theme["button_bg"], troughcolor=theme["bg"])
+        elif isinstance(widget, tk.Text):
+            widget.configure(bg=theme["text_bg"], fg=theme["text_fg"])
+        elif isinstance(widget, tk.Canvas):
+            widget.configure(bg=theme["bg"])
+        elif isinstance(widget, tk.Listbox):
+            widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"])
+    except Exception:
+        pass
+    for child in widget.winfo_children():
+        apply_theme_to_widget_tree(child, theme)

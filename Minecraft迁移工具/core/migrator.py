@@ -268,31 +268,39 @@ def run_migration(
                     log("⚠️ 用户取消了迁移", "WARNING")
                     return False
 
-                matched = match_mod(item, source_files, name_map)
-                if matched:
-                    src_file = source_files[matched]
-                    dst_file = tgt_mods / matched
-                    if dst_file.exists() and not overwrite and not dry_run:
-                        log(f"⏭️ 跳过已存在的模组: {matched}", "WARNING")
-                        skipped += 1
-                        continue
-                    ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite, is_file=True)
-                    if ok:
-                        success += 1
-                        file_index += 1
-                        copied_bytes += src_file.stat().st_size
-                        if dry_run:
-                            log(f"[模拟] 将复制: {matched}", "SIMULATE")
-                        else:
-                            log(f"✅ 已复制: {matched}", "SUCCESS")
-                        step = f"复制模组 ({idx + 1}/{total_mods})"
-                        progress(file_index, matched, copied_bytes, step)
-                    else:
-                        failed.append((item, msg))
-                        log(f"❌ 复制失败 {matched}: {msg}", "ERROR")
+                # 支持“完整路径”条目：直接按该文件复制；否则回退到源目录名匹配
+                direct_src = Path(item)
+                if direct_src.is_file() and direct_src.suffix.lower() == ".jar":
+                    matched = direct_src.name
+                    src_file = direct_src
                 else:
-                    failed.append((item, "未找到匹配的文件"))
-                    log(f"❌ 未找到匹配模组: {item}", "ERROR")
+                    matched = match_mod(item, source_files, name_map)
+                    if not matched:
+                        failed.append((item, "未找到匹配的文件"))
+                        log(f"❌ 未找到匹配模组: {item}", "ERROR")
+                        continue
+                    src_file = source_files[matched]
+
+                dst_file = tgt_mods / matched
+                if dst_file.exists() and not overwrite and not dry_run:
+                    log(f"⏭️ 跳过已存在的模组: {matched}", "WARNING")
+                    skipped += 1
+                    continue
+                ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite,
+                                    is_file=True)
+                if ok:
+                    success += 1
+                    file_index += 1
+                    copied_bytes += src_file.stat().st_size
+                    if dry_run:
+                        log(f"[模拟] 将复制: {matched}", "SIMULATE")
+                    else:
+                        log(f"✅ 已复制: {matched}", "SUCCESS")
+                    step = f"复制模组 ({idx + 1}/{total_mods})"
+                    progress(file_index, matched, copied_bytes, step)
+                else:
+                    failed.append((item, msg))
+                    log(f"❌ 复制失败 {matched}: {msg}", "ERROR")
             log(f"模组复制完成: 成功 {success} 个, 跳过 {skipped} 个, 失败 {len(failed)} 个", "INFO")
 
         # -------- 步骤2: 复制 options.txt --------
@@ -304,7 +312,8 @@ def run_migration(
         src_opts = src_path / "options.txt"
         dst_opts = tgt_path / "options.txt"
         if src_opts.exists():
-            ok, msg = safe_copy(src_opts, dst_opts, dry_run, overwrite=True, is_file=True)
+            ok, msg = safe_copy(src_opts, dst_opts, dry_run, overwrite=True,
+                                is_file=True)
             if ok:
                 file_index += 1
                 copied_bytes += src_opts.stat().st_size
@@ -336,7 +345,8 @@ def run_migration(
                     continue
                 rel = src_file.relative_to(src_world)
                 dst_file = dst_world / rel
-                ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite=True, is_file=True)
+                ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite=True,
+                                    is_file=True)
                 if ok:
                     file_index += 1
                     copied_bytes += src_file.stat().st_size
@@ -384,7 +394,8 @@ def run_migration(
 
                 dst_entry = tgt_config / entry
                 if src_entry.is_file():
-                    ok, msg = safe_copy(src_entry, dst_entry, dry_run, overwrite=True, is_file=True)
+                    ok, msg = safe_copy(src_entry, dst_entry, dry_run, overwrite=True,
+                                        is_file=True)
                     if ok:
                         success_cfg += 1
                         file_index += 1
@@ -405,7 +416,8 @@ def run_migration(
                             continue
                         rel = src_file.relative_to(src_entry)
                         dst_file = dst_entry / rel
-                        ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite=True, is_file=True)
+                        ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite=True,
+                                            is_file=True)
                         if ok:
                             success_cfg += 1
                             file_index += 1

@@ -39,19 +39,22 @@ def get_mod_metadata(jar_path):
                                 return modid, version or "?", "Fabric"
                             elif modid:
                                 filename = jar_path.name
-                                ver_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)', filename)
+                                ver_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)',
+                                                      filename)
                                 if ver_match:
                                     return modid, ver_match.group(1), "Fabric(文件名推断)"
                                 return modid, "?", "Fabric(占位符)"
                         except json.JSONDecodeError:
                             modid_match = re.search(r'"id"\s*:\s*"([^"]+)"', content)
-                            version_match = re.search(r'"version"\s*:\s*"([^"]+)"', content)
+                            version_match = re.search(r'"version"\s*:\s*"([^"]+)"',
+                                                      content)
                             if modid_match:
                                 modid = modid_match.group(1)
                                 version = version_match.group(1) if version_match else None
                                 if is_placeholder(version):
                                     filename = jar_path.name
-                                    ver_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)', filename)
+                                    ver_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)',
+                                                          filename)
                                     if ver_match:
                                         return modid, ver_match.group(1), "Fabric(正则解析)"
                                     return modid, "?", "Fabric(正则解析)"
@@ -96,6 +99,19 @@ def get_mod_metadata(jar_path):
         return None, None, None
 
 
+def _clean_meta(value, default="未知"):
+    """清理占位符/空值（如 ${file.jarVersion}），返回默认值。"""
+    if value is None:
+        return default
+    s = str(value).strip()
+    if not s or s == default:
+        return default
+    # Maven/Gradle 占位符：${file.jarVersion} 或 $xxx
+    if s.startswith("$"):
+        return default
+    return s
+
+
 def get_full_mod_metadata(jar_path):
     """
     从 jar 中读取完整的模组元数据（用于详情展示）
@@ -117,12 +133,14 @@ def get_full_mod_metadata(jar_path):
                     content = f.read().decode('utf-8', errors='ignore')
                     try:
                         data = json.loads(content)
-                        info["modid"] = data.get("id", "未知")
-                        info["version"] = data.get("version", "未知")
-                        info["name"] = data.get("name", "未知")
+                        info["modid"] = _clean_meta(data.get("id", "未知"))
+                        info["version"] = _clean_meta(data.get("version", "未知"))
+                        info["name"] = _clean_meta(data.get("name", "未知"))
                         info["description"] = data.get("description", "无")
-                        info["authors"] = ", ".join(data.get("authors", [])) if data.get("authors") else "无"
-                        info["dependencies"] = ", ".join(data.get("depends", {}).keys()) if data.get("depends") else "无"
+                        info["authors"] = ", ".join(data.get("authors",
+                                                             [])) if data.get("authors") else "无"
+                        info["dependencies"] = ", ".join(data.get("depends",
+                                                                  {}).keys()) if data.get("depends") else "无"
                         info["mod_type"] = "Fabric"
                     except:
                         pass
@@ -134,9 +152,9 @@ def get_full_mod_metadata(jar_path):
                     name = re.search(r'displayName\s*=\s*"([^"]+)"', content)
                     desc = re.search(r'description\s*=\s*"([^"]+)"', content)
                     author = re.search(r'author\s*=\s*"([^"]+)"', content)
-                    info["modid"] = modid.group(1) if modid else "未知"
-                    info["version"] = version.group(1) if version else "未知"
-                    info["name"] = name.group(1) if name else "未知"
+                    info["modid"] = _clean_meta(modid.group(1) if modid else "未知")
+                    info["version"] = _clean_meta(version.group(1) if version else "未知")
+                    info["name"] = _clean_meta(name.group(1) if name else "未知")
                     info["description"] = desc.group(1) if desc else "无"
                     info["authors"] = author.group(1) if author else "无"
                     info["mod_type"] = "Forge"
@@ -250,8 +268,10 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
                     progress_queue.put((current, result["name"]))
     save_cache(tgt_cache_file, tgt_cache)
 
-    src_by_modid = {info["modid"]: name for name, info in src_files.items() if info["modid"]}
-    tgt_by_modid = {info["modid"]: name for name, info in tgt_files.items() if info["modid"]}
+    src_by_modid = {info["modid"]: name for name,
+                    info in src_files.items() if info["modid"]}
+    tgt_by_modid = {info["modid"]: name for name,
+                    info in tgt_files.items() if info["modid"]}
     src_by_norm = {info["norm"]: name for name, info in src_files.items()}
     tgt_by_norm = {info["norm"]: name for name, info in tgt_files.items()}
 

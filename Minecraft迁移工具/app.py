@@ -43,8 +43,12 @@ def main():
     # 发送启动通知（非阻塞）
     send_startup_notification()
 
-    # 创建主窗口（先隐藏，避免瞬移）
-    root = tk.Tk()
+    # 创建主窗口（先隐藏，避免瞬移）；使用 TkinterDnD 以支持文件拖拽
+    try:
+        from tkinterdnd2 import TkinterDnD
+        root = TkinterDnD.Tk()
+    except Exception:
+        root = tk.Tk()
     root.withdraw()
     root.title("Minecraft 整合包迁移工具 - 增强版 v3")
     root.geometry("1000x1080")
