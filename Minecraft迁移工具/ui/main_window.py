@@ -1,6 +1,7 @@
 # ui/main_window.py
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+import tkinter.font as tkfont
 import json
 import time
 import os
@@ -26,6 +27,12 @@ from core.scanner import scan_mod_differences, get_full_mod_metadata
 from ui.dialogs import ProgressWindow, ScanProgressWindow
 from ui.diff_window import show_diff_window
 from ui.diff_window import show_diff_window, update_diff_theme
+
+
+def _grad_width(text):
+    """按文字测量渐变按钮宽度（微软雅黑 9 粗体 + 内边距）。"""
+    return int(tkfont.Font(family="微软雅黑", size=9, weight="bold").measure(text)) + 26
+
 
 class MigrationGUI:
     def __init__(self, root):
@@ -182,6 +189,21 @@ class MigrationGUI:
             bordercolor=self.theme["bg"]
         )
         apply_theme_to_widget_tree(self.root, self.theme)
+
+        # 同步"放大查看"结果表的行标签颜色
+        for bv in getattr(self, '_big_view_trees', []):
+            try:
+                if bv.winfo_exists():
+                    bv.tag_configure("missing", background=self.theme.get("danger_bg", "#ffb3b3"),
+                                     foreground=self.theme.get("danger_fg", "#8b0000"))
+                    bv.tag_configure("checked", background=self.theme.get("sel_bg", "#a6d0f5"),
+                                     foreground=self.theme.get("sel_fg", "#000000"))
+                    bv.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
+                                     foreground=self.theme.get("warn_fg", "#000000"))
+                    bv.tag_configure("odd", background=self.theme.get("neutral_bg", "#f8f9fa"),
+                                     foreground=self.theme.get("neutral_fg", "#000000"))
+            except Exception:
+                pass
 
         if hasattr(self, 'bottom_frame'):
             self.bottom_frame.configure(bg=self.theme["bottom_bg"])
@@ -572,39 +594,43 @@ class MigrationGUI:
         btn_frame = tk.Frame(frame_modlist)
         btn_frame.pack(fill="x", pady=5)
 
-        btn_changelog = tk.Button(btn_frame, text="从变更日志导入（含Updated）",
-                                  command=self.import_from_changelog,
-                                  bg=self.theme["info_bg"])
+        # 统一渐变按钮（同高度/字体，语义配色，宽度按文字自适应）
+        def gw(text):
+            return int(tkfont.Font(family="微软雅黑", size=9, weight="bold").measure(text)) + 26
+
+        btn_changelog = create_gradient_button(
+            btn_frame, "📥 从变更日志导入（含Updated）", self.import_from_changelog,
+            colors=("#00acc1", "#26c6da"), hover_colors=("#26c6da", "#00acc1"),
+            width=gw("📥 从变更日志导入（含Updated）"), height=30, font=("微软雅黑", 9, "bold"))
         btn_changelog.pack(side="left", padx=5)
         self.create_tooltip(btn_changelog, "你需要提供的是“崩溃助手”模组给予的mod变更列表")
 
         self.scan_btn = create_gradient_button(
-            btn_frame,
-            text="🔍 扫描模组差异",
-            command=self.action_scan_mod_diff,
-            colors=("#00bcd4", "#3f51b5")
-        )
-        self.mod_magnify_btn = tk.Button(
-            btn_frame,
-            text="📂 放大查看",
-            command=lambda: self.open_big_view(self.mod_text, "模组清单")
-        )
-        self.mod_magnify_btn.pack(side="left", padx=5)
+            btn_frame, "🔍 扫描模组差异", self.action_scan_mod_diff,
+            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            width=gw("🔍 扫描模组差异"), height=30, font=("微软雅黑", 9, "bold"))
+        self.mod_magnify_btn = create_gradient_button(
+            btn_frame, "📂 放大查看", lambda: self.open_big_view(self.mod_text, "模组清单"),
+            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            width=gw("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_mods_btn = create_gradient_button(
             btn_frame, "➕ 添加模组", self.add_mods,
             colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
-            width=112, height=30, font=("微软雅黑", 10, "bold"))
+            width=gw("➕ 添加模组"), height=30, font=("微软雅黑", 9, "bold"))
+        self.clear_mods_btn = create_gradient_button(
+            btn_frame, "🗑️ 清空清单", self.clear_mod_list,
+            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            width=gw("🗑️ 清空清单"), height=30, font=("微软雅黑", 9, "bold"))
+        self.check_mods_btn = create_gradient_button(
+            btn_frame, "🔎 检查清单模组是否存在（源目录）", self.check_modlist_existence,
+            colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
+            width=gw("🔎 检查清单模组是否存在（源目录）"), height=30, font=("微软雅黑", 9, "bold"))
+
+        self.mod_magnify_btn.pack(side="left", padx=5)
         self.add_mods_btn.pack(side="left", padx=5)
         self.scan_btn.pack(side="left", padx=5)
-        tk.Button(btn_frame, text="清空清单",
-                  command=lambda: (self.mod_text.configure(state=tk.NORMAL),
-                                                               self.mod_text.delete(1.0,
-                                                                                    tk.END),
-                                                               self.save_config(),
-                                                           self._update_text_states())).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="检查清单模组是否存在（源目录）",
-                  command=self.check_modlist_existence,
-                  bg=self.theme["warn_bg"]).pack(side="left", padx=5)
+        self.clear_mods_btn.pack(side="left", padx=5)
+        self.check_mods_btn.pack(side="left", padx=5)
 
     def _create_config_widgets(self):
         frame_config = tk.LabelFrame(self.root,
@@ -624,25 +650,44 @@ class MigrationGUI:
                               lambda e: self._safe_undo(self.config_text))
         self.config_text.bind("<Control-y>",
                               lambda e: self._safe_redo(self.config_text))
+        # 支持从资源管理器拖拽文件/文件夹到 config 清单
+        try:
+            from tkinterdnd2 import DND_FILES
+            self.config_text.drop_target_register(DND_FILES)
+            self.config_text.dnd_bind('<<Drop>>', self._on_config_drop)
+        except Exception:
+            pass
 
         btn_config_frame = tk.Frame(frame_config)
         btn_config_frame.pack(fill="x", pady=5)
 
-        tk.Button(btn_config_frame, text="从源 config 导入所有条目",
-                  command=self.import_config_entries,
-                  bg=self.theme["success_bg"]).pack(side="left", padx=5)
-        self.config_magnify_btn = tk.Button(
-            btn_config_frame,
-            text="📂 放大查看",
-            command=lambda: self.open_big_view(self.config_text, "Config清单")
-        )
+        self.config_import_btn = create_gradient_button(
+            btn_config_frame, "📥 从源 config 导入所有条目", self.import_config_entries,
+            colors=("#00acc1", "#26c6da"), hover_colors=("#26c6da", "#00acc1"),
+            width=_grad_width("📥 从源 config 导入所有条目"), height=30,
+            font=("微软雅黑", 9, "bold"))
+        self.config_import_btn.pack(side="left", padx=5)
+        self.config_magnify_btn = create_gradient_button(
+            btn_config_frame, "📂 放大查看",
+            lambda: self.open_big_view(self.config_text, "Config清单"),
+            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         self.config_magnify_btn.pack(side="left", padx=5)
-        tk.Button(btn_config_frame, text="从源 config 浏览添加（📂文件夹）",
-                  command=self.browse_add_config_entry, bg=self.theme["accent_bg"]).pack(side="left", padx=5)
-        tk.Button(btn_config_frame, text="从源 config 浏览添加（📄文件）",
-                  command=self.browse_add_config_file, bg=self.theme["accent_bg"]).pack(side="left", padx=5)
-        tk.Button(btn_config_frame, text="清空 config 清单",
-                  command=lambda: (self.config_text.configure(state=tk.NORMAL), self.config_text.delete(1.0, tk.END), self.save_config(), self._update_text_states())).pack(side="left", padx=5)
+        self.add_config_dir_btn = create_gradient_button(
+            btn_config_frame, "📁 浏览添加文件夹", self.browse_add_config_entry,
+            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            width=_grad_width("📁 浏览添加文件夹"), height=30, font=("微软雅黑", 9, "bold"))
+        self.add_config_dir_btn.pack(side="left", padx=5)
+        self.add_config_file_btn = create_gradient_button(
+            btn_config_frame, "📄 浏览添加文件", self.browse_add_config_file,
+            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
+        self.add_config_file_btn.pack(side="left", padx=5)
+        self.clear_config_btn = create_gradient_button(
+            btn_config_frame, "🗑️ 清空 config 清单", self.clear_config,
+            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            width=_grad_width("🗑️ 清空 config 清单"), height=30, font=("微软雅黑", 9, "bold"))
+        self.clear_config_btn.pack(side="left", padx=5)
 
     def _create_bottom_widgets(self):
         opt_frame = tk.Frame(self.root)
@@ -930,10 +975,13 @@ class MigrationGUI:
             self.log(f"✅ 已从源 config 导入 {len(entries)} 个条目（文件/文件夹）", level="SUCCESS")
             self.save_config()
             self._update_text_states()
-            self.mod_text.edit_reset()
-            self.mod_text.edit_modified(False)
+            self.config_text.edit_reset()
+            self.config_text.edit_modified(False)
+            messagebox.showinfo("导入成功", f"✅ 已从源 config 导入 {len(entries)} 个条目。",
+                               parent=self.root)
         else:
             self.log("ℹ️ 源 config 目录为空，无条目可导入", level="INFO")
+            messagebox.showinfo("提示", "源 config 目录为空，无条目可导入。", parent=self.root)
 
     def browse_add_config_entry(self):
         src = self.source_path.get().strip()
@@ -964,13 +1012,13 @@ class MigrationGUI:
             return
 
         self.config_text.configure(state=tk.NORMAL)
-        current = self.config_text.get("1.0", tk.END).strip()
-        if current and not current.endswith("\n"):
-            current += "\n"
+        if self.config_text.get("1.0", tk.END).strip():
+            self.config_text.insert(tk.END, "\n")
         self.config_text.insert(tk.END, str(rel_path) + "\n")
         self.log(f"✅ 已添加 config 条目: {rel_path}", level="SUCCESS")
         self.save_config()
         self._update_text_states()
+        messagebox.showinfo("添加成功", f"✅ 已添加 config 条目：{rel_path}", parent=self.root)
 
     def browse_add_config_file(self):
         src = self.source_path.get().strip()
@@ -1004,13 +1052,13 @@ class MigrationGUI:
             return
 
         self.config_text.configure(state=tk.NORMAL)
-        current = self.config_text.get("1.0", tk.END).strip()
-        if current and not current.endswith("\n"):
-            current += "\n"
+        if self.config_text.get("1.0", tk.END).strip():
+            self.config_text.insert(tk.END, "\n")
         self.config_text.insert(tk.END, str(rel_path) + "\n")
         self.log(f"✅ 已添加 config 条目: {rel_path}", level="SUCCESS")
         self.save_config()
         self._update_text_states()
+        messagebox.showinfo("添加成功", f"✅ 已添加 config 条目：{rel_path}", parent=self.root)
 
     # ---------- 历史记录 ----------
     def action_show_history(self):
@@ -1272,6 +1320,7 @@ class MigrationGUI:
             self._update_text_states()
             self.log(f"✅ 从差异扫描中导入了 {len(selected_files)} 个模组", level="SUCCESS")
             self.save_config()
+            self._notify_modlist_change()
 
         # 调用 show_diff_window 并保存窗口引用
         self.diff_window = show_diff_window(self.root, data, self.theme,
@@ -1435,60 +1484,72 @@ class MigrationGUI:
     # ---------- 其他辅助 ----------
     def _is_text_overflow(self, text_widget):
         """
-        判断文本框内容是否水平溢出（适用于 wrap=tk.NONE）
+        判断文本框内容是否溢出（行数超过可视高度=竖直，或单行过长=水平）。
         """
         try:
-            # 检查是否有文本
             content = text_widget.get("1.0", tk.END).strip()
             if not content:
                 return False
+            text_widget.update_idletasks()
 
-            # 获取最后一个字符的边界框
-            # 注意：如果文本被 disabled，需要临时启用
+            # 竖直溢出：内容超出可视高度（yview 第二项 < 1 表示可滚动）
+            try:
+                first, last = text_widget.yview()
+                if last < 1.0 - 1e-6:
+                    return True
+            except Exception:
+                pass
+
+            # 水平溢出：最后字符超出可视宽度
             was_disabled = False
             if text_widget.cget('state') == tk.DISABLED:
                 was_disabled = True
                 text_widget.configure(state=tk.NORMAL)
 
-            # 获取最后一行的最后一个字符的位置
             last_line = text_widget.index("end-1c linestart")
             last_char = text_widget.index("end-1c")
-            # 使用 bbox 获取该字符的屏幕坐标
             bbox = text_widget.bbox(last_char)
             if bbox is None:
-                # 可能无法获取，则回退到 xview 方法
                 first_x, last_x = text_widget.xview()
                 overflow = last_x < 1.0
             else:
-                # 获取文本框的可视宽度（像素）
                 width = text_widget.winfo_width()
-                # 如果字符的右边缘超出了可视宽度，则溢出
                 overflow = (bbox[0] + bbox[2]) > width
 
-            # 恢复状态
             if was_disabled:
                 text_widget.configure(state=tk.DISABLED)
-
             return overflow
         except Exception:
             # 任何异常都视为未溢出，避免频繁报错
             return False
 
+    def _set_magnify_overflow(self, widget, overflow):
+        """设置放大键的溢出高亮：渐变按钮整键变橙色，普通按钮橙底。"""
+        try:
+            if isinstance(widget, tk.Canvas) and hasattr(widget, 'set_gradient'):
+                if overflow:
+                    widget.set_gradient("#ff9800", "#ffb74d", "#ffa726", "#ffcc80")
+                else:
+                    base = getattr(widget, '_base_colors', ("#ff9800", "#ffb74d"))
+                    hov = getattr(widget, '_base_hover', None)
+                    if hov:
+                        widget.set_gradient(base[0], base[1], hov[0], hov[1])
+                    else:
+                        widget.set_gradient(base[0], base[1])
+            else:
+                if overflow:
+                    widget.config(bg='#ffa500', fg='black')
+                else:
+                    widget.config(bg=self.theme["button_bg"], fg=self.theme["button_fg"])
+        except Exception:
+            pass
+
     def _check_overflow(self):
         """检查并更新放大按钮高亮状态"""
-        # 模组清单
-        if self._is_text_overflow(self.mod_text):
-            self.mod_magnify_btn.config(bg='#ffa500', fg='black')
-        else:
-            self.mod_magnify_btn.config(bg=self.theme["button_bg"],
-                                        fg=self.theme["button_fg"])
-
-        # Config 清单
-        if self._is_text_overflow(self.config_text):
-            self.config_magnify_btn.config(bg='#ffa500', fg='black')
-        else:
-            self.config_magnify_btn.config(bg=self.theme["button_bg"],
-                                           fg=self.theme["button_fg"])
+        self._set_magnify_overflow(self.mod_magnify_btn,
+                                   self._is_text_overflow(self.mod_text))
+        self._set_magnify_overflow(self.config_magnify_btn,
+                                   self._is_text_overflow(self.config_text))
     def _safe_undo(self, widget):
         try:
             widget.edit_undo()
@@ -1524,7 +1585,18 @@ class MigrationGUI:
         self.save_config()
         self._update_text_states()
         self.log(f"✅ 已添加 {len(new)} 个模组", level="SUCCESS")
+        self._notify_modlist_change()
         return len(new)
+
+    def _mod_add_result(self, files, added):
+        """模组添加后的成功/失败提示。"""
+        non_jar = len(files) - sum(1 for f in files if Path(f).suffix.lower() == ".jar")
+        if added:
+            messagebox.showinfo("添加成功", f"✅ 已添加 {added} 个模组。", parent=self.root)
+        else:
+            messagebox.showinfo("添加提示", "所选模组已在清单中，未新增。", parent=self.root)
+        if non_jar:
+            messagebox.showwarning("添加提示", f"⚠️ 有 {non_jar} 个非 .jar 文件被跳过。", parent=self.root)
 
     def add_mods(self):
         """从文件选择器多选并批量添加模组。"""
@@ -1532,7 +1604,7 @@ class MigrationGUI:
             title="选择要添加的模组（可多选）",
             filetypes=[("Minecraft 模组", "*.jar"), ("所有文件", "*.*")])
         if files:
-            self._append_mods(files)
+            self._mod_add_result(files, self._append_mods(files))
 
     def _on_mod_drop(self, event):
         """从资源管理器拖入文件时，把 .jar 添加到模组清单。"""
@@ -1540,34 +1612,114 @@ class MigrationGUI:
             files = self.root.tk.splitlist(event.data)
         except Exception:
             files = event.data
-        self._append_mods(files)
+        self._mod_add_result(files, self._append_mods(files))
+
+    def _add_config_paths(self, paths):
+        """把拖入的路径转成相对 config 的条目，加入 config 清单。返回 (新增数, 失败列表)。"""
+        src = self.source_path.get().strip()
+        if not src:
+            return 0, ["尚未设置源实例根目录"]
+        src_config = Path(src) / "config"
+        if not src_config.exists():
+            return 0, ["源 config 目录不存在"]
+        lines = set(l for l in self.config_text.get("1.0", tk.END).splitlines() if l.strip())
+        added = 0
+        failed = []
+        for p in paths:
+            tp = Path(p)
+            try:
+                rel = tp.relative_to(src_config) if tp.is_absolute() else Path(p)
+            except ValueError:
+                failed.append(str(tp))
+                continue
+            rel_s = str(rel)
+            if not _is_safe_path(rel_s):
+                failed.append(str(tp))
+                continue
+            if rel_s not in lines:
+                self.config_text.configure(state=tk.NORMAL)
+                if self.config_text.get("1.0", tk.END).strip():
+                    self.config_text.insert(tk.END, "\n")
+                self.config_text.insert(tk.END, rel_s + "\n")
+                lines.add(rel_s)
+                added += 1
+        self.save_config()
+        self._update_text_states()
+        return added, failed
+
+    def _on_config_drop(self, event):
+        """从资源管理器拖入文件/文件夹，作为 config 条目添加。"""
+        try:
+            files = self.root.tk.splitlist(event.data)
+        except Exception:
+            files = event.data
+        added, failed = self._add_config_paths(files)
+        if added:
+            messagebox.showinfo("添加成功", f"✅ 已添加 {added} 个 config 条目。", parent=self.root)
+        if failed:
+            messagebox.showwarning("添加提示",
+                                   f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
+                                   + "\n".join(failed[:5]), parent=self.root)
+
+    def clear_mod_list(self):
+        """清空模组清单。"""
+        self.mod_text.configure(state=tk.NORMAL)
+        self.mod_text.delete("1.0", tk.END)
+        self.save_config()
+        self._update_text_states()
+        self._notify_modlist_change()
+
+    def clear_config(self):
+        """清空 config 清单。"""
+        self.config_text.configure(state=tk.NORMAL)
+        self.config_text.delete("1.0", tk.END)
+        self.save_config()
+        self._update_text_states()
+
+    def _notify_modlist_change(self):
+        """通知已打开的"放大查看"刷新模组清单。"""
+        try:
+            self.mod_text.event_generate("<<ModlistChanged>>")
+        except Exception:
+            pass
 
     def open_big_view(self, source_text, title):
-        """大窗口查看：可编辑列表（模组清单支持添加/删除、记录完整路径并回写主清单）。"""
+        """大窗口查看：可多选（勾选）+ 可排序的列表，并支持搜索、存在性检测、添加/删除、拖拽。"""
         is_mod = "模组" in title or source_text is getattr(self, 'mod_text', None)
-
         win = tk.Toplevel(self.root)
         win.withdraw()
         win.title(f"大窗口查看 - {title}")
-        win.geometry("980x660")
-        win.minsize(760, 500)
+        win.geometry("1060x680")
+        win.minsize(820, 520)
         win.transient(self.root)
         win.configure(bg=self.theme["bg"])
         set_window_icon(win)
 
         if is_mod:
-            columns = ("name", "path", "type", "modid", "version", "size")
-            headers = (("name", "文件名", 190, "w"), ("path", "完整路径", 250, "w"),
-                       ("type", "类型", 70, "w"), ("modid", "Mod ID", 120, "w"),
-                       ("version", "版本", 110, "w"), ("size", "大小KB", 80, "e"))
+            columns = ("chk", "status", "name", "path", "type", "modid", "version", "size")
+            headers = (("chk", "", 38, "center"), ("status", "状态", 62, "w"),
+                       ("name", "文件名", 175, "w"), ("path", "完整路径", 200, "w"),
+                       ("type", "类型", 62, "w"), ("modid", "Mod ID", 105, "w"),
+                       ("version", "版本", 95, "w"), ("size", "大小KB", 68, "e"))
         else:
-            columns = ("path",)
-            headers = (("path", "路径", 520, "w"),)
+            columns = ("chk", "status", "name", "path", "type")
+            headers = (("chk", "", 38, "center"), ("status", "状态", 62, "w"),
+                       ("name", "名称", 170, "w"), ("path", "相对路径/完整路径", 260, "w"),
+                       ("type", "类型", 70, "w"))
 
         tree = ttk.Treeview(win, columns=columns, show="headings", height=20)
         for col, txt, wd, anc in headers:
-            tree.heading(col, text=txt)
+            tree.heading(col, text=txt, command=lambda c=col: sort_by(c))
             tree.column(col, width=wd, anchor=anc)
+        tree.configure(selectmode="none")
+        tree.tag_configure("missing", background=self.theme.get("danger_bg", "#ffb3b3"),
+                           foreground=self.theme.get("danger_fg", "#8b0000"))
+        tree.tag_configure("checked", background=self.theme.get("sel_bg", "#a6d0f5"),
+                           foreground=self.theme.get("sel_fg", "#000000"))
+        tree.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
+                           foreground=self.theme.get("warn_fg", "#000000"))
+        tree.tag_configure("odd", background=self.theme.get("neutral_bg", "#f8f9fa"),
+                           foreground=self.theme.get("neutral_fg", "#000000"))
         vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(win, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -1577,53 +1729,141 @@ class MigrationGUI:
         win.grid_rowconfigure(0, weight=1)
         win.grid_columnconfigure(0, weight=1)
 
-        entries = [ln.strip() for ln in source_text.get("1.0",
-                                                        tk.END).splitlines() if ln.strip()]
+        entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines() if ln.strip()]
         msg_queue = queue.Queue()
+        meta = {}          # entry索引 -> {status,name,path,type,modid,version,size}
+        checked = {}       # 条目内容(完整路径/文件名) -> bool，用勾选做多选（按内容而非行位置，避免排序/刷新后错位）
+        new_keys = set()   # 本次会话新添加的模组（文件名），染黄色高亮提示
+        order = list(range(len(entries)))   # 当前显示顺序（entries 索引），含排序+过滤
+        sort_state = {"col": None, "rev": False}
 
         mods_dir = None
-        if is_mod and hasattr(self, 'source_path'):
+        config_dir = None
+        if hasattr(self, 'source_path'):
             sp = self.source_path.get().strip()
             if sp:
-                mods_dir = Path(sp) / "mods"
+                if is_mod:
+                    mods_dir = Path(sp) / "mods"
+                else:
+                    config_dir = Path(sp) / "config"
+
+        def key_of(entry):
+            """勾选键：用文件名(小写)，保证完整路径/文件名两种条目能对应到同一个模组。"""
+            return Path(entry).name.lower()
 
         def resolve(entry):
-            """把条目解析成 (显示名, 完整路径, Path对象)；解析不出返回 None。"""
+            """解析条目为存在的对象：模组=jar，config=配置目录下的相对路径。返回 dict 或 None。"""
             p = Path(entry)
-            if p.is_file() and p.suffix.lower() == ".jar":
-                return (p.name, str(p), p)
-            if mods_dir is not None:
-                cand = mods_dir / p.name if (p.suffix == "" and p.name) else mods_dir / entry
-                if cand.is_file():
-                    return (cand.name, str(cand), cand)
-            return None
+            if is_mod:
+                if p.is_file() and p.suffix.lower() == ".jar":
+                    return {"name": p.name, "path": str(p), "obj": p, "type": None}
+                if mods_dir is not None:
+                    cand = mods_dir / p.name if (p.suffix == "" and p.name) else mods_dir / entry
+                    if cand.is_file():
+                        return {"name": cand.name, "path": str(cand), "obj": cand, "type": None}
+                return None
+            else:
+                if config_dir is not None:
+                    cand = config_dir / entry if not Path(entry).is_absolute() else Path(entry)
+                    if cand.exists():
+                        return {"name": cand.name, "path": str(cand), "obj": cand,
+                                "type": "文件夹" if cand.is_dir() else "文件"}
+                return None
 
-        def scan_row(iid, entry):
+        def sort_key(col):
+            def key(i):
+                e = entries[i]
+                r = resolve(e)
+                if col == "status":
+                    return 0 if r is not None else 1
+                if col == "name":
+                    return (r["name"] if r else Path(e).name).lower()
+                if col == "path":
+                    return str(e).lower()
+                if col == "type":
+                    return (r["type"] if r else "")
+                if col == "size":
+                    return r["obj"].stat().st_size if r else -1
+                m = meta.get(i, {})
+                return str(m.get(col, ""))
+            return key
+
+        def compute_order():
+            q = search_var.get().strip().lower()
+            idxs = list(range(len(entries)))
+            if q:
+                idxs = [i for i, e in enumerate(entries)
+                        if q in str(e).lower() or q in Path(e).name.lower()]
+            if sort_state["col"]:
+                idxs.sort(key=sort_key(sort_state["col"]), reverse=sort_state["rev"])
+            return idxs
+
+        def row_values(pos, idx):
+            m = meta.get(idx)
+            chk = "☑" if checked.get(key_of(entries[idx]), False) else "☐"
+            name = (m.get("name") if m else None) or Path(entries[idx]).name
+            path = (m.get("path") if m else entries[idx]) or entries[idx]
+            if is_mod:
+                if not m:
+                    return (chk, "…", entries[idx], entries[idx], "…", "…", "…", "…")
+                return (chk, m.get("status", "…"), name, path,
+                        m.get("type", "…"), m.get("modid", "…"), m.get("version", "…"),
+                        m.get("size", "…"))
+            else:
+                if not m:
+                    return (chk, "…", name, entries[idx], "…")
+                return (chk, m.get("status", "…"), name, path, m.get("type", "…"))
+
+        def row_tags(pos, idx):
+            """行配色：勾选优先(蓝) > 缺失(红) > 新添加(黄) > 奇偶斑马纹。"""
+            if checked.get(key_of(entries[idx])):
+                return ("checked",)
+            if meta.get(idx, {}).get("status") == "❌ 缺失":
+                return ("missing",)
+            if key_of(entries[idx]) in new_keys:
+                return ("new",)
+            if pos % 2:
+                return ("odd",)
+            return ()
+
+        def scan_row(pos, idx):
+            e = entries[idx]
             try:
-                r = resolve(entry)
+                r = resolve(e)
                 if r is None:
-                    msg_queue.put((iid, (entry, entry, "?", "?", "?", "?")))
+                    meta[idx] = {"status": "❌ 缺失", "name": Path(e).name or e,
+                                 "path": str(e), "type": "?", "modid": "?", "version": "?", "size": "?"}
                 else:
-                    display, path, f = r
-                    info = get_full_mod_metadata(str(f))
-                    size = round(f.stat().st_size / 1024, 1)
-                    msg_queue.put((iid, (display, path, info.get("mod_type", "?"),
-                                         info.get("modid", "?"), info.get("version",
-                                                                          "?"), size)))
+                    if is_mod:
+                        info = get_full_mod_metadata(str(r["obj"]))
+                        meta[idx] = {"status": "✅ 存在", "name": r["name"], "path": r["path"],
+                                     "type": info.get("mod_type", "?"), "modid": info.get("modid", "?"),
+                                     "version": info.get("version", "?"),
+                                     "size": round(r["obj"].stat().st_size / 1024, 1)}
+                    else:
+                        size = round(r["obj"].stat().st_size / 1024, 1) if r["obj"].is_file() else ""
+                        meta[idx] = {"status": "✅ 存在", "name": r["name"], "path": r["path"],
+                                     "type": r["type"], "modid": "", "version": "", "size": size}
             except Exception:
-                msg_queue.put((iid, (entry, entry, "?", "?", "?", "?")))
+                meta[idx] = {"status": "❌ 缺失", "name": Path(e).name or e,
+                             "path": str(e), "type": "?", "modid": "?", "version": "?", "size": "?"}
+            msg_queue.put(idx)
 
         def rebuild(rescan=True):
-            for iid in tree.get_children():
-                tree.delete(iid)
-            for i, e in enumerate(entries):
-                iid = str(i)
-                tree.insert("", "end", iid=iid,
-                            values=(e, e, "…", "…", "…", "…") if is_mod else (e,))
-                if is_mod and rescan:
-                    threading.Thread(target=scan_row, args=(iid, e),
-                                     daemon=True).start()
-            count_lbl.config(text=f"共 {len(entries)} 项")
+            if not win.winfo_exists():
+                return
+            tree.delete(*tree.get_children())
+            order[:] = compute_order()
+            for pos, idx in enumerate(order):
+                iid = str(pos)
+                tree.insert("", "end", iid=iid, values=row_values(pos, idx),
+                            tags=row_tags(pos, idx))
+                if rescan and idx not in meta:
+                    threading.Thread(target=scan_row, args=(pos, idx), daemon=True).start()
+            total = len(entries)
+            shown = len(order)
+            count_lbl.config(text=(f"显示 {shown}/{total} 项"
+                                   if search_var.get().strip() else f"共 {total} 项"))
 
         def write_back():
             content = "\n".join(entries)
@@ -1636,9 +1876,8 @@ class MigrationGUI:
             self.save_config()
 
         def add_mods():
-            files = filedialog.askopenfilenames(
-                title="选择要添加的模组（可多选）",
-                filetypes=[("Minecraft 模组", "*.jar"), ("所有文件", "*.*")])
+            files = filedialog.askopenfilenames(title="选择要添加的模组（可多选）",
+                                                filetypes=[("Minecraft 模组", "*.jar"), ("所有文件", "*.*")])
             if not files:
                 return
             existing = set(entries)
@@ -1647,22 +1886,23 @@ class MigrationGUI:
                 messagebox.showinfo("提示", "所选模组已在清单中。")
                 return
             entries.extend(new_entries)
+            new_keys.update(key_of(e) for e in new_entries)
             rebuild(rescan=True)
             write_back()
+            messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
         def del_selected():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showinfo("提示", "请先选中要删除的模组。")
+            to_del = {i for i, e in enumerate(entries) if checked.get(key_of(e))}
+            if not to_del:
+                messagebox.showinfo("提示", "请先勾选要删除的模组。")
                 return
-            for idx in sorted({int(i) for i in sel}, reverse=True):
-                if 0 <= idx < len(entries):
-                    entries.pop(idx)
+            entries[:] = [e for i, e in enumerate(entries) if i not in to_del]
+            meta.clear()
+            checked.clear()
             rebuild(rescan=True)
             write_back()
 
         def on_tree_drop(event):
-            """拖拽 .jar 到结果列表时追加进去并回写主清单。"""
             try:
                 files = self.root.tk.splitlist(event.data)
             except Exception:
@@ -1673,60 +1913,134 @@ class MigrationGUI:
             if not new_entries:
                 return
             entries.extend(new_entries)
+            new_keys.update(key_of(e) for e in new_entries)
             rebuild(rescan=True)
             write_back()
+            messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
+
+        def toggle_check(event):
+            row_id = tree.identify_row(event.y)
+            if not row_id:
+                return
+            pos = int(row_id)
+            k = key_of(entries[order[pos]])
+            checked[k] = not checked.get(k, False)
+            tree.set(row_id, "chk", "☑" if checked[k] else "☐")
+            # 同步行高亮（勾选->蓝色）
+            try:
+                idx = order[pos]
+                tree.item(row_id, tags=row_tags(pos, idx))
+            except Exception:
+                pass
+
+        def sort_by(col):
+            if sort_state["col"] == col:
+                sort_state["rev"] = not sort_state["rev"]
+            else:
+                sort_state["col"] = col
+                sort_state["rev"] = False
+            rebuild(rescan=False)
+
+        def poll():
+            try:
+                while True:
+                    idx = msg_queue.get_nowait()
+                    for pos, eidx in enumerate(order):
+                        if eidx == idx:
+                            iid = str(pos)
+                            if tree.exists(iid):
+                                tree.item(iid, values=row_values(pos, idx),
+                                          tags=row_tags(pos, idx))
+                            break
+            except queue.Empty:
+                pass
+            except Exception:
+                pass
+            try:
+                if win.winfo_exists():
+                    win.after(120, poll)
+            except Exception:
+                pass
+
+        def detect():
+            """强制重新检测存在性，并给出结果提示。"""
+            try:
+                missing = sum(1 for i, e in enumerate(entries) if resolve(e) is None)
+            except Exception:
+                missing = 0
+            meta.clear()
+            rebuild(rescan=True)
+            messagebox.showinfo("检测完成",
+                                f"✅ 存在性检测完成：共 {len(entries)} 项，缺失 {missing} 项。",
+                                parent=win)
 
         # 顶部工具栏
         top = tk.Frame(win, bg=self.theme["bg"])
         top.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
         count_lbl = tk.Label(top, text=f"共 {len(entries)} 项", bg=self.theme["bg"],
                              fg=self.theme["fg"])
-        count_lbl.pack(side="left")
+        count_lbl.pack(side="left", padx=6)
+        # 搜索（模组区/Config区都可用）
+        tk.Label(top, text="搜索:", bg=self.theme["bg"], fg=self.theme["fg"]).pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(top, textvariable=search_var, width=18,
+                                bg=self.theme["entry_bg"], fg=self.theme["entry_fg"],
+                                insertbackground=self.theme["fg"])
+        search_entry.pack(side="left", padx=4)
+        search_var.trace("w", lambda *a: rebuild(rescan=False))
+        search_entry.bind("<Return>", lambda e: rebuild(rescan=False))
+        detect_btn = create_gradient_button(top, "🔍 检测存在性", detect,
+                                            colors=("#43a047", "#66bb6a"),
+                                            hover_colors=("#66bb6a", "#43a047"),
+                                            width=118, height=30, font=("微软雅黑", 9, "bold"))
+        detect_btn.pack(side="left", padx=4)
+        del_btn = create_gradient_button(top, "🗑️ 删除选中", del_selected,
+                                         colors=("#e53935", "#ff7043"),
+                                         hover_colors=("#ef5350", "#ff7043"),
+                                         width=112, height=30, font=("微软雅黑", 9, "bold"))
+        del_btn.pack(side="left", padx=4)
         if is_mod:
-            add_btn = create_gradient_button(
-                top, "➕ 添加模组", add_mods,
-                colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
-                width=112, height=30, font=("微软雅黑", 10, "bold"))
-            add_btn.pack(side="left", padx=8)
-            del_btn = create_gradient_button(
-                top, "🗑️ 删除选中", del_selected,
-                colors=("#e53935", "#ff7043"), hover_colors=("#ef5350", "#ff7043"),
-                width=112, height=30, font=("微软雅黑", 10, "bold"))
-            del_btn.pack(side="left", padx=4)
-            count_lbl.pack(side="left", padx=8)
-            # 支持拖拽 .jar 到结果列表
+            add_btn = create_gradient_button(top, "➕ 添加模组", add_mods,
+                                             colors=("#00c853", "#00e676"),
+                                             hover_colors=("#00e676", "#00c853"),
+                                             width=112, height=30, font=("微软雅黑", 9, "bold"))
+            add_btn.pack(side="left", padx=4)
+            # 拖拽（仅模组可拖入 .jar）
             try:
                 from tkinterdnd2 import DND_FILES
                 tree.drop_target_register(DND_FILES)
                 tree.dnd_bind('<<Drop>>', on_tree_drop)
             except Exception:
                 pass
+        tree.bind("<ButtonRelease-1>", toggle_check)
         tk.Button(top, text="关闭", command=win.destroy,
-                  bg=self.theme["button_bg"],
-                  fg=self.theme["button_fg"]).pack(side="right")
+                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right")
+
+        # 当主界面清单被外部修改（如差异"应用"）时，自动重载并保留勾选高亮
+        if is_mod:
+            def reload_entries():
+                if not win.winfo_exists():
+                    return
+                entries[:] = [ln.strip() for ln in source_text.get(
+                    "1.0", tk.END).splitlines() if ln.strip()]
+                meta.clear()
+                rebuild(rescan=True)
+            source_text.bind("<<ModlistChanged>>", lambda e: reload_entries())
 
         rebuild(rescan=True)
-
-        def poll():
-            try:
-                while True:
-                    iid, vals = msg_queue.get_nowait()
-                    if tree.exists(iid):
-                        tree.item(iid, values=vals)
-            except queue.Empty:
-                pass
-            except Exception:
-                pass
-            win.after(120, poll)
-
         poll()
+        # 登记该结果表，方便主题切换时同步行标签颜色
+        if is_mod:
+            if not hasattr(self, '_big_view_trees'):
+                self._big_view_trees = []
+            self._big_view_trees.append(tree)
         apply_theme_to_widget_tree(win, self.theme)
         win.update_idletasks()
-        width = win.winfo_width()
-        height = win.winfo_height()
-        x = (win.winfo_screenwidth() // 2) - (width // 2)
-        y = (win.winfo_screenheight() // 2) - (height // 2)
-        win.geometry(f"{width}x{height}+{x}+{y}")
+        w = win.winfo_width()
+        h = win.winfo_height()
+        x = (win.winfo_screenwidth() // 2) - (w // 2)
+        y = (win.winfo_screenheight() // 2) - (h // 2)
+        win.geometry(f"{w}x{h}+{x}+{y}")
         win.deiconify()
 
     def _update_text_states(self):
