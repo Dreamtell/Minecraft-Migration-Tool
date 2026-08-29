@@ -14,7 +14,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             return f"#{r:02x}{g:02x}{b:02x}"
         hover_colors = (lighten(colors[0]), lighten(colors[1]))
 
-    state = {"colors": colors, "hover": hover_colors}
+    state = {"colors": colors, "hover": hover_colors, "text": text}
     canvas = tk.Canvas(parent, width=width, height=height, highlightthickness=0,
                        bg=parent.cget("bg"))
     canvas.pack_propagate(False)
@@ -32,7 +32,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
 
     def draw_text():
         canvas.delete("text")
-        canvas.text_id = canvas.create_text(width//2, height//2, text=text,
+        canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
                                             fill="white", font=font, tags="text")
 
     def set_gradient(c0, c1, h0=None, h1=None):
@@ -45,17 +45,38 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
 
     canvas.set_gradient = set_gradient
 
-    def on_enter(e):
-        draw_bg(True)
-        draw_text()
-    def on_leave(e):
-        draw_bg(False)
-        draw_text()
-    def on_click(e):
-        command()
+    # 支持像普通 Button 一样动态改 command / state
+    cmd = {"fn": command}
+    def set_command(fn):
+        cmd["fn"] = fn
+    canvas.set_command = set_command
 
+    def set_text(new_text):
+        """动态改按钮文字（替代 tk.Button 的 config(text=...)）。"""
+        state["text"] = new_text
+        draw_text()
+    canvas.set_text = set_text
+
+    flags = {"disabled": False}
+    def state_get(key):
+        return flags.get(key, False)
+    canvas.state = lambda new_state=None: (None if new_state is None else flags.update(
+        {"disabled": str(new_state).lower() == "disabled"}))
     canvas._base_colors = tuple(colors)
     canvas._base_hover = tuple(hover_colors)
+
+    def on_enter(e):
+        if not state_get("disabled"):
+            draw_bg(True)
+            draw_text()
+    def on_leave(e):
+        if not state_get("disabled"):
+            draw_bg(False)
+            draw_text()
+    def on_click(e):
+        if not state_get("disabled") and cmd["fn"] is not None:
+            cmd["fn"]()
+
     draw_bg(False)
     draw_text()
     canvas.bind("<Enter>", on_enter)

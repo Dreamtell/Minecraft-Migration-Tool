@@ -52,12 +52,16 @@ class MigrationGUI:
         self.dry_run = tk.BooleanVar(value=self.config.get("dry_run", True))
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
 
-        self.last_check_save_time = 0
         self.last_check_modlist_time = 0
 
         self.create_widgets()
         self.init_log_colors()
         self.apply_theme()
+
+        # 实时检测存档：输入存档名/切换源路径时即时刷新"存档是否存在"状态
+        self.world_name.trace_add("write", lambda *a: self._update_world_status())
+        self.source_path.trace_add("write", lambda *a: self._update_world_status())
+        self._update_world_status()
 
         self.mod_text.insert("1.0", self.config.get("mod_list", ""))
         self.config_text.insert("1.0", self.config.get("config_list", ""))
@@ -403,6 +407,7 @@ class MigrationGUI:
         tgt = self.target_path.get().strip()
         self.validate_path(src, self.source_status, "源")
         self.validate_path(tgt, self.target_status, "目标")
+        self._update_world_status()
         self.save_config()
 
     # ---------- 日志 ----------
@@ -485,7 +490,10 @@ class MigrationGUI:
         # 顶部栏
         top_bar = tk.Frame(self.root)
         top_bar.pack(fill="x", padx=10, pady=5)
-        self.theme_btn = tk.Button(top_bar, text="🌓 切换主题", command=self.toggle_theme)
+        self.theme_btn = create_gradient_button(
+            top_bar, "🌓 切换主题", self.toggle_theme,
+            colors=("#8e24aa", "#ab47bc"), hover_colors=("#ab47bc", "#8e24aa"),
+            width=_grad_width("🌓 切换主题"), height=30, font=("微软雅黑", 9, "bold"))
         self.theme_btn.pack(side="right", padx=5)
 
         # 警告横幅
@@ -531,10 +539,15 @@ class MigrationGUI:
         frame_source.pack(fill="x", padx=10, pady=5)
         tk.Entry(frame_source, textvariable=self.source_path,
                  width=60).pack(side="left", padx=5)
-        tk.Button(frame_source, text="浏览...",
-                  command=self.select_source).pack(side="left")
-        btn_copy = tk.Button(frame_source, text="← 使用新版路径填充",
-                             command=self.copy_target_to_source, bg=self.theme["warn_bg"])
+        btn_source_browse = create_gradient_button(
+            frame_source, "📂 浏览...", self.select_source,
+            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
+        btn_source_browse.pack(side="left", padx=5)
+        btn_copy = create_gradient_button(
+            frame_source, "← 使用新版路径填充", self.copy_target_to_source,
+            colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
+            width=_grad_width("← 使用新版路径填充"), height=30, font=("微软雅黑", 9, "bold"))
         btn_copy.pack(side="left", padx=5)
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"])
@@ -545,8 +558,11 @@ class MigrationGUI:
         frame_target.pack(fill="x", padx=10, pady=5)
         tk.Entry(frame_target, textvariable=self.target_path,
                  width=70).pack(side="left", padx=5)
-        tk.Button(frame_target, text="浏览...",
-                  command=self.select_target).pack(side="left")
+        btn_target_browse = create_gradient_button(
+            frame_target, "📂 浏览...", self.select_target,
+            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
+        btn_target_browse.pack(side="left", padx=5)
         self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"])
         self.target_status.pack(side="left", padx=10)
 
@@ -558,8 +574,6 @@ class MigrationGUI:
         tk.Label(frame_world, text="（例如：新的世界）").pack(side="left")
         self.world_status = tk.Label(frame_world, text="", fg=self.theme["muted_fg"])
         self.world_status.pack(side="left", padx=10)
-        tk.Button(frame_world, text="检查存档是否存在",
-                  command=self.check_save_exists).pack(side="right", padx=5)
 
     def _create_modlist_widgets(self):
         frame_modlist = tk.LabelFrame(self.root, text="需要复制的模组清单（每行一个 .jar 文件名）",
@@ -752,10 +766,16 @@ class MigrationGUI:
 
         log_toolbar = tk.Frame(frame_log)
         log_toolbar.pack(fill="x", pady=(0, 5))
-        tk.Button(log_toolbar, text="🗑️ 清空日志", command=self.clear_log,
-                  bg=self.theme["lightgray_bg"], width=10).pack(side="right", padx=5)
-        tk.Button(log_toolbar, text="📂 打开日志文件夹", command=self.open_log_folder,
-                  bg=self.theme["lightgray_bg"], width=14).pack(side="right", padx=5)
+        btn_clear_log = create_gradient_button(
+            log_toolbar, "🗑️ 清空日志", self.clear_log,
+            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            width=_grad_width("🗑️ 清空日志"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_clear_log.pack(side="right", padx=5)
+        btn_open_log = create_gradient_button(
+            log_toolbar, "📂 打开日志文件夹", self.open_log_folder,
+            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_open_log.pack(side="right", padx=5)
         self.log_text = scrolledtext.ScrolledText(frame_log, height=15, wrap=tk.WORD,
                                                   state="disabled")
         self.log_text.pack(fill="both", expand=True)
@@ -780,42 +800,23 @@ class MigrationGUI:
             self.root.bell()
             self.log("⚠️ 目标路径为空，无法复制", level="WARNING")
 
-    # ---------- 检查存档 ----------
-    def check_save_exists(self):
-        now = time.time()
-        if now - self.last_check_save_time < 2:
-            self.root.bell()
-            self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
-            return
-        self.last_check_save_time = now
-
+    # ---------- 检查存档（实时） ----------
+    def _update_world_status(self):
+        """实时检测源存档是否存在，只更新状态标签（不弹窗/不打日志，避免输入时刷屏）。"""
         src = self.source_path.get().strip()
         world = self.world_name.get().strip()
-
-        if not src:
-            self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
-            return
-        if not world:
-            self.root.bell()
-            self.log("⚠️ 请输入存档名称", level="WARNING")
-            return
-
-        src_path = Path(src)
-        if not src_path.exists():
-            self.root.bell()
-            self.log(f"❌ 源路径不存在：{src}", level="ERROR")
-            return
-
-        save_dir = src_path / "saves" / world
-        self.log(f"📂 检查源存档路径: {save_dir}", level="INFO")
-
-        if save_dir.is_dir():
-            self.world_status.config(text="✅ 存档已存在", fg=self.theme["ok_fg"])
-            self.log(f"✅ 源存档 '{world}' 存在于 {src_path}", level="SUCCESS")
-        else:
-            self.world_status.config(text="❌ 存档不存在", fg=self.theme["fail_fg"])
-            self.log(f"❌ 源存档 '{world}' 不存在于 {src_path}", level="WARNING")
+        try:
+            if not src or not world:
+                self.world_status.config(text="", fg=self.theme["muted_fg"])
+                return
+            src_path = Path(src)
+            save_dir = src_path / "saves" / world
+            if save_dir.is_dir():
+                self.world_status.config(text="✅ 存档已存在", fg=self.theme["ok_fg"])
+            else:
+                self.world_status.config(text="❌ 存档不存在", fg=self.theme["fail_fg"])
+        except Exception:
+            self.world_status.config(text="", fg=self.theme["muted_fg"])
 
     # ---------- 检查模组存在性 ----------
     def check_modlist_existence(self):
@@ -927,8 +928,11 @@ class MigrationGUI:
             else:
                 messagebox.showinfo("提示", "未添加任何模组")
 
-        tk.Button(dialog, text="提取并应用", command=extract_and_close,
-                  bg=self.theme["accent_bg"]).pack(pady=10)
+        btn_extract = create_gradient_button(
+            dialog, "提取并应用", extract_and_close,
+            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
+            width=_grad_width("提取并应用"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_extract.pack(pady=10)
         apply_theme_to_widget_tree(dialog, self.theme)
 
     def extract_mods_from_changelog(self, text):
@@ -1149,7 +1153,11 @@ class MigrationGUI:
 
         tree.tag_configure("rolled_back", background=self.theme["badge_rollback_bg"])
         tree.tag_configure("normal", background=self.theme["badge_normal_bg"])
-        tk.Button(hist_win, text="关闭", command=hist_win.destroy, width=10).pack(pady=10)
+        btn_close_hist = create_gradient_button(
+            hist_win, "关闭", hist_win.destroy,
+            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            width=_grad_width("关闭"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_close_hist.pack(pady=10)
         apply_theme_to_widget_tree(hist_win, self.theme)
 
     # ---------- 回滚 ----------
@@ -2127,8 +2135,11 @@ class MigrationGUI:
             except Exception:
                 pass
         tree.bind("<ButtonRelease-1>", toggle_check)
-        tk.Button(top, text="关闭", command=win.destroy,
-                  bg=self.theme["button_bg"], fg=self.theme["button_fg"]).pack(side="right")
+        btn_close_big = create_gradient_button(
+            top, "关闭", win.destroy,
+            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            width=_grad_width("关闭"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_close_big.pack(side="right")
 
         # 当主界面清单被外部修改（如差异"应用"/config导入/浏览添加/拖拽/清空）时，自动重载并保留勾选高亮
         def reload_entries():

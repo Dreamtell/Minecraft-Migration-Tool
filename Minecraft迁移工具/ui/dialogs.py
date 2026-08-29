@@ -7,7 +7,7 @@ import difflib
 import threading
 import queue
 import webbrowser
-from utils.helpers import set_window_icon
+from utils.helpers import set_window_icon, create_gradient_button
 from core.scanner import get_full_mod_metadata
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
@@ -72,8 +72,11 @@ class ProgressWindow:
                                     anchor="w")
         self.stats_label.pack(fill="x", padx=10, pady=5)
 
-        self.cancel_btn = tk.Button(self.win, text="取消迁移", command=self.on_cancel,
-                                    bg=theme.get("danger_bg", "lightcoral"))
+        self.cancel_btn = create_gradient_button(self.win, "取消迁移", self.on_cancel,
+                                                 colors=("#e53935", "#ef5350"),
+                                                 hover_colors=("#ef5350", "#e53935"),
+                                                 width=104, height=30,
+                                                 font=("微软雅黑", 9, "bold"))
         self.cancel_btn.pack(pady=10)
 
         self.hint_label = tk.Label(
@@ -98,7 +101,8 @@ class ProgressWindow:
 
     def on_cancel(self):
         self.cancelled = True
-        self.cancel_btn.config(state=tk.DISABLED, text="正在取消...")
+        self.cancel_btn.state(tk.DISABLED)
+        self.cancel_btn.set_text("正在取消...")
 
     def update_progress(self, file_index, file_name, copied_bytes, step=None):
         if step is not None:
@@ -279,7 +283,11 @@ def show_mod_detail(parent, jar_path, theme):
     search_var = tk.StringVar(value=info["name"] or info["modid"] or "")
     search_entry = tk.Entry(top, textvariable=search_var, width=44)
     search_entry.pack(side="left", padx=5)
-    search_btn = tk.Button(top, text="🔍 联网搜索")
+    search_btn = create_gradient_button(top, "🔍 联网搜索", None,
+                                        colors=("#00bcd4", "#26c6da"),
+                                        hover_colors=("#26c6da", "#00bcd4"),
+                                        width=104, height=28,
+                                        font=("微软雅黑", 9, "bold"))
     search_btn.pack(side="left", padx=5)
     muted_hint = tk.Label(top, text="（自动置顶最匹配项）",
                           fg=theme.get("muted_fg", "gray"))
@@ -325,14 +333,29 @@ def show_mod_detail(parent, jar_path, theme):
     act.pack(fill="x", pady=3)
     local_lbl = tk.Label(act, text=f"本地版本: {info['version']}")
     local_lbl.pack(side="left", padx=5)
-    copy_proj_btn = tk.Button(act, text="🔗 复制项目链接")
-    copy_link_btn = tk.Button(act, text="📋 复制下载链接")
-    open_btn = tk.Button(act, text="🌐 打开下载页")
+    copy_proj_btn = create_gradient_button(act, "🔗 复制项目链接", None,
+                                           colors=("#607d8b", "#90a4ae"),
+                                           hover_colors=("#78909c", "#b0bec5"),
+                                           width=120, height=28,
+                                           font=("微软雅黑", 9, "bold"))
+    copy_link_btn = create_gradient_button(act, "📋 复制下载链接", None,
+                                           colors=("#607d8b", "#90a4ae"),
+                                           hover_colors=("#78909c", "#b0bec5"),
+                                           width=120, height=28,
+                                           font=("微软雅黑", 9, "bold"))
+    open_btn = create_gradient_button(act, "🌐 打开下载页", None,
+                                      colors=("#607d8b", "#90a4ae"),
+                                      hover_colors=("#78909c", "#b0bec5"),
+                                      width=112, height=28,
+                                      font=("微软雅黑", 9, "bold"))
     open_btn.pack(side="right", padx=4)
     copy_link_btn.pack(side="right", padx=4)
     copy_proj_btn.pack(side="right", padx=4)
 
-    tk.Button(win, text="关闭", command=win.destroy, width=12).pack(pady=8)
+    create_gradient_button(win, "关闭", win.destroy,
+                           colors=("#757575", "#9e9e9e"),
+                           hover_colors=("#8d8d8d", "#bdbdbd"),
+                           width=72, height=30, font=("微软雅黑", 9, "bold")).pack(pady=8)
 
     # ---- 状态与线程安全更新（队列 + 轮询） ----
     msg_queue = queue.Queue()
@@ -400,7 +423,7 @@ def show_mod_detail(parent, jar_path, theme):
 
     def show_results(results):
         search_state["running"] = False
-        search_btn.config(state=tk.NORMAL)
+        search_btn.state(tk.NORMAL)
         for iid in tree.get_children():
             tree.delete(iid)
         result_items.clear()
@@ -469,7 +492,7 @@ def show_mod_detail(parent, jar_path, theme):
 
     def show_error(msg):
         search_state["running"] = False
-        search_btn.config(state=tk.NORMAL)
+        search_btn.state(tk.NORMAL)
         set_status(f"❌ {msg}", fail)
 
     def poll_queue():
@@ -497,7 +520,7 @@ def show_mod_detail(parent, jar_path, theme):
         if search_state["running"]:
             return
         search_state["running"] = True
-        search_btn.config(state=tk.DISABLED)
+        search_btn.state(tk.DISABLED)
         set_status("联网搜索中…", ok)
 
         def worker():
@@ -510,7 +533,7 @@ def show_mod_detail(parent, jar_path, theme):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    search_btn.config(command=do_search)
+    search_btn.set_command(do_search)
 
     def open_download():
         r = selected()
@@ -544,9 +567,9 @@ def show_mod_detail(parent, jar_path, theme):
         else:
             set_status("请先选中一条结果。", fail)
 
-    open_btn.config(command=open_download)
-    copy_link_btn.config(command=copy_download)
-    copy_proj_btn.config(command=copy_project)
+    open_btn.set_command(open_download)
+    copy_link_btn.set_command(copy_download)
+    copy_proj_btn.set_command(copy_project)
     search_entry.bind("<Return>", lambda e: do_search())
 
     poll_queue()

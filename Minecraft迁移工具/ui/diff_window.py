@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import time
-from utils.helpers import set_window_icon
+from utils.helpers import set_window_icon, create_gradient_button
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
 
 
@@ -318,7 +318,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
         # 强制刷新
         tree.update_idletasks()
-        sort_btn.config(text="▼ 降序" if sort_reverse.get() else "▲ 升序")
+        sort_btn.set_text("▼ 降序" if sort_reverse.get() else "▲ 升序")
 
     def toggle_sort_direction():
         sort_reverse.set(not sort_reverse.get())
@@ -338,9 +338,10 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                                state="readonly", width=10)
     field_combo.pack(side="left", padx=5)
     field_combo.bind("<<ComboboxSelected>>", lambda e: sort_items())
-    sort_btn = tk.Button(sort_frame, text="▲ 升序", command=toggle_sort_direction,
-                         bg=theme["button_bg"], fg=theme["button_fg"],
-                         relief=tk.RAISED, width=8)
+    sort_btn = create_gradient_button(sort_frame, "▲ 升序", toggle_sort_direction,
+                                      colors=("#607d8b", "#90a4ae"),
+                                      hover_colors=("#78909c", "#b0bec5"),
+                                      width=76, height=28, font=("微软雅黑", 9, "bold"))
     sort_btn.pack(side="left", padx=5)
 
     # 右侧按钮区域
@@ -382,25 +383,42 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         diff_win.destroy()
 
     # 按状态全选按钮（按状态配色，加回鲜艳色）
-    tk.Button(btn_frame, text="✅ 全选新增", command=lambda: select_by_status("新增"),
-              bg=theme["success_bg"], fg=theme["success_fg"],
-              width=10).pack(side="left", padx=2)
-    tk.Button(btn_frame, text="🔄 全选更新", command=lambda: select_by_status("更新"),
-              bg=theme["warn_bg"], fg=theme["warn_fg"], width=10).pack(side="left",
-                                                                       padx=2)
-    tk.Button(btn_frame, text="📌 全选目标独有", command=lambda: select_by_status("目标独有"),
-              bg=theme["neutral_bg"], fg=theme["neutral_fg"],
-              width=14).pack(side="left", padx=2)
+    create_gradient_button(btn_frame, "✅ 全选新增", lambda: select_by_status("新增"),
+                           colors=("#43a047", "#66bb6a"),
+                           hover_colors=("#66bb6a", "#43a047"),
+                           width=92, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
+    create_gradient_button(btn_frame, "🔄 全选更新", lambda: select_by_status("更新"),
+                           colors=("#fb8c00", "#ffb74d"),
+                           hover_colors=("#ffa726", "#ffcc80"),
+                           width=92, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
+    create_gradient_button(btn_frame, "📌 全选目标独有", lambda: select_by_status("目标独有"),
+                           colors=("#757575", "#9e9e9e"),
+                           hover_colors=("#8d8d8d", "#bdbdbd"),
+                           width=122, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
 
-    tk.Button(btn_frame, text="☑ 全选", command=select_all, width=8,
-              bg=theme["button_bg"], fg=theme["button_fg"]).pack(side="left", padx=2)
-    tk.Button(btn_frame, text="☐ 取消全选", command=deselect_all, width=10,
-              bg=theme["button_bg"], fg=theme["button_fg"]).pack(side="left", padx=2)
-    tk.Button(btn_frame, text="✅ 应用所选", command=apply_selection,
-              bg=theme["success_bg"], fg=theme["success_fg"], width=12).pack(
-        side="left", padx=10)
-    tk.Button(btn_frame, text="关闭", command=diff_win.destroy, width=8,
-              bg=theme["button_bg"], fg=theme["button_fg"]).pack(side="right", padx=2)
+    create_gradient_button(btn_frame, "☑ 全选", select_all,
+                           colors=("#607d8b", "#90a4ae"),
+                           hover_colors=("#78909c", "#b0bec5"),
+                           width=78, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
+    create_gradient_button(btn_frame, "☐ 取消全选", deselect_all,
+                           colors=("#607d8b", "#90a4ae"),
+                           hover_colors=("#78909c", "#b0bec5"),
+                           width=96, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
+    create_gradient_button(btn_frame, "✅ 应用所选", apply_selection,
+                           colors=("#00c853", "#00e676"),
+                           hover_colors=("#00e676", "#00c853"),
+                           width=104, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=10)
+    create_gradient_button(btn_frame, "关闭", diff_win.destroy,
+                           colors=("#757575", "#9e9e9e"),
+                           hover_colors=("#8d8d8d", "#bdbdbd"),
+                           width=64, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="right", padx=2)
 
     # ---- 底部统计 ----
     total = len(all_data)
