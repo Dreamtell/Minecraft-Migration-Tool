@@ -166,9 +166,22 @@ Minecraft迁移工具/
    - **Onefile**：勾选（单文件）
    - **Windowed (no console)**：勾选（无控制台窗口）
    - **Icon**：`1.ico`
-   - **本目录下不用的文件无需勾选；确保把 `tkinterdnd2` 作为 hidden import 附带**（否则打包后拖拽会失效）
+   - **tkinterdnd2**：仅加 `--hidden-import tkinterdnd2` 不够——它还需要收集包里的 `tkdnd` 动态库和 tcl 脚本，否则打包后拖拽会失效。
 
-   > 如果用命令行 PyInstaller，可加：`--hidden-import tkinterdnd2`
+4. **让 PyInstaller 自动收集 tkinterdnd2 平台资源（重要）**
+   因为 `tkinterdnd2` 除 Python 代码外，还带平台相关的 `tkdnd\win-x64\` 等目录（含 `libtkdnd2.10.1.dll` 和多个 `.tcl`），PyInstaller 默认不会收这些。项目已提供专用 hook：`hook_tkinterdnd2.py`。
+
+   - **auto-py-to-exe**：在 **Advanced → `--additional-hooks-dir`** 填入本项目根目录（即 `hook_tkinterdnd2.py` 所在目录），并在 **`--collect-data`** 留空即可（hook 已代劳）。或者直接把项目根目录加到 **Additional Files / `--additional-hooks-dir`**。
+   - **命令行 PyInstaller**：
+     ```bash
+     pyinstaller --onefile --windowed --icon 1.ico \
+       --additional-hooks-dir . \
+       --hidden-import tkinterdnd2 \
+       app.py
+     ```
+   - 若两种方式都拿不到，可用 `--collect-data tkinterdnd2` 直接声明收集该包全部数据文件。
+
+5. **打包后务必自测**：拖几个 `.jar` 文件进窗口，确认拖拽可用（能添加、能响应）。若无效，多半是 `tkdnd` 资源没被打进去。
 
 ### 依赖说明
 
@@ -193,7 +206,7 @@ Minecraft迁移工具/
 
 ## 📝 更新日志
 
-### v3.5+（当前开发版）
+### v4.0.0（当前版本）
 
 **✨ 新增**
 - 迁移前磁盘空间检查（自动校验目标盘余量并在不足时拦截）
