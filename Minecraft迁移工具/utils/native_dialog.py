@@ -1,4 +1,7 @@
 # utils/native_dialog.py
+# noinspection PyUnresolvedReferences
+#   ↓ 文件用途说明见下方 docstring。comtypes 的 COM 方法（Show/GetResults/SetOptions/_iid_/_methods_
+#   等）都是运行时动态生成的，PyCharm 静态分析无法识别、会误报未解析引用，故在此统一关闭该检查。
 """Windows 原生对话框封装（comtypes，安全调用 COM）。
 
 用 Vista 的新式 IFileOpenDialog 实现"选文件夹 + 多选"。
@@ -12,7 +15,9 @@ import ctypes
 from ctypes import POINTER, byref, c_void_p, c_int, c_uint, c_ulong, c_wchar_p
 
 import comtypes
-from comtypes import GUID, HRESULT, IUnknown, COMMETHOD
+# GUID 是纯 Python 类，PyCharm 可解析；HRESULT/IUnknown/COMMETHOD 来自 comtypes 的
+# C 扩展与元类动态层，静态分析看不到，故对整行关闭类型检查（运行时均存在）。
+from comtypes import GUID, HRESULT, IUnknown, COMMETHOD  # type: ignore
 
 # GUID 常量
 CLSID_FileOpenDialog = GUID("{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}")
@@ -118,7 +123,12 @@ def _shell_item_from_path(path):
     """用 SHCreateItemFromParsingName 从路径创建 IShellItem（原生指针）。"""
     iid = GUID("{43826D1E-E718-42EE-BC55-A1E261C37BFE}")  # IID_IShellItem
     item = c_void_p()
-    hr = ctypes.windll.shell32.SHCreateItemFromParsingName(
+    # ctypes.windll 仅在 Windows 上存在，且不在 ctypes 的类型存根里（PyCharm 会误报）；
+    # 这里用 getattr 动态获取，兼顾运行健壮性与 IDE 静态检查。
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return None
+    hr = windll.shell32.SHCreateItemFromParsingName(
         path, None, byref(iid), byref(item))
     if hr != S_OK or not item:
         return None
