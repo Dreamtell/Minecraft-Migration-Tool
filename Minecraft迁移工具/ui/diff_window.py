@@ -57,7 +57,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         foreground=theme["ttk_fg"],
         selectbackground=theme["ttk_select_bg"],
         selectforeground=theme["ttk_select_fg"],
-        bordercolor=theme["bg"],          # 边框跟随主题
+        bordercolor=theme["bg"],  # 边框跟随主题
         borderwidth=0,
         rowheight=24
     )
@@ -269,15 +269,19 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                     return float(item[idx])
                 except:
                     return 0.0
+
             return key_func
         elif field == "状态":
             status_order = {"新增": 0, "更新": 1, "目标独有": 2}
+
             def key_func(item):
                 return status_order.get(item[idx], 999)
+
             return key_func
         else:
             def key_func(item):
                 return str(item[idx]).lower()
+
             return key_func
 
     def sort_items():
@@ -428,7 +432,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     tk.Label(diff_win,
              text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
              font=("微软雅黑", 9), bg=theme["bg"], fg=theme["fg"]).grid(row=4, column=0,
-                                                                    columnspan=2, pady=5)
+                                                                        columnspan=2, pady=5)
 
     # ---- 窗口居中 ----
     diff_win.update_idletasks()

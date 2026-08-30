@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 import subprocess
 import re
+from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
 from utils.helpers import create_gradient_button, set_window_icon
@@ -53,6 +54,8 @@ class MigrationGUI:
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
 
         self.last_check_modlist_time = 0
+        self.last_check_config_time = 0
+        self._config_status_applied = False
 
         self.create_widgets()
         self.init_log_colors()
@@ -85,6 +88,8 @@ class MigrationGUI:
         self._update_text_states()
         self._log_cache_limit = 500
         self._saved_logs = []
+        self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
+        self._last_log_key = None
 
     def load_config(self):
         if CONFIG_FILE.exists():
@@ -213,6 +218,21 @@ class MigrationGUI:
             except Exception:
                 pass
 
+        # 同步主 config 清单的存在性状态标签颜色（跟随主题切换）
+        if hasattr(self, 'config_text'):
+            try:
+                self.config_text.tag_configure(
+                    "cfg_ok", background=self.theme.get("success_bg", "#d4edda"),
+                    foreground=self.theme.get("success_fg", "#000000"))
+                self.config_text.tag_configure(
+                    "cfg_missing", background=self.theme.get("danger_bg", "#ffc7c7"),
+                    foreground=self.theme.get("danger_fg", "#8b0000"))
+                self.config_text.tag_configure(
+                    "cfg_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
+                    foreground=self.theme.get("warn_fg", "#000000"))
+            except Exception:
+                pass
+
         if hasattr(self, 'bottom_frame'):
             self.bottom_frame.configure(bg=self.theme["bottom_bg"])
         if hasattr(self, 'warning_frame'):
@@ -247,18 +267,22 @@ class MigrationGUI:
             if self.diff_window.winfo_exists():
                 from ui.diff_window import update_diff_theme
                 update_diff_theme(self.diff_window, self.theme, self.current_theme)
+
     # ---------- 工具函数 ----------
     def create_tooltip(self, widget, text):
         def enter(event):
             self.tooltip = tk.Toplevel(widget)
             self.tooltip.wm_overrideredirect(True)
-            self.tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            self.tooltip.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
             label = tk.Label(self.tooltip, text=text,
-                             background=self.theme["tooltip_bg"], fg=self.theme["label_fg"], relief="solid", borderwidth=1, font=("微软雅黑", 9))
+                             background=self.theme["tooltip_bg"], fg=self.theme["label_fg"], relief="solid",
+                             borderwidth=1, font=("微软雅黑", 9))
             label.pack()
+
         def leave(event):
             if hasattr(self, 'tooltip'):
                 self.tooltip.destroy()
+
         widget.bind("<Enter>", enter)
         widget.bind("<Leave>", leave)
 
@@ -414,6 +438,22 @@ class MigrationGUI:
         self.save_config()
 
     # ---------- 日志 ----------
+    # 明显无用的提示（纯 UI 反馈，不算操作记录），保存到日志文件时过滤掉；屏幕仍会显示。
+    _LOG_TRIVIAL = (
+        "已将目标路径复制到源路径",
+        "目标路径为空，无法复制",
+        "主题已切换为",
+        "路径验证通过",
+        "ℹ️ 原生对话框不可用",
+        "📋 日志已清空",
+    )
+
+    def _persistable(self, level, message):
+        """判断该条记录是否值得写入日志文件：关键等级始终保存，INFO 过滤明显无用的提示。"""
+        if level in ("ERROR", "WARNING", "SUCCESS", "SIMULATE"):
+            return True
+        return not any(t in message for t in self._LOG_TRIVIAL)
+
     def log(self, message, level="INFO", save=True):
         def _log():
             self.log_text.configure(state="normal")
@@ -422,20 +462,43 @@ class MigrationGUI:
             self.log_text.configure(state="disabled")
             self.root.update_idletasks()
 
-        if save:
+        # 抑制连续完全相同的记录（避免"请勿频繁操作"等警告/重复信息刷屏）
+        key = (level, message)
+        if key == getattr(self, '_last_log_key', None):
+            return
+        self._last_log_key = key
+
+        if save and self._persistable(level, message):
             if not hasattr(self, '_saved_logs'):
                 self._saved_logs = []
             self._saved_logs.append(message + "\n")
             if len(self._saved_logs) >= self._log_cache_limit:
-                log_file = Path.home() / ".minecraft_migrate_last_log.txt"
                 try:
-                    with open(log_file, 'a', encoding='utf-8') as f:
-                        f.write("".join(self._saved_logs))
-                    self._saved_logs = []
-                except:
+                    self._flush_logs_to_file()
+                except Exception:
                     pass
 
         self.root.after(0, _log)
+
+    def _flush_logs_to_file(self, include_header=False):
+        """把缓存的日志写入本地文件；文件过大时先轮转（改名），避免无限增长。"""
+        log_file = Path.home() / ".minecraft_migrate_last_log.txt"
+        # 超过上限则把旧日志改名，重新开始记录
+        if log_file.exists() and log_file.stat().st_size > self._log_file_max_bytes:
+            bak = log_file.with_suffix(".old.txt")
+            if bak.exists():
+                bak.unlink()
+            log_file.rename(bak)
+        mode = 'a' if log_file.exists() else 'w'
+        with open(log_file, mode, encoding='utf-8') as f:
+            if include_header:
+                if mode == 'a':
+                    f.write("\n" + "=" * 50 + "\n")
+                    f.write(f"--- 新日志记录 ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+                f.write("".join(self._saved_logs))
+            else:
+                f.write("".join(self._saved_logs))
+        self._saved_logs = []
 
     def clear_log(self):
         if not hasattr(self, '_saved_logs') or not self._saved_logs:
@@ -447,22 +510,15 @@ class MigrationGUI:
             self.mod_text.edit_modified(False)
             return
 
-        log_file = Path.home() / ".minecraft_migrate_last_log.txt"
         try:
-            mode = 'a' if log_file.exists() else 'w'
-            with open(log_file, mode, encoding='utf-8') as f:
-                if mode == 'a':
-                    f.write("\n" + "=" * 50 + "\n")
-                    f.write(f"--- 新日志记录 ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
-                f.write("".join(self._saved_logs))
-
+            self._flush_logs_to_file(include_header=True)
             self.log_text.configure(state="normal")
             self.log_text.delete("1.0", tk.END)
             self.log_text.configure(state="disabled")
             self.mod_text.edit_reset()
             self.mod_text.edit_modified(False)
-            self.log(f"📋 日志已清空，有效操作记录已追加至 {log_file}", level="INFO", save=False)
-            self._saved_logs = []
+            self.log(f"📋 日志已清空，有效操作记录已追加至 {Path.home() / '.minecraft_migrate_last_log.txt'}",
+                     level="INFO", save=False)
         except Exception as e:
             self.log(f"❌ 日志保存失败：{e}", level="ERROR", save=False)
 
@@ -536,6 +592,7 @@ class MigrationGUI:
         self.bottom_frame.pack(fill="x", padx=10, pady=5)
         tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
                  font=("微软雅黑", 8)).pack()
+
     def _create_path_widgets(self):
         # 源目录
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
@@ -674,6 +731,16 @@ class MigrationGUI:
                               lambda e: self._safe_undo(self.config_text))
         self.config_text.bind("<Control-y>",
                               lambda e: self._safe_redo(self.config_text))
+        # config 条目存在性检查的状态标签（正常=绿 / 缺失=红 / 重复=黄）
+        self.config_text.tag_configure(
+            "cfg_ok", background=self.theme.get("success_bg", "#d4edda"),
+            foreground=self.theme.get("success_fg", "#000000"))
+        self.config_text.tag_configure(
+            "cfg_missing", background=self.theme.get("danger_bg", "#ffc7c7"),
+            foreground=self.theme.get("danger_fg", "#8b0000"))
+        self.config_text.tag_configure(
+            "cfg_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
+            foreground=self.theme.get("warn_fg", "#000000"))
         # 支持从资源管理器拖拽文件/文件夹到 config 清单
         try:
             from tkinterdnd2 import DND_FILES
@@ -685,12 +752,6 @@ class MigrationGUI:
         btn_config_frame = tk.Frame(frame_config)
         btn_config_frame.pack(fill="x", pady=5)
 
-        self.config_import_btn = create_gradient_button(
-            btn_config_frame, "📥 从源 config 导入所有条目", self.import_config_entries,
-            colors=("#00acc1", "#26c6da"), hover_colors=("#26c6da", "#00acc1"),
-            width=_grad_width("📥 从源 config 导入所有条目"), height=30,
-            font=("微软雅黑", 9, "bold"))
-        self.config_import_btn.pack(side="left", padx=5)
         self.config_magnify_btn = create_gradient_button(
             btn_config_frame, "📂 放大查看",
             lambda: self.open_big_view(self.config_text, "Config清单"),
@@ -699,12 +760,12 @@ class MigrationGUI:
         self.config_magnify_btn.pack(side="left", padx=5)
         self.add_config_dir_btn = create_gradient_button(
             btn_config_frame, "📁 浏览添加文件夹", self.browse_add_config_entry,
-            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
             width=_grad_width("📁 浏览添加文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_config_dir_btn.pack(side="left", padx=5)
         self.add_config_file_btn = create_gradient_button(
             btn_config_frame, "📄 浏览添加文件", self.browse_add_config_file,
-            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
             width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_config_file_btn.pack(side="left", padx=5)
         self.clear_config_btn = create_gradient_button(
@@ -712,6 +773,13 @@ class MigrationGUI:
             colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
             width=_grad_width("🗑️ 清空 config 清单"), height=30, font=("微软雅黑", 9, "bold"))
         self.clear_config_btn.pack(side="left", padx=5)
+        self.config_check_btn = create_gradient_button(
+            btn_config_frame, "🔎 检查 config 是否存在（源目录）", self.check_configlist_existence,
+            colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
+            width=_grad_width("🔎 检查 config 是否存在（源目录）"), height=30,
+            font=("微软雅黑", 9, "bold"))
+        self.config_check_btn.pack(side="left", padx=5)
+        self._create_check_legend(btn_config_frame)
 
     def _create_bottom_widgets(self):
         opt_frame = tk.Frame(self.root)
@@ -762,7 +830,6 @@ class MigrationGUI:
             font=("微软雅黑", 11, "bold")
         )
         self.history_btn.pack(side="right", padx=5)
-
 
     def _create_log_widgets(self):
         frame_log = tk.LabelFrame(self.root, text="执行日志", padx=5, pady=5)
@@ -876,7 +943,7 @@ class MigrationGUI:
             for m in missing[:50]:
                 self.log(f"  - {m}", level="ERROR")
             if len(missing) > 50:
-                self.log(f"  ... 还有 {len(missing)-50} 个未显示", level="WARNING")
+                self.log(f"  ... 还有 {len(missing) - 50} 个未显示", level="WARNING")
 
     # ---------- 从变更日志导入 ----------
     def import_from_changelog(self):
@@ -966,38 +1033,6 @@ class MigrationGUI:
         return added, updated
 
     # ---------- Config 清单相关 ----------
-    def import_config_entries(self):
-        src = self.source_path.get().strip()
-        if not src:
-            self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
-            return
-        src_config = Path(src) / "config"
-        if not src_config.exists():
-            self.root.bell()
-            self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
-            return
-
-        entries = []
-        for item in src_config.iterdir():
-            entries.append(item.name)
-
-        if entries:
-            self.config_text.configure(state=tk.NORMAL)
-            self.config_text.delete(1.0, tk.END)
-            self.config_text.insert(tk.END, "\n".join(entries))
-            self.log(f"✅ 已从源 config 导入 {len(entries)} 个条目（文件/文件夹）", level="SUCCESS")
-            self.save_config()
-            self._update_text_states()
-            self.config_text.edit_reset()
-            self.config_text.edit_modified(False)
-            self._notify_config_change()
-            messagebox.showinfo("导入成功", f"✅ 已从源 config 导入 {len(entries)} 个条目。",
-                               parent=self.root)
-        else:
-            self.log("ℹ️ 源 config 目录为空，无条目可导入", level="INFO")
-            messagebox.showinfo("提示", "源 config 目录为空，无条目可导入。", parent=self.root)
-
     def browse_add_config_entry(self):
         """浏览添加文件夹：优先用原生 Windows 多选文件夹对话框（comtypes）。
         原生不可用时回退到自定义树形多选对话框。"""
@@ -1060,9 +1095,9 @@ class MigrationGUI:
                 return []
 
         checked = set()
-        folder_iids = set()   # 真实文件夹节点的 iid（= 相对路径）
-        rel_abs = {}          # iid -> 绝对 Path
-        loaded = set()        # 已展开加载过子目录的 iid
+        folder_iids = set()  # 真实文件夹节点的 iid（= 相对路径）
+        rel_abs = {}  # iid -> 绝对 Path
+        loaded = set()  # 已展开加载过子目录的 iid
         captured = {"value": None}
 
         dlg = tk.Toplevel(self.root)
@@ -1134,6 +1169,7 @@ class MigrationGUI:
                     if c in folder_iids:
                         sync_mark(c)
                     walk(c)
+
             walk("")
 
         def on_click(event):
@@ -1250,7 +1286,7 @@ class MigrationGUI:
         hist_win.transient(self.root)
         set_window_icon(hist_win)
         tk.Label(hist_win, text=f"目标实例：{target_path}", font=("微软雅黑", 9,
-                                                             "bold")).pack(pady=5)
+                                                                 "bold")).pack(pady=5)
 
         columns = ("时间", "来源", "模组数", "Config数", "状态")
         tree = ttk.Treeview(hist_win, columns=columns, show="headings", height=18)
@@ -1792,6 +1828,7 @@ class MigrationGUI:
                                    self._is_text_overflow(self.mod_text))
         self._set_magnify_overflow(self.config_magnify_btn,
                                    self._is_text_overflow(self.config_text))
+
     def _safe_undo(self, widget):
         try:
             widget.edit_undo()
@@ -1824,6 +1861,12 @@ class MigrationGUI:
                     widget._undo_stack.pop(0)
                 widget._last = cur
                 widget._redo_stack.clear()
+                # config 清单内容变化后，存在性高亮已失效，清除以免误读
+                if kind == "config":
+                    try:
+                        self._clear_config_status()
+                    except Exception:
+                        pass
             widget.edit_modified(False)
 
         def _on_modified(event):
@@ -1985,6 +2028,8 @@ class MigrationGUI:
         self.save_config()
         self._update_text_states()
         if added:
+            # 内容已变化，之前的存在性高亮随之失效
+            self._clear_config_status()
             self._notify_config_change()
         return added, failed
 
@@ -2006,7 +2051,7 @@ class MigrationGUI:
         """清空模组清单。"""
         self.mod_text.configure(state=tk.NORMAL)
         self.mod_text.delete("1.0", tk.END)
-        self._new_mod_keys.clear()   # 清空后不再保留"新添加"高亮
+        self._new_mod_keys.clear()  # 清空后不再保留"新添加"高亮
         self.save_config()
         self._update_text_states()
         self._notify_modlist_change()
@@ -2015,6 +2060,7 @@ class MigrationGUI:
         """清空 config 清单。"""
         self.config_text.configure(state=tk.NORMAL)
         self.config_text.delete("1.0", tk.END)
+        self._clear_config_status()
         self.save_config()
         self._update_text_states()
         self._notify_config_change()
@@ -2032,6 +2078,111 @@ class MigrationGUI:
             self.config_text.event_generate("<<ConfigChanged>>")
         except Exception:
             pass
+
+    def _create_check_legend(self, parent):
+        """在检查按钮旁显示"存在/缺失/重复"三种颜色的图例（紧凑版，随按钮一行）。"""
+        try:
+            legend = tk.Frame(parent, bg=self.theme.get("labelframe_bg", self.theme["bg"]))
+            legend.pack(side="left", padx=4)
+
+            def chip(text, bg, fg):
+                lb = tk.Label(legend, text=text, bg=bg, fg=fg,
+                              font=("微软雅黑", 9, "bold"), padx=2, pady=1)
+                lb.pack(side="left", padx=1)
+
+            chip("✅ 存在", self.theme.get("success_bg", "#c6e0b4"),
+                 self.theme.get("success_fg", "#000000"))
+            chip("❌ 缺失", self.theme.get("danger_bg", "#ffc7c7"),
+                 self.theme.get("danger_fg", "#8b0000"))
+            chip("⚠️ 重复", self.theme.get("warn_bg", "#ffeaa7"),
+                 self.theme.get("warn_fg", "#000000"))
+        except Exception:
+            pass
+
+    def _parse_config_lines(self):
+        """读取 config 清单中非空、非注释的行（保持顺序，去除首尾空白）。"""
+        raw = self.config_text.get("1.0", tk.END).splitlines()
+        return [ln.strip() for ln in raw if ln.strip() and not ln.strip().startswith("#")]
+
+    def _clear_config_status(self):
+        """移除 config 清单上所有存在性高亮标签。"""
+        try:
+            self.config_text.tag_remove("cfg_ok", "1.0", tk.END)
+            self.config_text.tag_remove("cfg_missing", "1.0", tk.END)
+            self.config_text.tag_remove("cfg_duplicate", "1.0", tk.END)
+            self._config_status_applied = False
+        except Exception:
+            pass
+
+    def check_configlist_existence(self):
+        """检查 config 清单中每个条目（相对 config 目录的路径）在源目录是否存在，
+        并逐行用颜色高亮：存在=绿、缺失=红、重复=黄。"""
+        now = time.time()
+        if now - self.last_check_config_time < 2:
+            self.root.bell()
+            self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
+            return
+        self.last_check_config_time = now
+
+        src = self.source_path.get().strip()
+        if not src:
+            self.root.bell()
+            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            return
+        src_config = Path(src) / "config"
+        if not src_config.exists():
+            self.root.bell()
+            self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
+            return
+
+        entries = self._parse_config_lines()
+        if not entries:
+            self.root.bell()
+            self.log("⚠️ 当前 config 清单为空", level="WARNING")
+            self._clear_config_status()
+            return
+
+        def norm(e):
+            return e.replace("\\", "/").lower()
+
+        counts = Counter(norm(e) for e in entries)
+
+        self._clear_config_status()
+        ok = duplicate = missing = 0
+        missing_samples = []
+        lines = self.config_text.get("1.0", tk.END).splitlines()
+        for i, ln in enumerate(lines):
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            idx, end = f"{i + 1}.0", f"{i + 1}.end"
+            if not (src_config / s).exists():
+                self.config_text.tag_add("cfg_missing", idx, end)
+                missing += 1
+                if len(missing_samples) < 60:
+                    missing_samples.append(s)
+            elif counts[norm(s)] > 1:
+                self.config_text.tag_add("cfg_duplicate", idx, end)
+                duplicate += 1
+            else:
+                self.config_text.tag_add("cfg_ok", idx, end)
+                ok += 1
+        self._config_status_applied = True
+
+        self.log(f"📊 config 清单检查结果：总条目 {len(entries)}，去重后 {len(counts)} 个", level="INFO")
+        self.log(f"✅ 存在的条目：{ok}", level="SUCCESS")
+        if duplicate:
+            self.log(f"⚠️ 重复条目：{duplicate} 行", level="WARNING")
+        if missing:
+            self.log(f"❌ 缺失的条目：{missing}", level="ERROR")
+            self.root.bell()
+            self.log("缺失条目：", level="WARNING")
+            for m in missing_samples[:50]:
+                self.log(f"  - {m}", level="ERROR")
+            if missing > 50:
+                self.log(f"  ... 还有 {missing - 50} 条未显示", level="WARNING")
+        elif not duplicate:
+            self.log("✅ 所有 config 条目均存在且无重复。", level="SUCCESS")
 
     def open_big_view(self, source_text, title):
         """大窗口查看：可多选（勾选）+ 可排序的列表，并支持搜索、存在性检测、添加/删除、拖拽。"""
@@ -2089,6 +2240,8 @@ class MigrationGUI:
             "new": "hover_new",
         }
         _hover_iid = {"id": None}
+        _hover_cell = {"key": None}
+        _cell_tip = {"win": None}
 
         def _clear_hover():
             iid = _hover_iid.get("id")
@@ -2103,29 +2256,83 @@ class MigrationGUI:
                     pass
             _hover_iid["id"] = None
 
-        def _on_motion(event):
-            row = tree.identify_row(event.y)
-            if row == _hover_iid.get("id"):
-                return
-            _clear_hover()
-            if row:
+        def _hide_cell_tip():
+            tip = _cell_tip.get("win")
+            if tip is not None:
                 try:
-                    pos = int(row)
-                    idx = order[pos]
-                    cur = row_tags(pos, idx)
-                    hover_tag = "hover"
-                    if cur:
-                        hover_tag = _HOVER_TAG.get(cur[0], "hover")
-                    tree.item(row, tags=(hover_tag,))
-                    _hover_iid["id"] = row
+                    tip.destroy()
                 except Exception:
                     pass
+            _cell_tip["win"] = None
+
+        def _show_cell_tip(text, x, y):
+            """在光标旁弹出悬浮提示，显示单元格完整文本（路径等内容常被截断）。"""
+            _hide_cell_tip()
+            tip = tk.Toplevel(win)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{x + 12}+{y + 12}")
+            try:
+                tip.attributes("-topmost", True)
+            except Exception:
+                pass
+            lbl = tk.Label(tip, text=text,
+                           background=self.theme.get("tooltip_bg", "#ffffe0"),
+                           fg=self.theme.get("label_fg", "#000000"),
+                           relief="solid", borderwidth=1, font=("微软雅黑", 9),
+                           justify="left", wraplength=520, anchor="w")
+            lbl.pack()
+            _cell_tip["win"] = tip
+
+        def _update_cell_tip(event):
+            """悬停在单元格上：若文字可能被截断（较长）或为路径列，弹出完整文本提示。"""
+            try:
+                row = tree.identify_row(event.y)
+                col = tree.identify_column(event.x)
+                col_n = int(col.lstrip("#")) - 1 if col else -1
+                key = (row, col_n) if row else None
+                if key == _hover_cell["key"]:
+                    return
+                _hover_cell["key"] = key
+                _hide_cell_tip()
+                if not row or not (0 <= col_n < len(tree["columns"])):
+                    return
+                cname = tree["columns"][col_n]
+                if cname == "chk":
+                    return
+                text = tree.set(row, cname)
+                # 只在可能被截断的文本或路径列上提示，避免短文本频繁弹窗
+                if text and (cname == "path" or len(text) >= 12):
+                    _show_cell_tip(text, event.x_root, event.y_root)
+            except Exception:
+                pass
+
+        def _on_motion(event):
+            row = tree.identify_row(event.y)
+            if row != _hover_iid.get("id"):
+                _clear_hover()
+                if row:
+                    try:
+                        pos = int(row)
+                        idx = order[pos]
+                        cur = row_tags(pos, idx)
+                        hover_tag = "hover"
+                        if cur:
+                            hover_tag = _HOVER_TAG.get(cur[0], "hover")
+                        tree.item(row, tags=(hover_tag,))
+                        _hover_iid["id"] = row
+                    except Exception:
+                        pass
+            _update_cell_tip(event)
 
         def _on_leave(event):
             _clear_hover()
+            _hide_cell_tip()
+            _hover_cell["key"] = None
 
         tree.bind("<Motion>", _on_motion)
         tree.bind("<Leave>", _on_leave)
+        # 滚动时隐藏悬浮提示，避免提示停留在已移走行上造成误导
+        tree.bind("<MouseWheel>", lambda e: _hide_cell_tip(), add="+")
         vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(win, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -2137,10 +2344,10 @@ class MigrationGUI:
 
         entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines() if ln.strip()]
         msg_queue = queue.Queue()
-        meta = {}          # entry索引 -> {status,name,path,type,modid,version,size}
-        checked = {}       # 条目内容(完整路径/文件名) -> bool，用勾选做多选（按内容而非行位置，避免排序/刷新后错位）
-        new_keys = set()   # 本次会话新添加的模组（文件名），染黄色高亮提示
-        order = list(range(len(entries)))   # 当前显示顺序（entries 索引），含排序+过滤
+        meta = {}  # entry索引 -> {status,name,path,type,modid,version,size}
+        checked = {}  # 条目内容(完整路径/文件名) -> bool，用勾选做多选（按内容而非行位置，避免排序/刷新后错位）
+        new_keys = set()  # 本次会话新添加的模组（文件名），染黄色高亮提示
+        order = list(range(len(entries)))  # 当前显示顺序（entries 索引），含排序+过滤
         order_index = {idx: pos for pos, idx in enumerate(order)}  # idx->当前位置，供 poll 快速定位(O(1))
         sort_state = {"col": None, "rev": False}
 
@@ -2193,6 +2400,7 @@ class MigrationGUI:
                     return r["obj"].stat().st_size if r else -1
                 m = meta.get(i, {})
                 return str(m.get(col, ""))
+
             return key
 
         def compute_order():
@@ -2309,6 +2517,8 @@ class MigrationGUI:
             # 主模组清单被重写后，重新应用"新添加"黄色高亮
             if is_mod:
                 self._apply_mod_new_tags()
+            else:
+                self._clear_config_status()
 
         def add_mods():
             _initial = str(mods_dir) if (mods_dir is not None and mods_dir.exists()) else None
@@ -2428,6 +2638,7 @@ class MigrationGUI:
         search_entry.pack(side="left", padx=4)
         # 搜索防抖：停止输入 250ms 后再重建，避免每个按键都全量重建导致卡顿
         _search_after = [None]
+
         def on_search_changed(*a):
             if _search_after[0] is not None:
                 try:
@@ -2435,6 +2646,7 @@ class MigrationGUI:
                 except Exception:
                     pass
             _search_after[0] = win.after(250, lambda: rebuild(rescan=False))
+
         search_var.trace("w", on_search_changed)
         search_entry.bind("<Return>", lambda e: rebuild(rescan=False))
         detect_btn = create_gradient_button(top, "🔍 检测存在性", detect,
@@ -2475,6 +2687,7 @@ class MigrationGUI:
                 "1.0", tk.END).splitlines() if ln.strip()]
             meta.clear()
             rebuild(rescan=True)
+
         if is_mod:
             source_text.bind("<<ModlistChanged>>", lambda e: reload_entries())
         else:
@@ -2501,6 +2714,7 @@ class MigrationGUI:
         self.mod_text.configure(state=state)
         self.config_text.configure(state=state)
         self._check_overflow()
+
     def toggle_edit_mode(self):
         self._update_text_states()
         if self.edit_mode.get():

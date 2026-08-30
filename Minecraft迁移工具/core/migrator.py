@@ -209,17 +209,17 @@ def do_restore(target_path, log_func=None):
 
 # ---------- 主迁移函数 ----------
 def run_migration(
-    src_path,
-    tgt_path,
-    world_name,
-    modlist,
-    configlist,
-    dry_run,
-    overwrite,
-    progress_callback=None,
-    log_callback=None,
-    check_cancel=None,
-    add_history=True
+        src_path,
+        tgt_path,
+        world_name,
+        modlist,
+        configlist,
+        dry_run,
+        overwrite,
+        progress_callback=None,
+        log_callback=None,
+        check_cancel=None,
+        add_history=True
 ):
     """
     执行迁移主流程
@@ -312,8 +312,7 @@ def run_migration(
         src_opts = src_path / "options.txt"
         dst_opts = tgt_path / "options.txt"
         if src_opts.exists():
-            ok, msg = safe_copy(src_opts, dst_opts, dry_run, overwrite=True,
-                                is_file=True)
+            ok, msg = safe_copy(src_opts, dst_opts, dry_run, overwrite=True, is_file=True)
             if ok:
                 file_index += 1
                 copied_bytes += src_opts.stat().st_size
@@ -350,8 +349,6 @@ def run_migration(
                 if ok:
                     file_index += 1
                     copied_bytes += src_file.stat().st_size
-                    if not dry_run:
-                        log(f"✅ 复制存档文件: {rel}", "SUCCESS")
                     step = f"复制存档 ({idx + 1}/{total_world_files})"
                     progress(file_index, f"存档/{rel}", copied_bytes, step)
                 else:
@@ -422,8 +419,6 @@ def run_migration(
                             success_cfg += 1
                             file_index += 1
                             copied_bytes += src_file.stat().st_size
-                            if not dry_run:
-                                log(f"✅ 复制 config 文件: {entry}/{rel}", "SUCCESS")
                         else:
                             failed_cfg.append((f"{entry}/{rel}", msg))
                             log(f"❌ 复制 config 文件 {entry}/{rel} 失败: {msg}", "ERROR")

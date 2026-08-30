@@ -15,6 +15,7 @@ from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
 
 class ProgressWindow:
     """迁移进度模态窗口"""
+
     def __init__(self, parent, total_files, total_size):
         self.parent = parent
         self.total_files = total_files
@@ -124,6 +125,7 @@ class ProgressWindow:
 
 class ScanProgressWindow:
     """扫描模组差异进度窗口"""
+
     def __init__(self, parent, total_files, theme):
         self.parent = parent
         self.total_files = total_files
@@ -251,14 +253,14 @@ def show_mod_detail(parent, jar_path, theme):
     win.title(f"模组详情 - {os.path.basename(jar_path)}")
     win.minsize(700, 540)
     win.transient(parent)
-    win.withdraw()   # 先隐藏，等构建完再居中显示，避免"闪现-居中"闪动
+    win.withdraw()  # 先隐藏，等构建完再居中显示，避免"闪现-居中"闪动
     set_window_icon(win)
     _configure_mod_detail_styles(theme)
     fail = theme.get("fail_fg", "red")
     ok = theme.get("ok_fg", "green")
 
     tk.Label(win, text=f"文件: {os.path.basename(jar_path)}", font=("微软雅黑", 10,
-                                                                  "bold")).pack(pady=(8, 2))
+                                                                    "bold")).pack(pady=(8, 2))
     details = [
         f"模组名称: {info['name']}",
         f"Mod ID: {info['modid']}",
@@ -308,7 +310,7 @@ def show_mod_detail(parent, jar_path, theme):
     tree.configure(selectmode="none")  # 用自定义绿色选中标签，避免 ttk 灰色选中盖掉颜色
     for col, txt, wd, anc in (("name", "名称", 230, "w"), ("author", "作者", 105, "w"),
                               ("downloads", "下载量", 80, "e"), ("version", "最新版本", 150,
-                                                              "w"),
+                                                                 "w"),
                               ("slug", "项目ID", 110, "w")):
         tree.heading(col, text=txt)
         tree.column(col, width=wd, anchor=anc)
@@ -325,7 +327,26 @@ def show_mod_detail(parent, jar_path, theme):
     tree.configure(yscrollcommand=vsb.set)
     tree.pack(side="left", fill="both", expand=True, padx=5)
     vsb.pack(side="right", fill="y")
-    tree.bind("<Double-1>", lambda e: open_project_page())
+
+    def on_double_click(event):
+        """双击某行 -> 打开该项目主页；双击落在空白处/表头则忽略，避免误开上一选中行。"""
+        try:
+            row = tree.identify_row(event.y)
+            if not row:
+                return
+            # 确保被双击的目标行已选中（两次单击通常已选中，这里兜底）
+            current_sel[0] = row
+            for iid in tree.get_children():
+                if iid == row:
+                    tree.item(iid, tags=("sel",))
+                else:
+                    bt = base_tag.get(iid, "")
+                    tree.item(iid, tags=(bt,) if bt else ())
+        except Exception:
+            return
+        open_project_page()
+
+    tree.bind("<Double-1>", on_double_click)
     tree.bind("<ButtonRelease-1>", lambda e: on_row_click(e))
     win._search_tree = tree
 
@@ -361,7 +382,7 @@ def show_mod_detail(parent, jar_path, theme):
     msg_queue = queue.Queue()
     search_state = {"running": False}
     result_items = {}
-    base_tag = {}     # iid -> 基础标签（match/update/odd/''），供取消选中时恢复
+    base_tag = {}  # iid -> 基础标签（match/update/odd/''），供取消选中时恢复
 
     def set_status(msg, color=ok):
         status_lbl._last_fg = color
