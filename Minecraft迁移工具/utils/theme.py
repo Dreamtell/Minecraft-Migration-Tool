@@ -42,7 +42,11 @@ LIGHT_THEME = {
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     "ok_fg": "#2e7d32", "fail_fg": "#c62828", "muted_fg": "#808080",
     "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
-    "sel_bg": "#66bb6a", "sel_fg": "#ffffff"
+    "sel_bg": "#66bb6a", "sel_fg": "#ffffff",
+    "hover_bg": "#e9eef5", "hover_fg": "#000000",
+    "hover_checked_bg": "#cde8cd", "hover_checked_fg": "#000000",
+    "hover_missing_bg": "#ffd9d9", "hover_missing_fg": "#8b0000",
+    "hover_new_bg": "#fff2c4", "hover_new_fg": "#000000"
 }
 
 DARK_THEME = {
@@ -85,7 +89,11 @@ DARK_THEME = {
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     "ok_fg": "#7ee787", "fail_fg": "#ff6b6b", "muted_fg": "#aaaaaa",
     "badge_rollback_bg": "#5a2d2d", "badge_normal_bg": "#3a3a3a",
-    "sel_bg": "#2e7d32", "sel_fg": "#ffffff"
+    "sel_bg": "#2e7d32", "sel_fg": "#ffffff",
+    "hover_bg": "#3a3e44", "hover_fg": "#ffffff",
+    "hover_checked_bg": "#3a5a3a", "hover_checked_fg": "#ffffff",
+    "hover_missing_bg": "#5a3a3a", "hover_missing_fg": "#ffb3b3",
+    "hover_new_bg": "#5a4a3a", "hover_new_fg": "#ffffff"
 }
 
 

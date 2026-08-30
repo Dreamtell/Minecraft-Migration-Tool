@@ -31,7 +31,7 @@ def main():
     except singleton.SingleInstanceException:
         try:
             import ctypes
-            hwnd = ctypes.windll.user32.FindWindowW(None, "Minecraft 整合包迁移工具 - 增强版 v3")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "Minecraft 整合包迁移工具 - 增强版 v4")
             if hwnd:
                 if ctypes.windll.user32.IsIconic(hwnd):
                     ctypes.windll.user32.ShowWindow(hwnd, 9)
@@ -50,7 +50,7 @@ def main():
     except Exception:
         root = tk.Tk()
     root.withdraw()
-    root.title("Minecraft 整合包迁移工具 - 增强版 v3")
+    root.title("Minecraft 整合包迁移工具 - 增强版 v4")
     root.geometry("1000x1080")
 
     # 设置图标

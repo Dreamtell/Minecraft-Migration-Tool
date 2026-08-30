@@ -38,7 +38,7 @@ def _grad_width(text):
 class MigrationGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Minecraft 整合包迁移工具 - 增强版 v3")
+        self.root.title("Minecraft 整合包迁移工具 - 增强版 v4")
         self.root.geometry("1000x1080")
 
         self.config = self.load_config()
@@ -67,6 +67,9 @@ class MigrationGUI:
         self.config_text.insert("1.0", self.config.get("config_list", ""))
         self.mod_text.edit_reset()
         self.config_text.edit_reset()
+        # 用自定义撤销栈替代 Tk 原生撤销（Tk 会把连续删除合并为一步撤销）
+        self._setup_custom_undo(self.mod_text, "mod")
+        self._setup_custom_undo(self.config_text, "config")
         self.log("=" * 60, level="INFO", save=False)
         self.log("【免费声明】本工具完全免费，严禁用于商业用途或转卖。", level="WARNING", save=False)
         self.log("如有任何收费行为，请立即举报。作者不会以任何形式向你收费。", level="WARNING", save=False)
@@ -129,7 +132,7 @@ class MigrationGUI:
             except:
                 pass
 
-        # Treeview 样式
+        # Treeview 样式（放大查看的列表用大一号字体，更清晰）
         style.configure(
             "Treeview",
             background=self.theme["ttk_bg"],
@@ -137,7 +140,8 @@ class MigrationGUI:
             fieldbackground=self.theme["ttk_bg"],
             selectbackground=self.theme["ttk_select_bg"],
             selectforeground=self.theme["ttk_select_fg"],
-            borderwidth=0
+            borderwidth=0,
+            font=("微软雅黑", 11)
         )
         style.map(
             "Treeview",
@@ -150,7 +154,8 @@ class MigrationGUI:
             "Treeview.Heading",
             background=self.theme["button_bg"],
             foreground=self.theme["fg"],
-            relief="flat"
+            relief="flat",
+            font=("微软雅黑", 10, "bold")
         )
 
         # Progressbar 样式
@@ -205,8 +210,6 @@ class MigrationGUI:
                                      foreground=self.theme.get("sel_fg", "#000000"))
                     bv.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
                                      foreground=self.theme.get("warn_fg", "#000000"))
-                    bv.tag_configure("odd", background=self.theme.get("neutral_bg", "#f8f9fa"),
-                                     foreground=self.theme.get("neutral_fg", "#000000"))
             except Exception:
                 pass
 
@@ -581,7 +584,7 @@ class MigrationGUI:
         frame_modlist.pack(fill="both", expand=True, padx=10, pady=5)
 
         self.mod_text = scrolledtext.ScrolledText(frame_modlist, height=8, wrap=tk.NONE,
-                                                  undo=True)
+                                                  undo=True, font=("微软雅黑 Light", 10))
         self.mod_text.pack(fill="both", expand=True, padx=5, pady=5)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
@@ -664,7 +667,8 @@ class MigrationGUI:
         warning_config.pack(anchor="w", padx=5, pady=2)
 
         self.config_text = scrolledtext.ScrolledText(frame_config, height=6,
-                                                     wrap=tk.NONE, undo=True)
+                                                     wrap=tk.NONE, undo=True,
+                                                     font=("微软雅黑 Light", 10))
         self.config_text.pack(fill="both", expand=True, padx=5, pady=5)
         self.config_text.bind("<Control-z>",
                               lambda e: self._safe_undo(self.config_text))
@@ -995,6 +999,8 @@ class MigrationGUI:
             messagebox.showinfo("提示", "源 config 目录为空，无条目可导入。", parent=self.root)
 
     def browse_add_config_entry(self):
+        """浏览添加文件夹：优先用原生 Windows 多选文件夹对话框（comtypes）。
+        原生不可用时回退到自定义树形多选对话框。"""
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
@@ -1006,33 +1012,197 @@ class MigrationGUI:
             self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
             return
 
-        selected = filedialog.askdirectory(title="请选择源 config 下的文件夹",
-                                           initialdir=str(src_config))
-        if not selected:
-            return
-        selected_path = Path(selected)
+        # 优先原生多选文件夹对话框（返回绝对路径）
         try:
-            rel_path = selected_path.relative_to(src_config)
-        except ValueError:
-            self.log(f"❌ 选择的路径不在源 config 目录下: {selected}", level="ERROR")
-            return
+            from utils.native_dialog import pick_folders
+            selected = pick_folders(
+                parent_hwnd=self.root.winfo_id(),
+                initial_dir=str(src_config),
+                title="请选择源 config 下的文件夹（可多选）")
+            native_ok = True
+        except Exception:
+            selected = None
+            native_ok = False
 
-        if not _is_safe_path(str(rel_path)):
-            self.log("❌ 拒绝：路径包含 '..' 或为绝对路径，不安全", level="ERROR")
-            messagebox.showerror("不安全路径", "所选路径包含 '..'，可能越界，已拒绝。")
-            return
+        if native_ok:
+            if not selected:
+                return
+            selected_paths = [str(p) for p in selected]
+        else:
+            # 原生失败 → 回退自定义树形多选（返回相对路径）
+            self.log("ℹ️ 原生对话框不可用，已切换到自定义多选对话框", level="INFO")
+            selected = self._pick_config_folders(src_config)
+            if not selected:
+                return
+            selected_paths = [str(src_config / s) for s in selected]
 
-        self.config_text.configure(state=tk.NORMAL)
-        if self.config_text.get("1.0", tk.END).strip():
-            self.config_text.insert(tk.END, "\n")
-        self.config_text.insert(tk.END, str(rel_path) + "\n")
-        self.log(f"✅ 已添加 config 条目: {rel_path}", level="SUCCESS")
-        self.save_config()
-        self._update_text_states()
-        self._notify_config_change()
-        messagebox.showinfo("添加成功", f"✅ 已添加 config 条目：{rel_path}", parent=self.root)
+        added, failed = self._add_config_paths(selected_paths)
+        if added:
+            self.log(f"✅ 已添加 {added} 个 config 子文件夹条目", level="SUCCESS")
+        elif not failed:
+            self.log("ℹ️ 所选文件夹均已在 config 清单中，未重复添加", level="INFO")
+        if failed:
+            messagebox.showwarning(
+                "添加提示",
+                f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
+                + "\n".join(str(f) for f in failed[:5]), parent=self.root)
+
+    def _pick_config_folders(self, src_config):
+        """树形多选对话框：可展开/折叠浏览 config 下的子文件夹，点击文件夹名即勾选。
+        返回选中的相对路径列表（已去除被祖先覆盖的子项），取消则返回 None。"""
+        theme = self.theme
+
+        def child_dirs(parent_abs):
+            try:
+                return sorted([e for e in parent_abs.iterdir() if e.is_dir()],
+                              key=lambda p: p.name.lower())
+            except Exception:
+                return []
+
+        checked = set()
+        folder_iids = set()   # 真实文件夹节点的 iid（= 相对路径）
+        rel_abs = {}          # iid -> 绝对 Path
+        loaded = set()        # 已展开加载过子目录的 iid
+        captured = {"value": None}
+
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        dlg.title("选择 config 下的文件夹（可多选）")
+        dlg.geometry("780x640")
+        dlg.minsize(600, 500)
+        dlg.transient(self.root)
+        dlg.configure(bg=theme["bg"])
+        set_window_icon(dlg)
+
+        hint = tk.Label(dlg, text="点击文件夹名即可勾选/取消；点击 ▸ 展开子文件夹；可同时勾选多个。",
+                        bg=theme["bg"], fg=theme["muted_fg"])
+        hint.pack(fill="x", padx=10, pady=(10, 2))
+
+        tw = tk.Frame(dlg, bg=theme["bg"])
+        tw.pack(fill="both", expand=True, padx=10, pady=4)
+        tree = ttk.Treeview(tw, columns=("chk", "path"), show="tree headings",
+                            selectmode="none")
+        tree.heading("#0", text="文件夹")
+        tree.column("#0", width=300, anchor="w", stretch=True)
+        tree.heading("chk", text="✓")
+        tree.column("chk", width=40, anchor="center", stretch=False)
+        tree.heading("path", text="完整相对路径")
+        tree.column("path", width=360, anchor="w", stretch=False)
+        vsb = ttk.Scrollbar(tw, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tw, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        tw.grid_rowconfigure(0, weight=1)
+        tw.grid_columnconfigure(0, weight=1)
+
+        def sync_mark(iid):
+            tree.set(iid, "chk", "☑" if iid in checked else "☐")
+
+        def update_count():
+            count_lbl.config(text=f"已勾选 {len(checked)} 个文件夹")
+
+        def populate(parent_iid, parent_abs):
+            for c in tree.get_children(parent_iid):
+                tree.delete(c)
+            for e in child_dirs(parent_abs):
+                rel_s = str(e.relative_to(src_config))
+                iid = rel_s
+                folder_iids.add(iid)
+                rel_abs[iid] = e
+                mark = "☑" if rel_s in checked else "☐"
+                if child_dirs(e):
+                    tree.insert(parent_iid, "end", iid=iid, text=e.name,
+                                values=(mark, rel_s))
+                    tree.insert(iid, "end", iid=iid + "::ph", text="…",
+                                values=("", ""))
+                else:
+                    tree.insert(parent_iid, "end", iid=iid, text=e.name,
+                                values=(mark, rel_s))
+
+        def on_open(event):
+            iid = tree.focus()
+            if not iid or iid not in rel_abs or iid in loaded:
+                return
+            populate(iid, rel_abs[iid])
+            loaded.add(iid)
+
+        def sync_all():
+            def walk(iid):
+                for c in tree.get_children(iid):
+                    if c in folder_iids:
+                        sync_mark(c)
+                    walk(c)
+            walk("")
+
+        def on_click(event):
+            # 点中展开箭头 → 交给默认行为展开/折叠，不改变勾选
+            if tree.identify_element(event.x, event.y) == "Treeview.indicator":
+                return
+            row = tree.identify_row(event.y)
+            if not row or row.endswith("::ph") or row not in folder_iids:
+                return
+            if row in checked:
+                checked.discard(row)
+            else:
+                checked.add(row)
+            sync_mark(row)
+            update_count()
+            return "break"
+
+        tree.bind("<Button-1>", on_click)
+        tree.bind("<<TreeviewOpen>>", on_open)
+
+        count_lbl = tk.Label(dlg, bg=theme["bg"], fg=theme["fg"], text="")
+        count_lbl.pack(fill="x", padx=10, pady=(0, 4))
+
+        def mk_button(parent, text, cmd):
+            return tk.Button(parent, text=text, command=cmd, bg=theme["button_bg"],
+                             fg=theme["button_fg"], activebackground=theme["button_bg"],
+                             activeforeground=theme["button_fg"], relief=tk.FLAT,
+                             padx=12, pady=4, font=("微软雅黑", 9))
+
+        def select_top():
+            checked.clear()
+            for e in child_dirs(src_config):
+                checked.add(str(e.relative_to(src_config)))
+            sync_all()
+            update_count()
+
+        def clear_all():
+            checked.clear()
+            sync_all()
+            update_count()
+
+        btnbar = tk.Frame(dlg, bg=theme["bg"])
+        btnbar.pack(fill="x", padx=10, pady=(8, 10))
+        mk_button(btnbar, "全选顶层", select_top).pack(side="left", padx=4)
+        mk_button(btnbar, "全不选", clear_all).pack(side="left", padx=4)
+
+        def confirm():
+            picked = [Path(r) for r in checked]
+            # 子项若已被选中的祖先覆盖（其下整棵子树都会被迁移），无需重复添加
+            norm = [str(p) for p in sorted(picked)
+                    if not any(q != p and p.is_relative_to(q) for q in picked)]
+            captured["value"] = norm
+            dlg.destroy()
+
+        def cancel():
+            captured["value"] = None
+            dlg.destroy()
+
+        mk_button(btnbar, "确定添加", confirm).pack(side="right", padx=4)
+        mk_button(btnbar, "取消", cancel).pack(side="right", padx=4)
+
+        populate("", src_config)
+        update_count()
+        dlg.deiconify()
+        dlg.wait_window()
+        return captured.get("value")
 
     def browse_add_config_file(self):
+        """浏览添加文件：一次可多选多个 config 下的文件。"""
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
@@ -1044,34 +1214,23 @@ class MigrationGUI:
             self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
             return
 
-        selected = filedialog.askopenfilename(
-            title="请选择源 config 下的文件",
+        selected = filedialog.askopenfilenames(
+            title="请选择源 config 下的文件（可多选）",
             initialdir=str(src_config),
             filetypes=[("所有文件", "*.*")]
         )
         if not selected:
             return
-        selected_path = Path(selected)
-        try:
-            rel_path = selected_path.relative_to(src_config)
-        except ValueError:
-            self.log(f"❌ 选择的文件不在源 config 目录下: {selected}", level="ERROR")
-            return
-
-        if not _is_safe_path(str(rel_path)):
-            self.log("❌ 拒绝：路径包含 '..' 或为绝对路径，不安全", level="ERROR")
-            messagebox.showerror("不安全路径", "所选路径包含 '..'，可能越界，已拒绝。")
-            return
-
-        self.config_text.configure(state=tk.NORMAL)
-        if self.config_text.get("1.0", tk.END).strip():
-            self.config_text.insert(tk.END, "\n")
-        self.config_text.insert(tk.END, str(rel_path) + "\n")
-        self.log(f"✅ 已添加 config 条目: {rel_path}", level="SUCCESS")
-        self.save_config()
-        self._update_text_states()
-        self._notify_config_change()
-        messagebox.showinfo("添加成功", f"✅ 已添加 config 条目：{rel_path}", parent=self.root)
+        added, failed = self._add_config_paths(selected)
+        if added:
+            self.log(f"✅ 已添加 {added} 个 config 文件条目", level="SUCCESS")
+        elif not failed:
+            self.log("ℹ️ 所选文件均已在 config 清单中，未重复添加", level="INFO")
+        if failed:
+            messagebox.showwarning(
+                "添加提示",
+                f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
+                + "\n".join(str(f) for f in failed[:5]), parent=self.root)
 
     # ---------- 历史记录 ----------
     def action_show_history(self):
@@ -1162,6 +1321,9 @@ class MigrationGUI:
 
     # ---------- 回滚 ----------
     def action_rollback(self):
+        if self._migration_running:
+            messagebox.showwarning("提示", "迁移正在进行中，暂不能回滚。")
+            return
         self.log("=" * 50, level="INFO")
         self.log("🔄 用户请求执行回滚操作", level="INFO")
 
@@ -1252,6 +1414,7 @@ class MigrationGUI:
 
         self._scanning = True
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 扫描中…")
+        self._refresh_busy_state()
         self.log("🔍 开始扫描模组差异，请稍候...", level="INFO")
         self.root.update_idletasks()
 
@@ -1309,6 +1472,7 @@ class MigrationGUI:
     def _finish_scan(self, data, error_msg):
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="🔍 扫描模组差异")
         self._scanning = False
+        self._refresh_busy_state()
 
         if hasattr(self, 'scan_progress_window'):
             self.scan_progress_window.close()
@@ -1344,6 +1508,16 @@ class MigrationGUI:
                                             self.current_theme, apply_callback)
 
     # ---------- 迁移 ----------
+    def _refresh_busy_state(self):
+        """迁移/扫描进行中时禁用"开始迁移/回滚/扫描"按钮，防止重复触发。"""
+        busy = self._migration_running or self._scanning
+        state = "disabled" if busy else "normal"
+        for btn in (self.start_btn, self.rollback_btn, self.scan_btn):
+            try:
+                btn.state(state)
+            except Exception:
+                pass
+
     def start_migration(self):
         if self._migration_running:
             messagebox.showwarning("提示", "迁移正在进行中，请勿重复启动")
@@ -1409,6 +1583,10 @@ class MigrationGUI:
                 "空间不足，请清理目标磁盘后重试。")
             return
 
+        # 置为"迁移中"，禁用相关按钮，防止重复触发
+        self._migration_running = True
+        self._refresh_busy_state()
+
         # 模拟模式
         if self.dry_run.get():
             self.log("========== 开始迁移（模拟） ==========", level="INFO")
@@ -1431,11 +1609,12 @@ class MigrationGUI:
         except Exception as e:
             self.log(f"❌ 备份失败：{e}", level="ERROR")
             messagebox.showerror("备份错误", f"备份目标实例失败：{e}\n迁移已取消。")
+            self._migration_running = False
+            self._refresh_busy_state()
             return
 
         self.progress_queue = queue.Queue()
         self.progress_window = ProgressWindow(self.root, total_files, total_size)
-        self._migration_running = True
         if self.after_id is None:
             self._poll_progress()
 
@@ -1523,20 +1702,26 @@ class MigrationGUI:
         def check_cancel():
             return self.progress_window and self.progress_window.cancelled
 
-        run_migration(
-            src_path=src_path,
-            tgt_path=tgt_path,
-            world_name=world,
-            modlist=modlist,
-            configlist=configlist,
-            dry_run=dry_run,
-            overwrite=self.overwrite_mods.get(),
-            progress_callback=progress_callback,
-            log_callback=self.log,
-            check_cancel=check_cancel,
-            add_history=True
-        )
-        self._migration_running = False
+        try:
+            run_migration(
+                src_path=src_path,
+                tgt_path=tgt_path,
+                world_name=world,
+                modlist=modlist,
+                configlist=configlist,
+                dry_run=dry_run,
+                overwrite=self.overwrite_mods.get(),
+                progress_callback=progress_callback,
+                log_callback=self.log,
+                check_cancel=check_cancel,
+                add_history=True
+            )
+        finally:
+            self._migration_running = False
+            try:
+                self.root.after(0, self._refresh_busy_state)
+            except Exception:
+                pass
 
     # ---------- 其他辅助 ----------
     def _is_text_overflow(self, text_widget):
@@ -1619,6 +1804,79 @@ class MigrationGUI:
         except tk.TclError:
             pass
 
+    def _setup_custom_undo(self, widget, kind):
+        """用自定义撤销栈替代 Tk 原生撤销。
+
+        Tk 的 Text 原生撤销会把"连续删除"合并成一步，无法逐个还原；
+        这里在每次内容修改后快照上一个状态，撤销时逐个恢复。kind 为
+        "mod" 或 "config"，用于撤销后刷新对应的清单/保存配置。
+        """
+        widget._undo_stack = []
+        widget._redo_stack = []
+        widget._last = widget.get("1.0", "end-1c")
+        widget._custom_undo_kind = kind
+
+        def _snapshot():
+            cur = widget.get("1.0", "end-1c")
+            if cur != widget._last:
+                widget._undo_stack.append(widget._last)
+                if len(widget._undo_stack) > 200:
+                    widget._undo_stack.pop(0)
+                widget._last = cur
+                widget._redo_stack.clear()
+            widget.edit_modified(False)
+
+        def _on_modified(event):
+            _snapshot()
+
+        def _after_edit():
+            try:
+                self.save_config()
+            except Exception:
+                pass
+            if kind == "mod":
+                try:
+                    self._apply_mod_new_tags()
+                    self._notify_modlist_change()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._notify_config_change()
+                except Exception:
+                    pass
+
+        def _set_content(text):
+            widget.configure(state=tk.NORMAL)
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", text)
+            widget._last = text
+            widget.edit_modified(False)
+
+        def _undo(event=None):
+            if not widget._undo_stack:
+                return "break"
+            cur = widget.get("1.0", "end-1c")
+            widget._redo_stack.append(cur)
+            prev = widget._undo_stack.pop()
+            _set_content(prev)
+            _after_edit()
+            return "break"
+
+        def _redo(event=None):
+            if not widget._redo_stack:
+                return "break"
+            cur = widget.get("1.0", "end-1c")
+            widget._undo_stack.append(cur)
+            nxt = widget._redo_stack.pop()
+            _set_content(nxt)
+            _after_edit()
+            return "break"
+
+        widget.bind("<<Modified>>", _on_modified, add="+")
+        widget.bind("<Control-z>", _undo)
+        widget.bind("<Control-y>", _redo)
+
     def _append_mods(self, paths):
         """把若干 .jar 完整路径追加到模组清单（自动去重）。返回新增数量。"""
         paths = [str(Path(p)) for p in paths if Path(p).suffix.lower() == ".jar"]
@@ -1673,9 +1931,16 @@ class MigrationGUI:
             messagebox.showwarning("添加提示", f"⚠️ 有 {non_jar} 个非 .jar 文件被跳过。", parent=self.root)
 
     def add_mods(self):
-        """从文件选择器多选并批量添加模组。"""
+        """从文件选择器多选并批量添加模组（默认定位到源实例的 mods 目录）。"""
+        src = self.source_path.get().strip()
+        initial = None
+        if src:
+            sp = Path(src)
+            mods_dir = sp / "mods"
+            initial = str(mods_dir if mods_dir.exists() else sp)
         files = filedialog.askopenfilenames(
             title="选择要添加的模组（可多选）",
+            initialdir=initial,
             filetypes=[("Minecraft 模组", "*.jar"), ("所有文件", "*.*")])
         if files:
             self._mod_add_result(files, self._append_mods(files))
@@ -1803,8 +2068,64 @@ class MigrationGUI:
                            foreground=self.theme.get("sel_fg", "#000000"))
         tree.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
                            foreground=self.theme.get("warn_fg", "#000000"))
-        tree.tag_configure("odd", background=self.theme.get("neutral_bg", "#f8f9fa"),
-                           foreground=self.theme.get("neutral_fg", "#000000"))
+        # 状态文字颜色（Tk 表格只能整行文字变色，无法单独染某一列）
+        tree.tag_configure("status_ok", foreground=self.theme.get("ok_fg", "#2e7d32"))
+        tree.tag_configure("status_loading", foreground=self.theme.get("muted_fg", "#808080"))
+        # 悬停高亮：普通行与"已高亮"（勾选/缺失/新添加等）行用不同的提示色
+        tree.tag_configure("hover", background=self.theme.get("hover_bg", "#e9eef5"),
+                           foreground=self.theme.get("hover_fg", "#000000"))
+        tree.tag_configure("hover_checked",
+                           background=self.theme.get("hover_checked_bg", "#cde8cd"),
+                           foreground=self.theme.get("hover_checked_fg", "#000000"))
+        tree.tag_configure("hover_missing",
+                           background=self.theme.get("hover_missing_bg", "#ffd9d9"),
+                           foreground=self.theme.get("hover_missing_fg", "#8b0000"))
+        tree.tag_configure("hover_new",
+                           background=self.theme.get("hover_new_bg", "#fff2c4"),
+                           foreground=self.theme.get("hover_new_fg", "#000000"))
+        _HOVER_TAG = {
+            "checked": "hover_checked",
+            "missing": "hover_missing",
+            "new": "hover_new",
+        }
+        _hover_iid = {"id": None}
+
+        def _clear_hover():
+            iid = _hover_iid.get("id")
+            if iid:
+                try:
+                    # 用当前状态重新计算该行应有的标签（勾选/缺失/新添加等），
+                    # 避免恢复悬停前的旧快照把已更新的语义颜色覆盖掉。
+                    pos = int(iid)
+                    idx = order[pos]
+                    tree.item(iid, tags=row_tags(pos, idx))
+                except Exception:
+                    pass
+            _hover_iid["id"] = None
+
+        def _on_motion(event):
+            row = tree.identify_row(event.y)
+            if row == _hover_iid.get("id"):
+                return
+            _clear_hover()
+            if row:
+                try:
+                    pos = int(row)
+                    idx = order[pos]
+                    cur = row_tags(pos, idx)
+                    hover_tag = "hover"
+                    if cur:
+                        hover_tag = _HOVER_TAG.get(cur[0], "hover")
+                    tree.item(row, tags=(hover_tag,))
+                    _hover_iid["id"] = row
+                except Exception:
+                    pass
+
+        def _on_leave(event):
+            _clear_hover()
+
+        tree.bind("<Motion>", _on_motion)
+        tree.bind("<Leave>", _on_leave)
         vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(win, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -1901,15 +2222,18 @@ class MigrationGUI:
                 return (chk, m.get("status", "…"), name, path, m.get("type", "…"))
 
         def row_tags(pos, idx):
-            """行配色：勾选优先(蓝) > 缺失(红) > 新添加(黄) > 奇偶斑马纹。"""
+            """行配色：勾选(绿底) > 缺失(红底) > 新添加(黄底) > 状态文字色。"""
             if checked.get(key_of(entries[idx])):
                 return ("checked",)
             if meta.get(idx, {}).get("status") == "❌ 缺失":
                 return ("missing",)
             if key_of(entries[idx]) in new_keys:
                 return ("new",)
-            if pos % 2:
-                return ("odd",)
+            st = meta.get(idx, {}).get("status")
+            if st == "✅ 存在":
+                return ("status_ok",)
+            if st == "…":
+                return ("status_loading",)
             return ()
 
         def scan_row(idx):
@@ -1987,7 +2311,9 @@ class MigrationGUI:
                 self._apply_mod_new_tags()
 
         def add_mods():
+            _initial = str(mods_dir) if (mods_dir is not None and mods_dir.exists()) else None
             files = filedialog.askopenfilenames(title="选择要添加的模组（可多选）",
+                                                initialdir=_initial,
                                                 filetypes=[("Minecraft 模组", "*.jar"), ("所有文件", "*.*")])
             if not files:
                 return
