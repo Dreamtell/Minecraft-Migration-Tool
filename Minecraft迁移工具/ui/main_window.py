@@ -36,6 +36,17 @@ def _grad_width(text):
     return int(tkfont.Font(family="微软雅黑", size=9, weight="bold").measure(text)) + 26
 
 
+def _center_window(win, w, h):
+    """把窗口在屏幕中央显示（w/h 为该窗口的目标尺寸）。"""
+    try:
+        win.update_idletasks()
+        x = max(0, (win.winfo_screenwidth() - w) // 2)
+        y = max(0, (win.winfo_screenheight() - h) // 2)
+        win.geometry(f"{w}x{h}+{x}+{y}")
+    except Exception:
+        pass
+
+
 class MigrationGUI:
     def __init__(self, root):
         self.root = root
@@ -119,12 +130,30 @@ class MigrationGUI:
             pass
         self._check_overflow()
 
+    # 日志分类文字色 -> 主题键
+    _LOG_COLOR_KEYS = {
+        "INFO": "log_info_fg",
+        "WARNING": "log_warning_fg",
+        "ERROR": "log_error_fg",
+        "SUCCESS": "log_success_fg",
+        "SIMULATE": "log_simulate_fg",
+    }
+    _LOG_TAGS = tuple(_LOG_COLOR_KEYS)
+
     def init_log_colors(self):
-        self.log_text.tag_config("INFO", foreground="gray")
-        self.log_text.tag_config("WARNING", foreground="orange")
-        self.log_text.tag_config("ERROR", foreground="red")
-        self.log_text.tag_config("SUCCESS", foreground="green")
-        self.log_text.tag_config("SIMULATE", foreground="blue")
+        """按当前主题设置日志分类颜色（INFO/警告/错误/成功/模拟）。"""
+        self._configure_log_colors(self.log_text)
+
+    def _configure_log_colors(self, widget):
+        """把日志分类色应用到指定控件的 tag 上（跟随主题，主日志与放大日志共用）。"""
+        default = {"INFO": "gray", "WARNING": "orange", "ERROR": "red",
+                   "SUCCESS": "green", "SIMULATE": "blue"}
+        for tag, key in self._LOG_COLOR_KEYS.items():
+            color = self.theme.get(key, default.get(tag, "gray"))
+            try:
+                widget.tag_config(tag, foreground=color)
+            except Exception:
+                pass
 
     def apply_theme(self):
         self.root.configure(bg=self.theme["bg"])
@@ -218,6 +247,17 @@ class MigrationGUI:
             except Exception:
                 pass
 
+        # 同步"放大查看"窗口的整体配色（背景/文字/输入框等，渐变按钮不受影响）
+        alive_big = []
+        for bww in getattr(self, '_big_view_windows', []):
+            try:
+                if bww.winfo_exists():
+                    apply_theme_to_widget_tree(bww, self.theme)
+                    alive_big.append(bww)
+            except Exception:
+                pass
+        self._big_view_windows = alive_big
+
         # 同步主 config 清单的存在性状态标签颜色（跟随主题切换）
         if hasattr(self, 'config_text'):
             try:
@@ -233,6 +273,21 @@ class MigrationGUI:
             except Exception:
                 pass
 
+        # 同步主模组清单的存在性闪烁标签颜色（跟随主题切换）
+        if hasattr(self, 'mod_text'):
+            try:
+                self.mod_text.tag_configure(
+                    "mod_ok", background=self.theme.get("success_bg", "#d4edda"),
+                    foreground=self.theme.get("success_fg", "#000000"))
+                self.mod_text.tag_configure(
+                    "mod_missing", background=self.theme.get("danger_bg", "#ffc7c7"),
+                    foreground=self.theme.get("danger_fg", "#8b0000"))
+                self.mod_text.tag_configure(
+                    "mod_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
+                    foreground=self.theme.get("warn_fg", "#000000"))
+            except Exception:
+                pass
+
         if hasattr(self, 'bottom_frame'):
             self.bottom_frame.configure(bg=self.theme["bottom_bg"])
         if hasattr(self, 'warning_frame'):
@@ -241,6 +296,10 @@ class MigrationGUI:
                                          fg=self.theme["warning_fg"])
         if hasattr(self, 'log_text'):
             self.log_text.configure(bg=self.theme["log_bg"], fg=self.theme["log_fg"])
+            try:
+                self._configure_log_colors(self.log_text)
+            except Exception:
+                pass
         if hasattr(self, 'source_status'):
             self.source_status.configure(bg=self.theme["bg"])
         if hasattr(self, 'target_status'):
@@ -248,6 +307,24 @@ class MigrationGUI:
         if hasattr(self, 'world_status'):
             self.world_status.configure(bg=self.theme["bg"])
         self._check_overflow()
+
+        # 同步"执行日志放大查看"窗口的配色与主题
+        try:
+            bv = getattr(self, '_log_big_view', None)
+            if bv is not None and bv.winfo_exists():
+                bv.configure(bg=self.theme["bg"])
+                tb = getattr(self, '_log_big_toolbar', None)
+                if tb is not None and tb.winfo_exists():
+                    tb.configure(bg=self.theme["bg"])
+                cl = getattr(self, '_log_big_count', None)
+                if cl is not None and cl.winfo_exists():
+                    cl.configure(bg=self.theme["bg"], fg=self.theme["muted_fg"])
+                bt = getattr(self, '_log_big_text', None)
+                if bt is not None and bt.winfo_exists():
+                    bt.configure(bg=self.theme["log_bg"], fg=self.theme["log_fg"])
+                    self._configure_log_colors(bt)
+        except Exception:
+            pass
 
     def toggle_theme(self):
         if self.current_theme == "light":
@@ -435,6 +512,11 @@ class MigrationGUI:
         self.validate_path(src, self.source_status, "源")
         self.validate_path(tgt, self.target_status, "目标")
         self._update_world_status()
+        # 源路径变化后重新按目录识别 config 文件夹条目（末尾加 "/"）
+        try:
+            self._mark_config_folders()
+        except Exception:
+            pass
         self.save_config()
 
     # ---------- 日志 ----------
@@ -461,6 +543,11 @@ class MigrationGUI:
             self.log_text.see(tk.END)
             self.log_text.configure(state="disabled")
             self.root.update_idletasks()
+            # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
+            try:
+                self.log_text.event_generate("<<LogChanged>>")
+            except Exception:
+                pass
 
         # 抑制连续完全相同的记录（避免"请勿频繁操作"等警告/重复信息刷屏）
         key = (level, message)
@@ -543,6 +630,125 @@ class MigrationGUI:
         except Exception as e:
             self.log(f"❌ 打开文件夹失败：{e}", level="ERROR")
             messagebox.showerror("错误", f"无法打开文件夹：{e}")
+
+    # 日志配色标签见类顶部 _LOG_COLOR_KEYS
+
+    def open_log_big_view(self):
+        """打开执行日志的放大查看窗口：只读、保留语义色，并实时跟随主日志更新。"""
+        # 避免重复打开多个放大窗口
+        existing = getattr(self, "_log_big_view", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        win = tk.Toplevel(self.root)
+        self._log_big_view = win
+        win.title("执行日志 - 放大查看")
+        win.geometry("1000x720")
+        win.minsize(660, 420)
+        win.transient(self.root)
+        win.configure(bg=self.theme["bg"])
+        set_window_icon(win)
+        _center_window(win, 1000, 720)
+
+        toolbar = tk.Frame(win, bg=self.theme["bg"])
+        toolbar.pack(fill="x", padx=8, pady=(8, 0))
+        self._log_big_toolbar = toolbar
+        count_lbl = tk.Label(toolbar, text="", bg=self.theme["bg"],
+                             fg=self.theme["muted_fg"], font=("微软雅黑", 9))
+        self._log_big_count = count_lbl
+        count_lbl.pack(side="left", padx=4)
+        btn_close = create_gradient_button(
+            toolbar, "❌ 关闭", win.destroy,
+            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            width=_grad_width("❌ 关闭"), height=28, font=("微软雅黑", 9, "bold"))
+        btn_close.pack(side="right", padx=4)
+        btn_refresh = create_gradient_button(
+            toolbar, "🔄 刷新",
+            lambda: state.__setitem__("last", None),
+            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            width=_grad_width("🔄 刷新"), height=28, font=("微软雅黑", 9, "bold"))
+        btn_refresh.pack(side="right", padx=4)
+
+        big = scrolledtext.ScrolledText(win, wrap=tk.WORD, state="disabled",
+                                        bg=self.theme["log_bg"], fg=self.theme["log_fg"],
+                                        font=("微软雅黑", 10))
+        big.pack(fill="both", expand=True, padx=8, pady=8)
+        self._log_big_text = big
+
+        # 使用与主日志一致的语义色（随主题）
+        self._configure_log_colors(big)
+
+        state = {"last": None, "bottom": True}
+
+        def sync():
+            try:
+                if not win.winfo_exists():
+                    return
+                content = self.log_text.get("1.0", tk.END)
+                if content != state["last"]:
+                    try:
+                        state["bottom"] = big.yview()[1] > 0.999
+                    except Exception:
+                        state["bottom"] = True
+                    big.configure(state=tk.NORMAL)
+                    big.delete("1.0", tk.END)
+                    big.insert("1.0", content)
+                    for tag in self._LOG_TAGS:
+                        ranges = self.log_text.tag_ranges(tag)
+                        # 个别 tk 版本 tag_ranges 会返回非迭代的 Tcl 对象，统一转成扁平串列表
+                        if not isinstance(ranges, (tuple, list)):
+                            ranges = self.log_text.tk.splitlist(ranges)
+                        for i in range(0, len(ranges), 2):
+                            big.tag_add(tag, ranges[i], ranges[i + 1])
+                    big.configure(state=tk.DISABLED)
+                    if state["bottom"]:
+                        big.see(tk.END)
+                    state["last"] = content
+                    count_lbl.config(text=f"{content.count(chr(10))} 行")
+            except tk.TclError:
+                return
+            except Exception:
+                pass
+
+        def on_log_changed(_evt=None):
+            sync()
+
+        def force_refresh():
+            state["last"] = None
+            sync()
+
+        # 事件驱动：主日志新增/清空时即时同步，无需轮询或手动刷新
+        # 先清理可能残留的旧绑定，避免重复打开时叠加
+        old_nid = getattr(self, '_log_big_notify_id', None)
+        if old_nid:
+            try:
+                self.log_text.unbind("<<LogChanged>>", old_nid)
+            except Exception:
+                pass
+        notify_id = self.log_text.bind("<<LogChanged>>", on_log_changed, add="+")
+        self._log_big_notify_id = notify_id
+
+        def on_close():
+            try:
+                self.log_text.unbind("<<LogChanged>>", notify_id)
+            except Exception:
+                pass
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+        btn_close.set_command(on_close)
+        btn_refresh.set_command(force_refresh)
+
+        sync()
 
     # ---------- 界面构建（由于太长，拆分为多个辅助方法） ----------
     def create_widgets(self):
@@ -649,6 +855,16 @@ class MigrationGUI:
         self._new_mod_keys = set()
         self.mod_text.tag_configure(
             "new", background=self.theme.get("warn_bg", "#ffeaa7"),
+            foreground=self.theme.get("warn_fg", "#000000"))
+        # 存在性检查的临时闪烁标签（存在=绿 / 缺失=红 / 重复=黄），1秒后自动恢复
+        self.mod_text.tag_configure(
+            "mod_ok", background=self.theme.get("success_bg", "#d4edda"),
+            foreground=self.theme.get("success_fg", "#000000"))
+        self.mod_text.tag_configure(
+            "mod_missing", background=self.theme.get("danger_bg", "#ffc7c7"),
+            foreground=self.theme.get("danger_fg", "#8b0000"))
+        self.mod_text.tag_configure(
+            "mod_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
             foreground=self.theme.get("warn_fg", "#000000"))
         # 支持从资源管理器拖拽 .jar 到清单
         try:
@@ -837,6 +1053,11 @@ class MigrationGUI:
 
         log_toolbar = tk.Frame(frame_log)
         log_toolbar.pack(fill="x", pady=(0, 5))
+        btn_big_log = create_gradient_button(
+            log_toolbar, "📂 放大查看", self.open_log_big_view,
+            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_big_log.pack(side="left", padx=5)
         btn_clear_log = create_gradient_button(
             log_toolbar, "🗑️ 清空日志", self.clear_log,
             colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
@@ -925,6 +1146,11 @@ class MigrationGUI:
             name_map[clean] = orig
             name_map[orig] = orig
 
+        def norm(e):
+            return e.replace("\\", "/").lower()
+
+        counts = Counter(norm(m) for m in modlist)
+
         missing = []
         found = []
         for item in modlist:
@@ -944,6 +1170,28 @@ class MigrationGUI:
                 self.log(f"  - {m}", level="ERROR")
             if len(missing) > 50:
                 self.log(f"  ... 还有 {len(missing) - 50} 个未显示", level="WARNING")
+
+        # 主界面临时闪烁高亮：存在=绿 / 缺失=红 / 重复=黄，1秒后自动恢复
+        self._clear_mod_status()
+        _flash_after = getattr(self, "_mod_flash_after", None)
+        if _flash_after:
+            try:
+                self.root.after_cancel(_flash_after)
+            except Exception:
+                pass
+        flash_lines = self.mod_text.get("1.0", tk.END).splitlines()
+        for i, ln in enumerate(flash_lines):
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            idx, end = f"{i + 1}.0", f"{i + 1}.end"
+            if not match_mod(s, source_files, name_map):
+                self.mod_text.tag_add("mod_missing", idx, end)
+            elif counts[norm(s)] > 1:
+                self.mod_text.tag_add("mod_duplicate", idx, end)
+            else:
+                self.mod_text.tag_add("mod_ok", idx, end)
+        self._mod_flash_after = self.root.after(1000, self._clear_mod_status)
 
     # ---------- 从变更日志导入 ----------
     def import_from_changelog(self):
@@ -1854,6 +2102,9 @@ class MigrationGUI:
         widget._custom_undo_kind = kind
 
         def _snapshot():
+            if getattr(widget, "_skip_snapshot", False):
+                widget.edit_modified(False)
+                return
             cur = widget.get("1.0", "end-1c")
             if cur != widget._last:
                 widget._undo_stack.append(widget._last)
@@ -1861,12 +2112,14 @@ class MigrationGUI:
                     widget._undo_stack.pop(0)
                 widget._last = cur
                 widget._redo_stack.clear()
-                # config 清单内容变化后，存在性高亮已失效，清除以免误读
-                if kind == "config":
-                    try:
+                # 内容变化后，存在性闪烁高亮已失效，清除以免误读
+                try:
+                    if kind == "config":
                         self._clear_config_status()
-                    except Exception:
-                        pass
+                    elif kind == "mod":
+                        self._clear_mod_status()
+                except Exception:
+                    pass
             widget.edit_modified(False)
 
         def _on_modified(event):
@@ -2004,7 +2257,7 @@ class MigrationGUI:
         src_config = Path(src) / "config"
         if not src_config.exists():
             return 0, ["源 config 目录不存在"]
-        lines = set(l for l in self.config_text.get("1.0", tk.END).splitlines() if l.strip())
+        lines = set(l.strip().rstrip("/") for l in self.config_text.get("1.0", tk.END).splitlines() if l.strip())
         added = 0
         failed = []
         for p in paths:
@@ -2018,12 +2271,15 @@ class MigrationGUI:
             if not _is_safe_path(rel_s):
                 failed.append(str(tp))
                 continue
-            if rel_s not in lines:
+            # 文件夹条目在末尾加 "/"（与文件区分）；去重按去掉末尾 "/" 归一化
+            if (src_config / rel_s).is_dir() and not rel_s.endswith("/"):
+                rel_s = rel_s.rstrip("/") + "/"
+            if rel_s.rstrip("/") not in lines:
                 self.config_text.configure(state=tk.NORMAL)
                 if self.config_text.get("1.0", tk.END).strip():
                     self.config_text.insert(tk.END, "\n")
                 self.config_text.insert(tk.END, rel_s + "\n")
-                lines.add(rel_s)
+                lines.add(rel_s.rstrip("/"))
                 added += 1
         self.save_config()
         self._update_text_states()
@@ -2104,6 +2360,76 @@ class MigrationGUI:
         raw = self.config_text.get("1.0", tk.END).splitlines()
         return [ln.strip() for ln in raw if ln.strip() and not ln.strip().startswith("#")]
 
+    def _mark_config_folders(self):
+        """按源 config 目录检测：文件夹条目在末尾加 "/"（便于与文件条目区分）。
+
+        幂等：已带 "/" 的行跳过；源路径未设置或 config 目录不存在时不处理。
+        只在内容加载、源路径变化、config 检查等安全时机调用（不做逐键实时改写，
+        避免与用户输入/撤销冲突）。
+        """
+        try:
+            src = self.source_path.get().strip()
+            if not src:
+                return
+            src_config = Path(src) / "config"
+            if not src_config.exists():
+                return
+        except Exception:
+            return
+
+        widget = self.config_text
+        try:
+            raw = widget.get("1.0", "end-1c")
+        except Exception:
+            return
+
+        new_lines = []
+        changed = False
+        for ln in raw.split("\n"):
+            s = ln.strip()
+            if s and not s.startswith("#") and not s.endswith("/"):
+                try:
+                    if (src_config / s).is_dir():
+                        new_lines.append(ln.rstrip() + "/")
+                        changed = True
+                        continue
+                except Exception:
+                    pass
+            new_lines.append(ln)
+
+        if not changed:
+            return
+
+        new_content = "\n".join(new_lines) + "\n"
+        try:
+            widget._skip_snapshot = True
+            widget.configure(state=tk.NORMAL)
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", new_content)
+            widget._last = widget.get("1.0", "end-1c")
+            widget.edit_modified(False)
+        except Exception:
+            pass
+        finally:
+            widget._skip_snapshot = False
+
+        # 恢复清单的读写状态（避免在编辑模式关闭时误保持为可编辑）
+        self._update_text_states()
+
+        # 内容已变化，旧的存在性高亮失效
+        self._clear_config_status()
+        self.save_config()
+        self._notify_config_change()
+
+    def _clear_mod_status(self):
+        """移除主模组清单上所有存在性闪烁高亮标签。"""
+        try:
+            self.mod_text.tag_remove("mod_ok", "1.0", tk.END)
+            self.mod_text.tag_remove("mod_missing", "1.0", tk.END)
+            self.mod_text.tag_remove("mod_duplicate", "1.0", tk.END)
+        except Exception:
+            pass
+
     def _clear_config_status(self):
         """移除 config 清单上所有存在性高亮标签。"""
         try:
@@ -2135,6 +2461,9 @@ class MigrationGUI:
             self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
             return
 
+        # 先按源目录把文件夹条目补上末尾 "/"（便于区分，且与高亮/重复判定一致）
+        self._mark_config_folders()
+
         entries = self._parse_config_lines()
         if not entries:
             self.root.bell()
@@ -2143,7 +2472,7 @@ class MigrationGUI:
             return
 
         def norm(e):
-            return e.replace("\\", "/").lower()
+            return e.replace("\\", "/").lower().rstrip("/")
 
         counts = Counter(norm(e) for e in entries)
 
@@ -2184,6 +2513,15 @@ class MigrationGUI:
         elif not duplicate:
             self.log("✅ 所有 config 条目均存在且无重复。", level="SUCCESS")
 
+        # 主界面临时闪烁高亮：1秒后自动恢复（清除颜色，回到普通文本）
+        _flash_after = getattr(self, "_config_flash_after", None)
+        if _flash_after:
+            try:
+                self.root.after_cancel(_flash_after)
+            except Exception:
+                pass
+        self._config_flash_after = self.root.after(1000, self._clear_config_status)
+
     def open_big_view(self, source_text, title):
         """大窗口查看：可多选（勾选）+ 可排序的列表，并支持搜索、存在性检测、添加/删除、拖拽。"""
         is_mod = "模组" in title or source_text is getattr(self, 'mod_text', None)
@@ -2195,6 +2533,11 @@ class MigrationGUI:
         win.transient(self.root)
         win.configure(bg=self.theme["bg"])
         set_window_icon(win)
+        _center_window(win, 1060, 680)
+        # 登记窗口，主题切换时统一重新配色（背景/文字/输入框等）
+        if not hasattr(self, '_big_view_windows'):
+            self._big_view_windows = []
+        self._big_view_windows.append(win)
 
         if is_mod:
             columns = ("chk", "status", "name", "path", "type", "modid", "version", "size")

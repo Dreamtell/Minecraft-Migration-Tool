@@ -46,7 +46,11 @@ LIGHT_THEME = {
     "hover_bg": "#e9eef5", "hover_fg": "#000000",
     "hover_checked_bg": "#cde8cd", "hover_checked_fg": "#000000",
     "hover_missing_bg": "#ffd9d9", "hover_missing_fg": "#8b0000",
-    "hover_new_bg": "#fff2c4", "hover_new_fg": "#000000"
+    "hover_new_bg": "#fff2c4", "hover_new_fg": "#000000",
+    # 日志分类色（执行日志/日志放大查看，跟随主题）
+    "log_info_fg": "#808080", "log_warning_fg": "#e65100",
+    "log_error_fg": "#c62828", "log_success_fg": "#2e7d32",
+    "log_simulate_fg": "#1565c0"
 }
 
 DARK_THEME = {
@@ -93,7 +97,11 @@ DARK_THEME = {
     "hover_bg": "#3a3e44", "hover_fg": "#ffffff",
     "hover_checked_bg": "#3a5a3a", "hover_checked_fg": "#ffffff",
     "hover_missing_bg": "#5a3a3a", "hover_missing_fg": "#ffb3b3",
-    "hover_new_bg": "#5a4a3a", "hover_new_fg": "#ffffff"
+    "hover_new_bg": "#5a4a3a", "hover_new_fg": "#ffffff",
+    # 日志分类色（执行日志/日志放大查看，跟随主题，深色用更亮的前景色）
+    "log_info_fg": "#9e9e9e", "log_warning_fg": "#ffb74d",
+    "log_error_fg": "#ff6b6b", "log_success_fg": "#7ee787",
+    "log_simulate_fg": "#64b5f6"
 }
 
 
