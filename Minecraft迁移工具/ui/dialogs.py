@@ -249,8 +249,18 @@ def update_mod_detail_theme(win, theme):
 def show_mod_detail(parent, jar_path, theme):
     """显示模组详细信息窗口（独立函数），带联网搜索模组/download链接功能。"""
     info = get_full_mod_metadata(jar_path)
+    # 单实例：同一模组的详情窗口已打开则聚焦，避免双击连点重复弹窗
+    win_title = f"模组详情 - {os.path.basename(jar_path)}"
+    for w in getattr(parent, '_mod_detail_windows', []):
+        try:
+            if w.winfo_exists() and w.title() == win_title:
+                w.lift()
+                w.focus_force()
+                return
+        except Exception:
+            pass
     win = tk.Toplevel(parent)
-    win.title(f"模组详情 - {os.path.basename(jar_path)}")
+    win.title(win_title)
     win.minsize(700, 540)
     win.transient(parent)
     win.withdraw()  # 先隐藏，等构建完再居中显示，避免"闪现-居中"闪动
@@ -388,6 +398,17 @@ def show_mod_detail(parent, jar_path, theme):
         status_lbl._last_fg = color
         status_lbl.config(text=msg, fg=color)
 
+    def _set_search_btn(running):
+        """联网搜索中：按钮变灰禁用并显示状态提示；完成后恢复原样。"""
+        if running:
+            search_btn.set_text("联网搜索中…")
+            search_btn.set_gradient("#9e9e9e", "#bdbdbd")
+            search_btn.state(tk.DISABLED)
+        else:
+            search_btn.set_text("🔍 联网搜索")
+            search_btn.set_gradient(*search_btn._base_colors, *search_btn._base_hover)
+            search_btn.state(tk.NORMAL)
+
     def selected():
         # 用自己维护的当前选中行，避免 ttk 灰色选中态盖掉颜色
         iid = current_sel[0]
@@ -444,7 +465,7 @@ def show_mod_detail(parent, jar_path, theme):
 
     def show_results(results):
         search_state["running"] = False
-        search_btn.state(tk.NORMAL)
+        _set_search_btn(False)
         for iid in tree.get_children():
             tree.delete(iid)
         result_items.clear()
@@ -513,7 +534,7 @@ def show_mod_detail(parent, jar_path, theme):
 
     def show_error(msg):
         search_state["running"] = False
-        search_btn.state(tk.NORMAL)
+        _set_search_btn(False)
         set_status(f"❌ {msg}", fail)
 
     def poll_queue():
@@ -541,8 +562,7 @@ def show_mod_detail(parent, jar_path, theme):
         if search_state["running"]:
             return
         search_state["running"] = True
-        search_btn.state(tk.DISABLED)
-        set_status("联网搜索中…", ok)
+        _set_search_btn(True)
 
         def worker():
             try:

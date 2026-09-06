@@ -26,7 +26,7 @@ from core.migrator import (
     match_mod
 )
 from core.scanner import scan_mod_differences, get_full_mod_metadata
-from ui.dialogs import ProgressWindow, ScanProgressWindow
+from ui.dialogs import ProgressWindow, ScanProgressWindow, show_mod_detail, update_mod_detail_theme
 from ui.diff_window import show_diff_window
 from ui.diff_window import show_diff_window, update_diff_theme
 
@@ -254,6 +254,10 @@ class MigrationGUI:
                 if bww.winfo_exists():
                     apply_theme_to_widget_tree(bww, self.theme)
                     alive_big.append(bww)
+                    # 顺带同步该放大查看窗口打开的模组详情窗口
+                    for detail_win in getattr(bww, '_mod_detail_windows', []):
+                        if detail_win.winfo_exists():
+                            update_mod_detail_theme(detail_win, self.theme)
             except Exception:
                 pass
         self._big_view_windows = alive_big
@@ -894,12 +898,12 @@ class MigrationGUI:
         def gw(text):
             return int(tkfont.Font(family="微软雅黑", size=9, weight="bold").measure(text)) + 26
 
-        btn_changelog = create_gradient_button(
+        self.btn_changelog = create_gradient_button(
             btn_frame, "📥 从变更日志导入（含Updated）", self.import_from_changelog,
             colors=("#00acc1", "#26c6da"), hover_colors=("#26c6da", "#00acc1"),
             width=gw("📥 从变更日志导入（含Updated）"), height=30, font=("微软雅黑", 9, "bold"))
-        btn_changelog.pack(side="left", padx=5)
-        self.create_tooltip(btn_changelog, "你需要提供的是“崩溃助手”模组给予的mod变更列表")
+        self.btn_changelog.pack(side="left", padx=5)
+        self.create_tooltip(self.btn_changelog, "你需要提供的是“崩溃助手”模组给予的mod变更列表")
 
         self.scan_btn = create_gradient_button(
             btn_frame, "🔍 扫描模组差异", self.action_scan_mod_diff,
@@ -1195,7 +1199,18 @@ class MigrationGUI:
 
     # ---------- 从变更日志导入 ----------
     def import_from_changelog(self):
+        # 单实例：变更日志对话框已打开则聚焦，避免重复弹窗
+        existing = getattr(self, "_changelog_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
         dialog = tk.Toplevel(self.root)
+        self._changelog_dialog = dialog
         dialog.title("从变更日志提取模组清单")
         dialog.geometry("800x600")
         set_window_icon(dialog)
@@ -1528,7 +1543,17 @@ class MigrationGUI:
             messagebox.showinfo("提示", "当前目标实例没有迁移记录。")
             return
 
+        existing = getattr(self, "_history_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
         hist_win = tk.Toplevel(self.root)
+        self._history_win = hist_win
         hist_win.title("迁移历史记录")
         hist_win.geometry("900x500")
         hist_win.transient(self.root)
@@ -1793,10 +1818,17 @@ class MigrationGUI:
 
     # ---------- 迁移 ----------
     def _refresh_busy_state(self):
-        """迁移/扫描进行中时禁用"开始迁移/回滚/扫描"按钮，防止重复触发。"""
+        """迁移/扫描进行中时禁用主界面所有操作/内容变更类按钮，防止连点或误操作。"""
         busy = self._migration_running or self._scanning
         state = "disabled" if busy else "normal"
-        for btn in (self.start_btn, self.rollback_btn, self.scan_btn):
+        btns = (
+            self.start_btn, self.rollback_btn, self.scan_btn,
+            self.btn_changelog, self.mod_magnify_btn, self.add_mods_btn,
+            self.clear_mods_btn, self.check_mods_btn, self.config_magnify_btn,
+            self.add_config_dir_btn, self.add_config_file_btn, self.clear_config_btn,
+            self.config_check_btn,
+        )
+        for btn in btns:
             try:
                 btn.state(state)
             except Exception:
@@ -2525,9 +2557,19 @@ class MigrationGUI:
     def open_big_view(self, source_text, title):
         """大窗口查看：可多选（勾选）+ 可排序的列表，并支持搜索、存在性检测、添加/删除、拖拽。"""
         is_mod = "模组" in title or source_text is getattr(self, 'mod_text', None)
+        # 单实例：同标题的放大查看窗口已打开则聚焦，避免连点重复弹窗
+        win_title = f"大窗口查看 - {title}"
+        for w in getattr(self, '_big_view_windows', []):
+            try:
+                if w.winfo_exists() and w.title() == win_title:
+                    w.lift()
+                    w.focus_force()
+                    return
+            except Exception:
+                pass
         win = tk.Toplevel(self.root)
         win.withdraw()
-        win.title(f"大窗口查看 - {title}")
+        win.title(win_title)
         win.geometry("1060x680")
         win.minsize(820, 520)
         win.transient(self.root)
@@ -2599,7 +2641,7 @@ class MigrationGUI:
                     pass
             _hover_iid["id"] = None
 
-        def _hide_cell_tip():
+        def _hide_cell_tip(clear_key=False):
             tip = _cell_tip.get("win")
             if tip is not None:
                 try:
@@ -2607,10 +2649,14 @@ class MigrationGUI:
                 except Exception:
                     pass
             _cell_tip["win"] = None
+            if clear_key:
+                _hover_cell["key"] = None
 
         def _show_cell_tip(text, x, y):
             """在光标旁弹出悬浮提示，显示单元格完整文本（路径等内容常被截断）。"""
             _hide_cell_tip()
+            if not win.winfo_exists():
+                return
             tip = tk.Toplevel(win)
             tip.wm_overrideredirect(True)
             tip.wm_geometry(f"+{x + 12}+{y + 12}")
@@ -2627,7 +2673,7 @@ class MigrationGUI:
             _cell_tip["win"] = tip
 
         def _update_cell_tip(event):
-            """悬停在单元格上：若文字可能被截断（较长）或为路径列，弹出完整文本提示。"""
+            """悬停单元格：若文字可能被截断（较长）或为路径列，弹出完整文本提示。"""
             try:
                 row = tree.identify_row(event.y)
                 col = tree.identify_column(event.x)
@@ -2650,6 +2696,7 @@ class MigrationGUI:
                 pass
 
         def _on_motion(event):
+            # 即时跟手：行变了立刻改高亮，离开立即恢复，不加任何延迟
             row = tree.identify_row(event.y)
             if row != _hover_iid.get("id"):
                 _clear_hover()
@@ -2669,13 +2716,17 @@ class MigrationGUI:
 
         def _on_leave(event):
             _clear_hover()
-            _hide_cell_tip()
-            _hover_cell["key"] = None
+            _hide_cell_tip(clear_key=True)
+
+        def _reset_hover_state():
+            """排序/刷新/清理时清空悬停状态，避免残留高亮。"""
+            _hover_iid["id"] = None
+            _hide_cell_tip(clear_key=True)
 
         tree.bind("<Motion>", _on_motion)
         tree.bind("<Leave>", _on_leave)
         # 滚动时隐藏悬浮提示，避免提示停留在已移走行上造成误导
-        tree.bind("<MouseWheel>", lambda e: _hide_cell_tip(), add="+")
+        tree.bind("<MouseWheel>", lambda e: _hide_cell_tip(clear_key=True), add="+")
         vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(win, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -2833,6 +2884,7 @@ class MigrationGUI:
         def rebuild(rescan=True):
             if not win.winfo_exists():
                 return
+            _reset_hover_state()
             tree.delete(*tree.get_children())
             order[:] = compute_order()
             order_index.clear()
@@ -2863,7 +2915,34 @@ class MigrationGUI:
             else:
                 self._clear_config_status()
 
+        big_scanning = {"flag": False}
+
+        def _set_busy_btns(busy):
+            """扫描/处理进行中禁用并变灰相关按钮，防止连点；完成后恢复。"""
+            for btn, busy_text, normal_text in (
+                (detect_btn, "检测中…", "🔍 检测存在性"),
+                (del_btn, None, None),
+                (add_btn if is_mod else None, None, None),
+            ):
+                if btn is None:
+                    continue
+                try:
+                    if busy:
+                        if busy_text:
+                            btn.set_text(busy_text)
+                        btn.set_gradient("#9e9e9e", "#bdbdbd")
+                        btn.state("disabled")
+                    else:
+                        if normal_text:
+                            btn.set_text(normal_text)
+                        btn.set_gradient(*btn._base_colors, *btn._base_hover)
+                        btn.state("normal")
+                except Exception:
+                    pass
+
         def add_mods():
+            if big_scanning["flag"]:
+                return
             _initial = str(mods_dir) if (mods_dir is not None and mods_dir.exists()) else None
             files = filedialog.askopenfilenames(title="选择要添加的模组（可多选）",
                                                 initialdir=_initial,
@@ -2882,6 +2961,8 @@ class MigrationGUI:
             messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
         def del_selected():
+            if big_scanning["flag"]:
+                return
             to_del = {i for i, e in enumerate(entries) if checked.get(key_of(e))}
             if not to_del:
                 messagebox.showinfo("提示", "请先勾选要删除的模组。")
@@ -2893,6 +2974,8 @@ class MigrationGUI:
             write_back()
 
         def on_tree_drop(event):
+            if big_scanning["flag"]:
+                return
             try:
                 files = self.root.tk.splitlist(event.data)
             except Exception:
@@ -2908,10 +2991,7 @@ class MigrationGUI:
             write_back()
             messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
-        def toggle_check(event):
-            row_id = tree.identify_row(event.y)
-            if not row_id:
-                return
+        def toggle_row(row_id):
             pos = int(row_id)
             k = key_of(entries[order[pos]])
             checked[k] = not checked.get(k, False)
@@ -2922,6 +3002,46 @@ class MigrationGUI:
                 tree.item(row_id, tags=row_tags(pos, idx))
             except Exception:
                 pass
+
+        def toggle_check(event):
+            # 普通单击（config 清单用）：切换勾选
+            row_id = tree.identify_row(event.y)
+            if row_id:
+                toggle_row(row_id)
+
+        def open_mod_detail(row_id):
+            """打开指定行对应模组的详情窗口（含 Modrinth 联网搜索）。"""
+            try:
+                pos = int(row_id)
+                idx = order[pos]
+                r = resolve(entries[idx])
+                path = (r.get("path") if r else None) or meta.get(idx, {}).get("path")
+                if path and os.path.exists(path):
+                    show_mod_detail(win, path, self.theme)
+                else:
+                    messagebox.showinfo("提示", "该行没有可查看的模组文件。", parent=win)
+            except Exception:
+                pass
+
+        _DOUBLE_CLICK_SEC = 0.25  # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击
+        _last_click = {"t": 0.0, "row": None}
+
+        def on_row_click(event):
+            """模组清单：单击切换勾选；快速双击同一行 -> 打开模组详情。"""
+            row_id = tree.identify_row(event.y)
+            if not row_id:
+                return
+            now = time.time()
+            if (now - _last_click["t"]) <= _DOUBLE_CLICK_SEC and row_id == _last_click["row"]:
+                # 快速双击：撤销第一次点击造成的勾选切换（双击不应改变勾选状态）
+                toggle_row(row_id)
+                _last_click["t"] = 0.0
+                _last_click["row"] = None
+                open_mod_detail(row_id)
+                return
+            _last_click["t"] = now
+            _last_click["row"] = row_id
+            toggle_row(row_id)
 
         def sort_by(col):
             if sort_state["col"] == col:
@@ -2948,6 +3068,14 @@ class MigrationGUI:
                 pass
             except Exception:
                 pass
+            # 扫描完成后恢复按钮（防止连点重复触发全量扫描）
+            if big_scanning["flag"]:
+                try:
+                    if scan_queue.unfinished_tasks == 0:
+                        big_scanning["flag"] = False
+                        _set_busy_btns(False)
+                except Exception:
+                    pass
             try:
                 if win.winfo_exists():
                     win.after(120, poll)
@@ -2956,6 +3084,10 @@ class MigrationGUI:
 
         def detect():
             """强制重新检测存在性，并给出结果提示。"""
+            if big_scanning["flag"]:
+                return
+            big_scanning["flag"] = True
+            _set_busy_btns(True)
             try:
                 missing = sum(1 for i, e in enumerate(entries) if resolve(e) is None)
             except Exception:
@@ -3015,7 +3147,11 @@ class MigrationGUI:
                 tree.dnd_bind('<<Drop>>', on_tree_drop)
             except Exception:
                 pass
-        tree.bind("<ButtonRelease-1>", toggle_check)
+        # 单击切换勾选；模组清单支持快速双击打开模组详情
+        if is_mod:
+            tree.bind("<ButtonRelease-1>", on_row_click)
+        else:
+            tree.bind("<ButtonRelease-1>", toggle_check)
         btn_close_big = create_gradient_button(
             top, "关闭", win.destroy,
             colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
