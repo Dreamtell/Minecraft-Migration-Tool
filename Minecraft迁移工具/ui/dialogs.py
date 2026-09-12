@@ -7,7 +7,7 @@ import difflib
 import threading
 import queue
 import webbrowser
-from utils.helpers import set_window_icon, create_gradient_button
+from utils.helpers import set_window_icon, create_gradient_button, focus_window
 from core.scanner import get_full_mod_metadata
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
@@ -99,6 +99,7 @@ class ProgressWindow:
         self.win.geometry(f"+{x}+{y}")
 
         self.win.deiconify()
+        focus_window(self.win)
 
     def on_cancel(self):
         self.cancelled = True
@@ -171,6 +172,7 @@ class ScanProgressWindow:
         self.win.update_idletasks()
         self.win.tk.eval('tk::PlaceWindow %s center' % self.win.winfo_pathname(self.win.winfo_id()))
         self.win.deiconify()
+        focus_window(self.win)
 
     def update_progress(self, current, filename):
         self.file_label.config(text=f"正在解析: {filename}")
@@ -643,6 +645,7 @@ def show_mod_detail(parent, jar_path, theme):
         y = max(0, (win.winfo_screenheight() // 2) - (h // 2))
         win.geometry(f"{w}x{h}+{x}+{y}")
         win.deiconify()
+        focus_window(win)
     except Exception:
         pass
 

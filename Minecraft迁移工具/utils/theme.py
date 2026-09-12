@@ -132,6 +132,19 @@ def apply_theme_to_widget_tree(widget, theme):
             widget.configure(bg=theme["bg"])
         elif isinstance(widget, tk.Listbox):
             widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"])
+        elif isinstance(widget, tk.Checkbutton):
+            # 勾选框默认是系统的浅灰底，不跟随主题会非常突兀
+            widget.configure(bg=theme["bg"], fg=theme["fg"],
+                             activebackground=theme["bg"],
+                             activeforeground=theme["fg"],
+                             selectcolor=theme.get("entry_bg", theme["bg"]),
+                             highlightthickness=0)
+        elif isinstance(widget, tk.Radiobutton):
+            widget.configure(bg=theme["bg"], fg=theme["fg"],
+                             activebackground=theme["bg"],
+                             activeforeground=theme["fg"],
+                             selectcolor=theme.get("entry_bg", theme["bg"]),
+                             highlightthickness=0)
     except Exception:
         pass
     for child in widget.winfo_children():

@@ -16,7 +16,7 @@ from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
-                           circular_reveal)
+                           circular_reveal, focus_window)
 from core.migrator import (
     run_migration,
     do_backup,
@@ -352,6 +352,23 @@ class MigrationGUI:
             self.target_status.configure(bg=self.theme["bg"])
         if hasattr(self, 'world_status'):
             self.world_status.configure(bg=self.theme["bg"])
+        if hasattr(self, 'migrate_arrow'):
+            self.migrate_arrow.configure(bg=self.theme["bg"], fg=self.theme["ok_fg"])
+        # 这些区域用的是专用配色，通用刷新会把它们刷成普通背景，这里逐个补回来
+        if hasattr(self, 'opt_frame'):
+            self.opt_frame.configure(bg=self.theme["bg"])
+        if hasattr(self, 'edit_toolbar'):
+            try:
+                self.edit_toolbar.configure(bg=self.theme["bg"])
+                self.edit_mode_cb.configure(
+                    bg=self.theme["edit_bg"], fg=self.theme["fg"],
+                    activebackground=self.theme["edit_bg"],
+                    activeforeground=self.theme["fg"],
+                    selectcolor=self.theme["edit_bg"])
+                self.edit_warn_label.configure(bg=self.theme["bg"],
+                                               fg=self.theme["fail_fg"])
+            except Exception:
+                pass
         self._check_overflow()
 
         # 同步"执行日志放大查看"窗口的配色与主题
@@ -839,6 +856,7 @@ class MigrationGUI:
         # 全部构建完成后才居中显示：此刻窗口仍是隐藏的，所以不会出现瞬移
         _center_window(win, 1000, 720)
         win.deiconify()
+        focus_window(win)
 
     # ---------- 界面构建（由于太长，拆分为多个辅助方法） ----------
     def create_widgets(self):
@@ -858,15 +876,6 @@ class MigrationGUI:
                                       text="⚠️ 本工具完全免费，请勿上当受骗！如遇收费行为，请立即举报。⚠️",
                                       font=("微软雅黑", 10, "bold"))
         self.warning_label.pack(pady=5)
-
-        # 信息提示
-        info_frame = tk.Frame(self.root)
-        info_frame.pack(fill="x", padx=10, pady=5)
-        tk.Label(info_frame,
-                 text="【重要】请选择实例根目录（例如 D:\\.minecraft\\versions\\游戏名），该目录下应直接包含 mods、saves、options.txt 等",
-                 fg=self.theme["fg"], wraplength=950).pack()
-        tk.Label(info_frame, text="👉 迁移方向：从“旧版”复制到“新版”（旧版模组 → 新版模组，保留你的自定义配置）",
-                 fg=self.theme["ok_fg"], wraplength=950).pack(pady=(0, 5))
 
         # ---- 路径选择 ----
         self._create_path_widgets()
@@ -908,6 +917,14 @@ class MigrationGUI:
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"])
         self.source_status.pack(side="left", padx=10)
+
+        # 迁移方向箭头：夹在源与目标之间，直观表示数据从「旧版」流向「新版」
+        arrow_row = tk.Frame(self.root)
+        arrow_row.pack(fill="x", padx=10)
+        self.migrate_arrow = tk.Label(
+            arrow_row, text="⬇", font=("微软雅黑", 20, "bold"),
+            fg=self.theme["ok_fg"], bg=self.theme["bg"])
+        self.migrate_arrow.pack()
 
         # 目标目录
         frame_target = tk.LabelFrame(self.root, text="📥 新版整合包（迁移目的地）", padx=5, pady=5)
@@ -964,18 +981,25 @@ class MigrationGUI:
         except Exception:
             pass
 
-        edit_toolbar = tk.Frame(frame_modlist, bg=self.theme["edit_bg"],
-                                relief=tk.RAISED, bd=2)
-        edit_toolbar.pack(fill="x", padx=5, pady=2)
-        cb = tk.Checkbutton(edit_toolbar, text="🔓 启用主界面编辑（直接修改清单）",
-                            variable=self.edit_mode,
-                            command=self.toggle_edit_mode, bg=self.theme["edit_bg"],
-                            font=("微软雅黑", 10, "bold"))
-        cb.pack(side="left", padx=5)
-        warn_label = tk.Label(edit_toolbar, text="⚠️ 编辑模式可能造成数据损坏，请谨慎操作！",
-                              fg=self.theme["fail_fg"],
-                              bg=self.theme["edit_bg"], font=("微软雅黑", 9))
-        warn_label.pack(side="left", padx=10)
+        # 橙色（edit_bg）只用在勾选框那一小块，整栏和后面的警告文字都用普通背景——
+        # 这样既能突出"编辑模式"，又不会整条都在喊。
+        self.edit_toolbar = tk.Frame(frame_modlist, bg=self.theme["bg"],
+                                     relief=tk.RAISED, bd=2)
+        self.edit_toolbar.pack(fill="x", padx=5, pady=2)
+        self.edit_mode_cb = tk.Checkbutton(
+            self.edit_toolbar, text="🔓 启用主界面编辑（直接修改清单）",
+            variable=self.edit_mode, command=self.toggle_edit_mode,
+            bg=self.theme["edit_bg"], fg=self.theme["fg"],
+            activebackground=self.theme["edit_bg"],
+            activeforeground=self.theme["fg"],
+            selectcolor=self.theme["edit_bg"],
+            highlightthickness=0, font=("微软雅黑", 10, "bold"))
+        self.edit_mode_cb.pack(side="left", padx=5)
+        self.edit_warn_label = tk.Label(
+            self.edit_toolbar, text="⚠️ 编辑模式可能造成数据损坏，请谨慎操作！",
+            fg=self.theme["fail_fg"], bg=self.theme["bg"],
+            font=("微软雅黑", 9))
+        self.edit_warn_label.pack(side="left", padx=10)
 
         btn_frame = tk.Frame(frame_modlist)
         btn_frame.pack(fill="x", pady=5)
@@ -1088,17 +1112,25 @@ class MigrationGUI:
         self._create_check_legend(btn_config_frame)
 
     def _create_bottom_widgets(self):
-        opt_frame = tk.Frame(self.root)
-        opt_frame.pack(fill="x", padx=10, pady=5)
-        self.dry_run_cb = tk.Checkbutton(opt_frame, text="模拟运行（仅显示操作）",
-                                         variable=self.dry_run, command=self.save_config)
+        self.opt_frame = tk.Frame(self.root, bg=self.theme["bg"])
+        self.opt_frame.pack(fill="x", padx=10, pady=5)
+        # 勾选框要显式上色：默认的系统浅灰和深色主题摆一起非常违和
+        cb_style = dict(bg=self.theme["bg"], fg=self.theme["fg"],
+                        activebackground=self.theme["bg"],
+                        activeforeground=self.theme["fg"],
+                        selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
+                        highlightthickness=0, bd=0)
+        self.dry_run_cb = tk.Checkbutton(self.opt_frame, text="模拟运行（仅显示操作）",
+                                         variable=self.dry_run, command=self.save_config,
+                                         **cb_style)
         self.dry_run_cb.pack(side="left")
-        self.overwrite_cb = tk.Checkbutton(opt_frame, text="覆盖已存在的模组",
-                                           variable=self.overwrite_mods, command=self.save_config)
+        self.overwrite_cb = tk.Checkbutton(self.opt_frame, text="覆盖已存在的模组",
+                                           variable=self.overwrite_mods,
+                                           command=self.save_config, **cb_style)
         self.overwrite_cb.pack(side="left", padx=20)
 
         # 右侧按钮组
-        btn_group = tk.Frame(opt_frame, bg=self.theme["bg"])
+        btn_group = tk.Frame(self.opt_frame, bg=self.theme["bg"])
         btn_group.pack(side="right")
 
         self.start_btn = create_gradient_button(
@@ -1158,7 +1190,8 @@ class MigrationGUI:
             colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
             width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
-        self.log_text = scrolledtext.ScrolledText(frame_log, height=15, wrap=tk.WORD,
+        # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
+        self.log_text = scrolledtext.ScrolledText(frame_log, height=22, wrap=tk.WORD,
                                                   state="disabled")
         self.log_text.pack(fill="both", expand=True)
 
@@ -1358,6 +1391,7 @@ class MigrationGUI:
         apply_theme_to_widget_tree(dialog, self.theme)
         _center_window(dialog, 800, 600)
         dialog.deiconify()
+        focus_window(dialog)
 
     def extract_mods_from_changelog(self, text):
         lines = text.splitlines()
@@ -1615,6 +1649,7 @@ class MigrationGUI:
         update_count()
         _center_window(dlg, 780, 640)
         dlg.deiconify()
+        focus_window(dlg)
         dlg.wait_window()
         return captured.get("value")
 
@@ -1748,6 +1783,7 @@ class MigrationGUI:
         apply_theme_to_widget_tree(hist_win, self.theme)
         _center_window(hist_win, 900, 500)
         hist_win.deiconify()
+        focus_window(hist_win)
 
     # ---------- 回滚 ----------
     def action_rollback(self):
@@ -2296,9 +2332,27 @@ class MigrationGUI:
                     pass
 
         def _set_content(text):
+            # 先记住滚动位置和光标：delete+insert 会把两者都甩回开头，
+            # 撤销后视图突然"置顶"就是这么来的。
+            try:
+                first = widget.yview()[0]
+            except Exception:
+                first = 0.0
+            try:
+                caret = widget.index(tk.INSERT)
+            except Exception:
+                caret = "1.0"
             widget.configure(state=tk.NORMAL)
             widget.delete("1.0", tk.END)
             widget.insert("1.0", text)
+            try:
+                widget.mark_set(tk.INSERT, caret)
+            except Exception:
+                pass
+            try:
+                widget.yview_moveto(first)
+            except Exception:
+                pass
             widget._last = text
             widget.edit_modified(False)
 
@@ -3022,11 +3076,21 @@ class MigrationGUI:
 
         def write_back():
             content = "\n".join(entries)
+            # 主清单是整体重写的：先记住滚动位置，写完再恢复，
+            # 否则关闭放大查看后会发现主界面清单自己跳回了顶部。
+            try:
+                first = source_text.yview()[0]
+            except Exception:
+                first = 0.0
             source_text.configure(state=tk.NORMAL)
             source_text.edit_separator()
             source_text.delete("1.0", tk.END)
             source_text.insert("1.0", content + ("\n" if content else ""))
             source_text.edit_separator()
+            try:
+                source_text.yview_moveto(first)
+            except Exception:
+                pass
             self._update_text_states()
             self.save_config()
             # 主模组清单被重写后，重新应用"新添加"黄色高亮
@@ -3319,9 +3383,11 @@ class MigrationGUI:
             win.attributes("-alpha", 0.0)
             win.deiconify()
             win.update()
+            focus_window(win)
             _fade_in(win)
         except Exception:
             win.deiconify()
+            focus_window(win)
 
     def _update_text_states(self):
         state = tk.NORMAL if self.edit_mode.get() else tk.DISABLED

@@ -262,6 +262,21 @@ def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=
         return None
 
 
+def focus_window(win):
+    """把焦点交给刚弹出的窗口，并把它提到最前。
+
+    必须在 deiconify() 之后调用 —— 窗口还隐藏时抢焦点是无效的。
+    """
+    try:
+        win.lift()
+    except Exception:
+        pass
+    try:
+        win.focus_force()
+    except Exception:
+        pass
+
+
 def get_icon_path():
     """获取图标文件路径（支持开发环境和打包环境）"""
     import sys
