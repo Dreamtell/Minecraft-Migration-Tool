@@ -318,10 +318,10 @@ def show_mod_detail(parent, jar_path, theme):
     tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=7,
                         style="Detail.Treeview")
     tree.configure(selectmode="none")  # 用自定义绿色选中标签，避免 ttk 灰色选中盖掉颜色
-    for col, txt, wd, anc in (("name", "名称", 230, "w"), ("author", "作者", 105, "w"),
-                              ("downloads", "下载量", 80, "e"), ("version", "最新版本", 150,
-                                                                 "w"),
-                              ("slug", "项目ID", 110, "w")):
+    for col, txt, wd, anc in (("name", "📄 名称", 230, "w"), ("author", "👤 作者", 105, "w"),
+                              ("downloads", "⬇️ 下载量", 80, "e"),
+                              ("version", "🔖 最新版本", 150, "w"),
+                              ("slug", "🆔 项目ID", 110, "w")):
         tree.heading(col, text=txt)
         tree.column(col, width=wd, anchor=anc)
     tree.tag_configure("match", background=theme.get("highlight_bg", "#cce5ff"),

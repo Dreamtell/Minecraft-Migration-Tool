@@ -59,7 +59,7 @@
 2. 安装依赖：
 
    ```bash
-   pip install tendo winotify tkinterdnd2
+   pip install tendo winotify tkinterdnd2 pillow
    ```
 
 3. 运行：
@@ -68,7 +68,8 @@
    python app.py
    ```
 
-> **提示**：`winotify` 用于 Windows 启动通知，`tkinterdnd2` 用于文件拖拽。若打包后拖拽失效，通常就是漏了 `tkinterdnd2`。
+> **提示**：`winotify` 用于 Windows 启动通知，`tkinterdnd2` 用于文件拖拽，
+> `pillow` 用于主题切换时的圆形过渡（需要截取窗口画面）。若打包后拖拽失效，通常就是漏了 `tkinterdnd2`。
 
 ---
 
@@ -191,6 +192,7 @@ Minecraft迁移工具/
 | `tkinterdnd2` | 文件拖拽进窗口 | ✅（打包需附带） |
 | `tendo` | 单实例运行 | ✅ |
 | `winotify` | Windows 启动通知 | ✅（建议） |
+| `pillow` | 主题切换的圆形过渡（截取窗口画面） | ✅（打包会被 PyInstaller 自动收集） |
 
 ---
 

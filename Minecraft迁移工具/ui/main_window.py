@@ -15,7 +15,8 @@ import re
 from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
-from utils.helpers import create_gradient_button, set_window_icon
+from utils.helpers import (create_gradient_button, set_window_icon, center_window,
+                           circular_reveal)
 from core.migrator import (
     run_migration,
     do_backup,
@@ -27,8 +28,8 @@ from core.migrator import (
 )
 from core.scanner import scan_mod_differences, get_full_mod_metadata
 from ui.dialogs import ProgressWindow, ScanProgressWindow, show_mod_detail, update_mod_detail_theme
-from ui.diff_window import show_diff_window
 from ui.diff_window import show_diff_window, update_diff_theme
+from ui.virtual_table import VirtualTable
 
 
 def _grad_width(text):
@@ -38,13 +39,56 @@ def _grad_width(text):
 
 def _center_window(win, w, h):
     """把窗口在屏幕中央显示（w/h 为该窗口的目标尺寸）。"""
+    center_window(win, w, h)
+
+
+# 窗口淡入/淡出：Toplevel 首次映射时系统会先填一块窗口背景、Tk 才画内容，
+# 于是露出一瞬空白。做法是先在透明状态下把首帧画完，再分几帧平滑显形，
+# 关闭时反向淡出——既不白屏，也不是"啪"地一下出现。
+_FADE_STEPS = 10
+_FADE_MS = 14
+
+
+def _fade_in(win, step=1):
+    """从透明平滑淡入到完全不透明。"""
     try:
-        win.update_idletasks()
-        x = max(0, (win.winfo_screenwidth() - w) // 2)
-        y = max(0, (win.winfo_screenheight() - h) // 2)
-        win.geometry(f"{w}x{h}+{x}+{y}")
+        if not win.winfo_exists():
+            return
+        win.attributes("-alpha", min(1.0, step / float(_FADE_STEPS)))
     except Exception:
-        pass
+        return
+    if step < _FADE_STEPS:
+        try:
+            win.after(_FADE_MS, lambda: _fade_in(win, step + 1))
+        except Exception:
+            pass
+
+
+def _fade_out(win, step=_FADE_STEPS - 1):
+    """平滑淡出后销毁窗口。"""
+    try:
+        if not win.winfo_exists():
+            return
+        win.attributes("-alpha", max(0.0, step / float(_FADE_STEPS)))
+    except Exception:
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        return
+    if step > 0:
+        try:
+            win.after(_FADE_MS, lambda: _fade_out(win, step - 1))
+        except Exception:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+    else:
+        try:
+            win.destroy()
+        except Exception:
+            pass
 
 
 class MigrationGUI:
@@ -234,18 +278,16 @@ class MigrationGUI:
         )
         apply_theme_to_widget_tree(self.root, self.theme)
 
-        # 同步"放大查看"结果表的行标签颜色
-        for bv in getattr(self, '_big_view_trees', []):
+        # 同步"放大查看"结果表的配色
+        alive_tables = []
+        for tv in getattr(self, '_big_view_tables', []):
             try:
-                if bv.winfo_exists():
-                    bv.tag_configure("missing", background=self.theme.get("danger_bg", "#ffb3b3"),
-                                     foreground=self.theme.get("danger_fg", "#8b0000"))
-                    bv.tag_configure("checked", background=self.theme.get("sel_bg", "#a5d6a7"),
-                                     foreground=self.theme.get("sel_fg", "#000000"))
-                    bv.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
-                                     foreground=self.theme.get("warn_fg", "#000000"))
+                if tv.winfo_exists():
+                    tv.apply_theme(self.theme)
+                    alive_tables.append(tv)
             except Exception:
                 pass
+        self._big_view_tables = alive_tables
 
         # 同步"放大查看"窗口的整体配色（背景/文字/输入框等，渐变按钮不受影响）
         alive_big = []
@@ -330,24 +372,64 @@ class MigrationGUI:
         except Exception:
             pass
 
-    def toggle_theme(self):
-        if self.current_theme == "light":
-            self.current_theme = "dark"
-            self.theme = DARK_THEME
-        else:
-            self.current_theme = "light"
-            self.theme = LIGHT_THEME
-        self.apply_theme()
-        self.on_path_change()
-        self.save_config()
-        self.log(f"主题已切换为{'深色' if self.current_theme == 'dark' else '浅色'}模式",
-                 level="SUCCESS", save=False)
+        # 兜底：其余已打开的弹窗（变更日志、迁移历史等）也一并跟随主题，
+        # 避免出现"主界面变了、某个子窗口还是旧配色"。
+        # 跳过主题过渡用的覆盖层，它的内容是一张截图，不该被重新配色。
+        for child in self.root.winfo_children():
+            try:
+                if getattr(child, "_is_theme_overlay", False):
+                    continue
+                if isinstance(child, tk.Toplevel) and child.winfo_exists():
+                    apply_theme_to_widget_tree(child, self.theme)
+            except Exception:
+                pass
 
-        # 更新已打开的差异窗口
-        if hasattr(self, 'diff_window') and self.diff_window is not None:
-            if self.diff_window.winfo_exists():
-                from ui.diff_window import update_diff_theme
-                update_diff_theme(self.diff_window, self.theme, self.current_theme)
+    def toggle_theme(self, from_widget=None):
+        """切换主题：先做一个从触发点向外扩散的圆形过渡，动画结束再真正换配色。"""
+        if getattr(self, "_theme_animating", False):
+            return                      # 动画进行中，忽略重复点击
+        new_name = "dark" if self.current_theme == "light" else "light"
+        new_theme = DARK_THEME if new_name == "dark" else LIGHT_THEME
+
+        def do_switch():
+            self.current_theme = new_name
+            self.theme = new_theme
+            self.apply_theme()
+            self.on_path_change()
+            self.save_config()
+            self.log(f"主题已切换为{'深色' if new_name == 'dark' else '浅色'}模式",
+                     level="SUCCESS", save=False)
+            # 更新已打开的差异窗口
+            if hasattr(self, 'diff_window') and self.diff_window is not None:
+                if self.diff_window.winfo_exists():
+                    from ui.diff_window import update_diff_theme
+                    update_diff_theme(self.diff_window, self.theme, self.current_theme)
+
+        def done():
+            try:
+                do_switch()
+            finally:
+                self._theme_animating = False
+
+        # 扩散圆心：优先用触发它的按钮，其次鼠标位置，最后窗口中心
+        cx = cy = None
+        try:
+            src = from_widget if from_widget is not None else getattr(self, "theme_btn", None)
+            if src is not None and src.winfo_exists():
+                cx = src.winfo_rootx() + src.winfo_width() // 2
+                cy = src.winfo_rooty() + src.winfo_height() // 2
+        except Exception:
+            cx = cy = None
+        if cx is None or cy is None:
+            try:
+                cx, cy = self.root.winfo_pointerx(), self.root.winfo_pointery()
+            except Exception:
+                cx = self.root.winfo_rootx() + self.root.winfo_width() // 2
+                cy = self.root.winfo_rooty() + self.root.winfo_height() // 2
+
+        self._theme_animating = True
+        # 覆盖层把旧界面盖住之后，才真正切换主题（详见 circular_reveal 的说明）
+        circular_reveal(self.root, cx, cy, on_switch=do_switch, on_done=done)
 
     # ---------- 工具函数 ----------
     def create_tooltip(self, widget, text):
@@ -652,6 +734,7 @@ class MigrationGUI:
 
         win = tk.Toplevel(self.root)
         self._log_big_view = win
+        win.withdraw()          # 先隐藏，构建完居中后再显示，避免"闪现-跳到中间"
         win.title("执行日志 - 放大查看")
         win.geometry("1000x720")
         win.minsize(660, 420)
@@ -753,6 +836,9 @@ class MigrationGUI:
         btn_refresh.set_command(force_refresh)
 
         sync()
+        # 全部构建完成后才居中显示：此刻窗口仍是隐藏的，所以不会出现瞬移
+        _center_window(win, 1000, 720)
+        win.deiconify()
 
     # ---------- 界面构建（由于太长，拆分为多个辅助方法） ----------
     def create_widgets(self):
@@ -1211,8 +1297,10 @@ class MigrationGUI:
                 pass
         dialog = tk.Toplevel(self.root)
         self._changelog_dialog = dialog
+        dialog.withdraw()       # 构建完居中后再显示，避免"闪现-跳到中间"
         dialog.title("从变更日志提取模组清单")
         dialog.geometry("800x600")
+        dialog.transient(self.root)
         set_window_icon(dialog)
         tk.Label(dialog,
                  text="请粘贴完整的变更日志文本（包含 'Added mods:' 和 'Updated mods:' 部分）：").pack(pady=5)
@@ -1268,6 +1356,8 @@ class MigrationGUI:
             width=_grad_width("提取并应用"), height=30, font=("微软雅黑", 9, "bold"))
         btn_extract.pack(pady=10)
         apply_theme_to_widget_tree(dialog, self.theme)
+        _center_window(dialog, 800, 600)
+        dialog.deiconify()
 
     def extract_mods_from_changelog(self, text):
         lines = text.splitlines()
@@ -1380,15 +1470,32 @@ class MigrationGUI:
         tw.pack(fill="both", expand=True, padx=10, pady=4)
         tree = ttk.Treeview(tw, columns=("chk", "path"), show="tree headings",
                             selectmode="none")
-        tree.heading("#0", text="文件夹")
+        tree.heading("#0", text="📁 文件夹")
         tree.column("#0", width=300, anchor="w", stretch=True)
-        tree.heading("chk", text="✓")
+        tree.heading("chk", text="☑")
         tree.column("chk", width=40, anchor="center", stretch=False)
-        tree.heading("path", text="完整相对路径")
+        tree.heading("path", text="📄 完整相对路径")
         tree.column("path", width=360, anchor="w", stretch=False)
         vsb = ttk.Scrollbar(tw, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(tw, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        # 横向滚动条只在内容真的超出可视宽度时才出现（默认宽度下 #0 列会自动拉伸填满，
+        # 常驻一条拖不动的横向滚动条只会让人困惑）
+        hsb_state = {"shown": True}
+
+        def on_xscroll(first, last):
+            hsb.set(first, last)
+            need = float(first) > 0.001 or float(last) < 0.999
+            try:
+                if need and not hsb_state["shown"]:
+                    hsb.grid()
+                    hsb_state["shown"] = True
+                elif not need and hsb_state["shown"]:
+                    hsb.grid_remove()
+                    hsb_state["shown"] = False
+            except Exception:
+                pass
+
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=on_xscroll)
         tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
@@ -1456,8 +1563,18 @@ class MigrationGUI:
         count_lbl = tk.Label(dlg, bg=theme["bg"], fg=theme["fg"], text="")
         count_lbl.pack(fill="x", padx=10, pady=(0, 4))
 
-        def mk_button(parent, text, cmd):
-            return tk.Button(parent, text=text, command=cmd, bg=theme["button_bg"],
+        def mk_button(parent, text, cmd, guard_ms=300):
+            # 与渐变按钮一致：冷却期内的重复点击直接忽略
+            click_at = {"t": 0.0}
+
+            def _run():
+                now = time.time()
+                if guard_ms and (now - click_at["t"]) * 1000 < guard_ms:
+                    return
+                click_at["t"] = now
+                cmd()
+
+            return tk.Button(parent, text=text, command=_run, bg=theme["button_bg"],
                              fg=theme["button_fg"], activebackground=theme["button_bg"],
                              activeforeground=theme["button_fg"], relief=tk.FLAT,
                              padx=12, pady=4, font=("微软雅黑", 9))
@@ -1496,6 +1613,7 @@ class MigrationGUI:
 
         populate("", src_config)
         update_count()
+        _center_window(dlg, 780, 640)
         dlg.deiconify()
         dlg.wait_window()
         return captured.get("value")
@@ -1554,6 +1672,7 @@ class MigrationGUI:
                 pass
         hist_win = tk.Toplevel(self.root)
         self._history_win = hist_win
+        hist_win.withdraw()     # 构建完居中后再显示，避免"闪现-跳到中间"
         hist_win.title("迁移历史记录")
         hist_win.geometry("900x500")
         hist_win.transient(self.root)
@@ -1591,11 +1710,11 @@ class MigrationGUI:
             height=18,
             style="History.Treeview"
         )
-        tree.heading("时间", text="迁移时间")
-        tree.heading("来源", text="来源路径")
-        tree.heading("模组数", text="模组数")
-        tree.heading("Config数", text="Config数")
-        tree.heading("状态", text="状态")
+        tree.heading("时间", text="🕒 迁移时间")
+        tree.heading("来源", text="📁 来源路径")
+        tree.heading("模组数", text="🧩 模组数")
+        tree.heading("Config数", text="⚙️ Config数")
+        tree.heading("状态", text="✅ 状态")
 
         tree.column("时间", width=160)
         tree.column("来源", width=400)
@@ -1627,6 +1746,8 @@ class MigrationGUI:
             width=_grad_width("关闭"), height=30, font=("微软雅黑", 9, "bold"))
         btn_close_hist.pack(pady=10)
         apply_theme_to_widget_tree(hist_win, self.theme)
+        _center_window(hist_win, 900, 500)
+        hist_win.deiconify()
 
     # ---------- 回滚 ----------
     def action_rollback(self):
@@ -2582,157 +2703,126 @@ class MigrationGUI:
         self._big_view_windows.append(win)
 
         if is_mod:
-            columns = ("chk", "status", "name", "path", "type", "modid", "version", "size")
-            headers = (("chk", "", 38, "center"), ("status", "状态", 62, "w"),
-                       ("name", "文件名", 175, "w"), ("path", "完整路径", 200, "w"),
-                       ("type", "类型", 62, "w"), ("modid", "Mod ID", 105, "w"),
-                       ("version", "版本", 95, "w"), ("size", "大小KB", 68, "e"))
+            columns = (("status", "🔵 状态", 96, "w"), ("chk", "☑", 44, "center"),
+                       ("name", "📄 文件名", 210, "w"), ("path", "📁 完整路径", 280, "w"),
+                       ("type", "🧩 类型", 92, "w"), ("modid", "🆔 Mod ID", 140, "w"),
+                       ("version", "🔖 版本", 120, "w"), ("size", "💾 大小KB", 92, "e"))
         else:
-            columns = ("chk", "status", "name", "path", "type")
-            headers = (("chk", "", 38, "center"), ("status", "状态", 62, "w"),
-                       ("name", "名称", 170, "w"), ("path", "相对路径/完整路径", 260, "w"),
-                       ("type", "类型", 70, "w"))
+            columns = (("status", "🔵 状态", 96, "w"), ("chk", "☑", 44, "center"),
+                       ("name", "📄 名称", 210, "w"), ("path", "📁 相对路径/完整路径", 340, "w"),
+                       ("type", "🏷️ 类型", 100, "w"))
 
-        tree = ttk.Treeview(win, columns=columns, show="headings", height=20)
-        for col, txt, wd, anc in headers:
-            tree.heading(col, text=txt, command=lambda c=col: sort_by(c))
-            tree.column(col, width=wd, anchor=anc)
-        tree.configure(selectmode="none")
-        tree.tag_configure("missing", background=self.theme.get("danger_bg", "#ffb3b3"),
-                           foreground=self.theme.get("danger_fg", "#8b0000"))
-        tree.tag_configure("checked", background=self.theme.get("sel_bg", "#a5d6a7"),
-                           foreground=self.theme.get("sel_fg", "#000000"))
-        tree.tag_configure("new", background=self.theme.get("warn_bg", "#ffeaa7"),
-                           foreground=self.theme.get("warn_fg", "#000000"))
-        # 状态文字颜色（Tk 表格只能整行文字变色，无法单独染某一列）
-        tree.tag_configure("status_ok", foreground=self.theme.get("ok_fg", "#2e7d32"))
-        tree.tag_configure("status_loading", foreground=self.theme.get("muted_fg", "#808080"))
-        # 悬停高亮：普通行与"已高亮"（勾选/缺失/新添加等）行用不同的提示色
-        tree.tag_configure("hover", background=self.theme.get("hover_bg", "#e9eef5"),
-                           foreground=self.theme.get("hover_fg", "#000000"))
-        tree.tag_configure("hover_checked",
-                           background=self.theme.get("hover_checked_bg", "#cde8cd"),
-                           foreground=self.theme.get("hover_checked_fg", "#000000"))
-        tree.tag_configure("hover_missing",
-                           background=self.theme.get("hover_missing_bg", "#ffd9d9"),
-                           foreground=self.theme.get("hover_missing_fg", "#8b0000"))
-        tree.tag_configure("hover_new",
-                           background=self.theme.get("hover_new_bg", "#fff2c4"),
-                           foreground=self.theme.get("hover_new_fg", "#000000"))
-        _HOVER_TAG = {
-            "checked": "hover_checked",
-            "missing": "hover_missing",
-            "new": "hover_new",
-        }
-        _hover_iid = {"id": None}
-        _hover_cell = {"key": None}
-        _cell_tip = {"win": None}
+        # 用自绘的 VirtualTable 取代 ttk.Treeview：Treeview 改任意一行的颜色都会重绘整个
+        # 可见区域（本机 26~39ms），悬停高亮因此严重滞后，而且无法只给某一列上色。
+        # VirtualTable 只把可见行画在 Canvas 上，悬停仅重绘两行；状态列用彩色圆点单独表达。
+        # 字号放大，列宽会按窗口可视宽度自动拉伸填满，不会右侧留白。
+        table = VirtualTable(
+            win, columns, self.theme,
+            font=("微软雅黑", 12), row_height=26, header_height=32,
+            on_row_click=lambda row, ev: _on_row_click(row, ev),
+            on_header_click=lambda key, ev: sort_by(key),
+            on_row_hover=lambda row, ev: _on_row_hover(row, ev),
+            on_leave=lambda ev: _tip_hide(),
+            on_scroll=lambda: _tip_hide())
+        table.grid(row=0, column=0, sticky="nsew")
+        _cell_tip = {"win": None, "label": None, "after": None, "shown": False,
+                     "x": 0, "y": 0, "xroot": 0, "yroot": 0, "motion_t": 0.0}
+        _tip_cell = {"row": -1, "key": None}
 
-        def _clear_hover():
-            iid = _hover_iid.get("id")
-            if iid:
+        def _tip_hide():
+            """收起悬浮提示。窗口只 withdraw 复用，绝不 destroy——
+            每次悬停都新建 Toplevel 会让鼠标扫过表格时明显卡顿。"""
+            after_id = _cell_tip.get("after")
+            if after_id is not None:
                 try:
-                    # 用当前状态重新计算该行应有的标签（勾选/缺失/新添加等），
-                    # 避免恢复悬停前的旧快照把已更新的语义颜色覆盖掉。
-                    pos = int(iid)
-                    idx = order[pos]
-                    tree.item(iid, tags=row_tags(pos, idx))
+                    win.after_cancel(after_id)
                 except Exception:
                     pass
-            _hover_iid["id"] = None
-
-        def _hide_cell_tip(clear_key=False):
-            tip = _cell_tip.get("win")
-            if tip is not None:
-                try:
-                    tip.destroy()
-                except Exception:
-                    pass
-            _cell_tip["win"] = None
-            if clear_key:
-                _hover_cell["key"] = None
-
-        def _show_cell_tip(text, x, y):
-            """在光标旁弹出悬浮提示，显示单元格完整文本（路径等内容常被截断）。"""
-            _hide_cell_tip()
-            if not win.winfo_exists():
-                return
-            tip = tk.Toplevel(win)
-            tip.wm_overrideredirect(True)
-            tip.wm_geometry(f"+{x + 12}+{y + 12}")
-            try:
-                tip.attributes("-topmost", True)
-            except Exception:
-                pass
-            lbl = tk.Label(tip, text=text,
-                           background=self.theme.get("tooltip_bg", "#ffffe0"),
-                           fg=self.theme.get("label_fg", "#000000"),
-                           relief="solid", borderwidth=1, font=("微软雅黑", 9),
-                           justify="left", wraplength=520, anchor="w")
-            lbl.pack()
-            _cell_tip["win"] = tip
-
-        def _update_cell_tip(event):
-            """悬停单元格：若文字可能被截断（较长）或为路径列，弹出完整文本提示。"""
-            try:
-                row = tree.identify_row(event.y)
-                col = tree.identify_column(event.x)
-                col_n = int(col.lstrip("#")) - 1 if col else -1
-                key = (row, col_n) if row else None
-                if key == _hover_cell["key"]:
-                    return
-                _hover_cell["key"] = key
-                _hide_cell_tip()
-                if not row or not (0 <= col_n < len(tree["columns"])):
-                    return
-                cname = tree["columns"][col_n]
-                if cname == "chk":
-                    return
-                text = tree.set(row, cname)
-                # 只在可能被截断的文本或路径列上提示，避免短文本频繁弹窗
-                if text and (cname == "path" or len(text) >= 12):
-                    _show_cell_tip(text, event.x_root, event.y_root)
-            except Exception:
-                pass
-
-        def _on_motion(event):
-            # 即时跟手：行变了立刻改高亮，离开立即恢复，不加任何延迟
-            row = tree.identify_row(event.y)
-            if row != _hover_iid.get("id"):
-                _clear_hover()
-                if row:
+                _cell_tip["after"] = None
+            if _cell_tip.get("shown"):
+                # 只有当前确实显示着才调 withdraw，省掉每次换行的无效 Tcl 调用
+                tip = _cell_tip.get("win")
+                if tip is not None:
                     try:
-                        pos = int(row)
-                        idx = order[pos]
-                        cur = row_tags(pos, idx)
-                        hover_tag = "hover"
-                        if cur:
-                            hover_tag = _HOVER_TAG.get(cur[0], "hover")
-                        tree.item(row, tags=(hover_tag,))
-                        _hover_iid["id"] = row
+                        tip.withdraw()
                     except Exception:
                         pass
-            _update_cell_tip(event)
+                _cell_tip["shown"] = False
 
-        def _on_leave(event):
-            _clear_hover()
-            _hide_cell_tip(clear_key=True)
+        def _tip_show():
+            """延迟到期：确认鼠标已停稳后，才做单元格识别并弹出提示。
+            列识别/取文本这些 Tcl 调用全部集中在这里，避免拖慢鼠标移动。"""
+            _cell_tip["after"] = None
+            # 鼠标仍在移动 -> 再等一会儿，划动过程中绝不弹窗
+            if time.time() - _cell_tip.get("motion_t", 0.0) < 0.25:
+                try:
+                    _cell_tip["after"] = win.after(150, _tip_show)
+                except Exception:
+                    pass
+                return
+            try:
+                if not win.winfo_exists():
+                    return
+            except Exception:
+                return
+            row = _tip_cell["row"]
+            cname = _tip_cell["key"]
+            if row < 0 or not cname or cname == "chk":
+                return
+            try:
+                text = table.model.cell(row, cname)
+            except Exception:
+                return
+            # 只在可能被截断的文本或路径列上提示，避免短文本频繁弹窗
+            if not (text and (cname == "path" or len(text) >= 12)):
+                return
+            tip = _cell_tip.get("win")
+            if tip is None:
+                tip = tk.Toplevel(win)
+                tip.wm_overrideredirect(True)
+                try:
+                    tip.attributes("-topmost", True)
+                except Exception:
+                    pass
+                lbl = tk.Label(tip, text="", relief="solid", borderwidth=1,
+                               font=("微软雅黑", 9), justify="left",
+                               wraplength=520, anchor="w")
+                lbl.pack()
+                _cell_tip["win"] = tip
+                _cell_tip["label"] = lbl
+            _cell_tip["label"].configure(
+                text=text,
+                background=self.theme.get("tooltip_bg", "#ffffe0"),
+                fg=self.theme.get("label_fg", "#000000"))
+            tip.wm_geometry(f"+{_cell_tip.get('xroot', 0) + 12}+{_cell_tip.get('yroot', 0) + 12}")
+            tip.deiconify()
+            _cell_tip["shown"] = True
+
+        def _on_row_hover(row, event):
+            """悬停到某行：记录位置，并安排延迟弹出单元格完整内容。
+            列识别推迟到鼠标停稳，鼠标移动时不碰表格绘制，所以划动很跟手。"""
+            _cell_tip["motion_t"] = time.time()
+            _cell_tip["x"] = event.x
+            _cell_tip["y"] = event.y
+            _cell_tip["xroot"] = event.x_root
+            _cell_tip["yroot"] = event.y_root
+            key = table.col_at(event.x) if row >= 0 else None
+            if (row, key) != (_tip_cell["row"], _tip_cell["key"]):
+                _tip_cell["row"] = row
+                _tip_cell["key"] = key
+                _tip_hide()          # 换了单元格，先收起旧提示
+            if _cell_tip["after"] is None and row >= 0 and key:
+                try:
+                    _cell_tip["after"] = win.after(300, _tip_show)
+                except Exception:
+                    pass
 
         def _reset_hover_state():
-            """排序/刷新/清理时清空悬停状态，避免残留高亮。"""
-            _hover_iid["id"] = None
-            _hide_cell_tip(clear_key=True)
+            """排序/刷新/清理时清空悬停状态，避免残留提示。"""
+            _tip_cell["row"] = -1
+            _tip_cell["key"] = None
+            _tip_hide()
 
-        tree.bind("<Motion>", _on_motion)
-        tree.bind("<Leave>", _on_leave)
-        # 滚动时隐藏悬浮提示，避免提示停留在已移走行上造成误导
-        tree.bind("<MouseWheel>", lambda e: _hide_cell_tip(clear_key=True), add="+")
-        vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
-        hsb = ttk.Scrollbar(win, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
         win.grid_rowconfigure(0, weight=1)
         win.grid_columnconfigure(0, weight=1)
 
@@ -2779,21 +2869,32 @@ class MigrationGUI:
                 return None
 
         def sort_key(col):
+            """排序键：只读内存里的扫描结果，绝不在这里碰磁盘。
+            以前每个键都要 resolve() 一次（文件系统调用），排序上千条目会明显卡。"""
+
             def key(i):
                 e = entries[i]
-                r = resolve(e)
+                m = meta.get(i) or {}
                 if col == "status":
-                    return 0 if r is not None else 1
+                    st = m.get("status")
+                    if st == "✅ 存在":
+                        return 0
+                    if st == "❌ 缺失":
+                        return 1
+                    return 2          # 尚未检测出结果
                 if col == "name":
-                    return (r["name"] if r else Path(e).name).lower()
+                    return (m.get("name") or Path(e).name).lower()
                 if col == "path":
-                    return str(e).lower()
+                    return str(m.get("path") or e).lower()
                 if col == "type":
-                    return (r["type"] if r else "")
+                    return (m.get("type") or "").lower()
                 if col == "size":
-                    return r["obj"].stat().st_size if r else -1
-                m = meta.get(i, {})
-                return str(m.get(col, ""))
+                    try:
+                        return float(m.get("size"))
+                    except (TypeError, ValueError):
+                        return -1.0
+                v = m.get(col)
+                return "" if v is None else str(v)
 
             return key
 
@@ -2807,36 +2908,57 @@ class MigrationGUI:
                 idxs.sort(key=sort_key(sort_state["col"]), reverse=sort_state["rev"])
             return idxs
 
-        def row_values(pos, idx):
-            m = meta.get(idx)
-            chk = "☑" if checked.get(key_of(entries[idx]), False) else "☐"
-            name = (m.get("name") if m else None) or Path(entries[idx]).name
-            path = (m.get("path") if m else entries[idx]) or entries[idx]
-            if is_mod:
-                if not m:
-                    return (chk, "…", entries[idx], entries[idx], "…", "…", "…", "…")
-                return (chk, m.get("status", "…"), name, path,
-                        m.get("type", "…"), m.get("modid", "…"), m.get("version", "…"),
-                        m.get("size", "…"))
-            else:
-                if not m:
-                    return (chk, "…", name, entries[idx], "…")
-                return (chk, m.get("status", "…"), name, path, m.get("type", "…"))
+        # ---- VirtualTable 的数据源：按需读取，不复制整表 ----
+        _STATUS_TEXT = {"✅ 存在": "存在", "❌ 缺失": "缺失", "…": "检测中"}
 
-        def row_tags(pos, idx):
-            """行配色：勾选(绿底) > 缺失(红底) > 新添加(黄底) > 状态文字色。"""
-            if checked.get(key_of(entries[idx])):
+        def _m_cell(row, key):
+            """单元格文本；row 是当前显示顺序里的行号。"""
+            idx = order[row]
+            m = meta.get(idx)
+            if key == "chk":
+                return "☑" if checked.get(key_of(entries[idx])) else "☐"
+            if key == "name":
+                return (m.get("name") if m else None) or Path(entries[idx]).name
+            if key == "path":
+                return (m.get("path") if m else None) or entries[idx]
+            if not m:
+                return "…"
+            v = m.get(key)
+            if key == "type" and v and v != "?":
+                # 类型列加图标：config 区分文件/文件夹，模组按加载器显示
+                return "%s %s" % ({"文件夹": "📁", "文件": "📄"}.get(v, "🧩"), v)
+            return "…" if v is None else str(v)
+
+        def _m_dot(row):
+            """状态列的 (颜色, 文字)：圆点是该列唯一带颜色的元素。"""
+            st = meta.get(order[row], {}).get("status") or "…"
+            if st == "❌ 缺失":
+                color = self.theme.get("danger_fg", "#8b0000")
+            elif st == "✅ 存在":
+                color = self.theme.get("ok_fg", "#2e7d32")
+            else:
+                color = self.theme.get("muted_fg", "#808080")
+            return color, _STATUS_TEXT.get(st, st)
+
+        def _m_tags(row):
+            """行底色：勾选(绿底) > 缺失(红底) > 新添加(黄底)。"""
+            idx = order[row]
+            k = key_of(entries[idx])
+            if checked.get(k):
                 return ("checked",)
             if meta.get(idx, {}).get("status") == "❌ 缺失":
                 return ("missing",)
-            if key_of(entries[idx]) in new_keys:
+            if k in new_keys:
                 return ("new",)
-            st = meta.get(idx, {}).get("status")
-            if st == "✅ 存在":
-                return ("status_ok",)
-            if st == "…":
-                return ("status_loading",)
             return ()
+
+        class _BigViewModel:
+            row_count = staticmethod(lambda: len(order))
+            cell = staticmethod(_m_cell)
+            dot = staticmethod(_m_dot)
+            tags = staticmethod(_m_tags)
+
+        table.set_model(_BigViewModel())
 
         def scan_row(idx):
             e = entries[idx]
@@ -2885,16 +3007,14 @@ class MigrationGUI:
             if not win.winfo_exists():
                 return
             _reset_hover_state()
-            tree.delete(*tree.get_children())
             order[:] = compute_order()
             order_index.clear()
             order_index.update({idx: pos for pos, idx in enumerate(order)})
-            for pos, idx in enumerate(order):
-                iid = str(pos)
-                tree.insert("", "end", iid=iid, values=row_values(pos, idx),
-                            tags=row_tags(pos, idx))
-                if rescan and idx not in meta:
-                    scan_queue.put(idx)
+            table.refresh()
+            if rescan:
+                for idx in order:
+                    if idx not in meta:
+                        scan_queue.put(idx)
             total = len(entries)
             shown = len(order)
             count_lbl.config(text=(f"显示 {shown}/{total} 项"
@@ -2991,29 +3111,18 @@ class MigrationGUI:
             write_back()
             messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
-        def toggle_row(row_id):
-            pos = int(row_id)
-            k = key_of(entries[order[pos]])
+        def toggle_row(row):
+            """切换某行勾选状态，并只重绘这一行（不整表重画）。"""
+            if not (0 <= row < len(order)):
+                return
+            k = key_of(entries[order[row]])
             checked[k] = not checked.get(k, False)
-            tree.set(row_id, "chk", "☑" if checked[k] else "☐")
-            # 同步行高亮（勾选->蓝色）
-            try:
-                idx = order[pos]
-                tree.item(row_id, tags=row_tags(pos, idx))
-            except Exception:
-                pass
+            table.repaint_row(row)
 
-        def toggle_check(event):
-            # 普通单击（config 清单用）：切换勾选
-            row_id = tree.identify_row(event.y)
-            if row_id:
-                toggle_row(row_id)
-
-        def open_mod_detail(row_id):
+        def open_mod_detail(row):
             """打开指定行对应模组的详情窗口（含 Modrinth 联网搜索）。"""
             try:
-                pos = int(row_id)
-                idx = order[pos]
+                idx = order[row]
                 r = resolve(entries[idx])
                 path = (r.get("path") if r else None) or meta.get(idx, {}).get("path")
                 if path and os.path.exists(path):
@@ -3026,22 +3135,24 @@ class MigrationGUI:
         _DOUBLE_CLICK_SEC = 0.25  # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击
         _last_click = {"t": 0.0, "row": None}
 
-        def on_row_click(event):
-            """模组清单：单击切换勾选；快速双击同一行 -> 打开模组详情。"""
-            row_id = tree.identify_row(event.y)
-            if not row_id:
+        def _on_row_click(row, event):
+            """单击切换勾选；模组清单快速双击同一行则打开模组详情。"""
+            if row < 0:
+                return
+            if not is_mod:
+                toggle_row(row)
                 return
             now = time.time()
-            if (now - _last_click["t"]) <= _DOUBLE_CLICK_SEC and row_id == _last_click["row"]:
+            if (now - _last_click["t"]) <= _DOUBLE_CLICK_SEC and row == _last_click["row"]:
                 # 快速双击：撤销第一次点击造成的勾选切换（双击不应改变勾选状态）
-                toggle_row(row_id)
+                toggle_row(row)
                 _last_click["t"] = 0.0
                 _last_click["row"] = None
-                open_mod_detail(row_id)
+                open_mod_detail(row)
                 return
             _last_click["t"] = now
-            _last_click["row"] = row_id
-            toggle_row(row_id)
+            _last_click["row"] = row
+            toggle_row(row)
 
         def sort_by(col):
             if sort_state["col"] == col:
@@ -3049,6 +3160,7 @@ class MigrationGUI:
             else:
                 sort_state["col"] = col
                 sort_state["rev"] = False
+            table.set_sort(col, sort_state["rev"])
             rebuild(rescan=False)
 
         def poll():
@@ -3059,10 +3171,7 @@ class MigrationGUI:
                     idx = msg_queue.get_nowait()
                     pos = order_index.get(idx)
                     if pos is not None:
-                        iid = str(pos)
-                        if tree.exists(iid):
-                            tree.item(iid, values=row_values(pos, idx),
-                                      tags=row_tags(pos, idx))
+                        table.repaint_row(pos)
                     batch -= 1
             except queue.Empty:
                 pass
@@ -3074,6 +3183,16 @@ class MigrationGUI:
                     if scan_queue.unfinished_tasks == 0:
                         big_scanning["flag"] = False
                         _set_busy_btns(False)
+                        if _pending_detect["flag"]:
+                            # 「检测存在性」的提示放到这里：此时扫描已全部结束，
+                            # 统计只读内存，不会像以前那样在点击时卡住界面。
+                            _pending_detect["flag"] = False
+                            missing = sum(1 for m in meta.values()
+                                          if m.get("status") == "❌ 缺失")
+                            messagebox.showinfo(
+                                "检测完成",
+                                f"✅ 存在性检测完成：共 {len(entries)} 项，缺失 {missing} 项。",
+                                parent=win)
                 except Exception:
                     pass
             try:
@@ -3082,35 +3201,37 @@ class MigrationGUI:
             except Exception:
                 pass
 
+        _pending_detect = {"flag": False}
+
         def detect():
-            """强制重新检测存在性，并给出结果提示。"""
+            """强制重新检测存在性：清空缓存后交给后台线程重扫，完成后由 poll 统一提示。
+            以前这里在界面线程里对每个条目 resolve() 查一次磁盘，上千个模组会卡好几秒。"""
             if big_scanning["flag"]:
                 return
             big_scanning["flag"] = True
             _set_busy_btns(True)
-            try:
-                missing = sum(1 for i, e in enumerate(entries) if resolve(e) is None)
-            except Exception:
-                missing = 0
             meta.clear()
+            _pending_detect["flag"] = True
             rebuild(rescan=True)
-            messagebox.showinfo("检测完成",
-                                f"✅ 存在性检测完成：共 {len(entries)} 项，缺失 {missing} 项。",
-                                parent=win)
 
-        # 顶部工具栏
+        # 顶部工具栏：所有按钮统一宽度与间距，模组 / Config 两个窗口看起来完全一致
         top = tk.Frame(win, bg=self.theme["bg"])
         top.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        _PAD = 6
+        _BTN_W = max(_grad_width("🔍 检测存在性"),
+                     _grad_width("🗑️ 删除选中"),
+                     _grad_width("➕ 添加模组"))
         count_lbl = tk.Label(top, text=f"共 {len(entries)} 项", bg=self.theme["bg"],
                              fg=self.theme["fg"])
-        count_lbl.pack(side="left", padx=6)
+        count_lbl.pack(side="left", padx=(0, _PAD * 2))
         # 搜索（模组区/Config区都可用）
-        tk.Label(top, text="搜索:", bg=self.theme["bg"], fg=self.theme["fg"]).pack(side="left")
+        tk.Label(top, text="搜索:", bg=self.theme["bg"],
+                 fg=self.theme["fg"]).pack(side="left")
         search_var = tk.StringVar()
         search_entry = tk.Entry(top, textvariable=search_var, width=18,
                                 bg=self.theme["entry_bg"], fg=self.theme["entry_fg"],
                                 insertbackground=self.theme["fg"])
-        search_entry.pack(side="left", padx=4)
+        search_entry.pack(side="left", padx=(_PAD, _PAD * 3))
         # 搜索防抖：停止输入 250ms 后再重建，避免每个按键都全量重建导致卡顿
         _search_after = [None]
 
@@ -3127,36 +3248,41 @@ class MigrationGUI:
         detect_btn = create_gradient_button(top, "🔍 检测存在性", detect,
                                             colors=("#43a047", "#66bb6a"),
                                             hover_colors=("#66bb6a", "#43a047"),
-                                            width=118, height=30, font=("微软雅黑", 9, "bold"))
-        detect_btn.pack(side="left", padx=4)
+                                            width=_BTN_W, height=30,
+                                            font=("微软雅黑", 9, "bold"))
+        detect_btn.pack(side="left", padx=_PAD)
         del_btn = create_gradient_button(top, "🗑️ 删除选中", del_selected,
                                          colors=("#e53935", "#ff7043"),
                                          hover_colors=("#ef5350", "#ff7043"),
-                                         width=112, height=30, font=("微软雅黑", 9, "bold"))
-        del_btn.pack(side="left", padx=4)
+                                         width=_BTN_W, height=30,
+                                         font=("微软雅黑", 9, "bold"))
+        del_btn.pack(side="left", padx=_PAD)
+        add_btn = None
         if is_mod:
             add_btn = create_gradient_button(top, "➕ 添加模组", add_mods,
                                              colors=("#00c853", "#00e676"),
                                              hover_colors=("#00e676", "#00c853"),
-                                             width=112, height=30, font=("微软雅黑", 9, "bold"))
-            add_btn.pack(side="left", padx=4)
+                                             width=_BTN_W, height=30,
+                                             font=("微软雅黑", 9, "bold"))
+            add_btn.pack(side="left", padx=_PAD)
             # 拖拽（仅模组可拖入 .jar）
             try:
                 from tkinterdnd2 import DND_FILES
-                tree.drop_target_register(DND_FILES)
-                tree.dnd_bind('<<Drop>>', on_tree_drop)
+                table.body.drop_target_register(DND_FILES)
+                table.body.dnd_bind('<<Drop>>', on_tree_drop)
             except Exception:
                 pass
-        # 单击切换勾选；模组清单支持快速双击打开模组详情
-        if is_mod:
-            tree.bind("<ButtonRelease-1>", on_row_click)
-        else:
-            tree.bind("<ButtonRelease-1>", toggle_check)
+        # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click）
         btn_close_big = create_gradient_button(
-            top, "关闭", win.destroy,
+            top, "✖ 关闭", lambda: _fade_out(win),
             colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
-            width=_grad_width("关闭"), height=30, font=("微软雅黑", 9, "bold"))
-        btn_close_big.pack(side="right")
+            width=_BTN_W, height=30, font=("微软雅黑", 9, "bold"))
+        btn_close_big.pack(side="right", padx=_PAD)
+        # 标题栏的 × 也走淡出，保持一致
+        try:
+            win.protocol("WM_DELETE_WINDOW", lambda: _fade_out(win))
+        except Exception:
+            pass
 
         # 当主界面清单被外部修改（如差异"应用"/config导入/浏览添加/拖拽/清空）时，自动重载并保留勾选高亮
         def reload_entries():
@@ -3174,19 +3300,28 @@ class MigrationGUI:
 
         rebuild(rescan=True)
         poll()
-        # 登记该结果表，方便主题切换时同步行标签颜色
-        if is_mod:
-            if not hasattr(self, '_big_view_trees'):
-                self._big_view_trees = []
-            self._big_view_trees.append(tree)
+        # 登记该表格，方便主题切换时同步配色
+        if not hasattr(self, '_big_view_tables'):
+            self._big_view_tables = []
+        self._big_view_tables.append(table)
         apply_theme_to_widget_tree(win, self.theme)
         win.update_idletasks()
+        # 窗口映射前先把列宽按实际布局排好，否则显示出来之后才重排，会二次闪烁
+        table.fit_now()
         w = win.winfo_width()
         h = win.winfo_height()
         x = (win.winfo_screenwidth() // 2) - (w // 2)
         y = (win.winfo_screenheight() // 2) - (h // 2)
         win.geometry(f"{w}x{h}+{x}+{y}")
-        win.deiconify()
+        # 先在透明状态下映射、把首帧画完，再平滑淡入：
+        # 既不露出未绘制的空白，也不会"啪"地一下蹦出来。
+        try:
+            win.attributes("-alpha", 0.0)
+            win.deiconify()
+            win.update()
+            _fade_in(win)
+        except Exception:
+            win.deiconify()
 
     def _update_text_states(self):
         state = tk.NORMAL if self.edit_mode.get() else tk.DISABLED

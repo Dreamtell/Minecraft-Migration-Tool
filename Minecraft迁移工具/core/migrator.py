@@ -407,18 +407,49 @@ def run_migration(
                         failed_cfg.append((entry, msg))
                         log(f"❌ 复制 config 失败 {entry}: {msg}", "ERROR")
                 elif src_entry.is_dir():
-                    dir_files = list(src_entry.rglob("*"))
-                    for src_file in dir_files:
-                        if not src_file.is_file():
+                    # 递归复制整个文件夹：目录本身也要建出来（含空文件夹），
+                    # 每个文件都打日志、更新进度，并且支持中途取消。
+                    try:
+                        if not dry_run:
+                            dst_entry.mkdir(parents=True, exist_ok=True)
+                    except Exception as e:
+                        failed_cfg.append((entry, f"创建目录失败: {e}"))
+                        log(f"❌ 创建 config 目录 {entry} 失败: {e}", "ERROR")
+                        continue
+
+                    for src_item in sorted(src_entry.rglob("*")):
+                        if check_cancel and check_cancel():
+                            log("⚠️ 用户取消了迁移", "WARNING")
+                            return False
+
+                        rel = src_item.relative_to(src_entry)
+                        dst_item = dst_entry / rel
+                        if src_item.is_dir():
+                            # 空文件夹也要保留，否则目标端目录结构不完整
+                            if dry_run:
+                                log(f"[模拟] 将创建目录: {entry}/{rel}", "SIMULATE")
+                            else:
+                                try:
+                                    dst_item.mkdir(parents=True, exist_ok=True)
+                                except Exception as e:
+                                    failed_cfg.append((f"{entry}/{rel}", f"建目录失败: {e}"))
+                                    log(f"❌ 创建 config 目录 {entry}/{rel} 失败: {e}", "ERROR")
                             continue
-                        rel = src_file.relative_to(src_entry)
-                        dst_file = dst_entry / rel
-                        ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite=True,
+                        if not src_item.is_file():
+                            continue
+
+                        ok, msg = safe_copy(src_item, dst_item, dry_run, overwrite=True,
                                             is_file=True)
                         if ok:
                             success_cfg += 1
                             file_index += 1
-                            copied_bytes += src_file.stat().st_size
+                            copied_bytes += src_item.stat().st_size
+                            if dry_run:
+                                log(f"[模拟] 将复制 config: {entry}/{rel}", "SIMULATE")
+                            else:
+                                log(f"✅ 已复制 config: {entry}/{rel}", "SUCCESS")
+                            step = f"复制 config ({idx + 1}/{total_config_entries})"
+                            progress(file_index, f"config/{entry}/{rel}", copied_bytes, step)
                         else:
                             failed_cfg.append((f"{entry}/{rel}", msg))
                             log(f"❌ 复制 config 文件 {entry}/{rel} 失败: {msg}", "ERROR")

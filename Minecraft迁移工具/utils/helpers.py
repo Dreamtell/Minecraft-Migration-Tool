@@ -2,10 +2,12 @@
 import tkinter as tk
 import os
 import sys
+import time
 from pathlib import Path
 
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
-                           hover_colors=None, width=180, height=32, font=("微软雅黑", 10, "bold")):
+                           hover_colors=None, width=180, height=32, font=("微软雅黑", 10, "bold"),
+                           click_guard_ms=300):
     if hover_colors is None:
         def lighten(hex_color, amount=40):
             r = min(255, int(hex_color[1:3], 16) + amount)
@@ -73,9 +75,17 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         if not state_get("disabled"):
             draw_bg(False)
             draw_text()
+    click_at = {"t": 0.0}
+
     def on_click(e):
-        if not state_get("disabled") and cmd["fn"] is not None:
-            cmd["fn"]()
+        if state_get("disabled") or cmd["fn"] is None:
+            return
+        # 防连点/误双击：冷却期内忽略重复点击，避免一个按钮被连点触发多次重活
+        now = time.time()
+        if click_guard_ms and (now - click_at["t"]) * 1000 < click_guard_ms:
+            return
+        click_at["t"] = now
+        cmd["fn"]()
 
     draw_bg(False)
     draw_text()
@@ -83,6 +93,174 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     canvas.bind("<Leave>", on_leave)
     canvas.bind("<Button-1>", on_click)
     return canvas
+
+def center_window(win, w=None, h=None):
+    """把窗口居中到屏幕。
+
+    关键：必须在窗口仍然 withdraw 的时候调用，然后再 deiconify —— 否则会看到
+    「先闪现在某个角落、再跳到屏幕中间」的瞬移。
+    w/h 省略或无效时按窗口自身尺寸计算。
+    """
+    try:
+        win.update_idletasks()
+        if not w or w <= 1:
+            w = win.winfo_width()
+        if not h or h <= 1:
+            h = win.winfo_height()
+        if w <= 1:
+            w = win.winfo_reqwidth()
+        if h <= 1:
+            h = win.winfo_reqheight()
+        x = max(0, (win.winfo_screenwidth() - w) // 2)
+        y = max(0, (win.winfo_screenheight() - h) // 2)
+        win.geometry(f"{w}x{h}+{x}+{y}")
+    except Exception:
+        pass
+
+
+def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=None):
+    """真·圆形揭示过渡：圆内是「新界面」，圆外是「旧界面」。
+
+    Tk 既不能给窗口做圆形裁剪，画布也没有 alpha 合成，所以分成四步：
+      1. 用 Pillow 把窗口当前画面截下来（这就是「旧界面」）
+      2. 用一个无边框覆盖窗原样盖住 —— 此时用户察觉不到任何变化
+      3. 在覆盖层底下真正切换主题
+      4. 用 Windows 的 SetWindowRgn 在截图上挖一个不断扩大的「圆洞」，
+         把下面的新界面一点点露出来
+    cx/cy 是屏幕坐标。任何一步失败都会立刻执行切换，功能不受影响。
+    """
+    state = {"switched": False, "done": False, "ov": None}
+
+    def do_switch():
+        if not state["switched"]:
+            state["switched"] = True
+            if on_switch:
+                try:
+                    on_switch()
+                except Exception:
+                    pass
+
+    def finish():
+        if not state["done"]:
+            state["done"] = True
+            do_switch()          # 兜底：无论走哪条路径，主题都必须切过去
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+
+    try:
+        import ctypes
+        from PIL import ImageGrab, ImageTk
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        # 64 位下句柄必须声明成指针，否则会被截断成 32 位
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
+        gdi32.CreateRectRgn.restype = ctypes.c_void_p
+        gdi32.CreateRectRgn.argtypes = [ctypes.c_int] * 4
+        gdi32.CreateEllipticRgn.restype = ctypes.c_void_p
+        gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int] * 4
+        gdi32.CombineRgn.restype = ctypes.c_int
+        gdi32.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                     ctypes.c_void_p, ctypes.c_int]
+        gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+
+        # 覆盖范围必须把已打开的子窗口也算进去：否则它们不会被截图遮住，
+        # 主窗口还在做圆形揭示时它们就已经变成新主题了，看起来会不同步。
+        wins = [win]
+        try:
+            for ch in win.winfo_children():
+                if isinstance(ch, tk.Toplevel) and ch.winfo_ismapped():
+                    wins.append(ch)
+        except Exception:
+            pass
+        x0 = min(x.winfo_rootx() for x in wins)
+        y0 = min(x.winfo_rooty() for x in wins)
+        x1 = max(x.winfo_rootx() + x.winfo_width() for x in wins)
+        y1 = max(x.winfo_rooty() + x.winfo_height() for x in wins)
+        w, h = x1 - x0, y1 - y0
+        if w <= 1 or h <= 1:
+            finish()
+            return None
+
+        # 1) 截下旧界面
+        shot = ImageGrab.grab(bbox=(x0, y0, x0 + w, y0 + h))
+        photo = ImageTk.PhotoImage(shot)
+
+        # 2) 覆盖层原样显示旧界面，所以下面的切换是「偷偷」发生的
+        ov = tk.Toplevel(win)
+        ov._is_theme_overlay = True      # 主题刷新时要跳过它（内容是一张截图）
+        state["ov"] = ov
+        ov.overrideredirect(True)
+        ov.geometry(f"{w}x{h}+{x0}+{y0}")
+        cv = tk.Canvas(ov, width=w, height=h, highlightthickness=0, bd=0)
+        cv.pack()
+        cv.create_image(0, 0, anchor="nw", image=photo)
+        cv.image = photo              # 保住引用，否则图片被回收会变成空白
+        try:
+            ov.attributes("-topmost", True)
+        except Exception:
+            pass
+        ov.update_idletasks()
+        ov.deiconify()
+        ov.update()
+
+        # 3) 在覆盖层底下真正切换主题
+        do_switch()
+        ov.update()
+
+        target = user32.GetParent(ctypes.c_void_p(ov.winfo_id())) or ov.winfo_id()
+        px = min(max(0, cx - x0), w)
+        py = min(max(0, cy - y0), h)
+        # 半径要够大到让圆能盖住离圆心最远的那个角
+        full_r = int(((max(px, w - px)) ** 2 + (max(py, h - py)) ** 2) ** 0.5) + 2
+
+        def set_hole(r):
+            """把覆盖层裁成「矩形 - 圆」，圆的位置就是露出来的新界面。"""
+            box = gdi32.CreateRectRgn(0, 0, w, h)
+            circ = gdi32.CreateEllipticRgn(int(px - r), int(py - r),
+                                           int(px + r), int(py + r))
+            if circ:
+                gdi32.CombineRgn(ctypes.c_void_p(box), ctypes.c_void_p(box),
+                                 ctypes.c_void_p(circ), 4)      # RGN_DIFF
+                gdi32.DeleteObject(ctypes.c_void_p(circ))       # 未被系统接管，自己删
+            if box:
+                # box 交给系统后不能再删
+                user32.SetWindowRgn(ctypes.c_void_p(target), ctypes.c_void_p(box), True)
+
+        set_hole(0)
+        step = {"i": 0}
+
+        def tick():
+            step["i"] += 1
+            t = step["i"] / float(steps)
+            eased = 1 - (1 - t) ** 3        # ease-out：先快后慢，收尾更自然
+            set_hole(int(full_r * eased))
+            if step["i"] < steps:
+                ov.after(interval, tick)
+            else:
+                try:
+                    ov.destroy()
+                except Exception:
+                    pass
+                finish()
+
+        ov.after(interval, tick)
+        return ov
+    except Exception:
+        ov = state.get("ov")
+        if ov is not None:
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+        finish()
+        return None
+
 
 def get_icon_path():
     """获取图标文件路径（支持开发环境和打包环境）"""

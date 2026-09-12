@@ -20,8 +20,10 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     diff_win.withdraw()
 
     diff_win.title("智能模组差异扫描（元数据级）")
-    width, height = 1200, 600
+    width, height = 1280, 620
     diff_win.geometry(f"{width}x{height}")
+    # 工具栏是完整一行（含搜索框），别让窗口被拖窄到把按钮挤散
+    diff_win.minsize(1240, 480)
     diff_win.transient(parent)
     diff_win.configure(bg=theme["bg"])
     set_window_icon(diff_win)
@@ -111,8 +113,12 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     )
     # 禁用内置选择，完全由 tag 控制
     tree.configure(selectmode="none")
+    # 列名是内部 key（排序/取值都按它），只把「表头显示文字」换成带图标的版本
+    _HEAD = {"选择": "☑ 选择", "文件名": "📄 文件名", "状态": "🔵 状态",
+             "类型": "🧩 类型", "Mod ID": "🆔 Mod ID", "版本": "🔖 版本",
+             "大小(KB)": "💾 大小(KB)", "备注": "📝 备注"}
     for col in columns:
-        tree.heading(col, text=col)
+        tree.heading(col, text=_HEAD.get(col, col))
     tree.column("选择", width=60, anchor="center", minwidth=60)
     tree.column("文件名", width=250, minwidth=150)
     tree.column("状态", width=100, minwidth=80)
@@ -120,13 +126,30 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     tree.column("Mod ID", width=150, minwidth=100)
     tree.column("版本", width=120, minwidth=80)
     tree.column("大小(KB)", width=90, anchor="center", minwidth=80)
-    tree.column("备注", width=300, minwidth=200)
+    tree.column("备注", width=300, minwidth=200, stretch=True)
 
     vsb = ttk.Scrollbar(diff_win, orient="vertical", command=tree.yview,
                         style="Diff.Vertical.TScrollbar")
     hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview,
                         style="Diff.Horizontal.TScrollbar")
-    tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    # 横向滚动条只在内容真的超出可视宽度时才出现：默认宽度下「备注」列会拉伸填满，
+    # 常驻一条拖不动的滚动条只会让人困惑。
+    hsb_state = {"shown": True}
+
+    def on_xscroll(first, last):
+        hsb.set(first, last)
+        need = float(first) > 0.001 or float(last) < 0.999
+        try:
+            if need and not hsb_state["shown"]:
+                hsb.grid()
+                hsb_state["shown"] = True
+            elif not need and hsb_state["shown"]:
+                hsb.grid_remove()
+                hsb_state["shown"] = False
+        except Exception:
+            pass
+
+    tree.configure(yscrollcommand=vsb.set, xscrollcommand=on_xscroll)
     tree.grid(row=1, column=0, sticky="nsew")
     vsb.grid(row=1, column=1, sticky="ns")
     hsb.grid(row=2, column=0, sticky="ew")
@@ -187,6 +210,9 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     def update_highlight():
         """根据 selection_state 更新每行的 tags，并强制刷新"""
         for iid, checked in selection_state.items():
+            # 被搜索过滤掉的行不在树里，必须跳过，否则 tree.item 会抛 TclError
+            if not tree.exists(iid):
+                continue
             # 获取当前行的现有 tags
             current_tags = list(tree.item(iid, "tags"))
             # 确保 "highlight" 存在或移除
@@ -284,17 +310,43 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
             return key_func
 
+    # 搜索范围 -> all_data 的字段下标
+    # item = (display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path)
+    _SCOPE_FIELDS = {
+        "全部": (0, 4, 5, 6, 7),
+        "文件名": (0,),
+        "Mod ID": (5,),
+        "版本": (6,),
+        "类型": (7,),
+        "备注": (4,),
+    }
+
+    def matched_indices():
+        """当前搜索条件下命中的 all_data 索引（保持原顺序）。"""
+        q = search_var.get().strip().lower()
+        if not q:
+            return list(range(len(all_data)))
+        fields = _SCOPE_FIELDS.get(search_scope.get(), (0,))
+        hits = []
+        for i, item in enumerate(all_data):
+            for k in fields:
+                if k < len(item) and q in str(item[k]).lower():
+                    hits.append(i)
+                    break
+        return hits
+
     def sort_items():
         key_func = get_sort_key(sort_field.get())
-        sorted_indices = sorted(range(len(all_data)),
-                                key=lambda i: key_func(all_data[i]), reverse=sort_reverse.get())
+        # 先按搜索条件过滤，再排序：表格里只放命中项
+        visible = matched_indices()
+        visible.sort(key=lambda i: key_func(all_data[i]), reverse=sort_reverse.get())
 
         # 清空 Treeview
         for child in tree.get_children():
             tree.delete(child)
 
         # 重新插入
-        for new_pos, idx in enumerate(sorted_indices):
+        for new_pos, idx in enumerate(visible):
             iid = str(idx)
             item = all_data[idx]
             display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
@@ -323,6 +375,17 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         # 强制刷新
         tree.update_idletasks()
         sort_btn.set_text("▼ 降序" if sort_reverse.get() else "▲ 升序")
+        # 底部统计：搜索过滤时提示「实际显示了几项」
+        try:
+            shown = len(tree.get_children())
+            head = f"总计 {len(all_data)} 项差异"
+            if search_var.get().strip():
+                head += f"（已过滤，显示 {shown} 项）"
+            stat_lbl.configure(
+                text=f"{head} | 新增 {new_count} | 更新 {update_count} | "
+                     f"目标独有 {target_only_count}")
+        except Exception:
+            pass
 
     def toggle_sort_direction():
         sort_reverse.set(not sort_reverse.get())
@@ -332,9 +395,38 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     toolbar_frame = tk.Frame(diff_win, bg=theme["bg"])
     toolbar_frame.grid(row=3, column=0, columnspan=2, pady=10, sticky="ew")
 
+    # 左侧搜索区：输入即过滤（250ms 防抖），可限定搜索范围
+    search_frame = tk.Frame(toolbar_frame, bg=theme["bg"])
+    search_frame.pack(side="left", padx=(10, 4))
+    tk.Label(search_frame, text="🔍", bg=theme["bg"],
+             fg=theme["fg"]).pack(side="left")
+    search_var = tk.StringVar()
+    search_entry = tk.Entry(search_frame, textvariable=search_var, width=16,
+                            bg=theme["entry_bg"], fg=theme["entry_fg"],
+                            insertbackground=theme["fg"])
+    search_entry.pack(side="left", padx=4)
+    search_scope = tk.StringVar(value="全部")
+    scope_combo = ttk.Combobox(search_frame, textvariable=search_scope,
+                               values=["全部", "文件名", "Mod ID", "版本", "类型", "备注"],
+                               state="readonly", width=7)
+    scope_combo.pack(side="left")
+    scope_combo.bind("<<ComboboxSelected>>", lambda e: sort_items())
+
+    _search_after = [None]
+
+    def on_search_changed(*a):
+        if _search_after[0] is not None:
+            try:
+                diff_win.after_cancel(_search_after[0])
+            except Exception:
+                pass
+        _search_after[0] = diff_win.after(250, sort_items)
+
+    search_var.trace("w", on_search_changed)
+
     # 左侧排序区域
     sort_frame = tk.Frame(toolbar_frame, bg=theme["bg"])
-    sort_frame.pack(side="left", padx=10, fill="x")
+    sort_frame.pack(side="left", padx=(6, 10), fill="x")
 
     tk.Label(sort_frame, text="排序依据：", bg=theme["bg"], fg=theme["fg"]).pack(side="left")
     field_combo = ttk.Combobox(sort_frame, textvariable=sort_field,
@@ -352,41 +444,73 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     btn_frame = tk.Frame(toolbar_frame, bg=theme["bg"])
     btn_frame.pack(side="right", padx=10)
 
-    def select_by_status(status):
+    def select_by_status(*statuses):
+        """按一个或多个状态组合全选（例如 ("新增","更新") 即排除"目标独有"）。
+        勾选状态记在 selection_state 里，与搜索过滤无关；
+        但只有出现在表格里的行才能去 set，被过滤掉的行必须跳过。"""
         for iid, item in enumerate(all_data):
-            if item[1] == status:
-                selection_state[str(iid)] = True
-                tree.set(str(iid), "选择", "☑")
-            else:
-                selection_state[str(iid)] = False
-                tree.set(str(iid), "选择", "☐")
+            on = item[1] in statuses
+            key = str(iid)
+            selection_state[key] = on
+            if tree.exists(key):
+                tree.set(key, "选择", "☑" if on else "☐")
         update_highlight()
 
     def select_all():
         for iid in selection_state.keys():
             selection_state[iid] = True
-            tree.set(iid, "选择", "☑")
+            if tree.exists(iid):
+                tree.set(iid, "选择", "☑")
         update_highlight()
 
     def deselect_all():
         for iid in selection_state.keys():
             selection_state[iid] = False
-            tree.set(iid, "选择", "☐")
+            if tree.exists(iid):
+                tree.set(iid, "选择", "☐")
         update_highlight()
 
     def apply_selection():
+        """应用所选：直接按 all_data 取值，不依赖表格行——
+        这样即使某行正被搜索过滤掉，它仍然会被正确应用。"""
         selected_files = []
         for iid, checked in selection_state.items():
-            if checked:
-                values = tree.item(iid, "values")
-                selected_files.append(values[1])
+            if not checked:
+                continue
+            try:
+                selected_files.append(all_data[int(iid)][0])
+            except Exception:
+                if tree.exists(iid):
+                    selected_files.append(tree.item(iid, "values")[1])
         if not selected_files:
             messagebox.showwarning("提示", "没有勾选任何模组")
             return
         apply_callback(selected_files)
         diff_win.destroy()
 
-    # 按状态全选按钮（按状态配色，加回鲜艳色）
+    # 按钮区排成一行：把 3 个组合全选收进下拉菜单，避免挤成两行
+    combo_menu = tk.Menu(diff_win, tearoff=0)
+    combo_menu.add_command(label="新增 + 更新（排除目标独有）",
+                           command=lambda: select_by_status("新增", "更新"))
+    combo_menu.add_command(label="新增 + 目标独有",
+                           command=lambda: select_by_status("新增", "目标独有"))
+    combo_menu.add_command(label="更新 + 目标独有",
+                           command=lambda: select_by_status("更新", "目标独有"))
+
+    def show_combo_menu():
+        try:
+            x = combo_btn.winfo_rootx()
+            y = combo_btn.winfo_rooty() + combo_btn.winfo_height()
+            combo_menu.tk_popup(x, y)
+        except Exception:
+            pass
+        finally:
+            try:
+                combo_menu.grab_release()
+            except Exception:
+                pass
+
+    # 按状态全选
     create_gradient_button(btn_frame, "✅ 全选新增", lambda: select_by_status("新增"),
                            colors=("#43a047", "#66bb6a"),
                            hover_colors=("#66bb6a", "#43a047"),
@@ -402,37 +526,45 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                            hover_colors=("#8d8d8d", "#bdbdbd"),
                            width=122, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
-
+    combo_btn = create_gradient_button(btn_frame, "▾ 组合选择", show_combo_menu,
+                                       colors=("#26a69a", "#4dd0e1"),
+                                       hover_colors=("#4dd0e1", "#26a69a"),
+                                       width=98, height=28,
+                                       font=("微软雅黑", 9, "bold"))
+    combo_btn.pack(side="left", padx=2)
+    # 全选 / 取消全选
     create_gradient_button(btn_frame, "☑ 全选", select_all,
                            colors=("#607d8b", "#90a4ae"),
                            hover_colors=("#78909c", "#b0bec5"),
-                           width=78, height=28,
-                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
+                           width=76, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 2))
     create_gradient_button(btn_frame, "☐ 取消全选", deselect_all,
                            colors=("#607d8b", "#90a4ae"),
                            hover_colors=("#78909c", "#b0bec5"),
-                           width=96, height=28,
+                           width=94, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
+    # 应用 / 关闭
     create_gradient_button(btn_frame, "✅ 应用所选", apply_selection,
                            colors=("#00c853", "#00e676"),
                            hover_colors=("#00e676", "#00c853"),
-                           width=104, height=28,
-                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=10)
+                           width=102, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 2))
     create_gradient_button(btn_frame, "关闭", diff_win.destroy,
                            colors=("#757575", "#9e9e9e"),
                            hover_colors=("#8d8d8d", "#bdbdbd"),
-                           width=64, height=28,
-                           font=("微软雅黑", 9, "bold")).pack(side="right", padx=2)
+                           width=62, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
 
     # ---- 底部统计 ----
     total = len(all_data)
     new_count = sum(1 for item in all_data if item[1] == "新增")
     update_count = sum(1 for item in all_data if item[1] == "更新")
     target_only_count = sum(1 for item in all_data if item[1] == "目标独有")
-    tk.Label(diff_win,
-             text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
-             font=("微软雅黑", 9), bg=theme["bg"], fg=theme["fg"]).grid(row=4, column=0,
-                                                                        columnspan=2, pady=5)
+    stat_lbl = tk.Label(
+        diff_win,
+        text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
+        font=("微软雅黑", 9), bg=theme["bg"], fg=theme["fg"])
+    stat_lbl.grid(row=4, column=0, columnspan=2, pady=5)
 
     # ---- 窗口居中 ----
     diff_win.update_idletasks()
@@ -473,6 +605,9 @@ def update_diff_theme(diff_win, theme, current_theme):
                     widget.configure(bg=theme["button_bg"], fg=theme["button_fg"])
             elif isinstance(widget, tk.Frame):
                 widget.configure(bg=theme["bg"])
+            elif isinstance(widget, tk.Entry):
+                widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"],
+                                 insertbackground=theme["fg"])
             elif isinstance(widget, ttk.Combobox):
                 style = ttk.Style()
                 style.configure("TCombobox",
