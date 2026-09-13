@@ -1,0 +1,21 @@
+# 仓库根目录的杂物。
+# 项目本体在 Minecraft迁移工具/ 下，那边另有一份更细的 .gitignore。
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 打包产物（auto-py-to-exe / PyInstaller 的输出）
+/output/
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+.vscode/
+
+# 系统杂项
+*.log
+Thumbs.db
+desktop.ini
