@@ -1,9 +1,28 @@
 # utils/helpers.py
 import tkinter as tk
+import tkinter.font as tkfont
 import os
 import sys
 import time
 from pathlib import Path
+
+
+def warm_up_emoji_font():
+    """把 Tk 的 emoji 字体回退提前查一次，免掉界面上第一个 emoji 白卡的那 260 ms。
+
+    Tk 在 Windows 上第一次遇到「微软雅黑里没有的字符」时会去枚举系统字体找替代，
+    实测单个字符约 267 ms；界面里第一个带 emoji 的按钮就会卡这么久。这里做的是
+    完全一样的调用，只是提前到启动闪屏刚画出来的时候——那会儿用户刚看到卡片，
+    卡一下看不出来；留到构建界面中途，就会看到立方体突然停住再接着转。
+    一个字符预热完，后面所有 emoji 都便宜了（实测 10~18 ms，就是按钮本身的成本）。
+    """
+    try:
+        font = tkfont.Font(family="微软雅黑", size=9, weight="bold")
+        for ch in ("🌓", "📂", "⚠️", "←"):
+            font.measure(ch)
+    except Exception:
+        pass
+
 
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            hover_colors=None, width=180, height=32, font=("微软雅黑", 10, "bold"),
@@ -260,6 +279,36 @@ def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=
                 pass
         finish()
         return None
+
+
+def clear_layered_style(win):
+    """摘掉窗口的 WS_EX_LAYERED 样式。
+
+    Tk 只要用过一次 -alpha，这个样式就一直留在窗口上；而 **Windows 对 layered
+    窗口会跳过系统的隐藏/显示过渡动画**——实测 withdraw() 之后窗口直接消失，
+    连同为普通窗口时那段约 190ms 的淡出都没有。
+    等淡入结束、窗口已经完全不透明时把它摘掉，窗口就恢复成普通窗口的行为，
+    关闭时系统那段动画才会回来。摘掉时窗口是 alpha=1.0，所以视觉上没有变化。
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.SetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                          ctypes.c_long]
+        hwnd = user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
+        GWL_EXSTYLE, WS_EX_LAYERED = -20, 0x00080000
+        ex = user32.GetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE)
+        if ex & WS_EX_LAYERED:
+            user32.SetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE,
+                                  ex & ~WS_EX_LAYERED)
+        return True
+    except Exception:
+        return False
 
 
 def focus_window(win):

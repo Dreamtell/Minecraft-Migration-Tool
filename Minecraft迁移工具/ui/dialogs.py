@@ -7,7 +7,8 @@ import difflib
 import threading
 import queue
 import webbrowser
-from utils.helpers import set_window_icon, create_gradient_button, focus_window
+from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
+                           center_window)
 from core.scanner import get_full_mod_metadata
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
@@ -29,7 +30,7 @@ class ProgressWindow:
         self.win.geometry("500x240")  # 稍微增高一点容纳步骤标签
         self.win.transient(parent)
         self.win.grab_set()
-        self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        self.win.protocol("WM_DELETE_WINDOW", self.on_close_request)
         set_window_icon(self.win)
 
         # 步骤标签（显示当前操作阶段）
@@ -105,6 +106,20 @@ class ProgressWindow:
         self.cancelled = True
         self.cancel_btn.state(tk.DISABLED)
         self.cancel_btn.set_text("正在取消...")
+
+    def on_close_request(self):
+        """点右上角 ❌：迁移跑到一半被误关代价太大，这里先确认一次。
+
+        界面上那个「取消」按钮是明确的意图，所以它不拦；❌ 才是容易误触的那个。
+        """
+        if self.cancelled:
+            return
+        if messagebox.askyesno(
+                "取消迁移",
+                "迁移正在进行，关闭这个窗口会中断当前操作，可能导致数据损坏。\n\n"
+                "确定要取消吗？",
+                default="no", icon="warning", parent=self.win):
+            self.on_cancel()
 
     def update_progress(self, file_index, file_name, copied_bytes, step=None):
         if step is not None:
@@ -189,6 +204,83 @@ class ScanProgressWindow:
 
     def on_cancel(self):
         messagebox.showwarning("提示", "扫描正在进行，请等待完成。")
+
+
+def ask_close_action(parent, theme):
+    """点 ❌ 时问一句：挂到后台继续跑，还是直接退出。
+
+    返回 (action, remember)：
+        action   —— "tray"（收进托盘）/ "exit"（直接退出）/ None（取消）
+        remember —— 用户有没有勾"记住我的选择"
+    这是个模态窗口，wait_window() 会一直等到用户选完；期间 Tk 主循环照常转，
+    后台的迁移/扫描不受影响。
+    """
+    result = {"action": None, "remember": False}
+
+    win = tk.Toplevel(parent)
+    win.withdraw()
+    win.title("关闭窗口")
+    win.configure(bg=theme["bg"])
+    win.transient(parent)
+    win.resizable(False, False)
+
+    tk.Label(win, text="要让程序继续在后台运行，还是直接退出？",
+             bg=theme["bg"], fg=theme["fg"],
+             font=("微软雅黑", 11, "bold")).pack(padx=26, pady=(20, 6))
+    tk.Label(win,
+             text="收进托盘 —— 程序留在后台继续跑，点托盘图标可以再打开；\n"
+                  "直接退出 —— 关掉程序（下次要重新启动）。",
+             bg=theme["bg"], fg=theme.get("muted_fg", theme["fg"]),
+             font=("微软雅黑", 9), justify="left").pack(padx=26, anchor="w")
+
+    remember = tk.BooleanVar(value=False)
+    tk.Checkbutton(win, text="记住我的选择，以后不再询问",
+                   variable=remember,
+                   bg=theme["bg"], fg=theme["fg"],
+                   activebackground=theme["bg"], activeforeground=theme["fg"],
+                   selectcolor=theme.get("entry_bg", theme["bg"]),
+                   highlightthickness=0, bd=0,
+                   font=("微软雅黑", 9)).pack(padx=22, pady=(12, 0), anchor="w")
+    tk.Label(win, text="（以后想改：右键任务栏托盘图标，勾选/取消"
+                       "「关闭窗口时收进托盘」）",
+             bg=theme["bg"], fg=theme.get("muted_fg", theme["fg"]),
+             font=("微软雅黑", 8)).pack(padx=26, anchor="w")
+
+    def choose(action):
+        result["action"] = action
+        result["remember"] = bool(remember.get())
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    row = tk.Frame(win, bg=theme["bg"])
+    row.pack(padx=20, pady=18)
+    for text, action, colors, hover, width in (
+            ("收进托盘继续运行", "tray", ("#00c853", "#00e676"),
+             ("#00e676", "#00c853"), 168),
+            ("直接退出", "exit", ("#e53935", "#ff7043"),
+             ("#ef5350", "#ff7043"), 110),
+            ("取消", None, ("#757575", "#9e9e9e"),
+             ("#8d8d8d", "#bdbdbd"), 90)):
+        btn = create_gradient_button(row, text, lambda a=action: choose(a),
+                                     colors=colors, hover_colors=hover,
+                                     width=width, height=32,
+                                     font=("微软雅黑", 9, "bold"))
+        btn.pack(side="left", padx=6)
+
+    win.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+    set_window_icon(win)
+    win.update_idletasks()
+    center_window(win, win.winfo_reqwidth(), win.winfo_reqheight())
+    win.deiconify()
+    focus_window(win)
+    try:
+        win.grab_set()
+    except Exception:
+        pass
+    win.wait_window()
+    return result["action"], result["remember"]
 
 
 def _configure_mod_detail_styles(theme):

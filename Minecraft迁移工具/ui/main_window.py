@@ -32,9 +32,35 @@ from ui.diff_window import show_diff_window, update_diff_theme
 from ui.virtual_table import VirtualTable
 
 
+_GRAD_FONT = None
+_GRAD_PAD = 26
+
+# Tk 量一个 emoji/符号会去查一次字体回退，进程里第一次要 260 ms 以上，后面每个新
+# 字符几毫秒；界面上十几个按钮的文案都带 emoji，累计约 300 ms 全卡在启动那一刻。
+# 而回退字形在 Windows 下几乎等宽——实测 emoji 一律 17 px、箭头 12 px（🗑️ 那种
+# 带变体选择符的也还是 17），所以先摘掉再按常量补回来，宽度与真实测量完全一致。
+_GRAD_SYM_RE = re.compile(
+    "[\u2190-\u21ff\u2300-\u23ff\u25a0-\u27bf\u2b00-\u2bff\ufe0f"
+    "\U0001F000-\U0001FAFF]")
+_GRAD_ARROW_RE = re.compile("[\u2190-\u21ff\u2b00-\u2bff]")
+_GRAD_SYM_W = 17
+_GRAD_ARROW_W = 12
+
+
 def _grad_width(text):
-    """按文字测量渐变按钮宽度（微软雅黑 9 粗体 + 内边距）。"""
-    return int(tkfont.Font(family="微软雅黑", size=9, weight="bold").measure(text)) + 26
+    """按文字测量渐变按钮宽度（微软雅黑 9 粗体 + 内边距）。
+
+    Font 对象缓存起来：每调一次就 new 一个 Font 是 tkinter 里出了名的慢，
+    而按钮宽度在启动时要算几十次，累计能有几百毫秒。emoji 按上面说的常量补。
+    """
+    global _GRAD_FONT
+    if _GRAD_FONT is None:
+        _GRAD_FONT = tkfont.Font(family="微软雅黑", size=9, weight="bold")
+    syms = _GRAD_SYM_RE.findall(text)
+    plain = _GRAD_SYM_RE.sub("", text)
+    extra = sum(_GRAD_ARROW_W if _GRAD_ARROW_RE.match(c) else _GRAD_SYM_W
+                for c in syms)
+    return int(_GRAD_FONT.measure(plain)) + extra + _GRAD_PAD
 
 
 def _center_window(win, w, h):
@@ -49,51 +75,76 @@ _FADE_STEPS = 10
 _FADE_MS = 14
 
 
-def _fade_in(win, step=1):
-    """从透明平滑淡入到完全不透明。"""
+def _fade_in(win, step=1, on_done=None):
+    """从透明平滑淡入到完全不透明。on_done 在淡入走完（或中途出错）后调用一次。"""
+    def finish():
+        if on_done is not None:
+            try:
+                on_done()
+            except Exception:
+                pass
+
     try:
         if not win.winfo_exists():
             return
         win.attributes("-alpha", min(1.0, step / float(_FADE_STEPS)))
     except Exception:
+        finish()
         return
     if step < _FADE_STEPS:
         try:
-            win.after(_FADE_MS, lambda: _fade_in(win, step + 1))
+            win.after(_FADE_MS, lambda: _fade_in(win, step + 1, on_done))
         except Exception:
-            pass
+            finish()
+    else:
+        finish()
 
 
-def _fade_out(win, step=_FADE_STEPS - 1):
-    """平滑淡出后销毁窗口。"""
+def _destroy_after_callback(win):
+    """用一个"下一帧 + 父窗口"的回调来销毁 win，别在回调里直接 destroy 自己。
+
+    after 回调收尾时 tkinter 还要 `self.deletecommand(name)`，而窗口已经销毁、
+    `_tclCommands` 被置成 None，会抛 AttributeError：既往控制台吐一段红字，
+    又会把同一时刻新登记的回调一起带走（实测能干掉主界面的淡入）。
+    挂到父窗口（root）上做就没这个问题。
+    """
+    parent = getattr(win, "master", None) or win
     try:
-        if not win.winfo_exists():
-            return
-        win.attributes("-alpha", max(0.0, step / float(_FADE_STEPS)))
+        parent.after(1, win.destroy)
     except Exception:
         try:
             win.destroy()
         except Exception:
             pass
+
+
+def _fade_out(win, step=_FADE_STEPS - 1):
+    """平滑淡出后销毁窗口（弹窗关闭用；走的是 Windows 的 layered-alpha）。"""
+    try:
+        if not win.winfo_exists():
+            return
+        win.attributes("-alpha", max(0.0, step / float(_FADE_STEPS)))
+    except Exception:
+        _destroy_after_callback(win)
         return
     if step > 0:
         try:
             win.after(_FADE_MS, lambda: _fade_out(win, step - 1))
         except Exception:
-            try:
-                win.destroy()
-            except Exception:
-                pass
+            _destroy_after_callback(win)
     else:
-        try:
-            win.destroy()
-        except Exception:
-            pass
+        _destroy_after_callback(win)
 
 
 class MigrationGUI:
-    def __init__(self, root):
+    def __init__(self, root, on_stage=None):
+        """on_stage(text)：可选的阶段回调。
+
+        构建过程有几百毫秒，期间 Tk 主线程被占满，启动闪屏的动画会停住。
+        传入这个回调就能在每个阶段之间让出一帧（app.py 里用它刷新闪屏）。
+        """
         self.root = root
+        self._on_stage = on_stage
         self.root.title("Minecraft 整合包迁移工具 - 增强版 v4")
         self.root.geometry("1000x1080")
 
@@ -107,13 +158,17 @@ class MigrationGUI:
         self.world_name = tk.StringVar(value=self.config.get("world", "老子的世界"))
         self.dry_run = tk.BooleanVar(value=self.config.get("dry_run", True))
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
+        # 关闭窗口时的行为：ask（每次问）/ tray（收进托盘）/ exit（直接退出）
+        self.close_action = self.config.get("close_action", "ask")
 
         self.last_check_modlist_time = 0
         self.last_check_config_time = 0
         self._config_status_applied = False
 
+        self._stage("正在构建界面…")
         self.create_widgets()
         self.init_log_colors()
+        self._stage("正在应用主题…")
         self.apply_theme()
 
         # 实时检测存档：输入存档名/切换源路径时即时刷新"存档是否存在"状态
@@ -121,6 +176,7 @@ class MigrationGUI:
         self.source_path.trace_add("write", lambda *a: self._update_world_status())
         self._update_world_status()
 
+        self._stage("正在载入清单…")
         self.mod_text.insert("1.0", self.config.get("mod_list", ""))
         self.config_text.insert("1.0", self.config.get("config_list", ""))
         self.mod_text.edit_reset()
@@ -139,12 +195,83 @@ class MigrationGUI:
         self._migration_running = False
         self.diff_window = None
         self._scanning = False
+        # 下面两个由 app.py 注入：窗口挂在托盘里的时候，任务跑完要弹系统通知，
+        # 扫描出来的差异窗口也要先压着，等窗口叫回来再开。
+        self._task_done_cb = None
+        self._in_tray_cb = None
+        self._pending_diff = None
+        self._stage("正在检查实例路径…")
         self.on_path_change()
+        self._stage()
         self._update_text_states()
         self._log_cache_limit = 500
         self._saved_logs = []
         self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
         self._last_log_key = None
+        self._stage("就绪")
+
+    def _stage(self, text=""):
+        """向构建阶段的观察者（启动闪屏）报告进度，并让出一帧。
+
+        传入回调时调用它；没传就什么都不做，所以对正常启动没有影响。
+        """
+        if not self._on_stage:
+            return
+        try:
+            self._on_stage(text)
+        except Exception:
+            pass
+
+    # ---------- 托盘（后台运行）相关 ----------
+    def set_close_action(self, action):
+        """记住"关闭窗口"的偏好：ask（每次问）/ tray（收进托盘）/ exit（直接退出）。"""
+        if action not in ("ask", "tray", "exit"):
+            return
+        self.close_action = action
+        try:
+            self.save_config()
+        except Exception:
+            pass
+
+    def busy_task_name(self):
+        """当前正在跑的任务名："迁移" / "扫描模组差异"；没有任务就返回 None。"""
+        if getattr(self, "_migration_running", False):
+            return "迁移"
+        if getattr(self, "_scanning", False):
+            return "扫描模组差异"
+        return None
+
+    def _in_tray(self):
+        """窗口现在是不是收在系统托盘里。"""
+        cb = self._in_tray_cb
+        try:
+            return bool(cb()) if cb else False
+        except Exception:
+            return False
+
+    def _notify_task_done(self, name, detail=""):
+        """任务跑完时如果窗口挂在托盘里，交给 app.py 弹个系统通知。"""
+        if not self._in_tray():
+            return
+        cb = self._task_done_cb
+        if cb is None:
+            return
+        try:
+            cb(name, detail)
+        except Exception:
+            pass
+
+    def _flush_pending_diff(self):
+        """窗口从托盘叫回来时，把之前压着的差异窗口补开出来。"""
+        item, self._pending_diff = self._pending_diff, None
+        if not item:
+            return
+        data, apply_callback = item
+        try:
+            self.diff_window = show_diff_window(self.root, data, self.theme,
+                                                self.current_theme, apply_callback)
+        except Exception:
+            pass
 
     def load_config(self):
         if CONFIG_FILE.exists():
@@ -166,6 +293,7 @@ class MigrationGUI:
             "mod_list": self.mod_text.get("1.0", tk.END).strip(),
             "config_list": self.config_text.get("1.0", tk.END).strip(),
             "edit_enabled": self.edit_mode.get(),
+            "close_action": self.close_action,
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -876,17 +1004,23 @@ class MigrationGUI:
                                       text="⚠️ 本工具完全免费，请勿上当受骗！如遇收费行为，请立即举报。⚠️",
                                       font=("微软雅黑", 10, "bold"))
         self.warning_label.pack(pady=5)
+        self._stage()
 
         # ---- 路径选择 ----
         self._create_path_widgets()
+        self._stage()               # 每建完一块就让出一帧，闪屏动画才不会被卡死
         # ---- 模组清单 ----
         self._create_modlist_widgets()
+        self._stage()
         # ---- Config 清单 ----
         self._create_config_widgets()
+        self._stage()
         # ---- 底部按钮 ----
         self._create_bottom_widgets()
+        self._stage()
         # ---- 日志 ----
         self._create_log_widgets()
+        self._stage()
 
         # 绑定事件
         self.source_path.trace_add("write", self.on_path_change)
@@ -917,6 +1051,7 @@ class MigrationGUI:
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"])
         self.source_status.pack(side="left", padx=10)
+        self._stage()
 
         # 迁移方向箭头：夹在源与目标之间，直观表示数据从「旧版」流向「新版」
         arrow_row = tk.Frame(self.root)
@@ -925,6 +1060,7 @@ class MigrationGUI:
             arrow_row, text="⬇", font=("微软雅黑", 20, "bold"),
             fg=self.theme["ok_fg"], bg=self.theme["bg"])
         self.migrate_arrow.pack()
+        self._stage()               # 让出一次：下面创建"新版"那一块又要几十毫秒
 
         # 目标目录
         frame_target = tk.LabelFrame(self.root, text="📥 新版整合包（迁移目的地）", padx=5, pady=5)
@@ -980,6 +1116,7 @@ class MigrationGUI:
             self.mod_text.dnd_bind('<<Drop>>', self._on_mod_drop)
         except Exception:
             pass
+        self._stage()               # ScrolledText 建一个要一百来毫秒，建完先让一帧
 
         # 橙色（edit_bg）只用在勾选框那一小块，整栏和后面的警告文字都用普通背景——
         # 这样既能突出"编辑模式"，又不会整条都在喊。
@@ -995,18 +1132,19 @@ class MigrationGUI:
             selectcolor=self.theme["edit_bg"],
             highlightthickness=0, font=("微软雅黑", 10, "bold"))
         self.edit_mode_cb.pack(side="left", padx=5)
+        self._stage()
         self.edit_warn_label = tk.Label(
             self.edit_toolbar, text="⚠️ 编辑模式可能造成数据损坏，请谨慎操作！",
             fg=self.theme["fail_fg"], bg=self.theme["bg"],
             font=("微软雅黑", 9))
         self.edit_warn_label.pack(side="left", padx=10)
+        self._stage()
 
         btn_frame = tk.Frame(frame_modlist)
         btn_frame.pack(fill="x", pady=5)
 
         # 统一渐变按钮（同高度/字体，语义配色，宽度按文字自适应）
-        def gw(text):
-            return int(tkfont.Font(family="微软雅黑", size=9, weight="bold").measure(text)) + 26
+        gw = _grad_width      # 用缓存了 Font 的量宽函数，别再就地 new 一个 Font
 
         self.btn_changelog = create_gradient_button(
             btn_frame, "📥 从变更日志导入（含Updated）", self.import_from_changelog,
@@ -1035,12 +1173,15 @@ class MigrationGUI:
             btn_frame, "🔎 检查清单模组是否存在（源目录）", self.check_modlist_existence,
             colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
             width=gw("🔎 检查清单模组是否存在（源目录）"), height=30, font=("微软雅黑", 9, "bold"))
+        self._stage()
 
         self.mod_magnify_btn.pack(side="left", padx=5)
         self.add_mods_btn.pack(side="left", padx=5)
         self.scan_btn.pack(side="left", padx=5)
+        self._stage()
         self.clear_mods_btn.pack(side="left", padx=5)
         self.check_mods_btn.pack(side="left", padx=5)
+        self._stage()
 
     def _create_config_widgets(self):
         frame_config = tk.LabelFrame(self.root,
@@ -1078,6 +1219,7 @@ class MigrationGUI:
             self.config_text.dnd_bind('<<Drop>>', self._on_config_drop)
         except Exception:
             pass
+        self._stage()
 
         btn_config_frame = tk.Frame(frame_config)
         btn_config_frame.pack(fill="x", pady=5)
@@ -1110,6 +1252,7 @@ class MigrationGUI:
             font=("微软雅黑", 9, "bold"))
         self.config_check_btn.pack(side="left", padx=5)
         self._create_check_legend(btn_config_frame)
+        self._stage()
 
     def _create_bottom_widgets(self):
         self.opt_frame = tk.Frame(self.root, bg=self.theme["bg"])
@@ -1128,6 +1271,7 @@ class MigrationGUI:
                                            variable=self.overwrite_mods,
                                            command=self.save_config, **cb_style)
         self.overwrite_cb.pack(side="left", padx=20)
+        self._stage()
 
         # 右侧按钮组
         btn_group = tk.Frame(self.opt_frame, bg=self.theme["bg"])
@@ -1144,6 +1288,7 @@ class MigrationGUI:
             font=("微软雅黑", 12, "bold")
         )
         self.start_btn.pack(side="right", padx=5)
+        self._stage()
 
         self.rollback_btn = create_gradient_button(
             parent=btn_group,
@@ -1168,6 +1313,7 @@ class MigrationGUI:
             font=("微软雅黑", 11, "bold")
         )
         self.history_btn.pack(side="right", padx=5)
+        self._stage()
 
     def _create_log_widgets(self):
         frame_log = tk.LabelFrame(self.root, text="执行日志", padx=5, pady=5)
@@ -1190,10 +1336,12 @@ class MigrationGUI:
             colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
             width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
+        self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
         self.log_text = scrolledtext.ScrolledText(frame_log, height=22, wrap=tk.WORD,
                                                   state="disabled")
         self.log_text.pack(fill="both", expand=True)
+        self._stage()
 
     # ---------- 路径选择 ----------
     def select_source(self):
@@ -1846,6 +1994,8 @@ class MigrationGUI:
                             self.root.after_cancel(self.after_id)
                             self.after_id = None
                         self._migration_running = False
+                        self._notify_task_done(
+                            "迁移", "任务已结束，点托盘图标打开主界面查看日志")
                         return
                     self.progress_window.update_progress(*msg)
             except queue.Empty:
@@ -1946,15 +2096,21 @@ class MigrationGUI:
 
         if error_msg:
             self.log(f"❌ 扫描出错: {error_msg}", level="ERROR")
-            messagebox.showerror("扫描错误", f"扫描过程中发生异常：{error_msg}")
+            if self._in_tray():
+                self._notify_task_done("扫描模组差异", f"扫描出错：{error_msg}")
+            else:
+                messagebox.showerror("扫描错误", f"扫描过程中发生异常：{error_msg}")
             return
 
         if data is None:
             return
 
         if not data:
-            messagebox.showinfo("提示", "两个 mods 目录完全一致，没有任何差异。")
             self.log("📊 扫描完成：无差异", level="INFO")
+            if self._in_tray():
+                self._notify_task_done("扫描模组差异", "两个 mods 目录完全一致，没有差异")
+            else:
+                messagebox.showinfo("提示", "两个 mods 目录完全一致，没有任何差异。")
             return
 
         self.log(f"📊 扫描完成，发现 {len(data)} 项差异", level="SUCCESS")
@@ -1970,6 +2126,12 @@ class MigrationGUI:
             self._notify_modlist_change()
 
         # 调用 show_diff_window 并保存窗口引用
+        if self._in_tray():
+            # 窗口挂在托盘里：别突然弹出这个窗口，先压着，等叫回主界面再开
+            self._pending_diff = (data, apply_callback)
+            self._notify_task_done("扫描模组差异",
+                                   f"发现 {len(data)} 项差异，点托盘图标查看")
+            return
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback)
 
@@ -2852,7 +3014,7 @@ class MigrationGUI:
             tip.deiconify()
             _cell_tip["shown"] = True
 
-        def _on_row_hover(row, event):
+        def _on_row_hover(row: int, event):
             """悬停到某行：记录位置，并安排延迟弹出单元格完整内容。
             列识别推迟到鼠标停稳，鼠标移动时不碰表格绘制，所以划动很跟手。"""
             _cell_tip["motion_t"] = time.time()
@@ -2965,7 +3127,7 @@ class MigrationGUI:
         # ---- VirtualTable 的数据源：按需读取，不复制整表 ----
         _STATUS_TEXT = {"✅ 存在": "存在", "❌ 缺失": "缺失", "…": "检测中"}
 
-        def _m_cell(row, key):
+        def _m_cell(row: int, key: str):
             """单元格文本；row 是当前显示顺序里的行号。"""
             idx = order[row]
             m = meta.get(idx)
@@ -2983,7 +3145,7 @@ class MigrationGUI:
                 return "%s %s" % ({"文件夹": "📁", "文件": "📄"}.get(v, "🧩"), v)
             return "…" if v is None else str(v)
 
-        def _m_dot(row):
+        def _m_dot(row: int):
             """状态列的 (颜色, 文字)：圆点是该列唯一带颜色的元素。"""
             st = meta.get(order[row], {}).get("status") or "…"
             if st == "❌ 缺失":
@@ -2994,7 +3156,7 @@ class MigrationGUI:
                 color = self.theme.get("muted_fg", "#808080")
             return color, _STATUS_TEXT.get(st, st)
 
-        def _m_tags(row):
+        def _m_tags(row: int):
             """行底色：勾选(绿底) > 缺失(红底) > 新添加(黄底)。"""
             idx = order[row]
             k = key_of(entries[idx])
@@ -3175,7 +3337,7 @@ class MigrationGUI:
             write_back()
             messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
-        def toggle_row(row):
+        def toggle_row(row: int):
             """切换某行勾选状态，并只重绘这一行（不整表重画）。"""
             if not (0 <= row < len(order)):
                 return
@@ -3183,7 +3345,7 @@ class MigrationGUI:
             checked[k] = not checked.get(k, False)
             table.repaint_row(row)
 
-        def open_mod_detail(row):
+        def open_mod_detail(row: int):
             """打开指定行对应模组的详情窗口（含 Modrinth 联网搜索）。"""
             try:
                 idx = order[row]
@@ -3199,7 +3361,7 @@ class MigrationGUI:
         _DOUBLE_CLICK_SEC = 0.25  # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击
         _last_click = {"t": 0.0, "row": None}
 
-        def _on_row_click(row, event):
+        def _on_row_click(row: int, event):
             """单击切换勾选；模组清单快速双击同一行则打开模组详情。"""
             if row < 0:
                 return
