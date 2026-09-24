@@ -8,7 +8,7 @@ import threading
 import queue
 import webbrowser
 from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
-                           center_window)
+                           center_window, lighten_color)
 from core.scanner import get_full_mod_metadata
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
@@ -76,7 +76,6 @@ class ProgressWindow:
 
         self.cancel_btn = create_gradient_button(self.win, "取消迁移", self.on_cancel,
                                                  colors=("#e53935", "#ef5350"),
-                                                 hover_colors=("#ef5350", "#e53935"),
                                                  width=104, height=30,
                                                  font=("微软雅黑", 9, "bold"))
         self.cancel_btn.pack(pady=10)
@@ -264,7 +263,7 @@ def ask_close_action(parent, theme):
             ("取消", None, ("#757575", "#9e9e9e"),
              ("#8d8d8d", "#bdbdbd"), 90)):
         btn = create_gradient_button(row, text, lambda a=action: choose(a),
-                                     colors=colors, hover_colors=hover,
+                                     colors=colors,
                                      width=width, height=32,
                                      font=("微软雅黑", 9, "bold"))
         btn.pack(side="left", padx=6)
@@ -303,6 +302,10 @@ def _configure_mod_detail_styles(theme):
         "Detail.Treeview.Heading",
         background=theme["button_bg"], foreground=theme["fg"],
         relief="flat", borderwidth=0
+    )
+    style.map(
+        "Detail.Treeview.Heading",
+        background=[("active", lighten_color(theme["button_bg"]))]
     )
     style.configure(
         "Detail.Vertical.TScrollbar",
@@ -391,7 +394,6 @@ def show_mod_detail(parent, jar_path, theme):
     search_entry.pack(side="left", padx=5)
     search_btn = create_gradient_button(top, "🔍 联网搜索", None,
                                         colors=("#00bcd4", "#26c6da"),
-                                        hover_colors=("#26c6da", "#00bcd4"),
                                         width=104, height=28,
                                         font=("微软雅黑", 9, "bold"))
     search_btn.pack(side="left", padx=5)
@@ -460,17 +462,14 @@ def show_mod_detail(parent, jar_path, theme):
     local_lbl.pack(side="left", padx=5)
     copy_proj_btn = create_gradient_button(act, "🔗 复制项目链接", None,
                                            colors=("#607d8b", "#90a4ae"),
-                                           hover_colors=("#78909c", "#b0bec5"),
                                            width=120, height=28,
                                            font=("微软雅黑", 9, "bold"))
     copy_link_btn = create_gradient_button(act, "📋 复制下载链接", None,
                                            colors=("#607d8b", "#90a4ae"),
-                                           hover_colors=("#78909c", "#b0bec5"),
                                            width=120, height=28,
                                            font=("微软雅黑", 9, "bold"))
     open_btn = create_gradient_button(act, "🌐 打开下载页", None,
                                       colors=("#607d8b", "#90a4ae"),
-                                      hover_colors=("#78909c", "#b0bec5"),
                                       width=112, height=28,
                                       font=("微软雅黑", 9, "bold"))
     open_btn.pack(side="right", padx=4)
@@ -479,7 +478,6 @@ def show_mod_detail(parent, jar_path, theme):
 
     create_gradient_button(win, "关闭", win.destroy,
                            colors=("#757575", "#9e9e9e"),
-                           hover_colors=("#8d8d8d", "#bdbdbd"),
                            width=72, height=30, font=("微软雅黑", 9, "bold")).pack(pady=8)
 
     # ---- 状态与线程安全更新（队列 + 轮询） ----

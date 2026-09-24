@@ -6,7 +6,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 from tendo import singleton
-from ui.main_window import MigrationGUI, _fade_in
+from ui.main_window import MigrationGUI
 from ui.dialogs import ask_close_action
 from utils.helpers import (get_icon_path, warm_up_emoji_font, clear_layered_style,
                            focus_window)
@@ -66,9 +66,15 @@ def main():
         except:
             pass
 
-    # 先弹出启动闪屏，盖住主界面构建期间的空窗（构建实测约 0.7s）
+    # 先把 emoji 那边的一次性开销（字体回退枚举 ~270ms + 首个带 emoji 的 Label
+    # 排版 ~40ms）做掉，再弹闪屏。放这儿是为了"闪屏一出现就是流畅的"——挪到闪屏
+    # 出来之后做的话，用户会看到立方体先愣住 300ms 才开始转。
+    # 代价是双击之后要多等这 300ms 才看到卡片，但总时长不变（闪屏最短时长照算）。
     splash = None
     splash_t0 = time.perf_counter()
+    warm_up_emoji_font()
+
+    # 弹出启动闪屏，盖住主界面构建期间的空窗（构建实测约 0.5s）
     try:
         from ui.splash import SplashScreen
         splash = SplashScreen(root, icon_path=icon_path)
@@ -76,13 +82,16 @@ def main():
     except Exception:
         splash = None
 
-    # 闪屏已经显示出来了，先把 emoji 字体回退查一次（约 0.27s）。
-    # 不预热的话这笔钱会在建第一个带 emoji 的按钮时花掉，正好卡在立方体转到一半。
-    warm_up_emoji_font()
+    # 主窗口的位置先算好，但**不显示**——构建期间窗口保持隐藏，等闪屏收走了
+    # 再让 Tk/Windows 原生显示出来。不提前映射、不预画、不做显形动画。
+    root.update_idletasks()
+    width, height = 1000, 1080
+    x = (root.winfo_screenwidth() - width) // 2
+    y = (root.winfo_screenheight() - height) // 2
+    root.geometry(f"{width}x{height}+{x}+{y}")
 
     # 创建主界面实例（此时窗口仍隐藏）
-    # on_stage：构建途中被回调，用来更新闪屏文字并让出一帧，
-    # 否则主线程被占满，闪屏动画会整个停住。
+    # on_stage：构建途中被回调，用来让出一帧，否则主线程被占满，闪屏动画会停住。
     def on_stage(text=""):
         if splash is not None and text:
             splash.set_status(text)
@@ -93,23 +102,6 @@ def main():
 
     app = MigrationGUI(root, on_stage=on_stage)
 
-    # 主界面已经建完了。先把它以 0 透明度显示在闪屏下面，把首次整窗绘制
-    # （实测 200~400 ms）在这里做掉：等闪屏淡出、卡片消失的那一瞬，露出来的
-    # 就是已经画好的界面——用户看到的是"卡片没了 → 主界面直接出现"，
-    # 中间既没有空白，也不会先闪一下没画完的窗口。
-    root.update_idletasks()
-    width, height = 1000, 1080
-    x = (root.winfo_screenwidth() - width) // 2
-    y = (root.winfo_screenheight() - height) // 2
-    root.geometry(f"{width}x{height}+{x}+{y}")
-    try:
-        root.attributes("-alpha", 0.0)      # 藏起来画（失败就走下面的退路）
-        hidden_by_alpha = True
-    except Exception:
-        hidden_by_alpha = False
-    if hidden_by_alpha:
-        root.deiconify()
-        root.update()                       # 这一下把整窗画完，此时完全透明、看不见
     if splash is not None:
         try:
             splash.lift()                   # 保证闪屏仍在最上层
@@ -117,37 +109,26 @@ def main():
             pass
 
     def _make_sure_visible():
-        """收尾：保证窗口确实显示出来，并把 layered 样式摘掉。
+        """收尾：保证窗口显示出来，并且是普通窗口（不带 layered）。
 
-        摘掉是关键——Tk 用过 -alpha 之后窗口一直带着 WS_EX_LAYERED，而 Windows
-        对 layered 窗口会跳过关闭时的系统过渡动画，关窗就会"直接没了"。
-        此时 alpha 已经回到 1.0，摘掉在视觉上没有任何变化。
+        layered 是"Windows 会跳过关闭动画"的那个样式。现在整条启动路径都不碰
+        -alpha，窗口本来就是普通的，这里只是兜底清一下。
         """
-        try:
-            root.attributes("-alpha", 1.0)
-        except Exception:
-            pass
         try:
             root.deiconify()
         except Exception:
             pass
         clear_layered_style(root)
+        focus_window(root)
 
     def reveal_main_window():
-        """闪屏彻底消失之后才让主界面显形。
-
-        显形本身也分几帧淡入——和"放大查看"那些弹窗用的是同一套 _fade_in，
-        否则卡片一没、主界面"啪"地硬切出来，弹出的那一下动画就没了。
-        淡入走完（on_done）再摘掉 layered 样式，让关闭时的系统动画能回来。
-        """
+        """主界面显形——直接让 Tk / Windows 原生显示，不做动画、不提前预画。"""
         try:
-            if not hidden_by_alpha:
-                root.deiconify()
-            _fade_in(root, on_done=_make_sure_visible)
+            root.deiconify()
         except Exception:
-            _make_sure_visible()
+            pass
 
-    # 构建如果太快（约 0.4s），立方体刚起转就淡出了，所以给闪屏一个最短显示时长；
+    # 构建如果太快（约 0.4s），立方体刚起转就收起了，所以给闪屏一个最短显示时长；
     # 等待期间继续 update，动画照常跑。
     if splash is not None:
         remain = SPLASH_MIN_SEC - (time.perf_counter() - splash_t0)
@@ -159,11 +140,15 @@ def main():
                 break
             time.sleep(0.002)       # 让出一点点 CPU 即可，sleep 太久会把帧率拖下去
         try:
-            splash.close(on_done=reveal_main_window)
+            # 主界面等卡片缩到只剩一小点（on_shrunk）才显形：显形会让主窗口做
+            # 第一次整绘（实测 150ms 上下），趁卡片已经很小的时候做，看不出来。
+            splash.close(on_shrunk=reveal_main_window, on_done=_make_sure_visible)
         except Exception:
             reveal_main_window()
+            _make_sure_visible()
     else:
         reveal_main_window()
+        _make_sure_visible()
 
     # ------------------------------------------------------- 系统托盘 / 后台
     # 关窗口不再退出，只是 withdraw 收进托盘，任务在后台继续跑；托盘菜单里才有
@@ -181,6 +166,8 @@ def main():
 
     hidden = {"v": False}          # 主界面是不是收在托盘里
     tray_tip_shown = {"v": False}
+    poll_id = {"v": None}          # tray_poll 的 after id（退出时要撤掉）
+    quitting = {"v": False}
 
     def notify_task_done(name, detail=""):
         """任务跑完时窗口若挂在托盘里，弹个系统通知提醒一下。"""
@@ -214,7 +201,7 @@ def main():
         apply_close_action(action)
 
     def show_main_window():
-        """从托盘把主界面叫回来（同样分帧淡入，避开 deiconify 的白闪）。"""
+        """从托盘把主界面叫回来——同样走原生显示，不做淡入/预画。"""
         if not hidden["v"]:
             try:
                 root.deiconify()
@@ -225,21 +212,7 @@ def main():
         hidden["v"] = False
         if tray is not None:
             tray.set_tooltip("Minecraft 整合包迁移工具")
-        try:
-            root.attributes("-alpha", 0.0)
-        except Exception:
-            pass
-        try:
-            root.deiconify()
-            root.update()
-        except Exception:
-            pass
-
-        def done():
-            clear_layered_style(root)       # 摘掉后系统才会给关闭动画
-            focus_window(root)
-
-        _fade_in(root, on_done=done)
+        _make_sure_visible()
         try:
             app._flush_pending_diff()       # 挂托盘期间扫描出的窗口，这时候补开
         except Exception:
@@ -259,7 +232,18 @@ def main():
                        "程序仍在后台运行。点托盘图标可重新打开，右键可退出。")
 
     def request_quit():
-        """请求退出：先跳出主循环，存盘和销毁统一放到 mainloop 之后做。"""
+        """请求退出：先跳出主循环，存盘和销毁统一放到 mainloop 之后做。
+
+        顺手把托盘轮询的定时器撤掉——不然它会带着一个已经被销毁的 Tcl 命令
+        在解释器收尾时炸出一行 "invalid command name"。
+        """
+        quitting["v"] = True
+        if poll_id["v"] is not None:
+            try:
+                root.after_cancel(poll_id["v"])
+            except Exception:
+                pass
+            poll_id["v"] = None
         try:
             root.quit()
         except Exception:
@@ -267,6 +251,8 @@ def main():
 
     def tray_poll():
         """Tk 主线程这边轮询托盘线程塞进来的命令。"""
+        if quitting["v"]:
+            return
         if tray is not None:
             try:
                 while True:
@@ -293,7 +279,7 @@ def main():
             except queue.Empty:
                 pass
         try:
-            root.after(80, tray_poll)
+            poll_id["v"] = root.after(80, tray_poll)
         except Exception:
             pass
 

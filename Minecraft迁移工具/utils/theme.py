@@ -129,7 +129,16 @@ def apply_theme_to_widget_tree(widget, theme):
         elif isinstance(widget, tk.Text):
             widget.configure(bg=theme["text_bg"], fg=theme["text_fg"])
         elif isinstance(widget, tk.Canvas):
-            widget.configure(bg=theme["bg"])
+            # 渐变按钮是 Canvas：它四角是透明的，得跟着"父容器的真实底色"走，
+            # 不能一律用 theme["bg"]（按钮可能坐在 LabelFrame 这类容器上）
+            setter = getattr(widget, "set_corner_bg", None)
+            if setter is not None:
+                try:
+                    setter(widget.master.cget("bg"))
+                except Exception:
+                    widget.configure(bg=theme["bg"])
+            else:
+                widget.configure(bg=theme["bg"])
         elif isinstance(widget, tk.Listbox):
             widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"])
         elif isinstance(widget, tk.Checkbutton):

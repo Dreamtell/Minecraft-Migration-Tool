@@ -139,13 +139,53 @@ def mark_rollback(target_path):
 
 
 # ---------- 备份与恢复 ----------
+# 备份范围必须和"迁移会动的东西"一一对应：少了 → 回滚不干净；多了 → 会把用户迁移后
+# 自己改过的文件一起回退掉。所以这里只列迁移真正会写的东西。
+# 迁移现在会写：mods/ config/ saves/ 三个目录 + 目标根的 options.txt。
+# （以后 run_migration 新增写目标根的文件，必须同步加进 _BACKUP_ROOT_FILES）
+_BACKUP_DIRS = ("mods", "config", "saves")
+_BACKUP_ROOT_FILES = ("options.txt",)
+_BACKUP_FILES_SUBDIR = "_files"
+_BACKUP_MANIFEST = "manifest.json"
+
+
+def get_backup_path(target_path):
+    return Path(target_path) / ".migrate_backup"
+
+
+def _write_manifest(backup_root, exists_dirs, exists_files):
+    """记录"迁移前哪些目录/文件存在"，回滚时才知道哪些是迁移新建的、该删掉。"""
+    data = {
+        "version": 2,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "dirs": {name: bool(exists_dirs.get(name)) for name in _BACKUP_DIRS},
+        "files": {name: bool(exists_files.get(name)) for name in _BACKUP_ROOT_FILES},
+    }
+    try:
+        with open(backup_root / _BACKUP_MANIFEST, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+    return data
+
+
+def read_manifest(backup_root):
+    """读备份清单。旧版本备份没有清单，返回 None，调用方按兼容模式处理。"""
+    try:
+        with open(Path(backup_root) / _BACKUP_MANIFEST, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def do_backup(target_path, log_func=None):
     """
-    备份目标实例，若失败则抛出异常
+    备份目标实例里"迁移可能改动的部分"，若失败则抛出异常
     """
+    target_path = Path(target_path)
+    backup_root = get_backup_path(target_path)
     if log_func:
         log_func("📦 开始备份目标实例...", "INFO")
-    backup_root = target_path / ".migrate_backup"
 
     if backup_root.exists():
         if log_func:
@@ -154,8 +194,10 @@ def do_backup(target_path, log_func=None):
     backup_root.mkdir(parents=True)
 
     backed = []
-    for folder in ["mods", "config", "saves"]:
+    exists_dirs = {}
+    for folder in _BACKUP_DIRS:
         src = target_path / folder
+        exists_dirs[folder] = src.exists()
         if src.exists():
             dst = backup_root / folder
             if log_func:
@@ -164,46 +206,116 @@ def do_backup(target_path, log_func=None):
             backed.append(folder)
         else:
             if log_func:
-                log_func(f"ℹ️ {folder} 不存在，跳过备份", "INFO")
+                log_func(f"ℹ️ {folder} 不存在，跳过备份"
+                         f"（回滚时会删掉迁移新建的同名目录）", "INFO")
+
+    # 根级文件（options.txt 等）：迁移也会覆盖它们，漏了就不是真回滚
+    files_root = backup_root / _BACKUP_FILES_SUBDIR
+    exists_files = {}
+    backed_files = []
+    for name in _BACKUP_ROOT_FILES:
+        src = target_path / name
+        exists_files[name] = src.exists()
+        if src.is_file():
+            files_root.mkdir(parents=True, exist_ok=True)
+            dst = files_root / name
+            if log_func:
+                log_func(f"📂 备份 {name} → {dst}", "INFO")
+            shutil.copy2(src, dst)
+            backed_files.append(name)
+
+    _write_manifest(backup_root, exists_dirs, exists_files)
 
     if log_func:
-        log_func(f"✅ 备份完成，已备份：{', '.join(backed) if backed else '无'}", "SUCCESS")
+        done = ", ".join(backed + backed_files)
+        log_func(f"✅ 备份完成，已备份：{done if done else '无'}", "SUCCESS")
 
 
 def do_restore(target_path, log_func=None):
     """
     从备份恢复目标实例
     返回: 是否成功
+
+    和旧版的三点区别：
+    1. 目标根的 options.txt 这类文件也在恢复范围内（以前漏了，回滚后它还是源实例的版本）；
+    2. 迁移前不存在的目录/文件，回滚时会被清掉，否则全新实例回滚完仍是迁移产物的堆；
+    3. 任何一项出错都返回 False，不再"什么都没恢复却报成功"。
     """
-    backup_root = target_path / ".migrate_backup"
+    target_path = Path(target_path)
+    backup_root = get_backup_path(target_path)
     if not backup_root.exists():
         if log_func:
             log_func("❌ 恢复失败：备份目录不存在", "ERROR")
         return False
 
+    manifest = read_manifest(backup_root)
+    if manifest is None and log_func:
+        log_func("⚠️ 这份备份没有清单（旧版本留下的）：只恢复已有内容，"
+                 "不会清理迁移新建的部分", "WARNING")
     if log_func:
         log_func("🔄 开始从备份恢复...", "INFO")
-    restored = []
 
-    for folder in ["mods", "config", "saves"]:
+    restored, cleaned, failed = [], [], []
+
+    for folder in _BACKUP_DIRS:
         target_folder = target_path / folder
         backup_folder = backup_root / folder
-
-        if backup_folder.exists():
-            if target_folder.exists():
+        try:
+            if backup_folder.is_dir():
+                if target_folder.exists():
+                    if log_func:
+                        log_func(f"🗑️ 删除现有目录：{target_folder}", "INFO")
+                    shutil.rmtree(target_folder)
                 if log_func:
-                    log_func(f"🗑️ 删除现有目录：{target_folder}", "INFO")
-                shutil.rmtree(target_folder)
+                    log_func(f"📂 恢复备份：{backup_folder} → {target_folder}", "INFO")
+                shutil.copytree(backup_folder, target_folder)
+                restored.append(folder + "/")
+            elif manifest is not None and not manifest.get("dirs", {}).get(folder, True):
+                # 迁移前本来没这个目录 → 现在还留着，说明是迁移建的
+                if target_folder.exists():
+                    if log_func:
+                        log_func(f"🗑️ 迁移新建的 {folder}/，按回滚要求删除", "INFO")
+                    shutil.rmtree(target_folder)
+                    cleaned.append(folder + "/")
+            else:
+                if log_func:
+                    log_func(f"ℹ️ 备份中不存在 {folder}，跳过", "INFO")
+        except Exception as e:
+            failed.append(f"{folder}: {e}")
             if log_func:
-                log_func(f"📂 恢复备份：{backup_folder} → {target_folder}", "INFO")
-            shutil.copytree(backup_folder, target_folder)
-            restored.append(folder)
-        else:
+                log_func(f"❌ 恢复 {folder} 失败: {e}", "ERROR")
+
+    files_root = backup_root / _BACKUP_FILES_SUBDIR
+    for name in _BACKUP_ROOT_FILES:
+        target_file = target_path / name
+        backup_file = files_root / name
+        try:
+            if backup_file.is_file():
+                if log_func:
+                    log_func(f"📂 恢复文件：{name} → {target_file}", "INFO")
+                shutil.copy2(backup_file, target_file)
+                restored.append(name)
+            elif manifest is not None and not manifest.get("files", {}).get(name, True):
+                if target_file.exists():
+                    if log_func:
+                        log_func(f"🗑️ 迁移新建的 {name}，按回滚要求删除", "INFO")
+                    target_file.unlink()
+                    cleaned.append(name)
+        except Exception as e:
+            failed.append(f"{name}: {e}")
             if log_func:
-                log_func(f"ℹ️ 备份中不存在 {folder}，跳过", "INFO")
+                log_func(f"❌ 恢复 {name} 失败: {e}", "ERROR")
+
+    if failed:
+        if log_func:
+            log_func(f"❌ 恢复未完成，失败 {len(failed)} 项：{'; '.join(failed)}", "ERROR")
+        return False
 
     if log_func:
-        log_func(f"✅ 恢复完成，已恢复：{', '.join(restored) if restored else '无'}", "SUCCESS")
+        detail = f"：{', '.join(restored)}" if restored else ""
+        log_func(f"✅ 恢复完成，已恢复 {len(restored)} 项"
+                 + (f"，清理迁移新建的 {len(cleaned)} 项" if cleaned else "")
+                 + detail, "SUCCESS")
     return True
 
 

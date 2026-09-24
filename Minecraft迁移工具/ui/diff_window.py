@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import time
-from utils.helpers import set_window_icon, create_gradient_button
+from utils.helpers import set_window_icon, create_gradient_button, lighten_color
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
 
 
@@ -75,7 +75,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     )
     style.map(
         "Diff.Treeview.Heading",
-        background=[('active', theme["button_bg"])]
+        background=[('active', lighten_color(theme["button_bg"]))]
     )
 
     # 配置滚动条样式
@@ -436,7 +436,6 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     field_combo.bind("<<ComboboxSelected>>", lambda e: sort_items())
     sort_btn = create_gradient_button(sort_frame, "▲ 升序", toggle_sort_direction,
                                       colors=("#607d8b", "#90a4ae"),
-                                      hover_colors=("#78909c", "#b0bec5"),
                                       width=76, height=28, font=("微软雅黑", 9, "bold"))
     sort_btn.pack(side="left", padx=5)
 
@@ -513,45 +512,37 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     # 按状态全选
     create_gradient_button(btn_frame, "✅ 全选新增", lambda: select_by_status("新增"),
                            colors=("#43a047", "#66bb6a"),
-                           hover_colors=("#66bb6a", "#43a047"),
                            width=92, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
     create_gradient_button(btn_frame, "🔄 全选更新", lambda: select_by_status("更新"),
                            colors=("#fb8c00", "#ffb74d"),
-                           hover_colors=("#ffa726", "#ffcc80"),
                            width=92, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
     create_gradient_button(btn_frame, "📌 全选目标独有", lambda: select_by_status("目标独有"),
                            colors=("#757575", "#9e9e9e"),
-                           hover_colors=("#8d8d8d", "#bdbdbd"),
                            width=122, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
     combo_btn = create_gradient_button(btn_frame, "▾ 组合选择", show_combo_menu,
                                        colors=("#26a69a", "#4dd0e1"),
-                                       hover_colors=("#4dd0e1", "#26a69a"),
                                        width=98, height=28,
                                        font=("微软雅黑", 9, "bold"))
     combo_btn.pack(side="left", padx=2)
     # 全选 / 取消全选
     create_gradient_button(btn_frame, "☑ 全选", select_all,
                            colors=("#607d8b", "#90a4ae"),
-                           hover_colors=("#78909c", "#b0bec5"),
                            width=76, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 2))
     create_gradient_button(btn_frame, "☐ 取消全选", deselect_all,
                            colors=("#607d8b", "#90a4ae"),
-                           hover_colors=("#78909c", "#b0bec5"),
                            width=94, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
     # 应用 / 关闭
     create_gradient_button(btn_frame, "✅ 应用所选", apply_selection,
                            colors=("#00c853", "#00e676"),
-                           hover_colors=("#00e676", "#00c853"),
                            width=102, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 2))
     create_gradient_button(btn_frame, "关闭", diff_win.destroy,
                            colors=("#757575", "#9e9e9e"),
-                           hover_colors=("#8d8d8d", "#bdbdbd"),
                            width=62, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
 

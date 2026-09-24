@@ -18,6 +18,8 @@
 import tkinter as tk
 import tkinter.font as tkfont
 
+from utils.helpers import lighten_color
+
 # 7x7 实心圆（透明背景）
 _DOT_PATTERN = (
     "  ###  ",
@@ -62,6 +64,7 @@ class VirtualTable(tk.Frame):
         self._free_slots = []    # 空闲槽位，滚动时复用，避免反复创建/销毁
         self._first = 0
         self._hover_row = -1
+        self._hover_col = None       # 鼠标经过的列头（列头点了能排序，得有高亮反馈）
         self.sort_col = None
         self.sort_rev = False
 
@@ -85,6 +88,8 @@ class VirtualTable(tk.Frame):
         self._base_bg = theme.get("ttk_bg", "#ffffff")
         self._base_fg = theme.get("ttk_fg", "#000000")
         self._border = theme.get("border", "#c8c8c8")
+        # 列头悬停高亮：和按钮同一套规则——把常态底色整体调亮一档
+        self._header_hover_bg = lighten_color(self._base_bg)
         if tag_styles is not None:
             self.tag_styles = dict(tag_styles)
         else:
@@ -141,6 +146,8 @@ class VirtualTable(tk.Frame):
 
     def _bind_events(self):
         self.header.bind("<Button-1>", self._ev_header_click)
+        self.header.bind("<Motion>", self._ev_header_motion)
+        self.header.bind("<Leave>", self._ev_header_leave)
         self.body.bind("<Button-1>", self._ev_click)
         self.body.bind("<Motion>", self._ev_motion)
         self.body.bind("<Leave>", self._ev_leave)
@@ -155,6 +162,12 @@ class VirtualTable(tk.Frame):
         c.delete("all")
         h = self.header_height
         c.create_rectangle(0, 0, self._total_width, h, fill=self._base_bg, width=0)
+        # 鼠标经过的那一列先铺一块高亮底，再画分隔线和文字（文字在最上层）
+        j0 = self._hover_col
+        if j0 is not None and 0 <= j0 < len(self.columns) and self.columns[j0][1]:
+            c.create_rectangle(self._col_x[j0], 0,
+                               self._col_x[j0] + self._widths[j0], h,
+                               fill=self._header_hover_bg, width=0)
         for j, (key, title, _w, anchor) in enumerate(self.columns):
             width = self._widths[j]
             x = self._col_x[j]
@@ -528,6 +541,23 @@ class VirtualTable(tk.Frame):
         row = self.row_at(event.y)
         if row >= 0 and self.on_row_click:
             self.on_row_click(row, event)
+
+    def _ev_header_motion(self, event):
+        """列头鼠标经过：高亮那一格（列头点一下能排序，得给反馈）。"""
+        x = self.header.canvasx(event.x)
+        col = None
+        for j, (key, title, _w, anchor) in enumerate(self.columns):
+            if title and self._col_x[j] <= x < self._col_x[j] + self._widths[j]:
+                col = j
+                break
+        if col != self._hover_col:
+            self._hover_col = col
+            self._draw_header()
+
+    def _ev_header_leave(self, event):
+        if self._hover_col is not None:
+            self._hover_col = None
+            self._draw_header()
 
     def _ev_header_click(self, event):
         x = self.header.canvasx(event.x)

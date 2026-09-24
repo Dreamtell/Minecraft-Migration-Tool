@@ -16,11 +16,13 @@ from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
-                           circular_reveal, focus_window)
+                           circular_reveal, focus_window, lighten_color,
+                           make_theme_icon)
 from core.migrator import (
     run_migration,
     do_backup,
     do_restore,
+    get_backup_path,
     load_history,
     mark_rollback,
     _is_safe_path,
@@ -45,6 +47,10 @@ _GRAD_SYM_RE = re.compile(
 _GRAD_ARROW_RE = re.compile("[\u2190-\u21ff\u2b00-\u2bff]")
 _GRAD_SYM_W = 17
 _GRAD_ARROW_W = 12
+# 顶栏两个图标按钮（⚙ / 月亮太阳）的边长：正方形，图标大小与相邻按钮高度协调
+_ICON_BTN = 34
+# 主题按钮里那张手绘图标（月亮/太阳）的边长
+_ICON_SIZE = 22
 
 
 def _grad_width(text):
@@ -71,8 +77,9 @@ def _center_window(win, w, h):
 # 窗口淡入/淡出：Toplevel 首次映射时系统会先填一块窗口背景、Tk 才画内容，
 # 于是露出一瞬空白。做法是先在透明状态下把首帧画完，再分几帧平滑显形，
 # 关闭时反向淡出——既不白屏，也不是"啪"地一下出现。
-_FADE_STEPS = 10
-_FADE_MS = 14
+# 步数从 10 提到 18：每步从 10% 降到 5.5%，肉眼就不再是"跳"着变透明了。
+_FADE_STEPS = 18
+_FADE_MS = 9
 
 
 def _fade_in(win, step=1, on_done=None):
@@ -228,6 +235,12 @@ class MigrationGUI:
         if action not in ("ask", "tray", "exit"):
             return
         self.close_action = action
+        # 设置窗开着的话，把单选框同步过去（托盘右键菜单也能改这个值）
+        try:
+            if getattr(self, "settings_close_var", None) is not None:
+                self.settings_close_var.set(action)
+        except Exception:
+            pass
         try:
             self.save_config()
         except Exception:
@@ -363,6 +376,11 @@ class MigrationGUI:
             relief="flat",
             font=("微软雅黑", 10, "bold")
         )
+        # 列标题能点（点一下排序），所以鼠标悬停也给同样的高亮反馈
+        style.map(
+            "Treeview.Heading",
+            background=[("active", lighten_color(self.theme["button_bg"]))]
+        )
 
         # Progressbar 样式
         style.configure(
@@ -480,8 +498,20 @@ class MigrationGUI:
             self.target_status.configure(bg=self.theme["bg"])
         if hasattr(self, 'world_status'):
             self.world_status.configure(bg=self.theme["bg"])
-        if hasattr(self, 'migrate_arrow'):
-            self.migrate_arrow.configure(bg=self.theme["bg"], fg=self.theme["ok_fg"])
+        # （迁移方向箭头现在是"⬇ 新版整合包"标题里的一个字符，没有独立控件要刷色）
+
+        # 主题按钮上的图标跟着主题走（深色时显示太阳 = 点它回浅色，反之给月亮）
+        if hasattr(self, 'theme_btn'):
+            try:
+                self.theme_btn.set_icon(self._theme_icon())
+            except Exception:
+                pass
+        # 设置窗开着的话，里面的主题单选框也同步过来
+        try:
+            if getattr(self, "settings_theme_var", None) is not None:
+                self.settings_theme_var.set(self.current_theme)
+        except Exception:
+            pass
         # 这些区域用的是专用配色，通用刷新会把它们刷成普通背景，这里逐个补回来
         if hasattr(self, 'opt_frame'):
             self.opt_frame.configure(bg=self.theme["bg"])
@@ -577,6 +607,82 @@ class MigrationGUI:
         circular_reveal(self.root, cx, cy, on_switch=do_switch, on_done=done)
 
     # ---------- 工具函数 ----------
+    # ---------- 设置 ----------
+    def _theme_icon(self):
+        """主题按钮上的图标：显示"点了会变成什么"——浅色时给月亮，深色时给太阳。
+
+        月亮/太阳都是自己用 Pillow 画的（见 helpers.make_theme_icon）：☀️ 这种 emoji
+        在 15pt 下就是一团圆点，看不出是太阳。
+        """
+        kind = "sun" if self.current_theme == "dark" else "moon"
+        return make_theme_icon(kind, size=_ICON_SIZE)
+
+    def choose_theme(self, name):
+        """从设置窗里指定主题（只有浅/深两种，所以和目标不同就等于切换）。"""
+        if name != self.current_theme:
+            self.toggle_theme(from_widget=getattr(self, "theme_btn", None))
+
+    def open_settings(self):
+        """⚙ 设置：程序级偏好集中放这儿（关闭窗口行为、主题）。"""
+        win = getattr(self, "settings_win", None)
+        if win is not None and win.winfo_exists():
+            focus_window(win)
+            return
+
+        win = tk.Toplevel(self.root)
+        self.settings_win = win
+        win.withdraw()
+        win.title("⚙ 设置")
+        win.configure(bg=self.theme["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        set_window_icon(win)
+
+        def section(title):
+            box = tk.LabelFrame(win, text=title, padx=10, pady=6,
+                                bg=self.theme["bg"], fg=self.theme["fg"])
+            box.pack(fill="x", padx=14, pady=(12, 0))
+            return box
+
+        def radio(parent, text, value, var, command, **kw):
+            return tk.Radiobutton(
+                parent, text=text, value=value, variable=var, command=command,
+                bg=self.theme["bg"], fg=self.theme["fg"],
+                activebackground=self.theme["bg"], activeforeground=self.theme["fg"],
+                selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
+                highlightthickness=0, bd=0, font=("微软雅黑", 9),
+                anchor="w", **kw)
+
+        # ---- 关闭窗口时 ----
+        box = section("关闭窗口时")
+        self.settings_close_var = tk.StringVar(
+            value=getattr(self, "close_action", "ask"))
+        for value, text in (("tray", "收进系统托盘，程序继续在后台跑"),
+                            ("exit", "直接退出程序"),
+                            ("ask", "每次问我")):
+            radio(box, text, value, self.settings_close_var,
+                  lambda v=value: self.set_close_action(v)).pack(fill="x")
+
+        # ---- 主题 ----
+        box2 = section("主题")
+        self.settings_theme_var = tk.StringVar(value=self.current_theme)
+        for value, text in (("light", "浅色"), ("dark", "深色")):
+            radio(box2, text, value, self.settings_theme_var,
+                  lambda v=value: self.choose_theme(v)).pack(side="left", padx=(0, 20))
+
+        row = tk.Frame(win, bg=self.theme["bg"])
+        row.pack(fill="x", padx=14, pady=14)
+        create_gradient_button(row, "关闭", win.destroy,
+                               colors=("#757575", "#9e9e9e"),
+                               width=90, height=30,
+                               font=("微软雅黑", 9, "bold")).pack(side="right")
+
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.update_idletasks()
+        center_window(win, win.winfo_reqwidth(), win.winfo_reqheight())
+        win.deiconify()
+        focus_window(win)
+
     def create_tooltip(self, widget, text):
         def enter(event):
             self.tooltip = tk.Toplevel(widget)
@@ -591,8 +697,11 @@ class MigrationGUI:
             if hasattr(self, 'tooltip'):
                 self.tooltip.destroy()
 
-        widget.bind("<Enter>", enter)
-        widget.bind("<Leave>", leave)
+        # 必须 add="+"：tkinter 的 bind 默认是覆盖，直接绑会把按钮自己那套
+        # 悬停高亮顶掉——之前"从变更日志导入""← 使用新版路径填充"这两个带提示的
+        # 按钮鼠标放上去毫无反应，就是被这里吃掉的。
+        widget.bind("<Enter>", enter, add="+")
+        widget.bind("<Leave>", leave, add="+")
 
     def _is_valid_instance(self, path_str):
         """
@@ -897,13 +1006,13 @@ class MigrationGUI:
         count_lbl.pack(side="left", padx=4)
         btn_close = create_gradient_button(
             toolbar, "❌ 关闭", win.destroy,
-            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            colors=("#757575", "#9e9e9e"),
             width=_grad_width("❌ 关闭"), height=28, font=("微软雅黑", 9, "bold"))
         btn_close.pack(side="right", padx=4)
         btn_refresh = create_gradient_button(
             toolbar, "🔄 刷新",
             lambda: state.__setitem__("last", None),
-            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            colors=("#00bcd4", "#3f51b5"),
             width=_grad_width("🔄 刷新"), height=28, font=("微软雅黑", 9, "bold"))
         btn_refresh.pack(side="right", padx=4)
 
@@ -988,14 +1097,23 @@ class MigrationGUI:
 
     # ---------- 界面构建（由于太长，拆分为多个辅助方法） ----------
     def create_widgets(self):
-        # 顶部栏
+        # 顶部栏：两个正方形图标按钮。设置在最右，主题切换在它左边（都用图标，不放文字）
         top_bar = tk.Frame(self.root)
         top_bar.pack(fill="x", padx=10, pady=5)
+        self.settings_btn = create_gradient_button(
+            top_bar, "⚙", self.open_settings,
+            colors=("#546e7a", "#78909c"),
+            width=_ICON_BTN, height=_ICON_BTN, font=("微软雅黑", 15))
+        self.settings_btn.pack(side="right", padx=(6, 0))
         self.theme_btn = create_gradient_button(
-            top_bar, "🌓 切换主题", self.toggle_theme,
-            colors=("#8e24aa", "#ab47bc"), hover_colors=("#ab47bc", "#8e24aa"),
-            width=_grad_width("🌓 切换主题"), height=30, font=("微软雅黑", 9, "bold"))
+            top_bar, "", self.toggle_theme,
+            colors=("#8e24aa", "#ab47bc"),
+            width=_ICON_BTN, height=_ICON_BTN, font=("微软雅黑", 15))
+        self.theme_btn.set_icon(self._theme_icon())
         self.theme_btn.pack(side="right", padx=5)
+        self.create_tooltip(self.theme_btn, "切换浅色 / 深色主题")
+        self.create_tooltip(self.settings_btn, "设置")
+        self._stage()
 
         # 警告横幅
         self.warning_frame = tk.Frame(self.root, relief=tk.RIDGE, bd=2)
@@ -1040,12 +1158,13 @@ class MigrationGUI:
                  width=60).pack(side="left", padx=5)
         btn_source_browse = create_gradient_button(
             frame_source, "📂 浏览...", self.select_source,
-            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
         btn_source_browse.pack(side="left", padx=5)
+        self._stage()
         btn_copy = create_gradient_button(
             frame_source, "← 使用新版路径填充", self.copy_target_to_source,
-            colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
+            colors=("#fb8c00", "#ffb74d"),
             width=_grad_width("← 使用新版路径填充"), height=30, font=("微软雅黑", 9, "bold"))
         btn_copy.pack(side="left", padx=5)
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
@@ -1053,23 +1172,18 @@ class MigrationGUI:
         self.source_status.pack(side="left", padx=10)
         self._stage()
 
-        # 迁移方向箭头：夹在源与目标之间，直观表示数据从「旧版」流向「新版」
-        arrow_row = tk.Frame(self.root)
-        arrow_row.pack(fill="x", padx=10)
-        self.migrate_arrow = tk.Label(
-            arrow_row, text="⬇", font=("微软雅黑", 20, "bold"),
-            fg=self.theme["ok_fg"], bg=self.theme["bg"])
-        self.migrate_arrow.pack()
-        self._stage()               # 让出一次：下面创建"新版"那一块又要几十毫秒
-
         # 目标目录
-        frame_target = tk.LabelFrame(self.root, text="📥 新版整合包（迁移目的地）", padx=5, pady=5)
+        # 迁移方向箭头直接写进标题（⬇ 表示上面「旧版」的数据往下流到这里）。
+        # 以前它自己占一整行，20pt 的箭头把那一行撑到 40 多像素；放进标题既不占
+        # 高度，也不会把这一框的路径框挤得和上面那框不对齐。
+        frame_target = tk.LabelFrame(self.root, text="⬇ 新版整合包（迁移目的地）",
+                                     padx=5, pady=5)
         frame_target.pack(fill="x", padx=10, pady=5)
         tk.Entry(frame_target, textvariable=self.target_path,
                  width=70).pack(side="left", padx=5)
         btn_target_browse = create_gradient_button(
             frame_target, "📂 浏览...", self.select_target,
-            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
         btn_target_browse.pack(side="left", padx=5)
         self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"])
@@ -1148,30 +1262,31 @@ class MigrationGUI:
 
         self.btn_changelog = create_gradient_button(
             btn_frame, "📥 从变更日志导入（含Updated）", self.import_from_changelog,
-            colors=("#00acc1", "#26c6da"), hover_colors=("#26c6da", "#00acc1"),
+            colors=("#00acc1", "#26c6da"),
             width=gw("📥 从变更日志导入（含Updated）"), height=30, font=("微软雅黑", 9, "bold"))
         self.btn_changelog.pack(side="left", padx=5)
         self.create_tooltip(self.btn_changelog, "你需要提供的是“崩溃助手”模组给予的mod变更列表")
 
         self.scan_btn = create_gradient_button(
             btn_frame, "🔍 扫描模组差异", self.action_scan_mod_diff,
-            colors=("#00bcd4", "#3f51b5"), hover_colors=("#26c6da", "#5c6bc0"),
+            colors=("#00bcd4", "#3f51b5"),
             width=gw("🔍 扫描模组差异"), height=30, font=("微软雅黑", 9, "bold"))
         self.mod_magnify_btn = create_gradient_button(
             btn_frame, "📂 放大查看", lambda: self.open_big_view(self.mod_text, "模组清单"),
-            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            colors=("#607d8b", "#90a4ae"),
             width=gw("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_mods_btn = create_gradient_button(
             btn_frame, "➕ 添加模组", self.add_mods,
-            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
+            colors=("#00c853", "#00e676"),
             width=gw("➕ 添加模组"), height=30, font=("微软雅黑", 9, "bold"))
+        self._stage()               # 这批有 6 个按钮，中间让一次
         self.clear_mods_btn = create_gradient_button(
             btn_frame, "🗑️ 清空清单", self.clear_mod_list,
-            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            colors=("#757575", "#9e9e9e"),
             width=gw("🗑️ 清空清单"), height=30, font=("微软雅黑", 9, "bold"))
         self.check_mods_btn = create_gradient_button(
             btn_frame, "🔎 检查清单模组是否存在（源目录）", self.check_modlist_existence,
-            colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
+            colors=("#fb8c00", "#ffb74d"),
             width=gw("🔎 检查清单模组是否存在（源目录）"), height=30, font=("微软雅黑", 9, "bold"))
         self._stage()
 
@@ -1227,27 +1342,27 @@ class MigrationGUI:
         self.config_magnify_btn = create_gradient_button(
             btn_config_frame, "📂 放大查看",
             lambda: self.open_big_view(self.config_text, "Config清单"),
-            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         self.config_magnify_btn.pack(side="left", padx=5)
         self.add_config_dir_btn = create_gradient_button(
             btn_config_frame, "📁 浏览添加文件夹", self.browse_add_config_entry,
-            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
+            colors=("#00c853", "#00e676"),
             width=_grad_width("📁 浏览添加文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_config_dir_btn.pack(side="left", padx=5)
         self.add_config_file_btn = create_gradient_button(
             btn_config_frame, "📄 浏览添加文件", self.browse_add_config_file,
-            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
+            colors=("#00c853", "#00e676"),
             width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_config_file_btn.pack(side="left", padx=5)
         self.clear_config_btn = create_gradient_button(
             btn_config_frame, "🗑️ 清空 config 清单", self.clear_config,
-            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            colors=("#757575", "#9e9e9e"),
             width=_grad_width("🗑️ 清空 config 清单"), height=30, font=("微软雅黑", 9, "bold"))
         self.clear_config_btn.pack(side="left", padx=5)
         self.config_check_btn = create_gradient_button(
             btn_config_frame, "🔎 检查 config 是否存在（源目录）", self.check_configlist_existence,
-            colors=("#fb8c00", "#ffb74d"), hover_colors=("#ffa726", "#ffcc80"),
+            colors=("#fb8c00", "#ffb74d"),
             width=_grad_width("🔎 检查 config 是否存在（源目录）"), height=30,
             font=("微软雅黑", 9, "bold"))
         self.config_check_btn.pack(side="left", padx=5)
@@ -1282,7 +1397,6 @@ class MigrationGUI:
             text="🚀 开始迁移",
             command=self.start_migration,
             colors=("#00c853", "#00e676"),
-            hover_colors=("#00e676", "#00c853"),
             width=180,
             height=38,
             font=("微软雅黑", 12, "bold")
@@ -1295,19 +1409,18 @@ class MigrationGUI:
             text="⚠️ 回滚",
             command=self.action_rollback,
             colors=("#e53935", "#ff7043"),
-            hover_colors=("#ef5350", "#ff7043"),
             width=160,
             height=38,
             font=("微软雅黑", 11, "bold")
         )
         self.rollback_btn.pack(side="right", padx=5)
+        self._stage()
 
         self.history_btn = create_gradient_button(
             parent=btn_group,
             text="📋 查看历史",
             command=self.action_show_history,
             colors=("#00acc1", "#26c6da"),
-            hover_colors=("#26c6da", "#00acc1"),
             width=160,
             height=38,
             font=("微软雅黑", 11, "bold")
@@ -1323,17 +1436,17 @@ class MigrationGUI:
         log_toolbar.pack(fill="x", pady=(0, 5))
         btn_big_log = create_gradient_button(
             log_toolbar, "📂 放大查看", self.open_log_big_view,
-            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         btn_big_log.pack(side="left", padx=5)
         btn_clear_log = create_gradient_button(
             log_toolbar, "🗑️ 清空日志", self.clear_log,
-            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            colors=("#757575", "#9e9e9e"),
             width=_grad_width("🗑️ 清空日志"), height=30, font=("微软雅黑", 9, "bold"))
         btn_clear_log.pack(side="right", padx=5)
         btn_open_log = create_gradient_button(
             log_toolbar, "📂 打开日志文件夹", self.open_log_folder,
-            colors=("#607d8b", "#90a4ae"), hover_colors=("#78909c", "#b0bec5"),
+            colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
@@ -1533,7 +1646,7 @@ class MigrationGUI:
 
         btn_extract = create_gradient_button(
             dialog, "提取并应用", extract_and_close,
-            colors=("#00c853", "#00e676"), hover_colors=("#00e676", "#00c853"),
+            colors=("#00c853", "#00e676"),
             width=_grad_width("提取并应用"), height=30, font=("微软雅黑", 9, "bold"))
         btn_extract.pack(pady=10)
         apply_theme_to_widget_tree(dialog, self.theme)
@@ -1756,10 +1869,18 @@ class MigrationGUI:
                 click_at["t"] = now
                 cmd()
 
-            return tk.Button(parent, text=text, command=_run, bg=theme["button_bg"],
-                             fg=theme["button_fg"], activebackground=theme["button_bg"],
-                             activeforeground=theme["button_fg"], relief=tk.FLAT,
-                             padx=12, pady=4, font=("微软雅黑", 9))
+            # 普通 tk.Button 也走同一套高亮：悬停时把底色调亮，和渐变按钮一致
+            base_bg = theme["button_bg"]
+            hover_bg = lighten_color(base_bg)
+            btn = tk.Button(parent, text=text, command=_run, bg=base_bg,
+                            fg=theme["button_fg"], activebackground=hover_bg,
+                            activeforeground=theme["button_fg"], relief=tk.FLAT,
+                            padx=12, pady=4, font=("微软雅黑", 9))
+            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=hover_bg,
+                                                             activebackground=hover_bg))
+            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=base_bg,
+                                                             activebackground=base_bg))
+            return btn
 
         def select_top():
             checked.clear()
@@ -1864,7 +1985,6 @@ class MigrationGUI:
                                                                  "bold")).pack(pady=5)
 
         columns = ("时间", "来源", "模组数", "Config数", "状态")
-        tree = ttk.Treeview(hist_win, columns=columns, show="headings", height=18)
         # 配置 Treeview 样式（使用当前主题）
         style = ttk.Style()
         if style.theme_use() != 'clam':
@@ -1884,6 +2004,10 @@ class MigrationGUI:
             "History.Treeview.Heading",
             background=self.theme["button_bg"],
             foreground=self.theme["fg"]
+        )
+        style.map(
+            "History.Treeview.Heading",
+            background=[("active", lighten_color(self.theme["button_bg"]))]
         )
 
         tree = ttk.Treeview(
@@ -1925,7 +2049,7 @@ class MigrationGUI:
         tree.tag_configure("normal", background=self.theme["badge_normal_bg"])
         btn_close_hist = create_gradient_button(
             hist_win, "关闭", hist_win.destroy,
-            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            colors=("#757575", "#9e9e9e"),
             width=_grad_width("关闭"), height=30, font=("微软雅黑", 9, "bold"))
         btn_close_hist.pack(pady=10)
         apply_theme_to_widget_tree(hist_win, self.theme)
@@ -1952,7 +2076,7 @@ class MigrationGUI:
             messagebox.showerror("错误", f"目标路径不存在：{tgt}")
             return
 
-        backup_root = tgt_path / ".migrate_backup"
+        backup_root = get_backup_path(tgt_path)
         if not backup_root.exists():
             self.log(f"❌ 回滚失败：未找到备份目录 {backup_root}", level="ERROR")
             messagebox.showerror("回滚失败", "没有找到可用的备份，无法回滚。")
@@ -1965,6 +2089,8 @@ class MigrationGUI:
                 f"即将把目标实例恢复到迁移前的状态，此操作将覆盖当前所有内容！\n\n"
                 f"目标路径：{tgt}\n"
                 f"备份路径：{backup_root}\n\n"
+                "mods / config / saves 以及根目录的 options.txt 都会还原；\n"
+                "迁移前不存在的部分会被删掉。\n\n"
                 "此操作不可撤销！\n确定要继续吗？"
         ):
             self.log("❌ 用户取消了回滚操作", level="WARNING")
@@ -1973,11 +2099,17 @@ class MigrationGUI:
         self.log("✅ 用户确认回滚，开始执行...", level="SUCCESS")
         success = do_restore(tgt_path, log_func=self.log)
         if success:
-            mark_rollback(tgt_path)
-            self.log("📝 已标记本次回滚到历史记录", level="INFO")
+            if mark_rollback(tgt_path):
+                self.log("📝 已标记本次回滚到历史记录", level="INFO")
+            else:
+                self.log("ℹ️ 历史记录里没有可标记的迁移记录（可能已经回滚过了）", level="WARNING")
             messagebox.showinfo("回滚完成", "目标实例已恢复到迁移前的状态。")
         else:
-            self.log("❌ 回滚操作失败，请检查日志", level="ERROR")
+            self.log("❌ 回滚操作失败，目标实例可能处于不完整状态，"
+                     "备份仍然保留，可重新执行回滚", level="ERROR")
+            messagebox.showerror("回滚失败",
+                                 "回滚未能完整完成，详情见日志。\n"
+                                 "备份目录仍然保留，可以再次尝试回滚。")
         self.log("=" * 50, level="INFO")
 
     # ---------- 进度轮询 ----------
@@ -3473,13 +3605,11 @@ class MigrationGUI:
         search_entry.bind("<Return>", lambda e: rebuild(rescan=False))
         detect_btn = create_gradient_button(top, "🔍 检测存在性", detect,
                                             colors=("#43a047", "#66bb6a"),
-                                            hover_colors=("#66bb6a", "#43a047"),
                                             width=_BTN_W, height=30,
                                             font=("微软雅黑", 9, "bold"))
         detect_btn.pack(side="left", padx=_PAD)
         del_btn = create_gradient_button(top, "🗑️ 删除选中", del_selected,
                                          colors=("#e53935", "#ff7043"),
-                                         hover_colors=("#ef5350", "#ff7043"),
                                          width=_BTN_W, height=30,
                                          font=("微软雅黑", 9, "bold"))
         del_btn.pack(side="left", padx=_PAD)
@@ -3487,7 +3617,6 @@ class MigrationGUI:
         if is_mod:
             add_btn = create_gradient_button(top, "➕ 添加模组", add_mods,
                                              colors=("#00c853", "#00e676"),
-                                             hover_colors=("#00e676", "#00c853"),
                                              width=_BTN_W, height=30,
                                              font=("微软雅黑", 9, "bold"))
             add_btn.pack(side="left", padx=_PAD)
@@ -3501,7 +3630,7 @@ class MigrationGUI:
         # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click）
         btn_close_big = create_gradient_button(
             top, "✖ 关闭", lambda: _fade_out(win),
-            colors=("#757575", "#9e9e9e"), hover_colors=("#8d8d8d", "#bdbdbd"),
+            colors=("#757575", "#9e9e9e"),
             width=_BTN_W, height=30, font=("微软雅黑", 9, "bold"))
         btn_close_big.pack(side="right", padx=_PAD)
         # 标题栏的 × 也走淡出，保持一致
