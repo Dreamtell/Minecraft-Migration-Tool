@@ -59,7 +59,7 @@
 2. 安装依赖：
 
    ```bash
-   pip install tendo winotify tkinterdnd2 pillow pywin32
+   pip install tendo winotify tkinterdnd2 pillow pywin32 pywinstyles
    ```
 
 3. 运行：
@@ -215,6 +215,7 @@ Minecraft迁移工具/
 | `winotify` | Windows 通知（任务完成、收进托盘提示） | ✅（建议） |
 | `pillow` | 主题切换的圆形过渡、闪屏立方体渲染 | ✅（打包会被 PyInstaller 自动收集） |
 | `pywin32` | 系统托盘（关窗口后挂在后台继续跑） | ⭕（装了才有托盘，没装则关窗口即退出） |
+| `pywinstyles` | 标题栏颜色跟随主题 + Win11 原生圆角 | ⭕（没装就退回系统默认标题栏，功能不受影响） |
 
 ---
 

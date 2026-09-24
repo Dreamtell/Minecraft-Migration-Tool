@@ -10,6 +10,7 @@ from ui.main_window import MigrationGUI
 from ui.dialogs import ask_close_action
 from utils.helpers import (get_icon_path, warm_up_emoji_font, clear_layered_style,
                            focus_window)
+from utils.config import load_raw_config
 from winotify import Notification, audio
 
 # 闪屏最短显示时长（秒）。主界面构建只要 ~0.7s，不兜底的话立方体刚起转就淡出了；
@@ -70,17 +71,22 @@ def main():
     # 排版 ~40ms）做掉，再弹闪屏。放这儿是为了"闪屏一出现就是流畅的"——挪到闪屏
     # 出来之后做的话，用户会看到立方体先愣住 300ms 才开始转。
     # 代价是双击之后要多等这 300ms 才看到卡片，但总时长不变（闪屏最短时长照算）。
+    # 设置里关掉启动动画时这笔预热照样做：界面里的 emoji 该卡还是会卡。
     splash = None
     splash_t0 = time.perf_counter()
     warm_up_emoji_font()
 
+    # 启动动画可以在设置里关掉：关掉就直接建主界面，不再等 SPLASH_MIN_SEC
+    splash_on = bool(load_raw_config().get("splash", True))
+
     # 弹出启动闪屏，盖住主界面构建期间的空窗（构建实测约 0.5s）
-    try:
-        from ui.splash import SplashScreen
-        splash = SplashScreen(root, icon_path=icon_path)
-        root.update()               # 让它真的画出来，而不是停在未渲染状态
-    except Exception:
-        splash = None
+    if splash_on:
+        try:
+            from ui.splash import SplashScreen
+            splash = SplashScreen(root, icon_path=icon_path)
+            root.update()           # 让它真的画出来，而不是停在未渲染状态
+        except Exception:
+            splash = None
 
     # 主窗口的位置先算好，但**不显示**——构建期间窗口保持隐藏，等闪屏收走了
     # 再让 Tk/Windows 原生显示出来。不提前映射、不预画、不做显形动画。
@@ -169,9 +175,13 @@ def main():
     poll_id = {"v": None}          # tray_poll 的 after id（退出时要撤掉）
     quitting = {"v": False}
 
-    def notify_task_done(name, detail=""):
-        """任务跑完时窗口若挂在托盘里，弹个系统通知提醒一下。"""
-        if hidden["v"]:
+    def notify_task_done(name, detail="", force=False):
+        """任务跑完时弹个系统通知。
+
+        force=True 是"后台静默执行"用的：那种模式下没有任何窗口反馈，
+        所以不管界面是不是挂在托盘里都得通知一声。
+        """
+        if hidden["v"] or force:
             send_toast(f"✅ {name}完成", detail or "点托盘图标打开主界面查看")
 
     app._task_done_cb = notify_task_done

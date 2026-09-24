@@ -81,6 +81,17 @@ class VirtualTable(tk.Frame):
         self._reload_theme(theme, tag_styles, hover_style)
         self._build()
         self._bind_events()
+        # 平滑滚动：这张表按行增量滚（整屏 moveto 要 66ms，按行只要 12ms），交给
+        # for_rows 攒零头做动画。**必须放在 _bind_events() 之后**：滚轮绑定是谁后绑谁生效，
+        # 早绑会被它自己的处理顶掉（那一个 return "break" 会把后面的链子全掐断）。
+        self._scroller = None
+        try:
+            from utils.helpers import SmoothScroller
+            self._scroller = SmoothScroller.for_rows(
+                self.body, self.row_height, on_render=self._after_scroll,
+                bind_widgets=[self.body, self.header])
+        except Exception:
+            self._scroller = None
 
     # ------------------------------------------------------------------ 主题
     def _reload_theme(self, theme, tag_styles=None, hover_style=None):
@@ -144,6 +155,15 @@ class VirtualTable(tk.Frame):
                             xscrollcommand=self._on_xscroll)
         self._draw_header()
 
+    def _after_scroll(self):
+        """滚动后重绘可见行，并通知外部（比如收起悬停提示）。"""
+        self._render()
+        if self.on_scroll:
+            try:
+                self.on_scroll()
+            except Exception:
+                pass
+
     def _bind_events(self):
         self.header.bind("<Button-1>", self._ev_header_click)
         self.header.bind("<Motion>", self._ev_header_motion)
@@ -151,9 +171,8 @@ class VirtualTable(tk.Frame):
         self.body.bind("<Button-1>", self._ev_click)
         self.body.bind("<Motion>", self._ev_motion)
         self.body.bind("<Leave>", self._ev_leave)
-        self.body.bind("<MouseWheel>", self._ev_wheel)
+        # 纵向滚轮交给 SmoothScroller（在 __init__ 里装），这里只管横向
         self.body.bind("<Shift-MouseWheel>", self._ev_wheel_x)
-        self.header.bind("<MouseWheel>", self._ev_wheel)
         self.body.bind("<Configure>", self._ev_configure)
 
     # ------------------------------------------------------------------- 表头

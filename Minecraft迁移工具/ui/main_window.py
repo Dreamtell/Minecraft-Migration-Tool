@@ -17,7 +17,8 @@ from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
                            circular_reveal, focus_window, lighten_color,
-                           make_theme_icon)
+                           make_theme_icon, clear_layered_style, SmoothScroller,
+                           tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
     run_migration,
     do_backup,
@@ -52,6 +53,103 @@ _ICON_BTN = 34
 # 主题按钮里那张手绘图标（月亮/太阳）的边长
 _ICON_SIZE = 22
 
+# ---- 可以在设置里显示/隐藏、调顺序的按钮 ------------------------------------
+# 一组 = 同一个容器里的一排按钮；组内顺序就是"从左到右"看到的样子。
+# side="right" 的那两排（靠右对齐）应用顺序时会反过来 pack，视觉顺序仍按列表走。
+_BUTTON_GROUPS = (
+    ("path",        "路径区（来源）",    "left"),
+    ("path_target", "路径区（目标）",    "left"),
+    ("mods",        "模组清单区",        "left"),
+    ("config",      "Config 清单区",     "left"),
+    ("action",      "动作按钮区",        "right"),
+    ("log_left",    "执行日志区（左）",  "left"),
+    ("log_right",   "执行日志区（右）",  "right"),
+)
+
+# 每组的默认顺序 = 现在的界面顺序；用户改过就用配置里的
+_DEFAULT_BUTTON_ORDER = {
+    "path":        ["browse_source", "copy_target"],
+    "path_target": ["browse_target"],
+    "mods":        ["changelog", "mod_magnify", "add_mods", "scan_diff",
+                    "clear_mods", "check_mods"],
+    "config":      ["cfg_magnify", "add_cfg_dir", "add_cfg_file", "clear_cfg",
+                    "check_cfg"],
+    "action":      ["history", "rollback", "start"],
+    "log_left":    ["log_big"],
+    "log_right":   ["log_open", "log_clear"],
+}
+
+_BUTTON_LABELS = {
+    "browse_source": "📂 浏览…（来源路径）",
+    "copy_target": "← 使用新版路径填充",
+    "browse_target": "📂 浏览…（目标路径）",
+    "changelog": "📥 从变更日志导入",
+    "mod_magnify": "📂 放大查看（模组清单）",
+    "add_mods": "➕ 添加模组",
+    "scan_diff": "🔍 扫描模组差异",
+    "clear_mods": "🗑️ 清空清单（模组）",
+    "check_mods": "🔎 检查模组是否存在",
+    "cfg_magnify": "📂 放大查看（config 清单）",
+    "add_cfg_dir": "📁 浏览添加文件夹",
+    "add_cfg_file": "📄 浏览添加文件",
+    "clear_cfg": "🗑️ 清空 config 清单",
+    "check_cfg": "🔎 检查 config 是否存在",
+    "history": "📋 查看历史",
+    "rollback": "⚠️ 回滚",
+    "start": "🚀 开始迁移",
+    "log_big": "📂 放大查看（日志）",
+    "log_open": "📂 打开日志文件夹",
+    "log_clear": "🗑️ 清空日志",
+}
+
+# 外部链接（设置窗口里的快捷入口）
+LINK_MINECRAFT = "https://www.minecraft.net/zh-hans"
+LINK_GITHUB = "https://github.com/Dreamtell/Minecraft-Migration-Tool"
+
+# 设置窗口的分区配色 / 图标（标题色、描边色、图标都是同一支主色）
+_SECTION_STYLE = {
+    "look":    ("外观与启动", "#8e24aa", "🎨"),
+    "buttons": ("界面按钮（勾选显示 / 上下调整顺序）", "#00acc1", "🧩"),
+    "close":   ("关闭与后台", "#fb8c00", "🚪"),
+    "links":   ("快捷链接", "#43a047", "🔗"),
+}
+
+# 按钮列表里每一排的主色 + 图标，用来给分组行上色
+_GROUP_COLORS = {
+    "path":        "#42a5f5",
+    "path_target": "#26c6da",
+    "mods":        "#66bb6a",
+    "config":      "#ffa726",
+    "action":      "#ef5350",
+    "log_left":    "#ab47bc",
+    "log_right":   "#8d6e63",
+}
+_GROUP_ICONS = {
+    "path":        "📤",
+    "path_target": "📥",
+    "mods":        "🧩",
+    "config":      "⚙️",
+    "action":      "🚀",
+    "log_left":    "📜",
+    "log_right":   "🗂️",
+}
+
+
+def _mix(color_a, color_b, t):
+    """把两个 #rrggbb 按比例混合（t=0 全取 a，t=1 全取 b）。
+
+    分组的浅/深底色都靠它算：往主题自己的背景色上混，浅色主题出淡彩、
+    深色主题出暗彩，一套规则两边都好看。
+    """
+    try:
+        a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
+        b = [int(color_b[i:i + 2], 16) for i in (1, 3, 5)]
+        return "#%02x%02x%02x" % tuple(
+            max(0, min(255, int(round(a[i] + (b[i] - a[i]) * t)))) for i in range(3))
+    except Exception:
+        return color_a
+
+
 
 def _grad_width(text):
     """按文字测量渐变按钮宽度（微软雅黑 9 粗体 + 内边距）。
@@ -74,39 +172,6 @@ def _center_window(win, w, h):
     center_window(win, w, h)
 
 
-# 窗口淡入/淡出：Toplevel 首次映射时系统会先填一块窗口背景、Tk 才画内容，
-# 于是露出一瞬空白。做法是先在透明状态下把首帧画完，再分几帧平滑显形，
-# 关闭时反向淡出——既不白屏，也不是"啪"地一下出现。
-# 步数从 10 提到 18：每步从 10% 降到 5.5%，肉眼就不再是"跳"着变透明了。
-_FADE_STEPS = 18
-_FADE_MS = 9
-
-
-def _fade_in(win, step=1, on_done=None):
-    """从透明平滑淡入到完全不透明。on_done 在淡入走完（或中途出错）后调用一次。"""
-    def finish():
-        if on_done is not None:
-            try:
-                on_done()
-            except Exception:
-                pass
-
-    try:
-        if not win.winfo_exists():
-            return
-        win.attributes("-alpha", min(1.0, step / float(_FADE_STEPS)))
-    except Exception:
-        finish()
-        return
-    if step < _FADE_STEPS:
-        try:
-            win.after(_FADE_MS, lambda: _fade_in(win, step + 1, on_done))
-        except Exception:
-            finish()
-    else:
-        finish()
-
-
 def _destroy_after_callback(win):
     """用一个"下一帧 + 父窗口"的回调来销毁 win，别在回调里直接 destroy 自己。
 
@@ -125,21 +190,26 @@ def _destroy_after_callback(win):
             pass
 
 
-def _fade_out(win, step=_FADE_STEPS - 1):
-    """平滑淡出后销毁窗口（弹窗关闭用；走的是 Windows 的 layered-alpha）。"""
+def _close_popup(win):
+    """按"原版弹窗"的方式关窗：不做 alpha 淡化，交给 Windows 自己的关闭动画。
+
+    窗口现在打开时也不再上 alpha，所以本来就不带 WS_EX_LAYERED；这里仍然先兜底
+    摘一次——系统对 layered 窗口会跳过自己的隐藏动画（withdraw 之后直接消失），
+    万一以后哪里又给窗口加了 -alpha，也不至于悄悄把这个效果弄没了。
+    """
     try:
         if not win.winfo_exists():
             return
-        win.attributes("-alpha", max(0.0, step / float(_FADE_STEPS)))
     except Exception:
-        _destroy_after_callback(win)
         return
-    if step > 0:
-        try:
-            win.after(_FADE_MS, lambda: _fade_out(win, step - 1))
-        except Exception:
-            _destroy_after_callback(win)
-    else:
+    try:
+        clear_layered_style(win)
+    except Exception:
+        pass
+    try:
+        win.withdraw()
+        win.after(200, win.destroy)
+    except Exception:
         _destroy_after_callback(win)
 
 
@@ -167,6 +237,20 @@ class MigrationGUI:
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
         # 关闭窗口时的行为：ask（每次问）/ tray（收进托盘）/ exit（直接退出）
         self.close_action = self.config.get("close_action", "ask")
+        # 启动动画：设置里可关（app.py 启动时直接读配置文件，这里只负责保存）
+        self.splash_enabled = bool(self.config.get("splash", True))
+        # 后台静默执行：跑任务时不弹进度窗/结果窗，只写日志 + 系统通知
+        self.silent_background = bool(self.config.get("silent_background", False))
+        # 按钮显示/隐藏 与 自定义顺序
+        self.hidden_buttons = list(self.config.get("buttons_hidden", []) or [])
+        self.button_order = dict(self.config.get("button_order", {}) or {})
+
+        # 可自定义按钮的登记表：key -> 控件（在 create_widgets 里逐个登记）
+        self._btn_widgets = {}
+        # 平滑滚动器：留住引用，不然会被回收（滚动就失效了）
+        self._scrollers = []
+        # 已经上过原生外观的窗口（避免 <Map> 每次重映射都刷一遍）
+        self._styled_windows = set()
 
         self.last_check_modlist_time = 0
         self.last_check_config_time = 0
@@ -177,6 +261,9 @@ class MigrationGUI:
         self.init_log_colors()
         self._stage("正在应用主题…")
         self.apply_theme()
+        # 之后新开的窗口（设置/历史/放大查看/进度/差异…）全靠这个统一上样式，
+        # 省得去每个建窗的地方补一行
+        self._bind_window_styling()
 
         # 实时检测存档：输入存档名/切换源路径时即时刷新"存档是否存在"状态
         self.world_name.trace_add("write", lambda *a: self._update_world_status())
@@ -262,15 +349,23 @@ class MigrationGUI:
         except Exception:
             return False
 
-    def _notify_task_done(self, name, detail=""):
-        """任务跑完时如果窗口挂在托盘里，交给 app.py 弹个系统通知。"""
-        if not self._in_tray():
+    def _notify_task_done(self, name, detail="", force=False):
+        """任务跑完时弹个系统通知。
+
+        force=True：静默模式下即使窗口没挂在托盘里也要通知（否则用户完全收不到反馈）。
+        """
+        if not force and not self._in_tray():
             return
         cb = self._task_done_cb
         if cb is None:
             return
         try:
-            cb(name, detail)
+            cb(name, detail, force)
+        except TypeError:
+            try:
+                cb(name, detail)     # 兼容只有一个参数位的旧回调
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -307,6 +402,10 @@ class MigrationGUI:
             "config_list": self.config_text.get("1.0", tk.END).strip(),
             "edit_enabled": self.edit_mode.get(),
             "close_action": self.close_action,
+            "splash": bool(getattr(self, "splash_enabled", True)),
+            "silent_background": bool(getattr(self, "silent_background", False)),
+            "buttons_hidden": list(getattr(self, "hidden_buttons", []) or []),
+            "button_order": dict(getattr(self, "button_order", {}) or {}),
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -424,6 +523,9 @@ class MigrationGUI:
         )
         apply_theme_to_widget_tree(self.root, self.theme)
 
+        # 原生外观也跟着主题走：深色主题给暗色标题栏，浅色给回白的
+        self._style_all_windows()
+
         # 同步"放大查看"结果表的配色
         alive_tables = []
         for tv in getattr(self, '_big_view_tables', []):
@@ -510,6 +612,7 @@ class MigrationGUI:
         try:
             if getattr(self, "settings_theme_var", None) is not None:
                 self.settings_theme_var.set(self.current_theme)
+            self._theme_settings_tree()
         except Exception:
             pass
         # 这些区域用的是专用配色，通用刷新会把它们刷成普通背景，这里逐个补回来
@@ -622,8 +725,104 @@ class MigrationGUI:
         if name != self.current_theme:
             self.toggle_theme(from_widget=getattr(self, "theme_btn", None))
 
+    # ---------- 按钮的显示/隐藏 与 排序 ----------
+    def _group_of(self, key):
+        for gkey, _label, _side in _BUTTON_GROUPS:
+            if key in _DEFAULT_BUTTON_ORDER[gkey]:
+                return gkey
+        return None
+
+    def _group_anchor(self, gkey):
+        """这一排按钮后面还跟着别的控件时返回那个控件。
+
+        必须用它当 pack 的 before= 锚点：pack_forget 之后再 pack 会排到队尾，
+        不指定锚点的话按钮会跑到状态标签/图例的右边去。
+        """
+        return {
+            "path": getattr(self, "source_status", None),
+            "path_target": getattr(self, "target_status", None),
+            "config": getattr(self, "_check_legend", None),
+        }.get(gkey)
+
+    def _resolved_order(self, gkey):
+        """某一排的最终顺序：配置里的顺序 + 补上配置里还没有的新按钮。"""
+        default = _DEFAULT_BUTTON_ORDER[gkey]
+        keys = [k for k in (self.button_order.get(gkey) or []) if k in default]
+        keys += [k for k in default if k not in keys]
+        return keys
+
+    def _apply_button_layout(self):
+        """按"显示/隐藏 + 自定义顺序"重新摆各排按钮。"""
+        hidden = set(self.hidden_buttons or ())
+        for gkey, _label, side in _BUTTON_GROUPS:
+            order = self._resolved_order(gkey)
+            # 先把这一排全部撤下来（含被隐藏的）：只重新 pack 显示的那些是不够的，
+            # 之前已经 pack 上去的隐藏按钮会原地不动，"隐藏"等于没生效。
+            for key in order:
+                widget = self._btn_widgets.get(key)
+                if widget is None:
+                    continue
+                try:
+                    widget.pack_forget()
+                except Exception:
+                    pass
+            shown = [k for k in order if k not in hidden and k in self._btn_widgets]
+            # 靠右对齐的那两排：反过来 pack，列表顺序就是从左到右看到的顺序
+            seq = shown if side == "left" else list(reversed(shown))
+            anchor = self._group_anchor(gkey)
+            for key in seq:
+                w = self._btn_widgets[key]
+                kwargs = {"side": side, "padx": 5}
+                try:
+                    if anchor is not None and anchor.winfo_exists():
+                        kwargs["before"] = anchor
+                    w.pack(**kwargs)
+                except Exception:
+                    try:
+                        w.pack(side=side, padx=5)
+                    except Exception:
+                        pass
+
+    def set_button_hidden(self, key, hidden):
+        """在设置里勾/取消某个按钮的显示。"""
+        keys = set(self.hidden_buttons or ())
+        keys.add(key) if hidden else keys.discard(key)
+        self.hidden_buttons = sorted(keys)
+        self._apply_button_layout()
+        self.save_config()
+        self._refresh_button_tree()
+
+    def move_button(self, key, delta):
+        """在所属那一排里把按钮上移/下移一格（整表顺序里含已隐藏的项）。"""
+        gkey = self._group_of(key)
+        if gkey is None:
+            return False
+        order = self._resolved_order(gkey)
+        i = order.index(key)
+        j = i + delta
+        if j < 0 or j >= len(order):
+            return False
+        order[i], order[j] = order[j], order[i]
+        self.button_order[gkey] = order
+        self._apply_button_layout()
+        self.save_config()
+        self._refresh_button_tree()
+        return True
+
+    def reset_button_layout(self):
+        """恢复默认：全部显示 + 默认顺序。"""
+        self.hidden_buttons = []
+        self.button_order = {}
+        self._apply_button_layout()
+        self.save_config()
+        self._refresh_button_tree()
+        self.log("🧩 界面按钮已恢复默认显示与顺序", level="INFO", save=False)
+
     def open_settings(self):
-        """⚙ 设置：程序级偏好集中放这儿（关闭窗口行为、主题）。"""
+        """⚙ 设置：程序级偏好集中放这儿。
+
+        分四块：外观与启动 / 界面按钮（显示隐藏+排序）/ 关闭与后台 / 快捷链接。
+        """
         win = getattr(self, "settings_win", None)
         if win is not None and win.winfo_exists():
             focus_window(win)
@@ -638,11 +837,24 @@ class MigrationGUI:
         win.transient(self.root)
         set_window_icon(win)
 
-        def section(title):
-            box = tk.LabelFrame(win, text=title, padx=10, pady=6,
-                                bg=self.theme["bg"], fg=self.theme["fg"])
-            box.pack(fill="x", padx=14, pady=(12, 0))
-            return box
+        def section(key):
+            """带主色描边 + 图标的分区：返回可以往里塞内容的容器。"""
+            title, accent, icon = _SECTION_STYLE[key]
+            wrapper = tk.Frame(win, bg=self.theme["bg"])
+            wrapper.pack(fill="x", padx=14, pady=(10, 0))
+            head = tk.Frame(wrapper, bg=self.theme["bg"])
+            head.pack(fill="x")
+            # 左边一个主色小色块当"图标底"，右边是主色标题
+            tk.Label(head, text="  ", bg=accent, fg=accent,
+                     font=("微软雅黑", 10, "bold")).pack(side="left", padx=(0, 6))
+            tk.Label(head, text=f"{icon} {title}", bg=self.theme["bg"], fg=accent,
+                     font=("微软雅黑", 10, "bold")).pack(side="left")
+            body = tk.Frame(wrapper, bg=self.theme["bg"],
+                            highlightbackground=accent, highlightthickness=1)
+            body.pack(fill="x", pady=(4, 0))
+            inner = tk.Frame(body, bg=self.theme["bg"])
+            inner.pack(fill="x", padx=8, pady=6)
+            return inner
 
         def radio(parent, text, value, var, command, **kw):
             return tk.Radiobutton(
@@ -653,22 +865,94 @@ class MigrationGUI:
                 highlightthickness=0, bd=0, font=("微软雅黑", 9),
                 anchor="w", **kw)
 
-        # ---- 关闭窗口时 ----
-        box = section("关闭窗口时")
+        def check(parent, text, var, command):
+            return tk.Checkbutton(
+                parent, text=text, variable=var, command=command,
+                bg=self.theme["bg"], fg=self.theme["fg"],
+                activebackground=self.theme["bg"], activeforeground=self.theme["fg"],
+                selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
+                highlightthickness=0, bd=0, font=("微软雅黑", 9), anchor="w")
+
+        # ---------- 1. 外观与启动 ----------
+        box1 = section("look")
+        self.settings_theme_var = tk.StringVar(value=self.current_theme)
+        row_theme = tk.Frame(box1, bg=self.theme["bg"])
+        row_theme.pack(fill="x")
+        tk.Label(row_theme, text="主题：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        for value, text in (("light", "浅色"), ("dark", "深色")):
+            radio(row_theme, text, value, self.settings_theme_var,
+                  lambda v=value: self.choose_theme(v)).pack(side="left", padx=(0, 18))
+
+        self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
+        check(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
+              self._toggle_splash).pack(fill="x", pady=(6, 0))
+
+        # ---------- 2. 界面按钮 ----------
+        box2 = section("buttons")
+        tree_wrap = tk.Frame(box2, bg=self.theme["bg"])
+        tree_wrap.pack(fill="both", expand=True)
+        self.settings_btn_tree = ttk.Treeview(
+            tree_wrap, columns=("状态",), show="tree headings", height=13,
+            selectmode="browse")
+        self.settings_btn_tree.heading("#0", text="按钮")
+        self.settings_btn_tree.heading("状态", text="状态")
+        self.settings_btn_tree.column("#0", width=380, anchor="w")
+        self.settings_btn_tree.column("状态", width=90, anchor="center")
+        sb = ttk.Scrollbar(tree_wrap, orient="vertical",
+                           command=self.settings_btn_tree.yview)
+        self.settings_btn_tree.configure(yscrollcommand=sb.set)
+        self.settings_btn_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.settings_btn_tree.bind("<Double-1>", self._on_button_tree_double_click)
+        self._smooth(self.settings_btn_tree, rows=True)
+
+        row_btn = tk.Frame(box2, bg=self.theme["bg"])
+        row_btn.pack(fill="x", pady=(6, 0))
+        create_gradient_button(row_btn, "显示 / 隐藏", self._toggle_selected_button,
+                               colors=("#00acc1", "#26c6da"), width=110, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 6))
+        create_gradient_button(row_btn, "↑ 上移", lambda: self._move_selected_button(-1),
+                               colors=("#42a5f5", "#64b5f6"), width=80, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+        create_gradient_button(row_btn, "↓ 下移", lambda: self._move_selected_button(1),
+                               colors=("#42a5f5", "#64b5f6"), width=80, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+        create_gradient_button(row_btn, "恢复默认", self.reset_button_layout,
+                               colors=("#757575", "#9e9e9e"), width=100, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+        tk.Label(box2, text="双击一行也能切换显示/隐藏；顺序只在同一排内调整。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8)).pack(anchor="w", pady=(4, 0))
+
+        # ---------- 3. 关闭与后台 ----------
+        box3 = section("close")
         self.settings_close_var = tk.StringVar(
             value=getattr(self, "close_action", "ask"))
         for value, text in (("tray", "收进系统托盘，程序继续在后台跑"),
                             ("exit", "直接退出程序"),
                             ("ask", "每次问我")):
-            radio(box, text, value, self.settings_close_var,
+            radio(box3, text, value, self.settings_close_var,
                   lambda v=value: self.set_close_action(v)).pack(fill="x")
+        self.settings_silent_var = tk.BooleanVar(value=self.silent_background)
+        check(box3, "后台静默执行任务（不弹进度/结果窗口，完成后系统通知）",
+              self.settings_silent_var, self._toggle_silent).pack(fill="x", pady=(6, 0))
 
-        # ---- 主题 ----
-        box2 = section("主题")
-        self.settings_theme_var = tk.StringVar(value=self.current_theme)
-        for value, text in (("light", "浅色"), ("dark", "深色")):
-            radio(box2, text, value, self.settings_theme_var,
-                  lambda v=value: self.choose_theme(v)).pack(side="left", padx=(0, 20))
+        # ---------- 4. 快捷链接 ----------
+        box4 = section("links")
+        row_link = tk.Frame(box4, bg=self.theme["bg"])
+        row_link.pack(fill="x")
+        create_gradient_button(row_link, "🌐 Minecraft 官网",
+                               lambda: self.open_link(LINK_MINECRAFT),
+                               colors=("#43a047", "#66bb6a"), width=150, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 8))
+        create_gradient_button(row_link, "🐙 GitHub 仓库",
+                               lambda: self.open_link(LINK_GITHUB),
+                               colors=("#455a64", "#78909c"), width=150, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left")
+        tk.Label(box4, text=f"{LINK_GITHUB}\n欢迎反馈问题或提交建议。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left").pack(anchor="w", pady=(4, 0))
 
         row = tk.Frame(win, bg=self.theme["bg"])
         row.pack(fill="x", padx=14, pady=14)
@@ -677,11 +961,137 @@ class MigrationGUI:
                                width=90, height=30,
                                font=("微软雅黑", 9, "bold")).pack(side="right")
 
+        self._refresh_button_tree()
+        self._theme_settings_tree()
+
         win.protocol("WM_DELETE_WINDOW", win.destroy)
         win.update_idletasks()
-        center_window(win, win.winfo_reqwidth(), win.winfo_reqheight())
+        center_window(win, max(win.winfo_reqwidth(), 640), win.winfo_reqheight())
         win.deiconify()
         focus_window(win)
+
+    # ---------- 设置窗口里的按钮列表 ----------
+    def _refresh_button_tree(self):
+        """重建按钮列表：分组行 + 每个按钮一行（含显示状态）。"""
+        tree = getattr(self, "settings_btn_tree", None)
+        if tree is None:
+            return
+        try:
+            if not tree.winfo_exists():
+                return
+        except Exception:
+            return
+        hidden = set(self.hidden_buttons or ())
+        selected = None
+        try:
+            sel = tree.selection()
+            if sel:
+                selected = sel[0]
+        except Exception:
+            pass
+        tree.delete(*tree.get_children())
+        for gkey, glabel, _side in _BUTTON_GROUPS:
+            parent = tree.insert("", "end", iid=f"grp:{gkey}",
+                                 text=f" {_GROUP_ICONS.get(gkey, '')} {glabel}",
+                                 values=("",), open=True, tags=(f"grp_{gkey}",))
+            for key in self._resolved_order(gkey):
+                if key not in self._btn_widgets:
+                    continue
+                is_hidden = key in hidden
+                tree.insert(parent, "end", iid=f"btn:{key}",
+                            text="   " + _BUTTON_LABELS.get(key, key),
+                            values=("☐ 隐藏" if is_hidden else "☑ 显示",),
+                            tags=("hidden",) if is_hidden else ())
+        if selected:
+            try:
+                tree.selection_set(selected)
+                tree.see(selected)
+            except Exception:
+                pass
+
+    def _theme_settings_tree(self):
+        """列表配色：每一排分组自己的主色，隐藏行标红。
+
+        Treeview 的 tag 颜色不跟着主题走，所以换主题时要重算一遍。
+        浅色主题往主题底色上混出淡彩，深色主题混出暗彩，同一套规则。
+        """
+        tree = getattr(self, "settings_btn_tree", None)
+        if tree is None:
+            return
+        try:
+            if not tree.winfo_exists():
+                return
+            base = self.theme.get("ttk_bg", self.theme["bg"])
+            dark = (self.current_theme == "dark")
+            for gkey, _glabel, _side in _BUTTON_GROUPS:
+                color = _GROUP_COLORS.get(gkey, "#78909c")
+                # 深色主题往后混出暗彩、前景调亮；浅色主题混出淡彩、前景压暗
+                bg = _mix(color, base, 0.78 if dark else 0.80)
+                fg = _mix(color, "#ffffff" if dark else "#000000",
+                          0.35 if dark else 0.30)
+                tree.tag_configure(f"grp_{gkey}", background=bg, foreground=fg,
+                                   font=("微软雅黑", 9, "bold"))
+            tree.tag_configure("hidden", foreground=self.theme["fail_fg"])
+        except Exception:
+            pass
+
+    def _selected_button_key(self):
+        tree = getattr(self, "settings_btn_tree", None)
+        if tree is None:
+            return None
+        try:
+            sel = tree.selection()
+        except Exception:
+            return None
+        if not sel:
+            return None
+        iid = sel[0]
+        if not iid.startswith("btn:"):
+            return None
+        return iid[4:]
+
+    def _toggle_selected_button(self):
+        key = self._selected_button_key()
+        if key is None:
+            messagebox.showinfo("提示", "请先在列表里选中一个按钮。", parent=self.settings_win)
+            return
+        self.set_button_hidden(key, key not in set(self.hidden_buttons or ()))
+
+    def _move_selected_button(self, delta):
+        key = self._selected_button_key()
+        if key is None:
+            messagebox.showinfo("提示", "请先在列表里选中一个按钮。", parent=self.settings_win)
+            return
+        if not self.move_button(key, delta):
+            self.log("ℹ️ 已经在所在那一排的边界了，无法继续移动", level="INFO", save=False)
+
+    def _on_button_tree_double_click(self, event):
+        key = self._selected_button_key()
+        if key is not None:
+            self.set_button_hidden(key, key not in set(self.hidden_buttons or ()))
+
+    def _toggle_splash(self):
+        """启动动画开关：app.py 在创建闪屏前会直接读配置文件。"""
+        self.splash_enabled = bool(self.settings_splash_var.get())
+        self.save_config()
+        self.log(f"🎬 启动动画已{'启用' if self.splash_enabled else '关闭'}"
+                 f"（下次启动程序生效）", level="INFO", save=False)
+
+    def _toggle_silent(self):
+        """后台静默执行开关。"""
+        self.silent_background = bool(self.settings_silent_var.get())
+        self.save_config()
+        self.log(f"🤫 后台静默执行已{'开启' if self.silent_background else '关闭'}"
+                 f"（跑任务时不再弹进度/结果窗口）", level="INFO", save=False)
+
+    def open_link(self, url):
+        """打开外部链接（官网 / GitHub 仓库）。"""
+        try:
+            import webbrowser
+            webbrowser.open_new_tab(url)
+            self.log(f"🔗 已打开链接：{url}", level="INFO", save=False)
+        except Exception as e:
+            messagebox.showerror("打开失败", f"无法打开链接：{e}", parent=self.settings_win)
 
     def create_tooltip(self, widget, text):
         def enter(event):
@@ -880,7 +1290,9 @@ class MigrationGUI:
         def _log():
             self.log_text.configure(state="normal")
             self.log_text.insert(tk.END, message + "\n", level)
-            self.log_text.see(tk.END)
+            # 用户手动往上翻的时候别把他拽回底部（滚回底部会自动恢复跟随）
+            if getattr(self, "_log_follow", True):
+                self.log_text.see(tk.END)
             self.log_text.configure(state="disabled")
             self.root.update_idletasks()
             # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
@@ -928,6 +1340,11 @@ class MigrationGUI:
         self._saved_logs = []
 
     def clear_log(self):
+        # 清空后内容不满一屏，顺手把"跟到底"恢复成跟随
+        try:
+            self._log_follow = True
+        except Exception:
+            pass
         if not hasattr(self, '_saved_logs') or not self._saved_logs:
             self.log_text.configure(state="normal")
             self.log_text.delete("1.0", tk.END)
@@ -1021,6 +1438,7 @@ class MigrationGUI:
                                         font=("微软雅黑", 10))
         big.pack(fill="both", expand=True, padx=8, pady=8)
         self._log_big_text = big
+        self._smooth(big)
 
         # 使用与主日志一致的语义色（随主题）
         self._configure_log_colors(big)
@@ -1080,10 +1498,8 @@ class MigrationGUI:
                 self.log_text.unbind("<<LogChanged>>", notify_id)
             except Exception:
                 pass
-            try:
-                win.destroy()
-            except Exception:
-                pass
+            # 和"放大查看"一样走原生关闭（系统自己的关闭动画，不做淡化）
+            _close_popup(win)
 
         win.protocol("WM_DELETE_WINDOW", on_close)
         btn_close.set_command(on_close)
@@ -1150,6 +1566,9 @@ class MigrationGUI:
         tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
                  font=("微软雅黑", 8)).pack()
 
+        # 全部按钮建完，最后按配置摆一遍（显示/隐藏 + 自定义顺序）
+        self._apply_button_layout()
+
     def _create_path_widgets(self):
         # 源目录
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
@@ -1161,12 +1580,14 @@ class MigrationGUI:
             colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
         btn_source_browse.pack(side="left", padx=5)
+        self._btn_widgets["browse_source"] = btn_source_browse
         self._stage()
         btn_copy = create_gradient_button(
             frame_source, "← 使用新版路径填充", self.copy_target_to_source,
             colors=("#fb8c00", "#ffb74d"),
             width=_grad_width("← 使用新版路径填充"), height=30, font=("微软雅黑", 9, "bold"))
         btn_copy.pack(side="left", padx=5)
+        self._btn_widgets["copy_target"] = btn_copy
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"])
         self.source_status.pack(side="left", padx=10)
@@ -1186,6 +1607,7 @@ class MigrationGUI:
             colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
         btn_target_browse.pack(side="left", padx=5)
+        self._btn_widgets["browse_target"] = btn_target_browse
         self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"])
         self.target_status.pack(side="left", padx=10)
 
@@ -1206,6 +1628,7 @@ class MigrationGUI:
         self.mod_text = scrolledtext.ScrolledText(frame_modlist, height=8, wrap=tk.NONE,
                                                   undo=True, font=("微软雅黑 Light", 10))
         self.mod_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self._smooth(self.mod_text)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
         # 本会话新添加的模组（文件名小写），主清单用黄色高亮提示
@@ -1265,6 +1688,7 @@ class MigrationGUI:
             colors=("#00acc1", "#26c6da"),
             width=gw("📥 从变更日志导入（含Updated）"), height=30, font=("微软雅黑", 9, "bold"))
         self.btn_changelog.pack(side="left", padx=5)
+        self._btn_widgets["changelog"] = self.btn_changelog
         self.create_tooltip(self.btn_changelog, "你需要提供的是“崩溃助手”模组给予的mod变更列表")
 
         self.scan_btn = create_gradient_button(
@@ -1296,6 +1720,13 @@ class MigrationGUI:
         self._stage()
         self.clear_mods_btn.pack(side="left", padx=5)
         self.check_mods_btn.pack(side="left", padx=5)
+        self._btn_widgets.update({
+            "mod_magnify": self.mod_magnify_btn,
+            "add_mods": self.add_mods_btn,
+            "scan_diff": self.scan_btn,
+            "clear_mods": self.clear_mods_btn,
+            "check_mods": self.check_mods_btn,
+        })
         self._stage()
 
     def _create_config_widgets(self):
@@ -1313,6 +1744,7 @@ class MigrationGUI:
                                                      wrap=tk.NONE, undo=True,
                                                      font=("微软雅黑 Light", 10))
         self.config_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self._smooth(self.config_text)
         self.config_text.bind("<Control-z>",
                               lambda e: self._safe_undo(self.config_text))
         self.config_text.bind("<Control-y>",
@@ -1366,6 +1798,13 @@ class MigrationGUI:
             width=_grad_width("🔎 检查 config 是否存在（源目录）"), height=30,
             font=("微软雅黑", 9, "bold"))
         self.config_check_btn.pack(side="left", padx=5)
+        self._btn_widgets.update({
+            "cfg_magnify": self.config_magnify_btn,
+            "add_cfg_dir": self.add_config_dir_btn,
+            "add_cfg_file": self.add_config_file_btn,
+            "clear_cfg": self.clear_config_btn,
+            "check_cfg": self.config_check_btn,
+        })
         self._create_check_legend(btn_config_frame)
         self._stage()
 
@@ -1426,6 +1865,11 @@ class MigrationGUI:
             font=("微软雅黑", 11, "bold")
         )
         self.history_btn.pack(side="right", padx=5)
+        self._btn_widgets.update({
+            "start": self.start_btn,
+            "rollback": self.rollback_btn,
+            "history": self.history_btn,
+        })
         self._stage()
 
     def _create_log_widgets(self):
@@ -1449,12 +1893,104 @@ class MigrationGUI:
             colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
+        self._btn_widgets.update({
+            "log_big": btn_big_log,
+            "log_open": btn_open_log,
+            "log_clear": btn_clear_log,
+        })
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
         self.log_text = scrolledtext.ScrolledText(frame_log, height=22, wrap=tk.WORD,
                                                   state="disabled")
         self.log_text.pack(fill="both", expand=True)
+        # 试验：日志区平滑滚动。手动往上滚时暂停"自动跟到底"，滚回底部再恢复，
+        # 否则日志一边涌入、一边把你拽回底部，根本翻不上去。
+        self._log_follow = True
+        self._log_scroller = SmoothScroller.for_text(
+            self.log_text,
+            on_user_scroll=self._on_log_user_scroll,
+            on_settle=self._on_log_scroll_settle)
+        try:
+            self.log_text.vbar.bind(
+                "<ButtonRelease-1>", lambda e: self._on_log_scroll_settle())
+        except Exception:
+            pass
         self._stage()
+
+    # ---------- 原生窗口外观（暗色标题栏 + Win11 圆角）----------
+    def _bind_window_styling(self):
+        """任何 Toplevel 一被显示出来就给它上原生外观。
+
+        用 <Map> 统一兜住：主界面、设置、历史、放大查看、进度窗、差异窗……
+        以及以后新加的窗口都自动生效，不用去每处建窗代码补一行。
+        """
+        def on_map(event):
+            try:
+                if isinstance(event.widget, tk.Toplevel):
+                    self._style_window(event.widget)
+            except Exception:
+                pass
+        try:
+            self.root.bind_all("<Map>", on_map, add="+")
+        except Exception:
+            pass
+
+    def _style_window(self, win, force=False):
+        """给窗口上暗色标题栏（跟随主题）+ 圆角；同一窗口只刷一次。"""
+        key = str(win)
+        if not force and key in getattr(self, "_styled_windows", set()):
+            return
+        try:
+            if style_window(win, dark=is_dark_theme(self.theme)):
+                self._styled_windows.add(key)
+        except Exception:
+            pass
+
+    def _style_all_windows(self):
+        """切主题后把所有已开的窗口重刷一遍（标题栏颜色要跟着变）。"""
+        self._styled_windows.clear()
+        self._style_window(self.root, force=True)
+        try:
+            for c in self.root.winfo_children():
+                if isinstance(c, tk.Toplevel):
+                    self._style_window(c, force=True)
+        except Exception:
+            pass
+
+    # ---------- 日志区平滑滚动联动 ----------
+    def _smooth(self, widget, rows=False, bind_widgets=None, on_render=None, **kw):
+        """给一个可滚动控件装上平滑滚动。
+
+        rows=False：Text 类，像素级真平滑。
+        rows=True ：Treeview / 自绘表格，只能整行走，由引擎攒零头做出动画。
+        """
+        try:
+            if rows:
+                sc = SmoothScroller.for_rows(
+                    widget, kw.pop("row_px", None) or tree_row_px(),
+                    on_render=on_render, bind_widgets=bind_widgets, **kw)
+            else:
+                sc = SmoothScroller.for_text(widget, bind_widgets=bind_widgets, **kw)
+            self._scrollers.append(sc)
+            return sc
+        except Exception:
+            return None
+
+    def _at_log_bottom(self):
+        try:
+            return self.log_text.yview()[1] >= 0.999
+        except Exception:
+            return True
+
+    def _on_log_user_scroll(self, going_up):
+        if going_up:
+            self._log_follow = False
+        elif self._at_log_bottom():
+            self._log_follow = True
+
+    def _on_log_scroll_settle(self):
+        if self._at_log_bottom():
+            self._log_follow = True
 
     # ---------- 路径选择 ----------
     def select_source(self):
@@ -1600,6 +2136,7 @@ class MigrationGUI:
                  text="请粘贴完整的变更日志文本（包含 'Added mods:' 和 'Updated mods:' 部分）：").pack(pady=5)
         text_widget = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, height=20)
         text_widget.pack(fill="both", expand=True, padx=10, pady=5)
+        self._smooth(text_widget)
 
         def extract_and_close():
             raw_text = text_widget.get("1.0", tk.END)
@@ -1773,6 +2310,7 @@ class MigrationGUI:
         tree.column("path", width=360, anchor="w", stretch=False)
         vsb = ttk.Scrollbar(tw, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(tw, orient="horizontal", command=tree.xview)
+        self._smooth(tree, rows=True)
         # 横向滚动条只在内容真的超出可视宽度时才出现（默认宽度下 #0 列会自动拉伸填满，
         # 常驻一条拖不动的横向滚动条只会让人困惑）
         hsb_state = {"shown": True}
@@ -2017,6 +2555,7 @@ class MigrationGUI:
             height=18,
             style="History.Treeview"
         )
+        self._smooth(tree, rows=True)
         tree.heading("时间", text="🕒 迁移时间")
         tree.heading("来源", text="📁 来源路径")
         tree.heading("模组数", text="🧩 模组数")
@@ -2364,7 +2903,8 @@ class MigrationGUI:
             self.log("不会实际修改任何文件", level="INFO")
             thread = threading.Thread(
                 target=self._run_migration_thread,
-                args=(src_path, tgt_path, world, modlist, configlist, True)
+                args=(src_path, tgt_path, world, modlist, configlist, True,
+                      self.overwrite_mods.get())
             )
             thread.daemon = True
             thread.start()
@@ -2380,14 +2920,23 @@ class MigrationGUI:
             self._refresh_busy_state()
             return
 
-        self.progress_queue = queue.Queue()
-        self.progress_window = ProgressWindow(self.root, total_files, total_size)
-        if self.after_id is None:
-            self._poll_progress()
+        if self.silent_background:
+            # 后台静默执行：不弹进度窗口，也不建队列/轮询，全过程只写日志
+            self.progress_queue = None
+            self.progress_window = None
+            self.log("🤫 后台静默执行已开启：不显示进度窗口，完成后用系统通知提醒",
+                     level="INFO")
+            self._silent_notify_on_finish = True
+        else:
+            self.progress_queue = queue.Queue()
+            self.progress_window = ProgressWindow(self.root, total_files, total_size)
+            if self.after_id is None:
+                self._poll_progress()
 
         thread = threading.Thread(
             target=self._run_migration_thread,
-            args=(src_path, tgt_path, world, modlist, configlist, False)
+            args=(src_path, tgt_path, world, modlist, configlist, False,
+                  self.overwrite_mods.get())
         )
         thread.daemon = True
         thread.start()
@@ -2459,9 +3008,19 @@ class MigrationGUI:
         return free >= needed, free, needed
 
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist,
-                              dry_run):
+                              dry_run, overwrite):
+        """迁移工作线程。
+
+        overwrite 由主线程读好再传进来：Tk 变量只能在主线程碰，子线程直接
+        self.overwrite_mods.get() 会抛 "main thread is not in main loop"。
+        """
         def progress_callback(file_index, file_name, copied_bytes, step=None):
             if file_index is None:
+                # 这是迁移结束的哨兵：以前这里直接 return 把它吞了，_poll_progress
+                # 永远等不到 None —— 进度窗口（还是 grab_set 的）跑完也不关，
+                # 界面就那样卡在"迁移进度"上不收。
+                if self.progress_queue:
+                    self.progress_queue.put(None)
                 return
             if self.progress_queue:
                 self.progress_queue.put((file_index, file_name, copied_bytes, step))
@@ -2477,7 +3036,7 @@ class MigrationGUI:
                 modlist=modlist,
                 configlist=configlist,
                 dry_run=dry_run,
-                overwrite=self.overwrite_mods.get(),
+                overwrite=overwrite,
                 progress_callback=progress_callback,
                 log_callback=self.log,
                 check_cancel=check_cancel,
@@ -2489,6 +3048,14 @@ class MigrationGUI:
                 self.root.after(0, self._refresh_busy_state)
             except Exception:
                 pass
+            # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
+            if getattr(self, "_silent_notify_on_finish", False):
+                self._silent_notify_on_finish = False
+                try:
+                    self.root.after(0, lambda: self._notify_task_done(
+                        "迁移", "后台静默执行已结束，点托盘图标查看日志", force=True))
+                except Exception:
+                    pass
 
     # ---------- 其他辅助 ----------
     def _is_text_overflow(self, text_widget):
@@ -2841,6 +3408,7 @@ class MigrationGUI:
         try:
             legend = tk.Frame(parent, bg=self.theme.get("labelframe_bg", self.theme["bg"]))
             legend.pack(side="left", padx=4)
+            self._check_legend = legend      # 重排 config 按钮时要用它当插入锚点
 
             def chip(text, bg, fg):
                 lb = tk.Label(legend, text=text, bg=bg, fg=fg,
@@ -3629,13 +4197,13 @@ class MigrationGUI:
                 pass
         # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click）
         btn_close_big = create_gradient_button(
-            top, "✖ 关闭", lambda: _fade_out(win),
+            top, "✖ 关闭", lambda: _close_popup(win),
             colors=("#757575", "#9e9e9e"),
             width=_BTN_W, height=30, font=("微软雅黑", 9, "bold"))
         btn_close_big.pack(side="right", padx=_PAD)
-        # 标题栏的 × 也走淡出，保持一致
+        # 标题栏的 × 同样走原生关闭
         try:
-            win.protocol("WM_DELETE_WINDOW", lambda: _fade_out(win))
+            win.protocol("WM_DELETE_WINDOW", lambda: _close_popup(win))
         except Exception:
             pass
 
@@ -3668,17 +4236,14 @@ class MigrationGUI:
         x = (win.winfo_screenwidth() // 2) - (w // 2)
         y = (win.winfo_screenheight() // 2) - (h // 2)
         win.geometry(f"{w}x{h}+{x}+{y}")
-        # 先在透明状态下映射、把首帧画完，再平滑淡入：
-        # 既不露出未绘制的空白，也不会"啪"地一下蹦出来。
+        # 原生显示：排版、列宽、首帧都在隐藏状态下做完了，直接映射出来即可。
+        # 不再用 alpha 淡入——那层 layered 样式会连系统的显示/关闭动画一起挡掉，
+        # 关了会"啪"地消失；现在开和关都交给 Windows 自己。
         try:
-            win.attributes("-alpha", 0.0)
             win.deiconify()
-            win.update()
-            focus_window(win)
-            _fade_in(win)
         except Exception:
-            win.deiconify()
-            focus_window(win)
+            pass
+        focus_window(win)
 
     def _update_text_states(self):
         state = tk.NORMAL if self.edit_mode.get() else tk.DISABLED

@@ -5,7 +5,16 @@ import math
 import os
 import sys
 import time
+import weakref
 from pathlib import Path
+
+# 活着的平滑滚动器（弱引用，不阻止回收）。用来统一管理/诊断，
+# 也可以将来做"一键关掉平滑滚动"的开关。
+_LIVE_SCROLLERS = weakref.WeakSet()
+
+
+def live_scrollers():
+    return [s for s in _LIVE_SCROLLERS]
 
 
 def warm_up_emoji_font():
@@ -49,6 +58,267 @@ def hover_pair(colors):
     还有的变暗——手感乱七八糟。现在统一由这里算：全程序一个规则 = 变亮。
     """
     return (lighten_color(colors[0]), lighten_color(colors[1]))
+
+
+class SmoothScroller:
+    """给可滚动控件加平滑滚动（滚轮逐帧动画）。
+
+    实测前提（Tk 8.6 / Windows）：Text 的 `yview_scroll(n, "pixels")` 可用，视图
+    **不是**按行对齐的（能停在半行上），每帧只重绘可见区，成本与文档长度无关——
+    3000 行和 20000 行都是 1.5ms 上下，所以逐帧动画很宽裕（实测 66fps）。
+
+    两类滚动目标：
+    - `for_text`：像素级，真·平滑（Text 类控件）。
+    - `for_rows`：只能整行整列走（ttk.Treeview、VirtualTable 这类按行步进的），
+      引擎照样每帧插值，只是把"不足一行的零头"攒到下一帧，看起来仍是动画。
+
+    只接管鼠标滚轮：拖滚动条、键盘翻页保持原样；连续滚轮只往目标累加，不互相打断。
+    """
+
+    def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=0.30,
+                 bind_widgets=None, on_user_scroll=None, on_settle=None):
+        self.widget = widget
+        self.frame_ms = frame_ms
+        self.ease = ease
+        self.px_per_notch = px_per_notch
+        self._mover = mover
+        self._left = 0.0          # 还没滚完的像素（正=向下）
+        self._job = None
+        self._on_user_scroll = on_user_scroll
+        self._on_settle = on_settle
+        # 必须覆盖而不是 add="+"：类绑定（Tk 自带的一格跳 3 行）排在控件绑定之后，
+        # 用 add 的话会先跳一次再动画，等于滚两倍。表头等也要绑，鼠标停在那儿也能滚。
+        for w in (bind_widgets or [widget]):
+            try:
+                w.bind("<MouseWheel>", self._on_wheel)
+            except Exception:
+                pass
+        try:
+            _LIVE_SCROLLERS.add(self)
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------------- 构造入口
+    @classmethod
+    def for_text(cls, widget, bind_widgets=None, **kw):
+        """Text 类：像素级平滑。一格滚轮沿用 Tk 默认的 3 行，手感速度不变。"""
+        def mover(px):
+            n = int(round(px))
+            if n == 0:
+                n = 1 if px > 0 else -1
+            before = widget.yview()[0]
+            try:
+                widget.yview_scroll(n, "pixels")
+            except Exception:
+                return 0, True
+            return (n, False) if abs(widget.yview()[0] - before) > 1e-9 else (0, True)
+
+        return cls(widget, mover, px_per_notch=kw.pop("px_per_notch", None)
+                   or _text_notch_px(widget), bind_widgets=bind_widgets, **kw)
+
+    @classmethod
+    def for_rows(cls, widget, row_px, on_render=None, bind_widgets=None, **kw):
+        """按行滚动的控件（Treeview / 自绘表格）：攒够一行走一行，其余交给动画。
+
+        一帧最多走一行（实测 Treeview 一次行滚动只要 0.03ms，便宜得很），动画才
+        "看得见"；只有剩余很多（猛滚十几格）时才允许一帧多走几行，否则一次滚 20 格
+        要 60 帧、拖沓得没法用。
+        """
+        acc = {"v": 0.0}
+
+        def mover(px):
+            acc["v"] += px
+            if row_px <= 0:
+                return 0, True
+            rows = int(acc["v"] // row_px)
+            remain = abs(acc["v"]) / row_px
+            cap = 1 if remain <= 8 else max(1, int(remain / 4))
+            rows = max(-cap, min(cap, rows))
+            if rows == 0:
+                return 0, False           # 零头先攒着，不算"滚不动"
+            acc["v"] -= rows * row_px
+            before = widget.yview()[0]
+            try:
+                widget.yview_scroll(rows, "units")
+            except Exception:
+                return 0, True
+            if on_render is not None:
+                try:
+                    on_render()
+                except Exception:
+                    pass
+            if abs(widget.yview()[0] - before) <= 1e-9:
+                acc["v"] = 0.0
+                return 0, True            # 到顶/底了
+            return rows * row_px, False
+
+        return cls(widget, mover, px_per_notch=kw.pop("px_per_notch", None) or row_px * 3,
+                   bind_widgets=bind_widgets, **kw)
+
+    # ------------------------------------------------------------------- 状态
+    def scrolling(self):
+        return self._job is not None or abs(self._left) >= 1.0
+
+    def stop(self):
+        if self._job is not None:
+            try:
+                self.widget.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+        self._left = 0.0
+
+    # ------------------------------------------------------------------- 动画
+    def _on_wheel(self, event):
+        delta = getattr(event, "delta", 0) or 0
+        # 触控板在 Windows 上会发小于 120 的细粒度 delta，按比例算，别一刀切
+        self._left += (-delta / 120.0) * self.px_per_notch
+        if self._on_user_scroll is not None:
+            try:
+                self._on_user_scroll(self._left < 0)   # True = 用户往上滚
+            except Exception:
+                pass
+        if self._job is None:
+            self._job = self.widget.after(1, self._step)
+        return "break"
+
+    def _settle(self):
+        if self._on_settle is not None:
+            try:
+                self._on_settle()
+            except Exception:
+                pass
+
+    def _step(self):
+        self._job = None
+        try:
+            if not self.widget.winfo_exists():
+                return
+        except Exception:
+            return
+        if abs(self._left) < 1.0:
+            self._left = 0.0
+            self._settle()
+            return
+        # 每帧走剩余量的 ease 倍；不足 1 像素也要走 1，否则会卡在最后一点点
+        move = self._left * self.ease
+        if abs(move) < 1.0:
+            move = 1.0 if move > 0 else -1.0
+        consumed, blocked = self._mover(move)
+        if blocked:
+            self._left = 0.0
+            self._settle()
+            return
+        self._left -= consumed
+        self._job = self.widget.after(self.frame_ms, self._step)
+
+
+def _hwnd_of(win):
+    """取窗口的 HWND（Tk 主窗口 / Toplevel 都行）。"""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        return user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
+    except Exception:
+        return None
+
+
+def is_dark_theme(theme):
+    """判断给进来的主题是不是深色（theme 是 utils.theme 里那两个字典之一）。"""
+    try:
+        from utils.theme import DARK_THEME
+        if theme is DARK_THEME:
+            return True
+        return isinstance(theme, dict) and theme.get("bg") == DARK_THEME.get("bg")
+    except Exception:
+        return False
+
+
+def _stylable(win):
+    """判断这个窗口该不该上原生标题栏样式。
+
+    两类窗口必须跳过：
+    - **overrideredirect 的无边框窗口**（启动闪屏就是）：它压根没有标题栏，
+      给它写 caption/边框颜色反而会把它的分层渲染搞坏——实测闪屏卡片会变成
+      "能透出桌面代码"的怪透明窗（用户看到的就是这个）。
+    - **带 alpha 的 layered 窗口**：同理，DWM 标题栏属性和 layered 混用会出问题。
+    """
+    try:
+        if win.overrideredirect():
+            return False
+    except Exception:
+        pass
+    try:
+        if float(win.attributes("-alpha")) < 0.999:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def style_window(win, dark=False, round_corners=True):
+    """给窗口上原生外观：标题栏颜色跟随主题 + Win11 原生圆角。
+
+    Tk 完全管不到标题栏：深色主题下窗口内容全黑、标题栏还是白的，割裂得厉害。
+    这里用 pywinstyles（CC0 公共领域、纯 ctypes、无依赖 → 打包零风险）。
+
+    关键坑一：**只把 immersive dark mode（属性 19/20）设回 0 是不会恢复浅色标题栏的**
+    ——DWM 对第一次的 dark 有"粘性"，实测属性回 0 后标题栏依旧是黑的（强制
+    FRAMECHANGED / RedrawWindow 都没用）。所以这里额外显式写标题栏配色
+    （DWMWA_CAPTION_COLOR=35、DWMWA_TEXT_COLOR=36，Win11 22000+ 起支持）。
+    关键坑二：无边框 / 半透明窗口不能刷（见 _stylable），否则会坏掉它自己的渲染。
+    没装库 / 系统不支持 / 任何异常都静默跳过，界面退回原来的样子。
+    """
+    if not _stylable(win):
+        return False
+    try:
+        import pywinstyles
+    except Exception:
+        return False
+    try:
+        pywinstyles.apply_style(win, "dark" if dark else "light")
+    except Exception:
+        pass
+    # 标题栏底色 + 标题文字色：显式指定，避免 dark 粘住
+    caption, title_fg = ("#202020", "#ffffff") if dark else ("#f0f0f0", "#000000")
+    try:
+        pywinstyles.change_header_color(win, caption)
+    except Exception:
+        pass
+    try:
+        pywinstyles.change_title_color(win, title_fg)
+    except Exception:
+        pass
+    if round_corners:
+        hwnd = _hwnd_of(win)
+        if hwnd:
+            try:
+                import ctypes
+                pywinstyles.ChangeDWMAttrib(hwnd, 33, ctypes.c_int(2))
+            except Exception:
+                pass
+    return True
+
+
+def _text_notch_px(widget):
+    """一格滚轮的像素数 = 3 行（跟 Tk 默认的滚动距离一致）。"""
+    try:
+        import tkinter.font as tkfont
+        f = tkfont.Font(font=widget.cget("font"))
+        return max(9, 3 * int(f.metrics("linespace")))
+    except Exception:
+        return 48
+
+
+def tree_row_px(widget=None, default=20):
+    """取 Treeview 的行高（按行平滑滚动要用）。"""
+    try:
+        import tkinter.ttk as ttk
+        return max(8, int(ttk.Style().lookup("Treeview", "rowheight") or default))
+    except Exception:
+        return default
 
 
 try:

@@ -8,7 +8,7 @@ import threading
 import queue
 import webbrowser
 from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
-                           center_window, lighten_color)
+                           center_window, lighten_color, SmoothScroller)
 from core.scanner import get_full_mod_metadata
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
@@ -379,6 +379,7 @@ def show_mod_detail(parent, jar_path, theme):
     ]
     text = scrolledtext.ScrolledText(win, wrap=tk.WORD, height=6, width=70)
     text.pack(padx=10, pady=5, fill="x", expand=False)
+    SmoothScroller.for_text(text)
     text.insert(tk.END, "\n".join(details))
     text.config(state=tk.DISABLED)
 
@@ -431,6 +432,7 @@ def show_mod_detail(parent, jar_path, theme):
     vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview,
                         style="Detail.Vertical.TScrollbar")
     tree.configure(yscrollcommand=vsb.set)
+    SmoothScroller.for_rows(tree, max(8, int(ttk.Style().lookup("Treeview", "rowheight") or 20)))
     tree.pack(side="left", fill="both", expand=True, padx=5)
     vsb.pack(side="right", fill="y")
 
