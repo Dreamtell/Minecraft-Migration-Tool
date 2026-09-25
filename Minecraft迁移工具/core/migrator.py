@@ -4,7 +4,6 @@ import time
 import json
 import traceback
 from pathlib import Path
-import threading
 
 
 # ---------- 工具函数 ----------
@@ -319,6 +318,132 @@ def do_restore(target_path, log_func=None):
     return True
 
 
+# ---------- 更新模组时的旧版本清理 ----------
+# 迁移是"按文件名复制"的：更新版文件名不同（create-6.0.8.jar → create-6.0.9.jar），
+# 目标的旧版不会被覆盖，于是同一个 mod 两个版本共存——Forge 启动直接
+# Duplicate mod 崩溃，Fabric 报 Duplicate mod ID。这里按 **modid** 找出旧版并移走。
+_MODID_CACHE = {}          # {路径: (mtime, size, modid)} 进程内缓存，同一文件只解压一次
+
+
+def _modid_of(jar_path):
+    """读 jar 的 modid；读不到（坏包/占位符/非模组文件）返回 None。"""
+    try:
+        jar_path = Path(jar_path)
+        st = jar_path.stat()
+        key = str(jar_path)
+        hit = _MODID_CACHE.get(key)
+        if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
+            return hit[2]
+        from core.scanner import get_mod_metadata
+        modid = get_mod_metadata(str(jar_path))[0]
+        modid = (modid or "").strip().lower()
+        if not modid or modid in ("未知", "unknown", "?", "无"):
+            modid = None
+        _MODID_CACHE[key] = (st.st_mtime, st.st_size, modid)
+        return modid
+    except Exception:
+        return None
+
+
+def index_modids(mods_dir):
+    """把 mods 目录里的 jar 按 modid 建索引：{modid: [Path, ...]}。
+
+    解析不出 modid 的会被跳过——这类文件绝不参与"旧版本清理"：
+    宁可留着让用户自己判断，也不能凭文件名猜错、误删别人的模组。
+    """
+    index = {}
+    try:
+        for jar in sorted(Path(mods_dir).glob("*.jar")):
+            modid = _modid_of(jar)
+            if modid:
+                index.setdefault(modid, []).append(jar)
+    except Exception:
+        pass
+    return index
+
+
+def _record_removed(target_path, modid, moved_names, replaced_by):
+    """把"移走了哪些旧版本"记进备份目录，方便用户事后查看（回滚不依赖它）。"""
+    try:
+        path = get_backup_path(target_path) / "removed_mods" / "_removed.json"
+        data = []
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = []
+        data.append({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "modid": modid,
+            "removed": list(moved_names),
+            "replaced_by": replaced_by,
+        })
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def remove_old_mod_versions(target_path, target_mods, src_jar, dst_path, index=None,
+                            log_func=None, dry_run=False):
+    """把目标 mods 里同 modid 的旧版本移进 .migrate_backup/removed_mods/。
+
+    返回被移走的文件名列表。只认 modid；移走而不是删除，回滚时 do_restore 会
+    用备份里的 mods 整目录恢复，所以这一步是可逆的。
+    """
+    if dry_run or index is None:
+        return []
+    modid = _modid_of(src_jar)
+    if not modid:
+        # 读不出 modid 就没法判断谁是谁，宁可不清理，也不凭文件名猜
+        if log_func:
+            log_func(f"ℹ️ 无法识别 {Path(src_jar).name} 的 modid，跳过旧版本清理"
+                     f"（如目标里已存在同模组的其他版本，请手动确认）", "INFO")
+        return []
+    try:
+        dst_resolved = Path(dst_path).resolve()
+    except Exception:
+        dst_resolved = None
+    olds = []
+    for p in index.get(modid, []):
+        try:
+            if not p.exists():
+                continue
+            if dst_resolved is not None and p.resolve() == dst_resolved:
+                continue                      # 就是它自己，不用动
+            olds.append(p)
+        except Exception:
+            continue
+    if not olds:
+        return []
+    dest_dir = get_backup_path(target_path) / "removed_mods"
+    moved = []
+    for old in olds:
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            target = dest_dir / old.name
+            n = 1
+            while target.exists():
+                target = dest_dir / f"{old.stem}.{n}{old.suffix}"
+                n += 1
+            shutil.move(str(old), str(target))
+            moved.append(old.name)
+            try:
+                index[modid].remove(old)      # 从索引摘掉，别被后面的条目再匹配到
+            except ValueError:
+                pass
+            if log_func:
+                log_func(f"🗑️ 移除目标旧版本：{old.name}（同 modid: {modid}）"
+                         f"，已移入备份 .migrate_backup/removed_mods", "WARNING")
+        except Exception as e:
+            if log_func:
+                log_func(f"⚠️ 移除旧版本 {old.name} 失败：{e}（该文件保持原样）", "WARNING")
+    if moved:
+        _record_removed(target_path, modid, moved, Path(dst_path).name)
+    return moved
+
+
 # ---------- 主迁移函数 ----------
 def run_migration(
         src_path,
@@ -331,14 +456,24 @@ def run_migration(
         progress_callback=None,
         log_callback=None,
         check_cancel=None,
-        add_history=True
+        add_history=True,
+        rename_marker=None
 ):
     """
     执行迁移主流程
+    rename_marker: 非空时，复制过去的模组会在文件名前加这个前缀（如 "★ "），
+                   方便用户在目标目录里一眼认出哪些是本次迁移带过去的。
+                   只改目标文件名，不改内容；加载器只认 jar 里的 modid，不受影响。
     返回: 是否成功完成
     """
     src_path = Path(src_path)
     tgt_path = Path(tgt_path)
+    marker = (rename_marker or "").strip()
+    if marker:
+        marker = marker + " " if not marker.endswith(" ") else marker
+        local_log = log_callback
+        if local_log:
+            local_log(f"🏷️ 已启用迁移标记：复制过去的模组会加前缀「{marker.strip()} 」", "INFO")
 
     def log(msg, level="INFO"):
         if log_callback:
@@ -373,8 +508,17 @@ def run_migration(
 
             success = 0
             skipped = 0
+            removed_old = 0
             failed = []
             total_mods = len(modlist)
+            # 目标 mods 的 modid 索引：用来识别"同一个 mod 的旧版本"。
+            # 只有真要复制（非模拟）且目标已有 mods 时才建，建一次给全程用。
+            target_index = None
+            if not dry_run and tgt_mods.exists():
+                _t0 = time.perf_counter()
+                target_index = index_modids(tgt_mods)
+                log(f"🔎 已索引目标 mods（{len(target_index)} 个 modid，"
+                    f"耗时 {time.perf_counter() - _t0:.1f}s），用于识别旧版本", "INFO")
             for idx, item in enumerate(modlist):
                 if check_cancel and check_cancel():
                     log("⚠️ 用户取消了迁移", "WARNING")
@@ -394,10 +538,17 @@ def run_migration(
                     src_file = source_files[matched]
 
                 dst_file = tgt_mods / matched
+                # 迁移标记：目标文件名前加前缀，方便用户在 mods 目录里辨认
+                if marker:
+                    dst_file = tgt_mods / (marker + matched)
                 if dst_file.exists() and not overwrite and not dry_run:
-                    log(f"⏭️ 跳过已存在的模组: {matched}", "WARNING")
+                    log(f"⏭️ 跳过已存在的模组: {dst_file.name}", "WARNING")
                     skipped += 1
                     continue
+                # 复制之前先清掉目标里同 modid 的旧版本（否则两个版本共存会崩）
+                removed_old += len(remove_old_mod_versions(
+                    tgt_path, tgt_mods, src_file, dst_file,
+                    index=target_index, log_func=log, dry_run=dry_run))
                 ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite,
                                     is_file=True)
                 if ok:
@@ -405,15 +556,18 @@ def run_migration(
                     file_index += 1
                     copied_bytes += src_file.stat().st_size
                     if dry_run:
-                        log(f"[模拟] 将复制: {matched}", "SIMULATE")
+                        log(f"[模拟] 将复制: {dst_file.name}", "SIMULATE")
                     else:
-                        log(f"✅ 已复制: {matched}", "SUCCESS")
+                        log(f"✅ 已复制: {dst_file.name}", "SUCCESS")
                     step = f"复制模组 ({idx + 1}/{total_mods})"
-                    progress(file_index, matched, copied_bytes, step)
+                    progress(file_index, dst_file.name, copied_bytes, step)
                 else:
                     failed.append((item, msg))
                     log(f"❌ 复制失败 {matched}: {msg}", "ERROR")
             log(f"模组复制完成: 成功 {success} 个, 跳过 {skipped} 个, 失败 {len(failed)} 个", "INFO")
+            if removed_old:
+                log(f"🧹 已移除 {removed_old} 个同 modid 的旧版本（移入 "
+                    f".migrate_backup/removed_mods，回滚时会自动恢复）", "SUCCESS")
 
         # -------- 步骤2: 复制 options.txt --------
         log("\n【步骤2】复制 options.txt...", "INFO")

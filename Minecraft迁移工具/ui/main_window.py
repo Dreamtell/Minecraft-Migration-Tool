@@ -16,7 +16,7 @@ from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
-                           circular_reveal, focus_window, lighten_color,
+                           RoundedEntry, circular_reveal, focus_window, lighten_color,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
@@ -29,9 +29,10 @@ from core.migrator import (
     _is_safe_path,
     match_mod
 )
-from core.scanner import scan_mod_differences, get_full_mod_metadata
+from core.scanner import (scan_mod_differences, get_full_mod_metadata,
+                          split_cn_name, get_mod_icon, guess_tags)
 from ui.dialogs import ProgressWindow, ScanProgressWindow, show_mod_detail, update_mod_detail_theme
-from ui.diff_window import show_diff_window, update_diff_theme
+from ui.diff_window import show_diff_window
 from ui.virtual_table import VirtualTable
 
 
@@ -109,10 +110,15 @@ LINK_GITHUB = "https://github.com/Dreamtell/Minecraft-Migration-Tool"
 # 设置窗口的分区配色 / 图标（标题色、描边色、图标都是同一支主色）
 _SECTION_STYLE = {
     "look":    ("外观与启动", "#8e24aa", "🎨"),
+    "migrate": ("迁移行为", "#7e57c2", "🏷️"),
+    "tags":    ("模组分类标签", "#00897b", "🌐"),
     "buttons": ("界面按钮（勾选显示 / 上下调整顺序）", "#00acc1", "🧩"),
     "close":   ("关闭与后台", "#fb8c00", "🚪"),
     "links":   ("快捷链接", "#43a047", "🔗"),
 }
+
+# 迁移标记可选的符号：都是微软雅黑里有字形、且文件名安全的（不含 \ / : * ? " < > |）
+_RENAME_MARKERS = ("★", "☆", "▶", "◆", "●", "✦", "✚", "【新】", "NEW_")
 
 # 按钮列表里每一排的主色 + 图标，用来给分组行上色
 _GROUP_COLORS = {
@@ -244,6 +250,11 @@ class MigrationGUI:
         # 按钮显示/隐藏 与 自定义顺序
         self.hidden_buttons = list(self.config.get("buttons_hidden", []) or [])
         self.button_order = dict(self.config.get("button_order", {}) or {})
+        # 迁移标记：复制过去的模组加前缀，方便在目标 mods 里辨认（默认关，不改老行为）
+        self.rename_migrated_mods = bool(self.config.get("rename_migrated_mods", False))
+        self.rename_marker = str(self.config.get("rename_marker", "★") or "★")
+        # 分类标签：默认用关键词推测；开启后去 Modrinth 取真实分类（有本地缓存）
+        self.online_tags = bool(self.config.get("online_tags", False))
 
         # 可自定义按钮的登记表：key -> 控件（在 create_widgets 里逐个登记）
         self._btn_widgets = {}
@@ -406,6 +417,9 @@ class MigrationGUI:
             "silent_background": bool(getattr(self, "silent_background", False)),
             "buttons_hidden": list(getattr(self, "hidden_buttons", []) or []),
             "button_order": dict(getattr(self, "button_order", {}) or {}),
+            "rename_migrated_mods": bool(getattr(self, "rename_migrated_mods", False)),
+            "rename_marker": str(getattr(self, "rename_marker", "★")),
+            "online_tags": bool(getattr(self, "online_tags", False)),
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -523,9 +537,6 @@ class MigrationGUI:
         )
         apply_theme_to_widget_tree(self.root, self.theme)
 
-        # 原生外观也跟着主题走：深色主题给暗色标题栏，浅色给回白的
-        self._style_all_windows()
-
         # 同步"放大查看"结果表的配色
         alive_tables = []
         for tv in getattr(self, '_big_view_tables', []):
@@ -537,6 +548,17 @@ class MigrationGUI:
                 pass
         self._big_view_tables = alive_tables
 
+        # 放大查看的"卡片视图"也一样要跟着主题换色（自绘控件，得显式调用）
+        alive_cards = []
+        for cdl in getattr(self, '_big_view_cards', []):
+            try:
+                if cdl.winfo_exists():
+                    cdl.apply_theme(self.theme)
+                    alive_cards.append(cdl)
+            except Exception:
+                pass
+        self._big_view_cards = alive_cards
+
         # 同步"放大查看"窗口的整体配色（背景/文字/输入框等，渐变按钮不受影响）
         alive_big = []
         for bww in getattr(self, '_big_view_windows', []):
@@ -544,6 +566,14 @@ class MigrationGUI:
                 if bww.winfo_exists():
                     apply_theme_to_widget_tree(bww, self.theme)
                     alive_big.append(bww)
+                    # 汇总标签是自己管颜色（_keep_fg），主题切换时得手动补一次
+                    for attr, key in (("_sel_lbl", "ok_fg"), ("_stat_lbl", "muted_fg")):
+                        lbl = getattr(bww, attr, None)
+                        if lbl is not None:
+                            try:
+                                lbl.config(fg=self.theme.get(key, self.theme["fg"]))
+                            except Exception:
+                                pass
                     # 顺带同步该放大查看窗口打开的模组详情窗口
                     for detail_win in getattr(bww, '_mod_detail_windows', []):
                         if detail_win.winfo_exists():
@@ -579,6 +609,11 @@ class MigrationGUI:
                 self.mod_text.tag_configure(
                     "mod_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
                     foreground=self.theme.get("warn_fg", "#000000"))
+                # "本次新添加的模组"黄色高亮：以前只在建界面时配过一次，切主题
+                # 从不重配，深色主题下会一直留着浅黄底
+                self.mod_text.tag_configure(
+                    "new", background=self.theme.get("warn_bg", "#ffeaa7"),
+                    foreground=self.theme.get("warn_fg", "#000000"))
             except Exception:
                 pass
 
@@ -600,6 +635,9 @@ class MigrationGUI:
             self.target_status.configure(bg=self.theme["bg"])
         if hasattr(self, 'world_status'):
             self.world_status.configure(bg=self.theme["bg"])
+        # 状态标签的语义色立刻换成本主题的（绿/红/灰），不等重新校验——
+        # 校验要扫实例目录，几百毫秒里旧颜色会一直挂着，看着就是"闪一下"
+        self._apply_status_semantic_colors()
         # （迁移方向箭头现在是"⬇ 新版整合包"标题里的一个字符，没有独立控件要刷色）
 
         # 主题按钮上的图标跟着主题走（深色时显示太阳 = 点它回浅色，反之给月亮）
@@ -661,6 +699,20 @@ class MigrationGUI:
                     apply_theme_to_widget_tree(child, self.theme)
             except Exception:
                 pass
+
+        # 把重绘在"覆盖层还盖着"的时候一次性冲掉。否则这些彩色文字（日志分类色、
+        # 清单高亮）的重新着色会被推迟到圆形揭示把它们露出来的那一刻，用户就会
+        # 看到"新底色 + 旧字色"闪一下——因为此刻窗口被截图覆盖层挡着，冲掉是看不见的。
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+        # 原生外观（暗色标题栏 + 圆角）必须放在**最后**：DWM 属性一改，Windows 会
+        # 立刻强制窗口重绘一次；如果这时彩色 tag 还没重配，屏幕上就会闪过
+        # "新底色 + 旧字色"的一帧（日志区的彩色行最明显）。放到全部配色都刷完之后
+        # 再动窗口样式，那一次重绘就已经是新配色了。
+        self._style_all_windows()
 
     def toggle_theme(self, from_widget=None):
         """切换主题：先做一个从触发点向外扩散的圆形过渡，动画结束再真正换配色。"""
@@ -751,23 +803,170 @@ class MigrationGUI:
         keys += [k for k in default if k not in keys]
         return keys
 
-    def _apply_button_layout(self):
-        """按"显示/隐藏 + 自定义顺序"重新摆各排按钮。"""
+    # ---------- 按钮排布：place + 插值动画 ----------
+    _ANIM_MS = 12              # 过渡帧间隔
+    _ANIM_MAX_FRAMES = 40      # 兜底：万一位置算不收敛，最多跑这么多帧
+
+    def _placeable_row(self, widgets):
+        """这一排能不能用 place 摆？
+
+        容器里混着别的控件（状态标签 / 图例）时不能：place 出来的按钮不占 pack
+        的位置，那些兄弟控件会当按钮不存在，直接压到它们身上。
+        """
+        try:
+            rows = {w.master for _k, w in widgets}
+            if len(rows) != 1:
+                return None
+            row = rows.pop()
+            group = {w for _k, w in widgets}
+            if set(row.winfo_children()) - group:
+                return None
+            return row
+        except Exception:
+            return None
+
+    def _place_row(self, row, entries, side, hidden, animate):
+        """把一排按钮用 place 摆好；可见的按钮从当前位置平滑滑到目标位置。
+
+        pack 是排不动的（要么原地要么跳），所以显隐/换序想有过渡只能用 place。
+        """
+        pad = 5
+        try:
+            row.update_idletasks()
+        except Exception:
+            pass
+        vis_seq = [(k, w) for k, w in entries if k not in hidden]
+        if side != "left":
+            vis_seq = list(reversed(vis_seq))
+        offsets, off = {}, pad
+        for k, w in vis_seq:
+            offsets[k] = off
+            off += w.winfo_reqwidth() + pad * 2
+        h = max([w.winfo_reqheight() for _k, w in entries] or [30])
+        # 关掉 propagate 后容器不再按子控件算尺寸，宽高都得自己给：
+        # fill 了 x/both 的排，宽度由父容器决定；其余（side="right" 那种）只能自己算，
+        # 否则容器宽度塌成 1px，靠右对齐的按钮会被 place 到负数坐标上去。
+        try:
+            fill = str(row.pack_info().get("fill", "none"))
+        except Exception:
+            fill = "none"
+        try:
+            row.pack_propagate(False)
+            if fill in ("x", "both"):
+                row.configure(height=h)
+            else:
+                row.configure(height=h, width=max(1, off))
+        except Exception:
+            pass
+        starts = {}
+        for k, w in entries:
+            try:
+                starts[k] = w.winfo_x() if w.winfo_ismapped() else None
+            except Exception:
+                starts[k] = None
+        for _k, w in entries:
+            try:
+                w.pack_forget()
+            except Exception:
+                pass
+        jobs = getattr(self, "_btn_anim_jobs", None)
+        if jobs is None:
+            jobs = self._btn_anim_jobs = []
+        for j in list(jobs):
+            try:
+                self.root.after_cancel(j)
+            except Exception:
+                pass
+        jobs.clear()
+
+        def place_at(w, x):
+            y = max(0, (h - w.winfo_reqheight()) // 2)
+            if side == "left":
+                w.place(x=x, y=y, anchor="nw")
+            else:
+                # 靠右对齐：用 relx=1.0 定位，窗口拉宽拉窄都跟着右边缘走
+                w.place(relx=1.0, x=-(x + w.winfo_reqwidth()), y=y, anchor="nw")
+
+        for k, w in entries:
+            if k in hidden:
+                try:
+                    w.place_forget()
+                except Exception:
+                    pass
+        if not animate or not vis_seq or not row.winfo_ismapped():
+            # 还没显示出来时（启动阶段）直接摆到位，别在后台空跑一遍动画
+            for k, w in vis_seq:
+                try:
+                    place_at(w, offsets[k])
+                except Exception:
+                    pass
+            return
+        pos = {}
+        for k, w in vis_seq:
+            start = starts.get(k)
+            if start is None:      # 新出现的：从旁边 26px 滑进来，而不是凭空冒出
+                start = offsets[k] - 26 if side == "left" else offsets[k] + 26
+            pos[k] = float(start)
+
+        def step(n):
+            done = True
+            for k, w in vis_seq:
+                tgt = float(offsets[k])
+                cur = pos[k]
+                if abs(cur - tgt) < 1.0:
+                    cur = tgt
+                else:
+                    cur += (tgt - cur) * 0.34
+                    done = False
+                pos[k] = cur
+                try:
+                    place_at(w, cur)
+                except Exception:
+                    pass
+            if not done and n < self._ANIM_MAX_FRAMES:
+                try:
+                    jobs.append(self.root.after(self._ANIM_MS, lambda: step(n + 1)))
+                except Exception:
+                    pass
+        step(0)
+
+    def _apply_button_layout(self, animate=True):
+        """按"显示/隐藏 + 自定义顺序"重新摆各排按钮。
+
+        容器里全是本排按钮的排走 place+插值（显隐/换序有一段平滑滑动）；
+        混着状态标签的那种排仍用 pack，行为跟以前完全一样。
+        """
         hidden = set(self.hidden_buttons or ())
         for gkey, _label, side in _BUTTON_GROUPS:
             order = self._resolved_order(gkey)
+            entries = [(k, self._btn_widgets[k]) for k in order if k in self._btn_widgets]
+            if not entries:
+                continue
             # 先把这一排全部撤下来（含被隐藏的）：只重新 pack 显示的那些是不够的，
-            # 之前已经 pack 上去的隐藏按钮会原地不动，"隐藏"等于没生效。
-            for key in order:
-                widget = self._btn_widgets.get(key)
-                if widget is None:
-                    continue
+            # 之前已经摆上去的隐藏按钮会原地不动，"隐藏"等于没生效。
+            for _k, w in entries:
                 try:
-                    widget.pack_forget()
+                    w.pack_forget()
                 except Exception:
                     pass
-            shown = [k for k in order if k not in hidden and k in self._btn_widgets]
-            # 靠右对齐的那两排：反过来 pack，列表顺序就是从左到右看到的顺序
+            row = self._placeable_row(entries)
+            if row is not None:
+                try:
+                    self._place_row(row, entries, side, hidden, animate)
+                    continue
+                except Exception:
+                    # place 这条路出问题就地回滚到 pack，别让界面摆不正
+                    for _k, w in entries:
+                        try:
+                            w.place_forget()
+                        except Exception:
+                            pass
+                    try:
+                        row.pack_propagate(True)
+                    except Exception:
+                        pass
+            shown = [k for k, _w in entries if k not in hidden]
+            # 靠右对齐的那两排：反过来摆，列表顺序就是从左到右看到的顺序
             seq = shown if side == "left" else list(reversed(shown))
             anchor = self._group_anchor(gkey)
             for key in seq:
@@ -888,12 +1087,47 @@ class MigrationGUI:
         check(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
               self._toggle_splash).pack(fill="x", pady=(6, 0))
 
-        # ---------- 2. 界面按钮 ----------
+        # ---------- 2. 迁移行为 ----------
+        box_m = section("migrate")
+        self.settings_rename_var = tk.BooleanVar(value=self.rename_migrated_mods)
+        check(box_m, "复制过去的模组加标记前缀（方便在目标 mods 里一眼认出）",
+              self.settings_rename_var, self._toggle_rename_marker).pack(fill="x")
+        row_mark = tk.Frame(box_m, bg=self.theme["bg"])
+        row_mark.pack(fill="x", pady=(4, 0))
+        tk.Label(row_mark, text="标记：", bg=self.theme["bg"], fg=self.theme["fg"],
+                 font=("微软雅黑", 9)).pack(side="left")
+        self.settings_marker_var = tk.StringVar(value=self.rename_marker)
+        for mark in _RENAME_MARKERS:
+            radio(row_mark, mark, mark, self.settings_marker_var,
+                  lambda m=mark: self._set_rename_marker(m)).pack(side="left", padx=1)
+        self.settings_marker_preview = tk.Label(
+            box_m, text="", bg=self.theme["bg"],
+            fg=self.theme.get("muted_fg", self.theme["fg"]), font=("微软雅黑", 8))
+        self.settings_marker_preview.pack(anchor="w", pady=(4, 0))
+        self._update_marker_preview()
+
+        # ---------- 3. 模组分类标签 ----------
+        box_t = section("tags")
+        self.settings_tags_var = tk.BooleanVar(value=getattr(self, "online_tags", False))
+        check(box_t, "联网获取真实分类（Modrinth；默认关闭）",
+              self.settings_tags_var, self._toggle_online_tags).pack(fill="x")
+        tk.Label(box_t,
+                 text="关闭时按关键词推测（标注“推测”的就是它）。开启后扫描会在后台联网查询，"
+                      "结果缓存到本地；断网或匹配不到时自动沿用推测结果。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w", pady=(4, 0))
+        self.settings_tag_cache_lbl = tk.Label(
+            box_t, text="", bg=self.theme["bg"],
+            fg=self.theme.get("muted_fg", self.theme["fg"]), font=("微软雅黑", 8))
+        self.settings_tag_cache_lbl.pack(anchor="w", pady=(2, 0))
+        self._update_tag_cache_label()
+
+        # ---------- 3. 界面按钮 ----------
         box2 = section("buttons")
         tree_wrap = tk.Frame(box2, bg=self.theme["bg"])
         tree_wrap.pack(fill="both", expand=True)
         self.settings_btn_tree = ttk.Treeview(
-            tree_wrap, columns=("状态",), show="tree headings", height=13,
+            tree_wrap, columns=("状态",), show="tree headings", height=8,
             selectmode="browse")
         self.settings_btn_tree.heading("#0", text="按钮")
         self.settings_btn_tree.heading("状态", text="状态")
@@ -1077,6 +1311,58 @@ class MigrationGUI:
         self.log(f"🎬 启动动画已{'启用' if self.splash_enabled else '关闭'}"
                  f"（下次启动程序生效）", level="INFO", save=False)
 
+    # ---------- 迁移标记 ----------
+    def _toggle_rename_marker(self):
+        """是否给复制过去的模组加前缀标记。"""
+        self.rename_migrated_mods = bool(self.settings_rename_var.get())
+        self._update_marker_preview()
+        self.save_config()
+        self.log(f"🏷️ 模组迁移标记已{'开启' if self.rename_migrated_mods else '关闭'}"
+                 + (f"（前缀「{self.rename_marker} 」）" if self.rename_migrated_mods else ""),
+                 level="INFO", save=False)
+
+    def _set_rename_marker(self, mark):
+        """换一个标记符号。"""
+        self.rename_marker = mark or "★"
+        self._update_marker_preview()
+        self.save_config()
+        self.log(f"🏷️ 迁移标记符号已改为「{self.rename_marker}」", level="INFO", save=False)
+
+    def _update_marker_preview(self):
+        """给用户看一眼实际效果（关着的时候也显示，方便先挑）。"""
+        lbl = getattr(self, "settings_marker_preview", None)
+        if lbl is None:
+            return
+        try:
+            state = "已开启" if getattr(self, "rename_migrated_mods", False) else "未开启"
+            lbl.config(text=f"效果（{state}）：{self.rename_marker} "
+                            f"create-1.20.1-6.0.9.jar")
+        except Exception:
+            pass
+
+    def _toggle_online_tags(self):
+        """联网分类开关：开启后扫描会在后台去 Modrinth 取真实分类。"""
+        self.online_tags = bool(self.settings_tags_var.get())
+        self.save_config()
+        self._update_tag_cache_label()
+        if self.online_tags:
+            self.log("🌐 联网分类已开启：重开一次“放大查看”就会在后台查询真实分类"
+                     "（结果会缓存到本地）", level="INFO", save=False)
+        else:
+            self.log("🌐 联网分类已关闭：改回按关键词推测分类", level="INFO", save=False)
+
+    def _update_tag_cache_label(self):
+        """显示本地分类缓存条数，让用户知道「查过一次就不会再联网」。"""
+        lbl = getattr(self, "settings_tag_cache_lbl", None)
+        if lbl is None:
+            return
+        try:
+            from core.mod_search import tag_cache_size, TAG_CACHE_FILE
+            lbl.config(text=f"本地分类缓存：{tag_cache_size()} 条"
+                            f"（{TAG_CACHE_FILE}，删掉它会重新联网查）")
+        except Exception:
+            pass
+
     def _toggle_silent(self):
         """后台静默执行开关。"""
         self.silent_background = bool(self.settings_silent_var.get())
@@ -1210,12 +1496,41 @@ class MigrationGUI:
         details["is_valid"] = True
         return True, "✅ 有效实例目录", details
 
+    # 状态标签的语义色：颜色由"状态"决定，但主题一变就得立刻换成新主题里的那支色。
+    _SEMANTIC_FG = {"ok": "ok_fg", "fail": "fail_fg", "muted": "muted_fg"}
+
+    def _set_status_semantic(self, label, kind, text=None):
+        """给状态标签上语义色，并记住是哪一种。
+
+        为什么要记：切主题时应用新颜色**不能等重新校验**——validate_path 要扫
+        实例目录（模组多的实例要好几百毫秒），那期间标签会一直挂着旧主题的颜色，
+        看起来就是"有颜色的文字闪一下"。记住状态后，apply_theme 里可以直接换色。
+        """
+        try:
+            label._semantic = kind
+            color = self.theme.get(self._SEMANTIC_FG.get(kind, "muted_fg"),
+                                   self.theme["fg"])
+            if text is None:
+                label.config(fg=color)
+            else:
+                label.config(text=text, fg=color)
+        except Exception:
+            pass
+
+    def _apply_status_semantic_colors(self):
+        """切主题时按上次记住的状态，立刻把三个状态标签的颜色换成新主题的。"""
+        for name in ("source_status", "target_status", "world_status"):
+            label = getattr(self, name, None)
+            if label is None:
+                continue
+            self._set_status_semantic(label, getattr(label, "_semantic", "muted"))
+
     def validate_path(self, path_str, status_label, label_text):
         """
         验证路径是否为有效的 Minecraft 整合包实例（增强版）
         """
         if not path_str:
-            status_label.config(text="（未选择）", fg=self.theme["muted_fg"])
+            self._set_status_semantic(status_label, "muted", "（未选择）")
             return
 
         is_valid, reason, details = self._is_valid_instance(path_str)
@@ -1249,12 +1564,13 @@ class MigrationGUI:
                 status_text = "✅ 有效实例目录"
 
             status_label.config(text=status_text, fg=self.theme["ok_fg"])
+            status_label._semantic = "ok"
 
             # 记录详细验证信息到日志（可选）
             # self.log(f"路径验证通过: {path_str}", level="INFO")
             # self.log(f"  详细信息: {details}", level="INFO")
         else:
-            status_label.config(text=f"❌ {reason}", fg=self.theme["fail_fg"])
+            self._set_status_semantic(status_label, "fail", f"❌ {reason}")
 
     def on_path_change(self, *args):
         src = self.source_path.get().strip()
@@ -1286,14 +1602,169 @@ class MigrationGUI:
             return True
         return not any(t in message for t in self._LOG_TRIVIAL)
 
+    # ------------------------------------------------------------ 文字动效
+    # Tk 的 Text 没有"逐行透明度"，所以淡入淡出只能靠把 foreground 从底色插值到
+    # 目标色（纯色背景下看着就是淡入/淡出；日志和清单都是纯色背景）。
+    @staticmethod
+    def _lerp_color(c0, c1, t):
+        try:
+            a = [int(c0[i:i + 2], 16) for i in (1, 3, 5)]
+            b = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+            return "#%02x%02x%02x" % tuple(
+                max(0, min(255, int(a[i] + (b[i] - a[i]) * t))) for i in range(3))
+        except Exception:
+            return c1
+
+    def _fade_text(self, widget, ranges, from_color, to_color, frames=12, frame_ms=20,
+                   indent_from=None, indent_to=None, on_done=None):
+        """给若干段文字做动画（ranges = [(起, 止), …] 的 Text 索引对）。
+
+        两个可插值的量：
+        - foreground：底色 ↔ 目标色，看着就是淡入/淡出；
+        - lmargin1/lmargin2：左边距，看着就是"滑进来/滑出去"。
+        实测**位移比变色显眼得多**，所以两样一起做；只改颜色 6 帧 72ms 那版基本看不出来。
+        动画跑完把临时 tag 撤掉，让原本的着色（如日志级别色）重新生效。
+        """
+        ranges = [(a, b) for a, b in (ranges or []) if a and b]
+        if not ranges or (str(from_color) == str(to_color) and indent_from is None):
+            if on_done:
+                on_done()
+            return
+        self._fade_seq = getattr(self, "_fade_seq", 0) + 1
+        tag = "fadeanim%d" % self._fade_seq
+        try:
+            widget.tag_configure(tag, foreground=from_color)
+            if indent_from is not None:
+                widget.tag_configure(tag, lmargin1=int(indent_from),
+                                     lmargin2=int(indent_from))
+            for a, b in ranges:
+                widget.tag_add(tag, a, b)
+        except Exception:
+            if on_done:
+                on_done()
+            return
+        state = {"i": 0}
+
+        def step():
+            i = state["i"]
+            if i >= frames:
+                try:
+                    widget.tag_remove(tag, "1.0", tk.END)
+                except Exception:
+                    pass
+                if on_done:
+                    on_done()
+                return
+            state["i"] = i + 1
+            t = state["i"] / frames
+            try:
+                opts = {"foreground": self._lerp_color(from_color, to_color, t)}
+                if indent_from is not None:
+                    off = int(indent_from + (indent_to - indent_from) * t)
+                    opts["lmargin1"] = off
+                    opts["lmargin2"] = off
+                widget.tag_configure(tag, **opts)
+            except Exception:
+                pass
+            try:
+                self.root.after(frame_ms, step)
+            except Exception:
+                pass
+        try:
+            # 延后一帧再开始，确保"透明态"先真正显示出来，否则会先正常显示再跳回透明
+            self.root.after(1, step)
+        except Exception:
+            pass
+
+    def _fade_text_lines(self, widget, lines, from_color, to_color, **kw):
+        """按整行淡入/淡出（lines 是 1-based 行号）。"""
+        ranges = []
+        for n in sorted({int(x) for x in (lines or [])}):
+            ranges.append(("%d.0" % n, "%d.end" % n))
+        self._fade_text(widget, ranges, from_color, to_color, **kw)
+
+    def _roll_counter(self, label, text):
+        """让"共 N 项"这类计数滚到新值（格式没变才滚，否则直接换文本）。"""
+        try:
+            old = label.cget("text") or ""
+        except Exception:
+            return
+        if old == text:
+            return
+        pat = re.compile(r"\d+")
+        old_t = pat.sub("{}", old)
+        new_t = pat.sub("{}", text)
+        old_n = pat.findall(old)
+        new_n = pat.findall(text)
+        if old_t != new_t or not old_n or len(old_n) != len(new_n):
+            try:
+                label.config(text=text)
+            except Exception:
+                pass
+            return
+        parts = re.split(r"(\d+)", text)
+        slots = [i for i, p in enumerate(parts) if p.isdigit()]
+        steps = 12          # 12 步 × 30ms ≈ 360ms：8 步 208ms 太快，像直接跳过去
+        tick = 30
+
+        def render(t):
+            out = list(parts)
+            for slot, a, b in zip(slots, old_n, new_n):
+                out[slot] = str(int(int(a) + (int(b) - int(a)) * t))
+            return "".join(out)
+
+        def step(i):
+            try:
+                if i >= steps:
+                    label.config(text=text)
+                    return
+                label.config(text=render(i / steps))
+                self.root.after(tick, lambda: step(i + 1))
+            except Exception:
+                pass
+        step(1)
+
+    def _fade_log_line(self, start, end, level):
+        """日志新行淡入。
+
+        只在"慢速零散输出"时做：迁移时日志会成批涌入（一次十几行），
+        每行都跑动画既积压又晃眼 —— 最近 200ms 超过 3 行就直接显示。
+        """
+        now = time.time()
+        recent = getattr(self, "_log_recent", None)
+        if recent is None:
+            recent = self._log_recent = []
+        recent.append(now)
+        del recent[:-10]
+        if sum(1 for t in recent if now - t <= 0.2) > 3:
+            return
+        if getattr(self, "_log_fading", False):
+            return
+        self._log_fading = True
+        color = self.theme.get(self._LOG_COLOR_KEYS.get(level, "log_info_fg"),
+                              self.theme.get("log_fg", "#000000"))
+        # 14 帧 × 18ms ≈ 250ms：短于 150ms 基本看不出是"动画"，只会像闪一下。
+        # 同时从右侧 44px 滑进来 —— 位移比变色显眼得多。
+        self._fade_text(self.log_text, [(start, end)],
+                        self.theme.get("log_bg", "#ffffff"), color,
+                        frames=14, frame_ms=18,
+                        indent_from=44, indent_to=0,
+                        on_done=lambda: setattr(self, "_log_fading", False))
+
     def log(self, message, level="INFO", save=True):
         def _log():
             self.log_text.configure(state="normal")
+            start = self.log_text.index("end-1c")
             self.log_text.insert(tk.END, message + "\n", level)
+            end = self.log_text.index("end-1c")
             # 用户手动往上翻的时候别把他拽回底部（滚回底部会自动恢复跟随）
             if getattr(self, "_log_follow", True):
                 self.log_text.see(tk.END)
             self.log_text.configure(state="disabled")
+            try:
+                self._fade_log_line(start, end, level)
+            except Exception:
+                pass
             self.root.update_idletasks()
             # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
             try:
@@ -1469,7 +1940,7 @@ class MigrationGUI:
                     if state["bottom"]:
                         big.see(tk.END)
                     state["last"] = content
-                    count_lbl.config(text=f"{content.count(chr(10))} 行")
+                    self._roll_counter(count_lbl, f"{content.count(chr(10))} 行")
             except tk.TclError:
                 return
             except Exception:
@@ -1573,8 +2044,9 @@ class MigrationGUI:
         # 源目录
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
         frame_source.pack(fill="x", padx=10, pady=5)
-        tk.Entry(frame_source, textvariable=self.source_path,
-                 width=60).pack(side="left", padx=5)
+        self.source_entry = RoundedEntry(frame_source, self.theme,
+                                         textvariable=self.source_path, chars=58)
+        self.source_entry.pack(side="left", padx=5)
         btn_source_browse = create_gradient_button(
             frame_source, "📂 浏览...", self.select_source,
             colors=("#607d8b", "#90a4ae"),
@@ -1590,6 +2062,7 @@ class MigrationGUI:
         self._btn_widgets["copy_target"] = btn_copy
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"])
+        self.source_status._keep_fg = True      # 颜色由状态决定，别被主题统一刷掉
         self.source_status.pack(side="left", padx=10)
         self._stage()
 
@@ -1600,8 +2073,9 @@ class MigrationGUI:
         frame_target = tk.LabelFrame(self.root, text="⬇ 新版整合包（迁移目的地）",
                                      padx=5, pady=5)
         frame_target.pack(fill="x", padx=10, pady=5)
-        tk.Entry(frame_target, textvariable=self.target_path,
-                 width=70).pack(side="left", padx=5)
+        self.target_entry = RoundedEntry(frame_target, self.theme,
+                                         textvariable=self.target_path, chars=66)
+        self.target_entry.pack(side="left", padx=5)
         btn_target_browse = create_gradient_button(
             frame_target, "📂 浏览...", self.select_target,
             colors=("#607d8b", "#90a4ae"),
@@ -1609,15 +2083,18 @@ class MigrationGUI:
         btn_target_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_target"] = btn_target_browse
         self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"])
+        self.target_status._keep_fg = True      # 同上
         self.target_status.pack(side="left", padx=10)
 
         # 存档名称
         frame_world = tk.LabelFrame(self.root, text="存档文件夹名称", padx=5, pady=5)
         frame_world.pack(fill="x", padx=10, pady=5)
-        tk.Entry(frame_world, textvariable=self.world_name, width=40).pack(side="left",
-                                                                           padx=5)
+        self.world_entry = RoundedEntry(frame_world, self.theme,
+                                        textvariable=self.world_name, chars=30)
+        self.world_entry.pack(side="left", padx=5)
         tk.Label(frame_world, text="（例如：新的世界）").pack(side="left")
         self.world_status = tk.Label(frame_world, text="", fg=self.theme["muted_fg"])
+        self.world_status._keep_fg = True       # 同上
         self.world_status.pack(side="left", padx=10)
 
     def _create_modlist_widgets(self):
@@ -2019,16 +2496,16 @@ class MigrationGUI:
         world = self.world_name.get().strip()
         try:
             if not src or not world:
-                self.world_status.config(text="", fg=self.theme["muted_fg"])
+                self._set_status_semantic(self.world_status, "muted", "")
                 return
             src_path = Path(src)
             save_dir = src_path / "saves" / world
             if save_dir.is_dir():
-                self.world_status.config(text="✅ 存档已存在", fg=self.theme["ok_fg"])
+                self._set_status_semantic(self.world_status, "ok", "✅ 存档已存在")
             else:
-                self.world_status.config(text="❌ 存档不存在", fg=self.theme["fail_fg"])
+                self._set_status_semantic(self.world_status, "fail", "❌ 存档不存在")
         except Exception:
-            self.world_status.config(text="", fg=self.theme["muted_fg"])
+            self._set_status_semantic(self.world_status, "muted", "")
 
     # ---------- 检查模组存在性 ----------
     def check_modlist_existence(self):
@@ -2339,7 +2816,7 @@ class MigrationGUI:
             tree.set(iid, "chk", "☑" if iid in checked else "☐")
 
         def update_count():
-            count_lbl.config(text=f"已勾选 {len(checked)} 个文件夹")
+            self._roll_counter(count_lbl, f"已勾选 {len(checked)} 个文件夹")
 
         def populate(parent_iid, parent_abs):
             for c in tree.get_children(parent_iid):
@@ -2749,7 +3226,7 @@ class MigrationGUI:
                     self.scan_btn.itemconfig(self.scan_btn.text_id,
                                              text=f"⏳ 解析中 ({current}/{total})")
                 else:
-                    self.scan_btn.itemconfig(self.scan_btn.text_id, text=f"⏳ 解析中...")
+                    self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 解析中...")
                 if hasattr(self, 'scan_progress_window'):
                     self.scan_progress_window.update_progress(current, filename)
         except queue.Empty:
@@ -3040,7 +3517,10 @@ class MigrationGUI:
                 progress_callback=progress_callback,
                 log_callback=self.log,
                 check_cancel=check_cancel,
-                add_history=True
+                add_history=True,
+                # 迁移标记：只改目标文件名，加载器认的是 jar 里的 modid，不受影响
+                rename_marker=(self.rename_marker
+                               if getattr(self, "rename_migrated_mods", False) else None)
             )
         finally:
             self._migration_running = False
@@ -3082,7 +3562,6 @@ class MigrationGUI:
                 was_disabled = True
                 text_widget.configure(state=tk.NORMAL)
 
-            last_line = text_widget.index("end-1c linestart")
             last_char = text_widget.index("end-1c")
             bbox = text_widget.bbox(last_char)
             if bbox is None:
@@ -3619,12 +4098,13 @@ class MigrationGUI:
         self._big_view_windows.append(win)
 
         if is_mod:
-            columns = (("status", "🔵 状态", 96, "w"), ("chk", "☑", 44, "center"),
+            # 没有"☑"列了：选中的行整行变蓝（和卡片视图同一套色），不用再单独放一个勾
+            columns = (("status", "🔵 状态", 96, "w"),
                        ("name", "📄 文件名", 210, "w"), ("path", "📁 完整路径", 280, "w"),
                        ("type", "🧩 类型", 92, "w"), ("modid", "🆔 Mod ID", 140, "w"),
                        ("version", "🔖 版本", 120, "w"), ("size", "💾 大小KB", 92, "e"))
         else:
-            columns = (("status", "🔵 状态", 96, "w"), ("chk", "☑", 44, "center"),
+            columns = (("status", "🔵 状态", 96, "w"),
                        ("name", "📄 名称", 210, "w"), ("path", "📁 相对路径/完整路径", 340, "w"),
                        ("type", "🏷️ 类型", 100, "w"))
 
@@ -3683,7 +4163,7 @@ class MigrationGUI:
                 return
             row = _tip_cell["row"]
             cname = _tip_cell["key"]
-            if row < 0 or not cname or cname == "chk":
+            if row < 0 or not cname:
                 return
             try:
                 text = table.model.cell(row, cname)
@@ -3744,10 +4224,10 @@ class MigrationGUI:
 
         entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines() if ln.strip()]
         msg_queue = queue.Queue()
-        meta = {}  # entry索引 -> {status,name,path,type,modid,version,size}
+        meta: dict = {}  # entry索引(int) -> {status,name,path,type,modid,version,size}
         checked = {}  # 条目内容(完整路径/文件名) -> bool，用勾选做多选（按内容而非行位置，避免排序/刷新后错位）
         new_keys = set()  # 本次会话新添加的模组（文件名），染黄色高亮提示
-        order = list(range(len(entries)))  # 当前显示顺序（entries 索引），含排序+过滤
+        order: list = list(range(len(entries)))  # 当前显示顺序（entries 索引），含排序+过滤
         order_index = {idx: pos for pos, idx in enumerate(order)}  # idx->当前位置，供 poll 快速定位(O(1))
         sort_state = {"col": None, "rev": False}
 
@@ -3831,8 +4311,6 @@ class MigrationGUI:
             """单元格文本；row 是当前显示顺序里的行号。"""
             idx = order[row]
             m = meta.get(idx)
-            if key == "chk":
-                return "☑" if checked.get(key_of(entries[idx])) else "☐"
             if key == "name":
                 return (m.get("name") if m else None) or Path(entries[idx]).name
             if key == "path":
@@ -3876,27 +4354,57 @@ class MigrationGUI:
 
         table.set_model(_BigViewModel())
 
-        def scan_row(idx):
+        def scan_row(idx: int):
             e = entries[idx]
             try:
                 r = resolve(e)
                 if r is None:
+                    cn, en = split_cn_name(Path(e).name or str(e))
                     meta[idx] = {"status": "❌ 缺失", "name": Path(e).name or e,
-                                 "path": str(e), "type": "?", "modid": "?", "version": "?", "size": "?"}
+                                 "path": str(e), "type": "?", "modid": "?", "version": "?",
+                                 "size": "?", "cn": cn, "desc": ""}
                 else:
                     if is_mod:
                         info = get_full_mod_metadata(str(r["obj"]))
+                        cn, _en = split_cn_name(Path(r["name"]).name)
+                        desc = str(info.get("description", "") or "").replace("\n", " ").strip()
+                        # 加载器 + 客户端/服务端（Fabric 才有）是 jar 里的事实，先放进去
+                        base_tags = ([info.get("mod_type", "")]
+                                     if info.get("mod_type") in ("Fabric", "Forge") else []) \
+                                    + ([info["env"]] if info.get("env") else [])
                         meta[idx] = {"status": "✅ 存在", "name": r["name"], "path": r["path"],
                                      "type": info.get("mod_type", "?"), "modid": info.get("modid", "?"),
                                      "version": info.get("version", "?"),
-                                     "size": round(r["obj"].stat().st_size / 1024, 1)}
+                                     "size": round(r["obj"].stat().st_size / 1024, 1),
+                                     "cn": cn,
+                                     # 卡片视图要显示"模组自己的名字"，不是文件名
+                                     "disp": str(info.get("name") or "").strip(),
+                                     # 元数据里没描述时是"无"，卡片视图别显示这个字
+                                     "desc": "" if desc in ("无", "未知") else desc,
+                                     # 分类：默认关键词推测；开了联网就尽量换成 Modrinth 真实分类
+                                     "tags": base_tags + guess_tags(desc, info.get("name", ""),
+                                                                    info.get("modid", "")),
+                                     "tags_online": False}
+                        if self.online_tags:
+                            try:
+                                from core.mod_search import fetch_categories_cached
+                                cats = fetch_categories_cached(
+                                    info.get("modid") or Path(r["name"]).stem,
+                                    modid=info.get("modid", ""), name=info.get("name", ""))
+                                if cats:
+                                    meta[idx]["tags"] = base_tags + cats
+                                    meta[idx]["tags_online"] = True
+                            except Exception:
+                                pass
                     else:
                         size = round(r["obj"].stat().st_size / 1024, 1) if r["obj"].is_file() else ""
                         meta[idx] = {"status": "✅ 存在", "name": r["name"], "path": r["path"],
-                                     "type": r["type"], "modid": "", "version": "", "size": size}
+                                     "type": r["type"], "modid": "", "version": "", "size": size,
+                                     "cn": "", "desc": ""}
             except Exception:
                 meta[idx] = {"status": "❌ 缺失", "name": Path(e).name or e,
-                             "path": str(e), "type": "?", "modid": "?", "version": "?", "size": "?"}
+                             "path": str(e), "type": "?", "modid": "?", "version": "?",
+                             "size": "?", "cn": "", "desc": ""}
             msg_queue.put(idx)
 
         # 有界扫描线程池：避免为每条目单开线程导致几千并发的线程爆炸/磁盘抖动
@@ -3927,39 +4435,74 @@ class MigrationGUI:
             order_index.clear()
             order_index.update({idx: pos for pos, idx in enumerate(order)})
             table.refresh()
+            if card_state["view"] and card_state["list"] is not None:
+                # 卡片视图跟着同一份数据走（排序/搜索/增删后都要重排）
+                card_state["list"].set_rows(card_rows())
             if rescan:
                 for idx in order:
                     if idx not in meta:
                         scan_queue.put(idx)
             total = len(entries)
             shown = len(order)
-            count_lbl.config(text=(f"显示 {shown}/{total} 项"
-                                   if search_var.get().strip() else f"共 {total} 项"))
+            self._roll_counter(count_lbl,
+                               f"显示 {shown}/{total} 项"
+                               if search_var.get().strip() else f"共 {total} 项")
+            update_summary()
 
-        def write_back():
-            content = "\n".join(entries)
-            # 主清单是整体重写的：先记住滚动位置，写完再恢复，
-            # 否则关闭放大查看后会发现主界面清单自己跳回了顶部。
-            try:
-                first = source_text.yview()[0]
-            except Exception:
-                first = 0.0
-            source_text.configure(state=tk.NORMAL)
-            source_text.edit_separator()
-            source_text.delete("1.0", tk.END)
-            source_text.insert("1.0", content + ("\n" if content else ""))
-            source_text.edit_separator()
-            try:
-                source_text.yview_moveto(first)
-            except Exception:
-                pass
-            self._update_text_states()
-            self.save_config()
-            # 主模组清单被重写后，重新应用"新添加"黄色高亮
-            if is_mod:
-                self._apply_mod_new_tags()
-            else:
-                self._clear_config_status()
+        def write_back(fade_out_lines=None, fade_in_lines=None):
+            """把 entries 写回主界面清单。
+
+            fade_out_lines / fade_in_lines：要淡出（删除前的位置）或淡入（重写后的位置）
+            的 1-based 行号。行数多（>20）就不做动画，直接重写 —— 批量操作时动画只会拖慢。
+            """
+            def _rewrite():
+                content = "\n".join(entries)
+                # 主清单是整体重写的：先记住滚动位置，写完再恢复，
+                # 否则关闭放大查看后会发现主界面清单自己跳回了顶部。
+                try:
+                    first = source_text.yview()[0]
+                except Exception:
+                    first = 0.0
+                source_text.configure(state=tk.NORMAL)
+                source_text.edit_separator()
+                source_text.delete("1.0", tk.END)
+                source_text.insert("1.0", content + ("\n" if content else ""))
+                source_text.edit_separator()
+                try:
+                    source_text.yview_moveto(first)
+                except Exception:
+                    pass
+                self._update_text_states()
+                self.save_config()
+                # 新加的行淡入（重写后行号才对得上）
+                if fade_in_lines and len(fade_in_lines) <= 20:
+                    try:
+                        self._fade_text_lines(
+                            source_text, fade_in_lines,
+                            self.theme.get("text_bg", "#ffffff"),
+                            self.theme.get("text_fg", "#000000"),
+                            frames=12, frame_ms=20, indent_from=40, indent_to=0)
+                    except Exception:
+                        pass
+                # 主模组清单被重写后，重新应用"新添加"黄色高亮
+                if is_mod:
+                    self._apply_mod_new_tags()
+                else:
+                    self._clear_config_status()
+
+            if fade_out_lines and 0 < len(fade_out_lines) <= 20:
+                # 先让要被删掉的行"淡出 + 往右滑走"，淡完了再真正重写
+                try:
+                    self._fade_text_lines(source_text, fade_out_lines,
+                                          source_text.cget("fg"),
+                                          self.theme.get("text_bg", "#ffffff"),
+                                          frames=12, frame_ms=20,
+                                          indent_from=0, indent_to=40,
+                                          on_done=_rewrite)
+                    return
+                except Exception:
+                    pass
+            _rewrite()
 
         big_scanning = {"flag": False}
 
@@ -4003,7 +4546,9 @@ class MigrationGUI:
             entries.extend(new_entries)
             new_keys.update(key_of(e) for e in new_entries)
             rebuild(rescan=True)
-            write_back()
+            # 新行在清单末尾，重写后让它们淡入
+            write_back(fade_in_lines=range(len(entries) - len(new_entries) + 1,
+                                           len(entries) + 1))
             messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
         def del_selected():
@@ -4013,11 +4558,13 @@ class MigrationGUI:
             if not to_del:
                 messagebox.showinfo("提示", "请先勾选要删除的模组。")
                 return
+            # 清单文本的行号 = entries 下标 + 1（文本是按 entries 顺序写的）
+            removed_lines = sorted(i + 1 for i in to_del)
             entries[:] = [e for i, e in enumerate(entries) if i not in to_del]
             meta.clear()
             checked.clear()
             rebuild(rescan=True)
-            write_back()
+            write_back(fade_out_lines=removed_lines)
 
         def on_tree_drop(event):
             if big_scanning["flag"]:
@@ -4034,7 +4581,8 @@ class MigrationGUI:
             entries.extend(new_entries)
             new_keys.update(key_of(e) for e in new_entries)
             rebuild(rescan=True)
-            write_back()
+            write_back(fade_in_lines=range(len(entries) - len(new_entries) + 1,
+                                           len(entries) + 1))
             messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
 
         def toggle_row(row: int):
@@ -4044,21 +4592,70 @@ class MigrationGUI:
             k = key_of(entries[order[row]])
             checked[k] = not checked.get(k, False)
             table.repaint_row(row)
+            update_summary()
+
+        def _path_of_row(row: int):
+            """这一行对应的磁盘路径（模组清单里没有真实文件时返回 None）。"""
+            try:
+                idx = order[row]
+                r = resolve(entries[idx])
+                return (r.get("path") if r else None) or meta.get(idx, {}).get("path")
+            except Exception:
+                return None
+
+        def reveal_path(path):
+            """在资源管理器中定位文件（高亮选中它本身）。"""
+            try:
+                if not path or not os.path.exists(path):
+                    messagebox.showinfo("提示", "该文件不在磁盘上，无法定位。", parent=win)
+                    return
+                subprocess.Popen(['explorer', '/select,', str(path)])
+            except Exception as e:
+                messagebox.showinfo("提示", f"定位失败：{e}", parent=win)
+
+        def set_checked_mode(mode):
+            """全选 / 反选 / 清空勾选 —— 只作用于当前显示（搜索/排序后）的行。
+
+            表格和卡片共用同一份 checked，所以改完两边一起刷。
+            """
+            for idx in order:
+                k = key_of(entries[idx])
+                if mode == "all":
+                    checked[k] = True
+                elif mode == "none":
+                    checked[k] = False
+                else:
+                    checked[k] = not checked.get(k, False)
+            try:
+                table.refresh()
+            except Exception:
+                pass
+            if card_state["view"] and card_state["list"] is not None:
+                card_state["list"].set_rows(card_rows())
+            update_summary()
+            n = sum(1 for i in order if checked.get(key_of(entries[i])))
+            _MODE_TEXT = {"all": "全选", "none": "清空勾选", "invert": "反选"}
+            self.log(f"☑ 已{_MODE_TEXT.get(mode, mode)}：当前显示 {len(order)} 项，"
+                     f"选中 {n} 项", level="INFO", save=False)
 
         def open_mod_detail(row: int):
             """打开指定行对应模组的详情窗口（含 Modrinth 联网搜索）。"""
             try:
-                idx = order[row]
-                r = resolve(entries[idx])
-                path = (r.get("path") if r else None) or meta.get(idx, {}).get("path")
+                path = _path_of_row(row)
                 if path and os.path.exists(path):
-                    show_mod_detail(win, path, self.theme)
+                    m = meta.get(order[row], {}) if 0 <= row < len(order) else {}
+                    # 把扫描时拿到的分类一起带过去，详情窗口就不用再猜一遍
+                    show_mod_detail(win, path, self.theme,
+                                    tags_hint=m.get("tags"),
+                                    tags_online=bool(m.get("tags_online")))
                 else:
                     messagebox.showinfo("提示", "该行没有可查看的模组文件。", parent=win)
             except Exception:
                 pass
 
-        _DOUBLE_CLICK_SEC = 0.25  # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击
+        # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击。
+        # 原来 0.25 太长——想快速连点两行勾选时会被误判成双击，莫名其妙弹出详情窗口。
+        _DOUBLE_CLICK_SEC = 0.18
         _last_click = {"t": 0.0, "row": None}
 
         def _on_row_click(row: int, event):
@@ -4092,17 +4689,24 @@ class MigrationGUI:
         def poll():
             # 每次尽量只处理一小批消息，避免几千条积压时一次循环卡死 UI
             batch = 40
+            got = False
             try:
                 while batch > 0:
                     idx = msg_queue.get_nowait()
                     pos = order_index.get(idx)
                     if pos is not None:
                         table.repaint_row(pos)
+                        if card_state["view"] and card_state["list"] is not None:
+                            # 注意要"更新数据 + 重画"，只重画的话卡片还是扫描前的旧值
+                            card_state["list"].update_row(pos, make_row(order[pos]))
+                    got = True
                     batch -= 1
             except queue.Empty:
                 pass
             except Exception:
                 pass
+            if got:
+                update_summary()      # 扫描回来一批就刷新"存在/缺失"汇总
             # 扫描完成后恢复按钮（防止连点重复触发全量扫描）
             if big_scanning["flag"]:
                 try:
@@ -4140,24 +4744,63 @@ class MigrationGUI:
             _pending_detect["flag"] = True
             rebuild(rescan=True)
 
-        # 顶部工具栏：所有按钮统一宽度与间距，模组 / Config 两个窗口看起来完全一致
+        # 顶部工具栏分两行：第一行计数+搜索，第二行按钮。
+        # 挤在一行时（7 个按钮 + 搜索框）总宽会超过窗口，尾部按钮被裁掉一半；
+        # 拆开后按钮独占一行，窗口拉窄也不至于变形。
         top = tk.Frame(win, bg=self.theme["bg"])
         top.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
-        _PAD = 6
+        row_search = tk.Frame(top, bg=self.theme["bg"])
+        row_search.pack(fill="x", pady=(0, 4))
+        row_btns = tk.Frame(top, bg=self.theme["bg"])
+        row_btns.pack(fill="x")
+        _PAD = 4          # 按钮间距（原来 6，7 个按钮并排就撑爆一行）
         _BTN_W = max(_grad_width("🔍 检测存在性"),
                      _grad_width("🗑️ 删除选中"),
                      _grad_width("➕ 添加模组"))
-        count_lbl = tk.Label(top, text=f"共 {len(entries)} 项", bg=self.theme["bg"],
+        count_lbl = tk.Label(row_search, text=f"共 {len(entries)} 项", bg=self.theme["bg"],
                              fg=self.theme["fg"])
         count_lbl.pack(side="left", padx=(0, _PAD * 2))
-        # 搜索（模组区/Config区都可用）
-        tk.Label(top, text="搜索:", bg=self.theme["bg"],
+        # 选中/存在性汇总：这两个数字是"我现在到底选了多少、有多少缺失"，
+        # 表格和卡片视图共用（改勾选的地方都会调 update_summary）。
+        sel_lbl = tk.Label(row_search, text="未选择", bg=self.theme["bg"],
+                           fg=self.theme.get("ok_fg", "#2e7d32"),
+                           font=("微软雅黑", 9, "bold"))
+        sel_lbl._keep_fg = True
+        sel_lbl.pack(side="left", padx=(0, _PAD * 3))
+        stat_lbl = tk.Label(row_search, text="", bg=self.theme["bg"],
+                            fg=self.theme.get("muted_fg", "#808080"),
+                            font=("微软雅黑", 8))
+        stat_lbl._keep_fg = True
+        stat_lbl.pack(side="left", padx=(0, _PAD * 3))
+        win._sel_lbl = sel_lbl
+        win._stat_lbl = stat_lbl
+
+        def update_summary():
+            """刷新"已选 N / 总数"和"存在/缺失"两个汇总（数字带滚动动画）。"""
+            try:
+                total = len(entries)
+                picked = sum(1 for e in entries if checked.get(key_of(e)))
+                self._roll_counter(sel_lbl,
+                                   f"已选 {picked} / {total} 项" if picked else "未选择")
+                exist = miss = 0
+                for i in range(total):
+                    st = (meta.get(i) or {}).get("status")
+                    if st == "✅ 存在":
+                        exist += 1
+                    elif st == "❌ 缺失":
+                        miss += 1
+                self._roll_counter(stat_lbl,
+                                   f"存在 {exist} · 缺失 {miss}" if (exist or miss) else "")
+            except Exception:
+                pass
+        update_summary()
+        # 搜索（模组区/Config区都可用）：单独一行，可以占满宽度，长名字也能看全
+        tk.Label(row_search, text="搜索:", bg=self.theme["bg"],
                  fg=self.theme["fg"]).pack(side="left")
         search_var = tk.StringVar()
-        search_entry = tk.Entry(top, textvariable=search_var, width=18,
-                                bg=self.theme["entry_bg"], fg=self.theme["entry_fg"],
-                                insertbackground=self.theme["fg"])
-        search_entry.pack(side="left", padx=(_PAD, _PAD * 3))
+        search_entry = RoundedEntry(row_search, self.theme, textvariable=search_var,
+                                    chars=18)
+        search_entry.pack(side="left", fill="x", expand=True, padx=(_PAD, 0))
         # 搜索防抖：停止输入 250ms 后再重建，避免每个按键都全量重建导致卡顿
         _search_after = [None]
 
@@ -4171,19 +4814,19 @@ class MigrationGUI:
 
         search_var.trace("w", on_search_changed)
         search_entry.bind("<Return>", lambda e: rebuild(rescan=False))
-        detect_btn = create_gradient_button(top, "🔍 检测存在性", detect,
+        detect_btn = create_gradient_button(row_btns, "🔍 检测存在性", detect,
                                             colors=("#43a047", "#66bb6a"),
                                             width=_BTN_W, height=30,
                                             font=("微软雅黑", 9, "bold"))
         detect_btn.pack(side="left", padx=_PAD)
-        del_btn = create_gradient_button(top, "🗑️ 删除选中", del_selected,
+        del_btn = create_gradient_button(row_btns, "🗑️ 删除选中", del_selected,
                                          colors=("#e53935", "#ff7043"),
                                          width=_BTN_W, height=30,
                                          font=("微软雅黑", 9, "bold"))
         del_btn.pack(side="left", padx=_PAD)
         add_btn = None
         if is_mod:
-            add_btn = create_gradient_button(top, "➕ 添加模组", add_mods,
+            add_btn = create_gradient_button(row_btns, "➕ 添加模组", add_mods,
                                              colors=("#00c853", "#00e676"),
                                              width=_BTN_W, height=30,
                                              font=("微软雅黑", 9, "bold"))
@@ -4195,9 +4838,182 @@ class MigrationGUI:
                 table.body.dnd_bind('<<Drop>>', on_tree_drop)
             except Exception:
                 pass
+        # 视图切换：表格（可勾选/排序/编辑）↔ 卡片（PCL2 风格只读预览）
+        card_state = {"view": False, "list": None}
+
+        # 多选菜单：全选/反选/清空勾选/删除选中，表格和卡片视图共用
+        sel_menu = tk.Menu(win, tearoff=0)
+        sel_menu.add_command(label="✅ 全选（当前显示）",
+                             command=lambda: set_checked_mode("all"))
+        sel_menu.add_command(label="🔄 反选", command=lambda: set_checked_mode("invert"))
+        sel_menu.add_command(label="⬜ 清空勾选", command=lambda: set_checked_mode("none"))
+        sel_menu.add_separator()
+        sel_menu.add_command(label="🗑️ 删除选中", command=del_selected)
+        btn_sel = create_gradient_button(
+            row_btns, "☑ 多选", None, colors=("#00897b", "#26a69a"),
+            width=88, height=30, font=("微软雅黑", 9, "bold"))
+        btn_sel.set_command(lambda: sel_menu.tk_popup(
+            btn_sel.winfo_rootx(), btn_sel.winfo_rooty() + btn_sel.winfo_height()))
+        btn_sel.pack(side="left", padx=_PAD)
+
+        def make_row(idx: int):
+            """生成一条卡片数据（图标懒加载，只有滚到的行才解压）。"""
+            m = meta.get(idx) or {}
+            fname = str(m.get("name") or "")
+            disp = str(m.get("disp") or "").strip()
+            cn = str(m.get("cn") or "").strip()
+            title = cn or disp or fname
+            subtitle = ""
+            if cn and disp and disp != cn:
+                subtitle = disp
+            elif cn and not disp and fname != cn:
+                subtitle = fname
+            return {
+                "title": title,
+                "subtitle": subtitle,
+                "version": str(m.get("version") or ""),
+                "desc": str(m.get("desc") or ""),
+                "icon_key": m.get("path") or "",
+                "tags": m.get("tags") or [],
+                "tags_online": bool(m.get("tags_online")),
+                # 存在性状态 + 勾选态：卡片视图跟表格共用同一份数据
+                "status": str(m.get("status") or "…"),
+                "checked": bool(checked.get(key_of(entries[idx]))) if idx < len(entries) else False,
+            }
+
+        def card_rows():
+            """按当前显示顺序生成卡片数据。"""
+            return [make_row(idx) for idx in order]
+
+        def _card_icon(row):
+            path = get_mod_icon(row.get("icon_key") or "")
+            if not path:
+                return None
+            from PIL import Image
+            return Image.open(path).convert("RGBA")
+
+        def card_check(i: int):
+            """卡片上的勾选框：和表格视图共用同一份选中状态。"""
+            try:
+                toggle_row(i)
+                if card_state["list"] is not None:
+                    card_state["list"].update_row(i, make_row(order[i]))
+            except Exception:
+                pass
+
+        def card_action(i: int, action: str):
+            """卡片悬停图标 / 右键菜单的动作：详情 / 打开所在位置 / 从清单移除。"""
+            # 变量名不要再叫 idx：这个函数和外面那个超长函数共享作用域，
+            # 同名变量会让静态检查把两边推断出来的类型合并（PyCharm 会报
+            # "int | list 不能当字典键"这种误报）。这里用 entry_idx 并标注类型。
+            try:
+                entry_idx: int = order[i]
+            except Exception:
+                return
+            if action == "info":
+                open_mod_detail(i)
+            elif action == "reveal":
+                reveal_path(_path_of_row(i))
+            elif action == "remove":
+                name = (meta.get(entry_idx) or {}).get("name") or entries[entry_idx]
+                entries.pop(entry_idx)
+                meta.clear()
+                checked.clear()
+                rebuild(rescan=True)
+                # 删掉的那一行在文本里就是 entry_idx+1，让它先淡出再重写
+                write_back(fade_out_lines=[entry_idx + 1])
+                self.log(f"🗑 已从清单移除：{name}", level="WARNING", save=False)
+
+        def card_menu(i: int, event):
+            """卡片右键菜单：单行操作（详情/定位/移除）+ 批量勾选，省得去顶栏点。"""
+            menu = tk.Menu(win, tearoff=0)
+            if i >= 0:
+                menu.add_command(label="ℹ 查看详情", command=lambda: open_mod_detail(i))
+                menu.add_command(label="📂 在文件夹中定位",
+                                 command=lambda: reveal_path(_path_of_row(i)))
+                menu.add_separator()
+                menu.add_command(label="🗑 从清单移除", command=lambda: card_action(i, "remove"))
+                menu.add_separator()
+            menu.add_command(label="✅ 全选（当前显示）",
+                             command=lambda: set_checked_mode("all"))
+            menu.add_command(label="🔄 反选", command=lambda: set_checked_mode("invert"))
+            menu.add_command(label="⬜ 清空勾选", command=lambda: set_checked_mode("none"))
+            menu.add_separator()
+            menu.add_command(label="🗑️ 删除选中", command=del_selected)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                try:
+                    menu.grab_release()
+                except Exception:
+                    pass
+
+        def _ensure_card():
+            if card_state["list"] is not None:
+                return card_state["list"]
+            from ui.card_list import ModCardList, default_fallback_icon
+            card = ModCardList(win, self.theme, icon_provider=_card_icon,
+                               fallback_icon=default_fallback_icon(),
+                               on_double_click=lambda i, e: open_mod_detail(i),
+                               on_action=card_action,
+                               on_context=card_menu,
+                               on_check=card_check)
+            card.grid(row=0, column=0, sticky="nsew")
+            card.grid_remove()
+            if not hasattr(self, '_big_view_cards'):
+                self._big_view_cards = []
+            self._big_view_cards.append(card)
+            card_state["list"] = card
+            return card
+
+        def toggle_view():
+            try:
+                card_state["view"] = not card_state["view"]
+                if card_state["view"]:
+                    card = _ensure_card()
+                    card.set_rows(card_rows())
+                    table.grid_remove()
+                    card.grid()
+                    btn_view.set_text("📋 表格视图")
+                    self.log("🗂 已切到卡片视图（只读预览；勾选/编辑请切回表格）",
+                             level="INFO", save=False)
+                else:
+                    if card_state["list"] is not None:
+                        card_state["list"].grid_remove()
+                    table.grid()
+                    btn_view.set_text("🗂 卡片视图")
+            except Exception as exc:
+                card_state["view"] = False
+                try:
+                    table.grid()
+                except Exception:
+                    pass
+                self.log(f"⚠️ 卡片视图不可用：{exc}", level="WARNING", save=False)
+
+        btn_view = create_gradient_button(
+            row_btns, "🗂 卡片视图", toggle_view,
+            colors=("#7e57c2", "#9575cd"),
+            width=118, height=30, font=("微软雅黑", 9, "bold"))
+        if is_mod:
+            btn_view.pack(side="right", padx=_PAD)
+
+        # 卡片视图没有表头可点，排序收进一个下拉按钮（表格视图也能用）
+        sort_menu = tk.Menu(win, tearoff=0)
+        for _col, _label in (("name", "按名称"), ("status", "按状态"),
+                             ("version", "按版本"), ("modid", "按 Mod ID"),
+                             ("size", "按大小")):
+            sort_menu.add_command(label=_label, command=lambda c=_col: sort_by(c))
+        btn_sort = create_gradient_button(
+            row_btns, "⇅ 排序", None,
+            colors=("#546e7a", "#78909c"),
+            width=88, height=30, font=("微软雅黑", 9, "bold"))
+        btn_sort.set_command(lambda: sort_menu.tk_popup(
+            btn_sort.winfo_rootx(), btn_sort.winfo_rooty() + btn_sort.winfo_height()))
+        if is_mod:
+            btn_sort.pack(side="right", padx=_PAD)
         # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click）
         btn_close_big = create_gradient_button(
-            top, "✖ 关闭", lambda: _close_popup(win),
+            row_btns, "✖ 关闭", lambda: _close_popup(win),
             colors=("#757575", "#9e9e9e"),
             width=_BTN_W, height=30, font=("微软雅黑", 9, "bold"))
         btn_close_big.pack(side="right", padx=_PAD)
@@ -4258,3 +5074,5 @@ class MigrationGUI:
         else:
             self.log("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="INFO")
         self.save_config()
+
+

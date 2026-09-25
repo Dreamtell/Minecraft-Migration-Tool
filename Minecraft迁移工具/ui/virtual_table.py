@@ -105,7 +105,7 @@ class VirtualTable(tk.Frame):
             self.tag_styles = dict(tag_styles)
         else:
             self.tag_styles = {
-                "checked": (theme.get("sel_bg", "#a5d6a7"), theme.get("sel_fg", "#000000")),
+                "checked": (theme.get("card_sel_bg", "#d4e6f8"), theme.get("card_sel_fg", "#0d3d63")),
                 "missing": (theme.get("danger_bg", "#ffb3b3"), theme.get("danger_fg", "#8b0000")),
                 "new": (theme.get("warn_bg", "#ffeaa7"), theme.get("warn_fg", "#000000")),
             }

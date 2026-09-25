@@ -1,4 +1,5 @@
 # core/scanner.py
+import io
 import zipfile
 import json
 import re
@@ -6,12 +7,137 @@ import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 模组图标缓存目录（和日志文件一样放用户目录，不动用户实例里的东西）
+ICON_CACHE_DIR = Path.home() / ".minecraft_migrate_icons"
+
 
 def normalize_mod_name(name):
     """去除文件名中的 [前缀] 部分"""
     if name.startswith("[") and "]" in name:
         return name.split("]", 1)[1].strip()
     return name
+
+
+def split_cn_name(filename):
+    """把 "[中文名] 英文名-版本.jar" 拆成 (中文名, 英文名)。
+
+    中文名不是从 jar 里读的——整合包习惯把中文名写在方括号里，直接拿它当
+    "中文名"用，比联网翻译省事也准。
+    注意：方括号里必须**含汉字**才算中文名，否则像 "[1.20.1] SecurityCraft"
+    这种版本方括号会被误当成名字。
+    """
+    stem = Path(filename).stem
+    if stem.startswith("[") and "]" in stem:
+        inside = stem[1:stem.index("]")].strip()
+        rest = stem[stem.index("]") + 1:].strip()
+        if inside and any("\u4e00" <= ch <= "\u9fff" for ch in inside):
+            return inside, (rest or stem)
+    return "", stem
+
+
+# 分类标签的"推测"规则：jar 里没有分类信息（那是 PCL2 自己的在线资料库），
+# 这里只能按描述/名字里的关键词猜，界面上要标明是推测。
+_TAG_RULES = (
+    ("优化", ("optimiz", "performance", "fps", "lag", "faster", "smooth", "优化", "性能")),
+    ("画面", ("shader", "graphic", "visual", "render", "光影", "画质", "texture")),
+    ("信息显示", ("hud", "tooltip", "overlay", "minimap", "jei", "rei ", "显示", "信息")),
+    ("科技", ("machine", "energy", "factory", "tech", "engineering", "kinetic",
+              "contraption", "机械", "能源", "科技")),
+    ("魔法", ("magic", "spell", "arcane", "ritual", "魔法")),
+    ("冒险", ("dungeon", "adventure", "structure", "dimension", "biome", "冒险", "地牢", "维度")),
+    ("装备", ("weapon", "armor", "sword", "combat", "装备", "武器", "战斗")),
+    ("存储", ("storage", "backpack", "container", "drawer", "存储", "背包", "容器")),
+    ("建筑", ("building", "decoration", "furniture", "建筑", "装饰")),
+    ("生物", ("mob ", "creature", "animal", "boss", "entity", "生物", "怪物")),
+    ("农业", ("farm", "crop", "cooking", "agriculture", "农业", "作物", "食物")),
+    ("任务", ("quest", "mission", "任务")),
+    ("音效", ("sound", "music", "audio", "音效", "音乐")),
+    ("前置库", ("library", "api", "framework", "前置", "库")),
+    ("多人", ("multiplayer", "network", "联机", "服务器")),
+)
+
+
+def guess_tags(desc="", name="", modid=""):
+    """按关键词推测分类标签（离线、零维护，界面上要写明"推测"）。"""
+    text = f"{desc} {name} {modid}".lower()
+    tags = [tag for tag, keys in _TAG_RULES if any(k in text for k in keys)]
+    return tags[:3]
+
+
+def get_mod_icon(jar_path, cache_dir=None):
+    """取模组图标（返回缓存 PNG 的路径；没有图标返回 None）。
+
+    图标来源：Fabric 的 `icon` 字段 / Forge 的 `logoFile` → 包根 icon.png →
+    根目录唯一的小图。结果按 路径+mtime+size 缓存：有图标存 PNG、没有就写个
+    .none 标记，所以只有第一次会解压，之后都读缓存。
+    """
+    jar_path = Path(jar_path)
+    # cache_dir 允许传字符串（测试/临时目录都这么用），这里统一转 Path，
+    # 不然 "str" / "文件名" 会在下面直接 TypeError。
+    cache = Path(cache_dir) if cache_dir else Path(ICON_CACHE_DIR)
+    try:
+        st = jar_path.stat()
+        key = f"{abs(hash((str(jar_path), int(st.st_mtime), st.st_size))):x}"
+    except Exception:
+        return None
+    png = cache / f"{key}.png"
+    none_mark = cache / f"{key}.none"
+    if png.exists():
+        return png
+    if none_mark.exists():
+        return None
+    entry = None
+    try:
+        with zipfile.ZipFile(jar_path, "r") as zf:
+            names = zf.namelist()
+            lower = {n.lower(): n for n in names}
+            if "fabric.mod.json" in names:
+                try:
+                    data = json.loads(zf.read("fabric.mod.json").decode("utf-8", "ignore"))
+                    icon = data.get("icon")
+                    if isinstance(icon, dict):
+                        for size in sorted(icon, key=lambda x: -int(x) if str(x).isdigit() else 0):
+                            if str(icon[size]).lower() in lower:
+                                entry = lower[str(icon[size]).lower()]
+                                break
+                    elif isinstance(icon, str) and icon.lower() in lower:
+                        entry = lower[icon.lower()]
+                except Exception:
+                    pass
+            if entry is None and "meta-inf/mods.toml" in lower:
+                try:
+                    text = zf.read(lower["meta-inf/mods.toml"]).decode("utf-8", "ignore")
+                    m = re.search(r'logoFile\s*=\s*"([^"]+)"', text)
+                    if m and m.group(1).lower() in lower:
+                        entry = lower[m.group(1).lower()]
+                except Exception:
+                    pass
+            if entry is None and "icon.png" in lower:
+                entry = lower["icon.png"]
+            if entry is None:
+                roots = [n for n in names
+                         if "/" not in n and n.lower().endswith((".png", ".jpg", ".jpeg"))]
+                if len(roots) == 1:
+                    entry = roots[0]
+            raw = zf.read(entry) if entry else None
+    except Exception:
+        raw = None
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        if not raw:
+            none_mark.write_bytes(b"")
+            return None
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw)).convert("RGBA")
+        im.thumbnail((96, 96), Image.LANCZOS)
+        im.save(png, "PNG")
+        return png
+    except Exception:
+        try:
+            none_mark.write_bytes(b"")
+        except Exception:
+            pass
+        return None
 
 
 def get_mod_metadata(jar_path):
@@ -142,6 +268,9 @@ def get_full_mod_metadata(jar_path):
                         info["dependencies"] = ", ".join(data.get("depends",
                                                                   {}).keys()) if data.get("depends") else "无"
                         info["mod_type"] = "Fabric"
+                        # 只有 Fabric 有可靠的 client/server 声明；Forge 那边判不准，留空
+                        env = str(data.get("environment", "") or "").lower()
+                        info["env"] = {"client": "客户端", "server": "服务端"}.get(env, "")
                     except:
                         pass
             elif 'META-INF/mods.toml' in zf.namelist():

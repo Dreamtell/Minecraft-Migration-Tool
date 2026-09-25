@@ -1,15 +1,17 @@
 # ui/dialogs.py
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox
 import os
 import re
+import subprocess
 import difflib
 import threading
 import queue
 import webbrowser
 from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
-                           center_window, lighten_color, SmoothScroller)
-from core.scanner import get_full_mod_metadata
+                           center_window, lighten_color, SmoothScroller, RoundedEntry)
+from core.scanner import (get_full_mod_metadata, split_cn_name, guess_tags,
+                          get_mod_icon)
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
 
@@ -316,11 +318,91 @@ def _configure_mod_detail_styles(theme):
     )
 
 
+def _detail_icon_photo(jar_path, px=56):
+    """模组图标 → PhotoImage（取不到就现画一个兜底图标）。"""
+    try:
+        from PIL import Image, ImageTk
+    except Exception:
+        return None
+    img = None
+    try:
+        p = get_mod_icon(jar_path)
+        if p:
+            img = Image.open(p).convert("RGBA")
+    except Exception:
+        img = None
+    if img is None:
+        try:
+            from ui.card_list import default_fallback_icon
+            img = default_fallback_icon(px)
+        except Exception:
+            return None
+    try:
+        return ImageTk.PhotoImage(img.resize((px, px), Image.LANCZOS))
+    except Exception:
+        return None
+
+
+def _chip_colors(kind, text, theme):
+    """徽章配色：版本/类型/环境走主题语义色，分类标签走卡片视图那套色。"""
+    if kind == "version":
+        return theme.get("accent_bg", "#b3d9ff"), theme.get("accent_fg", "#000000")
+    if kind == "type":
+        return theme.get("info_bg", "#d0f0f0"), theme.get("info_fg", "#000000")
+    if kind == "env":
+        return theme.get("neutral_bg", "#f8f9fa"), theme.get("neutral_fg", "#000000")
+    try:
+        from ui.card_list import TAG_COLORS
+    except Exception:
+        TAG_COLORS = {}
+    return TAG_COLORS.get(text, ("#546e7a", "#ffffff"))
+
+
+def _restyle_detail(win, theme):
+    """详情窗口里"自己管颜色"的控件，主题切换后重新上色。
+
+    apply_theme_to_widget_tree 会把所有 Label 刷成 label_fg/label_bg，
+    徽章的底色和中性的说明文字都会丢，所以这里补回来。
+    """
+    for lbl in getattr(win, "_detail_muted", []):
+        try:
+            lbl.config(fg=theme.get("muted_fg", "gray"))
+        except Exception:
+            pass
+    for lbl, kind, text in getattr(win, "_detail_chips", []):
+        try:
+            bg, fg = _chip_colors(kind, text, theme)
+            lbl.config(bg=bg, fg=fg)
+        except Exception:
+            pass
+    box = getattr(win, "_detail_desc", None)
+    if box is not None:
+        try:
+            box.config(bg=theme.get("log_bg", theme.get("text_bg", "#ffffff")),
+                       fg=theme.get("text_fg", "#000000"))
+        except Exception:
+            pass
+
+
+def _wrap_label(label, container, pad=96, minimum=180):
+    """让 Label 的自动换行宽度跟着容器走（否则窗口缩放后文字不折行）。"""
+    def _on_cfg(event):
+        try:
+            label.config(wraplength=max(minimum, event.width - pad))
+        except Exception:
+            pass
+    try:
+        container.bind("<Configure>", _on_cfg, add="+")
+    except Exception:
+        pass
+
+
 def update_mod_detail_theme(win, theme):
     """更新已打开的模组详情窗口的主题颜色（递归应用到所有子控件）"""
     try:
         win.configure(bg=theme["bg"])
         apply_theme_to_widget_tree(win, theme)
+        _restyle_detail(win, theme)
         _configure_mod_detail_styles(theme)
         if hasattr(win, '_search_tree'):
             st = win._search_tree
@@ -343,8 +425,12 @@ def update_mod_detail_theme(win, theme):
         pass
 
 
-def show_mod_detail(parent, jar_path, theme):
-    """显示模组详细信息窗口（独立函数），带联网搜索模组/download链接功能。"""
+def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
+    """显示模组详细信息窗口（独立函数），带联网搜索模组/download链接功能。
+
+    tags_hint / tags_online：放大查看窗口把扫描时拿到的分类传进来
+    （tags_online=True 表示是 Modrinth 的真实分类，不是关键词推测）。
+    """
     info = get_full_mod_metadata(jar_path)
     # 单实例：同一模组的详情窗口已打开则聚焦，避免双击连点重复弹窗
     win_title = f"模组详情 - {os.path.basename(jar_path)}"
@@ -366,22 +452,171 @@ def show_mod_detail(parent, jar_path, theme):
     fail = theme.get("fail_fg", "red")
     ok = theme.get("ok_fg", "green")
 
-    tk.Label(win, text=f"文件: {os.path.basename(jar_path)}", font=("微软雅黑", 10,
-                                                                    "bold")).pack(pady=(8, 2))
-    details = [
-        f"模组名称: {info['name']}",
-        f"Mod ID: {info['modid']}",
-        f"版本: {info['version']}",
-        f"类型: {info['mod_type']}",
-        f"作者: {info['authors']}",
-        f"描述: {info['description']}",
-        f"依赖: {info['dependencies']}"
-    ]
-    text = scrolledtext.ScrolledText(win, wrap=tk.WORD, height=6, width=70)
-    text.pack(padx=10, pady=5, fill="x", expand=False)
-    SmoothScroller.for_text(text)
-    text.insert(tk.END, "\n".join(details))
-    text.config(state=tk.DISABLED)
+    muted = theme.get("muted_fg", "gray")
+    win._detail_muted = []
+    win._detail_chips = []
+
+    # ---- 头部：图标 + 名称 + 徽章（以前是整块等宽文本，看着像日志） ----
+    head = tk.Frame(win)
+    head.pack(fill="x", padx=16, pady=(14, 2))
+
+    cn, en = split_cn_name(os.path.basename(jar_path))
+    title = cn or info["name"] or info["modid"] or "未知"
+
+    icon_lbl = tk.Label(head)
+    icon_lbl.pack(side="left", padx=(0, 14), anchor="n")
+    _icon_photo = _detail_icon_photo(jar_path)
+    if _icon_photo is not None:
+        icon_lbl.config(image=_icon_photo)
+        icon_lbl._photo_ref = _icon_photo          # 留引用，否则被回收成空白
+
+    box = tk.Frame(head)
+    box.pack(side="left", fill="both", expand=True)
+    tk.Label(box, text=title, font=("微软雅黑", 14, "bold"),
+             anchor="w", justify="left").pack(fill="x")
+    sub_txt = os.path.basename(jar_path)
+    if info["name"] and info["name"] != title and info["name"] not in sub_txt:
+        sub_txt = f"{info['name']}  ·  {sub_txt}"
+    sub_lbl = tk.Label(box, text=sub_txt, font=("微软雅黑", 9), anchor="w",
+                       justify="left", fg=muted)
+    sub_lbl._keep_fg = True
+    sub_lbl.pack(fill="x", pady=(3, 6))
+    win._detail_muted.append(sub_lbl)
+    _wrap_label(sub_lbl, box, pad=24)
+
+    # 徽章行：版本 / 类型 / 运行环境 / 分类（分类是关键词猜的，必须写明）
+    chips_row = tk.Frame(box)
+    chips_row.pack(fill="x")
+    chip_specs = []
+    if info["version"] and info["version"] != "未知":
+        chip_specs.append(("version", info["version"]))
+    if info["mod_type"] and info["mod_type"] != "未知":
+        chip_specs.append(("type", info["mod_type"]))
+    if info.get("env"):
+        chip_specs.append(("env", info["env"]))
+    tags = []
+    tags_from_web = False
+    if tags_online and tags_hint:
+        # 加载器/运行环境已经在上面当徽章了，别在这里重复一遍
+        skip = {str(info.get("mod_type") or ""), str(info.get("env") or "")}
+        tags = [t for t in tags_hint if t and t not in skip][:4]
+        tags_from_web = bool(tags)
+    if not tags:
+        try:
+            tags = guess_tags(info["description"], info["name"], info["modid"])
+        except Exception:
+            tags = []
+    for t in tags:
+        chip_specs.append(("tag", t))
+    for kind, text_c in chip_specs:
+        bg_c, fg_c = _chip_colors(kind, text_c, theme)
+        chip = tk.Label(chips_row, text=text_c, bg=bg_c, fg=fg_c, padx=8, pady=1,
+                        font=("微软雅黑", 9, "bold"), bd=0)
+        chip._keep_colors = True
+        chip.pack(side="left", padx=(0, 5))
+        win._detail_chips.append((chip, kind, text_c))
+    if tags:
+        note = tk.Label(chips_row,
+                        text="（分类来自 Modrinth）" if tags_from_web else "（分类为关键词推测）",
+                        fg=muted, font=("微软雅黑", 8))
+        note._keep_fg = True
+        note.pack(side="left", padx=(4, 0))
+        win._detail_muted.append(note)
+
+    # ---- 字段区：标签右对齐、值左对齐（比"冒号拼一行"好扫读） ----
+    grid = tk.Frame(win)
+    grid.pack(fill="x", padx=22, pady=(10, 4))
+    grid.columnconfigure(1, weight=1)
+    fields = (("作者", info["authors"]), ("依赖", info["dependencies"]),
+              ("Mod ID", info["modid"]))
+    for r, (k, v) in enumerate(fields):
+        kl = tk.Label(grid, text=k, font=("微软雅黑", 9), anchor="ne", fg=muted)
+        kl._keep_fg = True
+        kl.grid(row=r, column=0, sticky="ne", padx=(0, 12), pady=2)
+        vl = tk.Label(grid, text=(v or "无"), font=("微软雅黑", 9), anchor="w",
+                      justify="left")
+        vl.grid(row=r, column=1, sticky="w", pady=2)
+        win._detail_muted.append(kl)
+        _wrap_label(vl, grid, pad=110)
+
+    # ---- 描述：单独一块面板，可平滑滚动（不是整个窗口一大坨文本） ----
+    desc_box = tk.Frame(win)
+    desc_box.pack(fill="x", padx=22, pady=(10, 2))
+    dl = tk.Label(desc_box, text="📝 描述", font=("微软雅黑", 9, "bold"), anchor="w")
+    dl.pack(fill="x", pady=(0, 4))
+    desc = str(info["description"] or "无").strip() or "无"
+    height = max(3, min(6, 1 + len(desc) // 68))
+    desc_txt = tk.Text(desc_box, height=height, wrap="word", relief="flat", bd=0,
+                       padx=10, pady=8, font=("微软雅黑", 9),
+                       highlightthickness=0, cursor="arrow")
+    desc_txt.pack(fill="x")
+    # 描述面板一般就几行，滚一格 3 行会"一滑到底"；这里一格只走约一行
+    SmoothScroller.for_text(desc_txt, px_per_notch=22)
+    desc_txt.insert(tk.END, desc)
+    desc_txt.config(state=tk.DISABLED)
+
+    def _fit_desc(event=None):
+        """按真实换行行数调高度：估的字符数（中文/英文宽度差一倍）经常差一行。"""
+        try:
+            n = desc_txt.count("1.0", "end", "displaylines")
+            n = n[0] if isinstance(n, (tuple, list)) else n
+            if n:
+                want = max(2, min(8, int(n)))
+                if int(desc_txt.cget("height")) != want:
+                    desc_txt.config(height=want)
+        except Exception:
+            pass
+    desc_txt.bind("<Configure>", _fit_desc, add="+")
+    win._detail_desc = desc_txt
+
+    # ---- 文件操作行：定位 / 复制（详情窗口最常见的三个后续动作） ----
+    ops = tk.Frame(win)
+    ops.pack(fill="x", padx=22, pady=(6, 0))
+    ops_hint = tk.Label(ops, text="", font=("微软雅黑", 8), anchor="w", fg=muted)
+    ops_hint._keep_fg = True
+    win._detail_muted.append(ops_hint)
+
+    def _flash(msg, color=None):
+        try:
+            ops_hint.config(text=msg, fg=color or muted)
+        except Exception:
+            pass
+
+    def reveal_file():
+        # 优先 explorer /select,（会把文件本身高亮出来），失败再退回直接打开目录
+        try:
+            subprocess.Popen(['explorer', '/select,', str(jar_path)])
+        except Exception:
+            try:
+                os.startfile(os.path.dirname(jar_path))
+            except Exception as e:
+                _flash(f"打开失败：{e}", fail)
+                return
+        _flash("已在资源管理器中定位该文件。", ok)
+
+    def copy_text(value, what):
+        value = str(value or "").strip()
+        if not value or value in ("未知", "无"):
+            _flash(f"没有可复制的{what}。", fail)
+            return
+        try:
+            win.clipboard_clear()
+            win.clipboard_append(value)
+            _flash(f"已复制{what}：{value}", ok)
+        except Exception as e:
+            _flash(f"复制失败：{e}", fail)
+
+    create_gradient_button(ops, "📂 打开所在文件夹", reveal_file,
+                           colors=("#607d8b", "#90a4ae"), width=150, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 6))
+    create_gradient_button(ops, "📋 复制 Mod ID", lambda: copy_text(info["modid"], "Mod ID"),
+                           colors=("#607d8b", "#90a4ae"), width=132, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+    create_gradient_button(ops, "📋 复制文件名",
+                           lambda: copy_text(os.path.basename(jar_path), "文件名"),
+                           colors=("#607d8b", "#90a4ae"), width=132, height=28,
+                           font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+    ops_hint.pack(side="left", padx=(10, 0))
 
     # ---- 联网搜索区 ----
     search_frame = tk.LabelFrame(win, text="🔍 联网搜索模组（Modrinth）", padx=5, pady=5)
@@ -391,7 +626,8 @@ def show_mod_detail(parent, jar_path, theme):
     top.pack(fill="x", pady=(2, 4))
     tk.Label(top, text="搜索词:").pack(side="left")
     search_var = tk.StringVar(value=info["name"] or info["modid"] or "")
-    search_entry = tk.Entry(top, textvariable=search_var, width=44)
+    search_entry = RoundedEntry(top, theme, textvariable=search_var, chars=44,
+                                height=28)
     search_entry.pack(side="left", padx=5)
     search_btn = create_gradient_button(top, "🔍 联网搜索", None,
                                         colors=("#00bcd4", "#26c6da"),
@@ -460,8 +696,13 @@ def show_mod_detail(parent, jar_path, theme):
 
     act = tk.Frame(search_frame)
     act.pack(fill="x", pady=3)
-    local_lbl = tk.Label(act, text=f"本地版本: {info['version']}")
+    # 本地版本用徽章样式（和顶部那排一致），比一行灰字好认
+    _vbg, _vfg = _chip_colors("version", info["version"], theme)
+    local_lbl = tk.Label(act, text=f"本地版本 {info['version']}", bg=_vbg, fg=_vfg,
+                         padx=8, pady=1, font=("微软雅黑", 9, "bold"), bd=0)
+    local_lbl._keep_colors = True
     local_lbl.pack(side="left", padx=5)
+    win._detail_chips.append((local_lbl, "version", info["version"]))
     copy_proj_btn = create_gradient_button(act, "🔗 复制项目链接", None,
                                            colors=("#607d8b", "#90a4ae"),
                                            width=120, height=28,

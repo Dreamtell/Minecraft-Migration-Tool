@@ -4,7 +4,7 @@ from tkinter import ttk, messagebox
 import os
 import time
 from utils.helpers import (set_window_icon, create_gradient_button, lighten_color,
-                           SmoothScroller, tree_row_px)
+                           SmoothScroller, tree_row_px, RoundedEntry)
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
 
 
@@ -162,9 +162,12 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
     # ---- 定义高亮 tag 颜色 ----
     def update_highlight_color():
-        # 根据主题设置 highlight 颜色（使用明显的高亮色）
-        tree.tag_configure("highlight", background=theme["highlight_bg"],
-                           foreground=theme["highlight_fg"])
+        # 选中高亮：用和卡片视图同一套"选中蓝"
+        # 注意：Treeview 里同一个 item 挂多个 tag 且都设了 background 时，
+        # **tags 列表里靠前的那个生效**（实测：("status","highlight") 显示的是 status 色）。
+        # 所以下面所有地方都必须把 "highlight" 放在最前面，否则选中根本看不出来。
+        tree.tag_configure("highlight", background=theme.get("card_sel_bg", "#d4e6f8"),
+                           foreground=theme.get("card_sel_fg", "#0d3d63"))
 
     update_highlight_color()
 
@@ -176,17 +179,10 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
         default_checked = (status == "新增")
         checked_char = "☑" if default_checked else "☐"
-        # 基础标签（状态）
-        tags = []
-        if status == "新增":
-            tags.append("new")
-        elif status == "更新":
-            tags.append("update")
-        else:
-            tags.append("target_only")
-        # 如果默认勾选，添加高亮标签
-        if default_checked:
-            tags.append("highlight")
+        # 状态标签（颜色含义）
+        status_tag = {"新增": "new", "更新": "update"}.get(status, "target_only")
+        # "highlight" 必须排在最前，否则会被状态 tag 的 background 盖掉（见 update_highlight_color）
+        tags = ["highlight", status_tag] if default_checked else [status_tag]
 
         iid = str(idx)
         tree.insert("", "end", iid=iid, values=(
@@ -216,22 +212,15 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
             # 被搜索过滤掉的行不在树里，必须跳过，否则 tree.item 会抛 TclError
             if not tree.exists(iid):
                 continue
-            # 获取当前行的现有 tags
-            current_tags = list(tree.item(iid, "tags"))
-            # 确保 "highlight" 存在或移除
-            if checked:
-                if "highlight" not in current_tags:
-                    current_tags.append("highlight")
-            else:
-                if "highlight" in current_tags:
-                    current_tags.remove("highlight")
-            # 更新 tags（保留其他状态标签）
-            tree.item(iid, tags=tuple(current_tags))
+            current_tags = [t for t in tree.item(iid, "tags") if t != "highlight"]
+            # highlight 必须放最前（Treeview 里靠前的 tag 胜出），否则选中看不出来
+            new_tags = (["highlight"] + current_tags) if checked else current_tags
+            tree.item(iid, tags=tuple(new_tags))
         # 强制刷新
         tree.update_idletasks()
 
     # ---- 交互事件（自定义快速双击判定） ----
-    DOUBLE_CLICK_SEC = 0.25  # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击
+    DOUBLE_CLICK_SEC = 0.18  # 快速双击阈值（秒）：和放大查看/卡片视图保持一致
     last_click_time = [0.0]
     last_click_row = [None]
 
@@ -339,6 +328,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         return hits
 
     def sort_items():
+        _sorted_once[0] = True          # 之后表头才显示 ▲/▼
         key_func = get_sort_key(sort_field.get())
         # 先按搜索条件过滤，再排序：表格里只放命中项
         visible = matched_indices()
@@ -353,19 +343,13 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
             iid = str(idx)
             item = all_data[idx]
             display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
-            checked = "☑" if selection_state.get(iid, False) else "☐"
-            # 构建 tags
-            tags = []
-            if status == "新增":
-                tags.append("new")
-            elif status == "更新":
-                tags.append("update")
-            else:
-                tags.append("target_only")
-            if selection_state.get(iid, False):
-                tags.append("highlight")
+            checked = selection_state.get(iid, False)
+            checked_char = "☑" if checked else "☐"
+            status_tag = {"新增": "new", "更新": "update"}.get(status, "target_only")
+            # highlight 放最前，不然会被状态色盖掉
+            tags = ["highlight", status_tag] if checked else [status_tag]
             tree.insert("", "end", iid=iid, values=(
-                checked,
+                checked_char,
                 display_name,
                 status,
                 mod_type,
@@ -378,6 +362,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         # 强制刷新
         tree.update_idletasks()
         sort_btn.set_text("▼ 降序" if sort_reverse.get() else "▲ 升序")
+        update_sort_indicators()
         # 底部统计：搜索过滤时提示「实际显示了几项」
         try:
             shown = len(tree.get_children())
@@ -404,9 +389,8 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     tk.Label(search_frame, text="🔍", bg=theme["bg"],
              fg=theme["fg"]).pack(side="left")
     search_var = tk.StringVar()
-    search_entry = tk.Entry(search_frame, textvariable=search_var, width=16,
-                            bg=theme["entry_bg"], fg=theme["entry_fg"],
-                            insertbackground=theme["fg"])
+    search_entry = RoundedEntry(search_frame, theme, textvariable=search_var, chars=16,
+                                height=28)
     search_entry.pack(side="left", padx=4)
     search_scope = tk.StringVar(value="全部")
     scope_combo = ttk.Combobox(search_frame, textvariable=search_scope,
@@ -441,6 +425,42 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                                       colors=("#607d8b", "#90a4ae"),
                                       width=76, height=28, font=("微软雅黑", 9, "bold"))
     sort_btn.pack(side="left", padx=5)
+
+    # 表头点击也能排序（和"放大查看"的表格一致，那儿一直是点表头）
+    _SORT_COLS = {"文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)"}
+    _sorted_once = [False]      # 用户手动排过序没（没排过就不标箭头）
+
+    def update_sort_indicators():
+        """把 ▲/▼ 标在当前排序列的表头上，点了哪列一眼能看出来。
+
+        没手动排过序时不标箭头：刚打开时表格是扫描顺序，标个"▲ 文件名"会误导。
+        """
+        cur = sort_field.get()
+        arrow = "▼" if sort_reverse.get() else "▲"
+        for col in columns:
+            txt = _HEAD.get(col, col)
+            if _sorted_once[0] and col == cur:
+                txt = f"{arrow} {txt}"
+            try:
+                tree.heading(col, text=txt)
+            except Exception:
+                pass
+
+    def sort_by_column(col):
+        """点表头：换一列就按新列升序，点同一列则切换升降序。"""
+        if col not in _SORT_COLS:
+            return
+        if sort_field.get() == col:
+            sort_reverse.set(not sort_reverse.get())
+        else:
+            sort_field.set(col)
+            sort_reverse.set(False)
+        sort_items()
+
+    for _col in columns:
+        if _col in _SORT_COLS:
+            tree.heading(_col, command=lambda c=_col: sort_by_column(c))
+    update_sort_indicators()
 
     # 右侧按钮区域
     btn_frame = tk.Frame(toolbar_frame, bg=theme["bg"])
@@ -620,9 +640,10 @@ def update_diff_theme(diff_win, theme, current_theme):
                 style.configure("Diff.Treeview.Heading",
                                 background=theme["button_bg"],
                                 foreground=theme["fg"])
-                # 更新高亮 tag 颜色
-                widget.tag_configure("highlight", background=theme["highlight_bg"],
-                                     foreground=theme["highlight_fg"])
+                # 更新高亮 tag 颜色（和卡片视图同一套"选中蓝"）
+                widget.tag_configure("highlight",
+                                     background=theme.get("card_sel_bg", "#d4e6f8"),
+                                     foreground=theme.get("card_sel_fg", "#0d3d63"))
                 # 更新状态标签颜色
                 widget.tag_configure("new", background=theme["success_bg"],
                                      foreground=theme["success_fg"])

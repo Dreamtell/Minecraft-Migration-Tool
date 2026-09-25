@@ -2,11 +2,8 @@
 import tkinter as tk
 import tkinter.font as tkfont
 import math
-import os
-import sys
 import time
 import weakref
-from pathlib import Path
 
 # 活着的平滑滚动器（弱引用，不阻止回收）。用来统一管理/诊断，
 # 也可以将来做"一键关掉平滑滚动"的开关。
@@ -49,6 +46,16 @@ def lighten_color(hex_color, amount=40):
     g = min(255, int(hex_color[3:5], 16) + amount)
     b = min(255, int(hex_color[5:7], 16) + amount)
     return "#%02x%02x%02x" % (r, g, b)
+
+
+def _shade(hex_color, amount):
+    """#rrggbb 整体加减一个值（负数=变暗），越界自动夹到 0~255。"""
+    try:
+        parts = [max(0, min(255, int(hex_color[i:i + 2], 16) + amount))
+                 for i in (1, 3, 5)]
+        return "#%02x%02x%02x" % tuple(parts)
+    except Exception:
+        return hex_color
 
 
 def hover_pair(colors):
@@ -159,6 +166,18 @@ class SmoothScroller:
     def scrolling(self):
         return self._job is not None or abs(self._left) >= 1.0
 
+    def scroll_px(self, px):
+        """按像素滚动（键盘/程序触发），走的是和滚轮同一套动画，手感一致。"""
+        try:
+            self._left += float(px)
+        except Exception:
+            return
+        if self._job is None:
+            try:
+                self._job = self.widget.after(1, self._step)
+            except Exception:
+                self._job = None
+
     def stop(self):
         if self._job is not None:
             try:
@@ -204,12 +223,20 @@ class SmoothScroller:
         move = self._left * self.ease
         if abs(move) < 1.0:
             move = 1.0 if move > 0 else -1.0
+        before_left = self._left
         consumed, blocked = self._mover(move)
         if blocked:
             self._left = 0.0
             self._settle()
             return
         self._left -= consumed
+        # 兜底：mover 的消费量必须让剩余量变小。若某个 mover 返回了绝对值而不是
+        # 带符号的位移，向上滚时剩余量会被越减越大 —— 表现就是"向上滚异常快"。
+        # 真出现这种情况就当滚到底直接停，宁可不动也别失控。
+        if abs(self._left) > abs(before_left):
+            self._left = 0.0
+            self._settle()
+            return
         self._job = self.widget.after(self.frame_ms, self._step)
 
 
@@ -331,6 +358,245 @@ _BTN_RADIUS = 6        # 渐变按钮圆角半径（像素）；按钮太矮时�
 _BTN_SS = 4            # 超采样倍数：4 倍画完再缩回来，圆角边缘才不会有锯齿
 _BTN_CACHE_MAX = 512
 _btn_cache = {}
+
+# 圆角输入框的底图缓存：(宽,高,圆角,填充,描边,父底色) -> PIL 图
+_field_cache = {}
+_FIELD_SS = 4
+
+
+def _rounded_field_image(w, h, radius, fill, border, corner_bg=None, border_w=1,
+                         ss=None):
+    """圆角输入框的底：描边 + 内部填充，四角透明（交给 Tk 跟父容器底色混）。
+
+    Tk 的 Entry 没有 border-radius，圆角只能靠"背后垫一张图"来做。
+    border_w 用来加粗描边（正在编辑的输入框用 2px，一眼能看出是哪个）。
+    ss 是超采样倍数：4 倍最细腻但一张要 4~8ms；拖窗口缩放时先用 1 倍顶上，
+    停手后再补一张精细的（见 RoundedEntry._on_configure）。
+    """
+    if w <= 2 or h <= 2:
+        return None
+    bw = max(1, min(int(border_w), max(1, min(w, h) // 2 - 1)))
+    s = int(ss or _FIELD_SS)
+    key = (int(w), int(h), int(radius), str(fill), str(border), str(corner_bg), bw, s)
+    hit = _field_cache.get(key)
+    if hit is not None:
+        return hit
+    try:
+        im = _PILImage.new("RGBA", (w * s, h * s), (0, 0, 0, 0))
+        d = _PILDraw.Draw(im)
+        d.rounded_rectangle([0, 0, w * s - 1, h * s - 1], radius=max(0, radius * s),
+                            fill=border)
+        d.rounded_rectangle([bw * s, bw * s, (w - bw) * s - 1, (h - bw) * s - 1],
+                            radius=max(0, radius * s - bw * s), fill=fill)
+        if s != 1:
+            im = im.resize((w, h), _PILImage.LANCZOS)
+    except Exception:
+        return None
+    if len(_field_cache) > 64:
+        # 实际只需要"当前尺寸 × 聚焦与否 × 深浅主题 × 超采样"这十来个键；
+        # 拖拽缩放时会不断产生新宽度，所以给个上限兜住内存（一张最大约 120KB）。
+        _field_cache.clear()
+    _field_cache[key] = im
+    return im
+
+
+class RoundedEntry(tk.Frame):
+    """圆角单行输入框：Canvas 垫一张圆角底图，真正的 tk.Entry 放在上面。
+
+    只改外观——输入、IME 中文输入、右键菜单、拖选、快捷键全都还是原生 Entry
+    在处理，所以不会因为"自绘"而丢功能。
+    用法跟 tk.Entry 基本一致：get/delete/insert/bind/icursor 等都会转发给内部
+    Entry；pack/grid 作用于外壳（Frame）。
+    """
+
+    def __init__(self, master, theme, textvariable=None, chars=20, height=30,
+                 radius=8, pad_x=9, font=("微软雅黑", 10), width=None, **kw):
+        base_bg = "#f0f0f0"
+        try:
+            base_bg = master.cget("bg")
+        except Exception:
+            pass
+        if str(base_bg).startswith("System"):
+            base_bg = (theme or {}).get("bg", "#f0f0f0")
+        super().__init__(master, bg=base_bg, height=height)
+        self._is_rounded_entry = True
+        self.theme = dict(theme or {})
+        self._radius = radius
+        self._pad_x = pad_x
+        self._h = height
+        self._focus = False
+        self._photo = None
+        try:
+            self.pack_propagate(False)
+            self.grid_propagate(False)
+        except Exception:
+            pass
+        self._font = tkfont.Font(font=font)
+        ch_w = self._font.measure("0") or 7
+        self._px_w = int(width if width else ch_w * max(4, int(chars)) + pad_x * 2)
+
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=base_bg,
+                                width=self._px_w, height=height)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.set_corner_bg = self._set_corner_bg
+        self.entry = tk.Entry(self.canvas, textvariable=textvariable, bd=0,
+                              highlightthickness=0, relief="flat",
+                              bg=self.theme.get("entry_bg", "#ffffff"),
+                              fg=self.theme.get("entry_fg", "#000000"),
+                              insertbackground=self.theme.get("fg", "#000000"),
+                              font=font, **kw)
+        self._img_id = self.canvas.create_image(0, 0, anchor="nw")
+        self._entry_id = self.canvas.create_window(pad_x, height // 2, anchor="w",
+                                                   window=self.entry)
+        self._last_w = None
+        self._fine_job = None
+        self.canvas.bind("<Configure>", lambda e: self._on_configure())
+        # 点在圆角留白处也应该聚焦到输入框上
+        self.canvas.bind("<Button-1>", lambda e: self.entry.focus_set())
+        self.entry.bind("<FocusIn>", lambda e: self._set_focus(True))
+        self.entry.bind("<FocusOut>", lambda e: self._set_focus(False))
+        self.configure(width=self._px_w)
+        self.after_idle(self._redraw)
+
+    # -------------------------------------------------------------- 兼容 tk.Entry
+    def __getattr__(self, name):
+        # __init__ 期间也会走到这里（属性还没建好），必须先挡住，否则无限递归
+        if name in ("entry", "canvas", "_redraw", "theme"):
+            raise AttributeError(name)
+        entry = self.__dict__.get("entry")
+        if entry is None:
+            raise AttributeError(name)
+        return getattr(entry, name)
+
+    # 下面这几个 Frame 自己也有同名方法，__getattr__ 轮不到它们 —— 必须显式转发。
+    # 尤其 bind：不转发的话绑定会落在"外壳 Frame"上，而 Frame 拿不到键盘事件，
+    # 搜索框里按回车就没反应了。
+    def bind(self, sequence=None, func=None, add=None):
+        return self.entry.bind(sequence, func, add)
+
+    def unbind(self, sequence, funcid=None):
+        return self.entry.unbind(sequence, funcid)
+
+    def focus_set(self):
+        return self.entry.focus_set()
+
+    def focus_force(self):
+        return self.entry.focus_force()
+
+    def focus(self):
+        return self.entry.focus()
+
+    # ------------------------------------------------------------------ 外观
+    def _set_corner_bg(self, color):
+        """主题切换时同步外壳/画布底色（圆角是透明的，露出的就是这个色）。"""
+        try:
+            self.configure(bg=color)
+            self.canvas.configure(bg=color)
+        except Exception:
+            pass
+
+    def _base_bg(self):
+        """外壳/画布该用的底色 = 父容器的真实底色。
+
+        构造时父容器（LabelFrame 之类）可能还没被主题刷过，cget("bg") 会给出
+        系统色 SystemButtonFace —— 那样圆角外面会露出一圈浅灰（深色主题下很扎眼）。
+        所以系统色一律换成主题底色。
+        """
+        bg = None
+        try:
+            bg = self.master.cget("bg")
+        except Exception:
+            bg = None
+        if not bg or str(bg).startswith("System"):
+            bg = self.theme.get("bg", "#f0f0f0")
+        return bg
+
+    def _on_configure(self):
+        """尺寸变化：宽度真变了就先画一张便宜的（1 倍超采样），停手后补精细的。
+
+        4 倍超采样 + LANCZOS 一张 957×30 要 8ms；拖窗口缩放时每秒会来几十次
+        <Configure>，每次重生成会明显拖慢拖拽。1 倍只要 1ms 左右，边角在拖动
+        过程中略糙、停手 140ms 后自动变回精细版。
+        """
+        w = self.canvas.winfo_width()
+        if w <= 1:
+            return
+        if w != self._last_w:
+            self._last_w = w
+            self._redraw(fast=True)
+            if self._fine_job is not None:
+                try:
+                    self.after_cancel(self._fine_job)
+                except Exception:
+                    pass
+            self._fine_job = self.after(140, self._fine_redraw)
+        else:
+            self._redraw()
+
+    def _fine_redraw(self):
+        self._fine_job = None
+        self._redraw()
+
+    def _set_focus(self, focused):
+        self._focus = bool(focused)
+        self._redraw()
+
+    def set_theme(self, theme):
+        """主题切换：更新填充/描边/文字色并重画。"""
+        self.theme = dict(theme or {})
+        try:
+            self.entry.configure(bg=self.theme.get("entry_bg", "#ffffff"),
+                                 fg=self.theme.get("entry_fg", "#000000"),
+                                 insertbackground=self.theme.get("fg", "#000000"))
+        except Exception:
+            pass
+        self._set_corner_bg(self._base_bg())
+        self._redraw()
+
+    def _redraw(self, fast=False):
+        w = self.canvas.winfo_width()
+        if w <= 1:
+            w = self._px_w
+        h = self._h
+        fill = self.theme.get("entry_bg", "#ffffff")
+        dark = is_dark_theme(self.theme)
+        if self._focus:
+            # 正在编辑的那个必须最显眼：深色主题用亮蓝，浅色主题用中蓝，并且加粗到 2px。
+            # （以前这两种都用 accent_bg 压暗算：深色主题的 accent_bg 是 #3a4a5a，
+            #   压暗后接近全黑，反而比没聚焦的浅灰描边还看不见 —— 等于搞反了。）
+            border = "#64b5f6" if dark else "#4a90d9"
+            bw = 2
+        else:
+            # 没在编辑的保持低调：深色主题的 border 是 #bebebe，在暗底上太抢眼
+            border = "#4a4a4a" if dark else self.theme.get("border", "#c8c8c8")
+            bw = 1
+        img = _rounded_field_image(w, h, self._radius, fill, border,
+                                   self.canvas.cget("bg"), bw,
+                                   ss=1 if fast else None)
+        if img is not None and _PIL_OK:
+            try:
+                self._photo = _PILImageTk.PhotoImage(img)
+                self.canvas.itemconfigure(self._img_id, image=self._photo)
+            except Exception:
+                pass
+        else:
+            # 没有 Pillow：退回直角框，功能不受影响
+            try:
+                self.canvas.itemconfigure(self._img_id, image="")
+                self.canvas.delete("fallback")
+                self.canvas.create_rectangle(0, 0, w - 1, h - 1, outline=border,
+                                             tags="fallback")
+                self.canvas.tag_lower("fallback")
+            except Exception:
+                pass
+        try:
+            self.canvas.coords(self._img_id, 0, 0)
+            self.canvas.coords(self._entry_id, self._pad_x, h // 2)
+            self.canvas.itemconfigure(self._entry_id,
+                                      width=max(10, w - self._pad_x * 2),
+                                      height=max(10, h - 8))
+        except Exception:
+            pass
 
 
 def _tk_rgb(widget, color):

@@ -17,6 +17,9 @@ from winotify import Notification, audio
 # 超过这个时间就立刻淡出，不会平白拖慢启动。
 SPLASH_MIN_SEC = 1.5
 
+# 单实例锁的持有者：必须活到进程结束（被回收就释放锁，程序会变成可多开）
+_LOCK_HOLDER = None
+
 
 def send_toast(title, msg):
     """弹一条 Windows 系统通知（winotify，兼容 Win10/11）。"""
@@ -31,8 +34,12 @@ def send_toast(title, msg):
 
 def main():
     # 单实例检查
+    global _LOCK_HOLDER
     try:
-        me = singleton.SingleInstance()
+        # 必须留着这个对象：它被回收就会释放单实例锁，程序就变成"可多开"了。
+        # 放在模块级变量里而不是局部变量，就是为了让它活到进程结束
+        # （顺带也不会被 IDE 当成"赋值了没用"的死变量）。
+        _LOCK_HOLDER = singleton.SingleInstance()
     except singleton.SingleInstanceException:
         # 已经在跑了：优先请那个实例把主界面叫出来（窗口可能正挂在托盘里，
         # 这种状态下靠标题 FindWindow + ShowWindow 是叫不动的）

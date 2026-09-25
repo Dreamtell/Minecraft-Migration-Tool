@@ -44,6 +44,8 @@ LIGHT_THEME = {
     "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
     "sel_bg": "#66bb6a", "sel_fg": "#ffffff",
     "hover_bg": "#e9eef5", "hover_fg": "#000000",
+    # 卡片/表格的"选中"样式（模仿 PCL2：浅蓝底 + 左侧蓝条 + 蓝标题）
+    "card_sel_bg": "#d4e6f8", "card_sel_fg": "#0d3d63", "card_sel_bar": "#2f7fd1",
     "hover_checked_bg": "#cde8cd", "hover_checked_fg": "#000000",
     "hover_missing_bg": "#ffd9d9", "hover_missing_fg": "#8b0000",
     "hover_new_bg": "#fff2c4", "hover_new_fg": "#000000",
@@ -95,6 +97,8 @@ DARK_THEME = {
     "badge_rollback_bg": "#5a2d2d", "badge_normal_bg": "#3a3a3a",
     "sel_bg": "#2e7d32", "sel_fg": "#ffffff",
     "hover_bg": "#3a3e44", "hover_fg": "#ffffff",
+    # 卡片/表格的"选中"样式（深色版：暗蓝底 + 亮蓝条 + 亮蓝标题）
+    "card_sel_bg": "#2b3b4d", "card_sel_fg": "#cfe8ff", "card_sel_bar": "#4da3f0",
     "hover_checked_bg": "#3a5a3a", "hover_checked_fg": "#ffffff",
     "hover_missing_bg": "#5a3a3a", "hover_missing_fg": "#ffb3b3",
     "hover_new_bg": "#5a4a3a", "hover_new_fg": "#ffffff",
@@ -108,7 +112,12 @@ DARK_THEME = {
 def apply_theme_to_widget_tree(widget, theme):
     """将主题颜色递归应用到控件树（含 Toplevel 子窗口），供各窗口创建/切换时复用"""
     try:
-        if isinstance(widget, tk.Toplevel):
+        # 自绘圆角输入框（utils.helpers.RoundedEntry）：它不是普通 Frame，
+        # 填充/描边要按主题重画，所以要在 Frame 分支之前拦下来。
+        # 这里用鸭子类型判断，避免 theme <-> helpers 循环导入。
+        if getattr(widget, "_is_rounded_entry", False):
+            widget.set_theme(theme)
+        elif isinstance(widget, tk.Toplevel):
             widget.configure(bg=theme["bg"])
         elif isinstance(widget, tk.LabelFrame):
             # LabelFrame 是 Frame 的子类，需先判断，否则标题颜色不会设置
@@ -116,7 +125,17 @@ def apply_theme_to_widget_tree(widget, theme):
         elif isinstance(widget, tk.Frame):
             widget.configure(bg=theme["bg"])
         elif isinstance(widget, tk.Label):
-            widget.configure(bg=theme["label_bg"], fg=theme["label_fg"])
+            # 语义色标签（路径/存档状态那种绿/红字）自己管前景色：
+            # 这类文字的颜色是"状态"而不是"主题"决定的，统一刷成 label_fg 的话，
+            # 切主题时会先闪过一瞬"绿字变黑/白"、再被状态刷新改回绿色。
+            # 所以它们只跟主题刷底色，前景色留给状态刷新逻辑。
+            # _keep_colors 更彻底：底色前景都自己管（模组详情窗口的徽章就是这种）。
+            if getattr(widget, "_keep_colors", False):
+                pass
+            elif getattr(widget, "_keep_fg", False):
+                widget.configure(bg=theme["label_bg"])
+            else:
+                widget.configure(bg=theme["label_bg"], fg=theme["label_fg"])
         elif isinstance(widget, tk.Button):
             widget.configure(bg=theme["button_bg"], fg=theme["button_fg"],
                              activebackground=theme["button_bg"])
