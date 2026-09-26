@@ -2423,7 +2423,11 @@ class QtBigView(QtWidgets.QWidget):
         dlg.open()                       # 非阻塞对话框：Tk 主界面在这期间照样能响应
 
     def _refresh_failed(self):
-        """把主界面记下的"出错条目"同步到列表（主界面 hooks.failed 给的是 [(页, 名, 页名)]）。"""
+        """把主界面记下的"出错条目"同步到列表（主界面 hooks.failed 给的是 [(页, 名, 页名)]）。
+
+        顺带管住工具栏那个「📍 定位错误」：一条错都没有时置灰点不动
+        （点了也只会说"这次没有出错的条目"，不如直接不给点）。
+        """
         名单 = set()
         try:
             fn = self.hooks.get("failed")
@@ -2442,7 +2446,14 @@ class QtBigView(QtWidgets.QWidget):
                 变化 = True
         if 变化:
             self.store.reset.emit()          # 一次全刷，省得逐行发 dataChanged
-        return sum(1 for it in self.store.items if it.failed)
+        n = sum(1 for it in self.store.items if it.failed)
+        try:
+            btn = getattr(self, "btn_fail", None)
+            if btn is not None and btn.isEnabled() != (n > 0):
+                btn.setEnabled(n > 0)
+        except Exception:
+            pass
+        return n
 
     def _goto_next_failed(self):
         """跳到下一个出错的条目（清单里标红那几条），循环跳。

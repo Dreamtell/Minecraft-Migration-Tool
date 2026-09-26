@@ -374,6 +374,10 @@ class MigrationGUI:
         self.last_check_modlist_time = 0
         self.last_check_config_time = 0
         self._config_status_applied = False
+        # 出错的清单条目：(页索引, 条目名, 页名)；必须先于 create_widgets ——
+        # 日志工具条那颗「📍 定位错误」在建造时就要按"有没有错误"决定灰不灰
+        self._failed_items = []
+        self._fail_cursor = 0
 
         self._stage("正在构建界面…")
         self.create_widgets()
@@ -443,8 +447,6 @@ class MigrationGUI:
         self._saved_logs = []
         self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
         self._last_log_key = None
-        self._failed_items = []          # 出错的清单条目：(页索引, 条目名, 页名)
-        self._fail_cursor = 0            # 「定位错误」跳到第几个了
         self._stage("就绪")
 
     def _stage(self, text=""):
@@ -622,9 +624,20 @@ class MigrationGUI:
         self._refresh_fail_button()
 
     def _refresh_fail_button(self):
+        """刷新「📍 定位错误」：文字带上错误条数，**没有错误就置灰点不动**。
+
+        以前没错误时按钮还是彩色的，点一下只弹一句"这次没有出错的条目"——
+        不如直接禁用，一眼就知道现在无可定位的东西。
+        """
         n = len(self._failed_items)
         try:
             self.btn_fail_locate.set_text("📍 定位错误" + (" (%d)" % n if n else ""))
+        except Exception:
+            pass
+        try:
+            # 顺序要紧：set_state 禁用时会按当前文字重出一遍灰面图，
+            # 所以先把文字改好再切状态
+            self.btn_fail_locate.state("normal" if n else "disabled")
         except Exception:
             pass
 
@@ -3265,6 +3278,7 @@ class MigrationGUI:
             "log_open": btn_open_log,
             "log_clear": btn_clear_log,
         })
+        self._refresh_fail_button()      # 启动时没有错误 → 一开始就是灰的
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
         self.log_text_box = RoundedTextArea(frame_log, self.theme, height=22,

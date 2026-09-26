@@ -1427,6 +1427,11 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         draw_content()
     canvas.set_text = set_text
 
+    def get_text():
+        """读当前按钮文字（`set_text` 的读回，方便状态切换后确认画的是什么）。"""
+        return state["text"]
+    canvas.get_text = get_text
+
     def set_icon(pil_img):
         """把按钮内容换成一张居中的图标图（PIL Image）；传 None 回到文字。"""
         state["icon"] = pil_img
