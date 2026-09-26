@@ -1895,7 +1895,7 @@ class LiquidProgress(tk.Canvas):
         self.theme = dict(theme)
         self._h = int(height)
         self._cw = 0
-        self._fraction = 1.0
+        self._fraction = 0.0        # 0 起步：内容是空的时候进度条就该是空的
         self._flow = 0.0
         self._job = None
         self._photo = None
@@ -1911,14 +1911,6 @@ class LiquidProgress(tk.Canvas):
         self.bind("<Configure>", lambda _e: self._rebuild())
 
     # ---------------------------------------------------------------- 对外
-    def set_view(self, first, last):
-        """按 Text.yview() 那两个数算进度：顶部 0%、滑到底 100%。"""
-        区间 = float(last) - float(first)
-        if 区间 >= 0.999:               # 内容不满一屏：屏幕上摆的就是全部
-            self.set_fraction(1.0)
-        else:
-            self.set_fraction(float(first) / max(1e-6, 1.0 - 区间))
-
     def set_fraction(self, 比例):
         比例 = max(0.0, min(1.0, float(比例)))
         if abs(比例 - self._fraction) < 0.002:
@@ -2059,15 +2051,63 @@ class LiquidProgress(tk.Canvas):
 
 
 def bind_text_scroll(text_widget, on_view):
-    """让文本框的滚动也通知外面。
+    """让文本框的内容/滚动变化都通知外面 —— on_view(比例) 收到 0..1。
 
-    Tk 的 `yscrollcommand` 只能挂一个，而 ScrolledText 自己已经占上了（要同步滚动条），
-    所以包一层：先照旧调原来那个，再把 first/last 转给 on_view。
+    原来是把 Tk 的 first/last 直接转出去、由进度条自己算，但那样在**控件还没映射**
+    时（比如另外两个清单还在别的页签里）yview 会给出一串没意义的值，
+    算出来就是"空"。所以这里自己算好比例：
+
+      · 一条内容都没有   → 0.0（空清单的进度条就该是空的）
+      · 内容不满一屏     → 1.0（屏幕上摆着的就是全部）—— 按 `-height` 配置行数判断，
+                            不依赖窗口是否已经布局
+      · 真能滚           → 按 yview 位置算
+
+    另外挂三个触发点：`yscrollcommand`（滚了）、`<<Modified>>`（内容变了 —— 空框里
+    粘进几行时 yview 一直是 (0,1)，Tk 不会调 yscrollcommand）、`<Map>`（切到这一页时
+    重新算一次，隐藏期间算出来的比例不作数）。
     """
     try:
         原 = text_widget.cget("yscrollcommand")
     except Exception:
         原 = ""
+
+    def 是空的():
+        try:
+            return text_widget.index("end-1c") == "1.0"
+        except Exception:
+            return False
+
+    def 总行数():
+        try:
+            return int(str(text_widget.index("end-1c")).split(".")[0])
+        except Exception:
+            return 1
+
+    def 能显示的行数():
+        try:
+            return max(1, int(float(text_widget.cget("height"))))
+        except Exception:
+            return 1
+
+    def 比例():
+        if 是空的():
+            return 0.0
+        if 总行数() <= 能显示的行数():
+            return 1.0
+        try:
+            first, last = text_widget.yview()
+        except Exception:
+            return 1.0
+        区间 = float(last) - float(first)
+        if 区间 >= 0.999:
+            return 1.0
+        return float(first) / max(1e-6, 1.0 - 区间)
+
+    def 同步(*_a):
+        try:
+            on_view(比例())
+        except Exception:
+            pass
 
     def 包装(first, last):
         if 原:
@@ -2075,13 +2115,20 @@ def bind_text_scroll(text_widget, on_view):
                 text_widget.tk.call(原, first, last)
             except Exception:
                 pass
+        同步()
+
+    def 内容变了(_e=None):
         try:
-            on_view(first, last)
+            text_widget.edit_modified(False)
         except Exception:
             pass
+        同步()
 
     try:
         text_widget.configure(yscrollcommand=包装)
+        text_widget.bind("<<Modified>>", 内容变了, add="+")
+        text_widget.bind("<Map>", 内容变了, add="+")
+        同步()                          # 先按当前内容同步一次，别停在初始状态
     except Exception:
         trace_exc("helpers", "绑定文本框滚动")
 

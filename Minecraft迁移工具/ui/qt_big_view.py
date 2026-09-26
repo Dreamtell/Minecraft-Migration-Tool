@@ -950,7 +950,7 @@ class ScrollProgress(QtWidgets.QWidget):
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = dict(theme)
-        self._fill = 1.0                    # 0..1：已经滑过的比例
+        self._fill = 0.0                    # 0..1：已经滑过的比例（0 起步：空列表就该是空的）
         self._flow = 0.0                    # 0..1：高光走到哪儿了
         self._job = None
         self._after = None
@@ -965,13 +965,15 @@ class ScrollProgress(QtWidgets.QWidget):
         self._cancel = cancel
         self._sync_anim()
 
-    def set_range(self, value, maximum, page):
+    def set_range(self, value, maximum, page, rows=None):
         """按滚动条算进度：顶部 0%、滑到底 100%。返回填充比例。
 
-        内容不满一屏（maximum 为 0）时直接满格 —— 屏幕上摆着的就是全部内容。
+        内容不满一屏（maximum 为 0）时默认满格 —— 屏幕上摆着的就是全部内容。
+        但**一条内容都没有**（rows == 0）时必须是 0%：空列表把进度条画满，
+        看着像"已经滑到底 / 全都看完了"，恰好相反。
         """
         if maximum <= 0:
-            self._fill = 1.0
+            self._fill = 0.0 if (rows is not None and rows <= 0) else 1.0
         else:
             self._fill = max(0.0, min(1.0, float(value) / float(maximum)))
         self._sync_anim()
@@ -979,8 +981,12 @@ class ScrollProgress(QtWidgets.QWidget):
         return self._fill
 
     def _sync_anim(self):
-        """只有"还有内容没滑完 + 窗口看得见"才让高光跑起来。"""
-        需要 = self._after is not None and self._fill < 0.999 and self.isVisible()
+        """只有"还有内容没滑完 + 窗口看得见"才让高光跑起来。
+
+        填充为 0（空列表）时也不用跑：paintEvent 直接 return，跑动画纯属白烧 CPU。
+        """
+        需要 = (self._after is not None and 0.0 < self._fill < 0.999
+                and self.isVisible())
         if 需要 and self._job is None:
             self._step()
         elif not 需要 and self._job is not None:
@@ -1945,7 +1951,7 @@ class QtBigView(QtWidgets.QWidget):
         self.stack.addWidget(self.cards)
         # 列表上方的滚动进度条：从左往右填充，右边跟一个百分比数字
         self.scroll_progress = ScrollProgress(th, self)
-        self.scroll_pct = QtWidgets.QLabel("100%")
+        self.scroll_pct = QtWidgets.QLabel("0%")
         self.scroll_pct.setFixedWidth(44)
         self.scroll_pct.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         滚动行 = QtWidgets.QHBoxLayout()
@@ -2783,7 +2789,13 @@ class QtBigView(QtWidgets.QWidget):
         """按当前视图的滚动条更新顶部进度条与右边那个百分比。"""
         try:
             sb = self._active_view().verticalScrollBar()
-            比例 = self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep())
+            try:
+                # 当前**显示**的条数（搜索过滤后）：0 条时进度条必须是空的
+                行数 = int(self.store.counts()[1])
+            except Exception:
+                行数 = None
+            比例 = self.scroll_progress.set_range(sb.value(), sb.maximum(),
+                                                 sb.pageStep(), rows=行数)
             self.scroll_pct.setText("%d%%" % round(比例 * 100))
         except Exception:
             trace_exc("qt_big_view", "更新滚动进度")

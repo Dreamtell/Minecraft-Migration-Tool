@@ -413,7 +413,7 @@ class QtDiffView(QtWidgets.QWidget):
 
         # ---- 滚动进度条（液态，和放大窗口同一套）----
         self.scroll_progress = ScrollProgress(th, self)
-        self.scroll_pct = QtWidgets.QLabel("100%")
+        self.scroll_pct = QtWidgets.QLabel("0%")
         self.scroll_pct.setFixedWidth(44)
         self.scroll_pct.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         行 = QtWidgets.QHBoxLayout()
@@ -906,7 +906,9 @@ class QtDiffView(QtWidgets.QWidget):
     def _update_progress(self):
         view = self.table if self.stack.currentIndex() == 0 else self.cards
         sb = view.verticalScrollBar()
-        frac = self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep())
+        # 0 条差异（或过滤后一条不剩）时进度条要是空的，不能画满
+        frac = self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep(),
+                                              rows=len(self.store.order))
         self.scroll_pct.setText("%d%%" % round(frac * 100))
 
     def _schedule_icon(self):

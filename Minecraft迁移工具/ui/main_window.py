@@ -3133,7 +3133,7 @@ class MigrationGUI:
         # 文本框下面一条液态进度条：滑到哪儿了一眼能看到（跟着这个框的滚动走）
         self.mod_progress = LiquidProgress(parent, self.theme)
         self.mod_progress.pack(fill="x", padx=5, pady=(0, 4))
-        bind_text_scroll(self.mod_text, self.mod_progress.set_view)
+        bind_text_scroll(self.mod_text, self.mod_progress.set_fraction)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
         # 本会话新添加的模组（文件名小写），主清单用黄色高亮提示
@@ -3232,7 +3232,7 @@ class MigrationGUI:
         self._smooth(self.config_text)
         self.config_progress = LiquidProgress(parent, self.theme)
         self.config_progress.pack(fill="x", padx=5, pady=(0, 4))
-        bind_text_scroll(self.config_text, self.config_progress.set_view)
+        bind_text_scroll(self.config_text, self.config_progress.set_fraction)
         self.config_text.bind("<Control-z>",
                               lambda e: self._safe_undo(self.config_text))
         self.config_text.bind("<Control-y>",
@@ -3330,7 +3330,7 @@ class MigrationGUI:
         self._smooth(self.extra_text)
         self.extra_progress = LiquidProgress(parent, self.theme)
         self.extra_progress.pack(fill="x", padx=5, pady=(0, 4))
-        bind_text_scroll(self.extra_text, self.extra_progress.set_view)
+        bind_text_scroll(self.extra_text, self.extra_progress.set_fraction)
         self.extra_text.bind("<Control-z>", lambda e: self._safe_undo(self.extra_text))
         self.extra_text.bind("<Control-y>", lambda e: self._safe_redo(self.extra_text))
         # 存在性检查的临时高亮（存在=绿 / 缺失=红 / 重复=黄），1 秒后自动恢复
