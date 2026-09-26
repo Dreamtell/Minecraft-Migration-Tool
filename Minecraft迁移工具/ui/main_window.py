@@ -6692,29 +6692,31 @@ class MigrationGUI:
                             "Listbox", "Treeview", "TNotebook")
 
     def _on_blank_click(self, event):
-        """点击窗口空白处 = 退出主界面编辑模式。
+        """点击窗口空白处 = 退出主界面编辑模式（等于让清单文本框失焦）。
 
         编辑模式下改清单不用先去找那个开关，随手点一下背景就回到只读
         （设置 →「🎨 外观与启动」可以关掉这个行为）。
 
-        不算"空白"的只有两类：
-        - **清单区里的一切**（三个清单文本框、里面的留白、页签栏、区里的工具条）——
-          那正是要编辑的地方，点它不该退出；
-        - **有意图的交互控件**（按钮、输入框、滚动条、勾选框；渐变按钮和自绘开关是
-          Canvas，按标记属性认）。其余（背景 Frame/Label、日志文本框和它周围的圆角
-          底图、顶部自绘条…）一律当空白处理。
+        只有下面这些"点下去有明确用途"的地方不算空白，点了不退出：
+        - **三个清单文本框本身** —— 那正是要继续编辑的地方；
+        - **清单页签栏** —— 点它是切页，不是点空白；
+        - **有意图的交互控件**：按钮、输入框、滚动条、勾选框、下拉框（渐变按钮和
+          自绘开关是 Canvas，按标记属性认）。
+        清单区里其余的留白（文本框外面那一圈圆角边、页签下方的空白）、背景
+        Frame/Label、日志文本框和它周围的底图 —— 统统算空白。
         """
         try:
-            if not self.blank_exit_edit.get() or not self.edit_mode.get():
+            if not self.edit_mode.get():
                 return
             w = event.widget
-            x = w
-            for _ in range(30):                     # 往上找，看是不是在清单区里
-                if x is None:
-                    break                   # （文本框 → 圆角底图 → 页 → body → 页签 → 清单区）
-                if x is getattr(self, "list_area", None):
+            for 框 in (getattr(self, "mod_text", None),
+                      getattr(self, "config_text", None),
+                      getattr(self, "extra_text", None)):
+                if 框 is not None and w is 框:
                     return
-                x = getattr(x, "master", None)
+            bar = getattr(getattr(self, "list_tabs", None), "bar", None)
+            if bar is not None and w is bar:
+                return
             if w.winfo_class() in self._INTERACTIVE_CLASSES:
                 return
             # 自绘控件：渐变按钮（Canvas + set_command）、开关卡片、圆角输入框
@@ -6724,27 +6726,39 @@ class MigrationGUI:
                 return
         except Exception:
             return
+        # 点空白处一律让清单文本框失焦（"点了别处"该有的反应），
+        # 至于要不要连编辑模式一起关，由设置里的开关决定
+        if not self.blank_exit_edit.get():
+            self._blur_list_texts()
+            return
         self.edit_mode.set(False)
-        self.toggle_edit_mode()                     # 里面会清选区 + 把焦点收回主窗口
+        self.toggle_edit_mode()                     # 里面也会失焦 + 清选区
 
-    def _clear_list_selection(self):
-        """清掉三个清单里的选中高亮（蓝底选区）。
+    def _blur_list_texts(self):
+        """让三个清单文本框失焦：清掉蓝色选区、焦点收回主窗口（描边跟着灭）。
 
-        退出编辑时用：焦点收走了、框也变回只读了，要是那段蓝色选区还留着，
-        看着就像"还在编辑"。tag 操作不受 Text 的 disabled 限制，所以顺序无所谓。
+        焦点收回主窗口，三个文本框各收到一次 FocusOut；再显式把圆角框的聚焦态
+        复一遍，免得个别情况下 FocusOut 没到、那圈亮蓝描边还亮着。
         """
         for 框 in (getattr(self, "mod_text", None), getattr(self, "config_text", None),
                   getattr(self, "extra_text", None)):
             if 框 is None:
                 continue
             try:
-                框.tag_remove("sel", "1.0", "end")
+                框.tag_remove("sel", "1.0", "end")   # tag 操作不受 disabled 限制
             except Exception:
                 pass
         try:
-            self.root.focus_set()               # 顺手把键盘焦点收回主窗口（描边跟着复位）
+            self.root.focus_set()               # 键盘焦点收回主窗口
         except Exception:
             pass
+        for box in (getattr(self, "mod_text_box", None),
+                    getattr(self, "config_text_box", None),
+                    getattr(self, "extra_text_box", None)):
+            try:
+                box._set_focus(False)           # 兜底复一遍描边状态
+            except Exception:
+                pass
 
     def toggle_edit_mode(self):
         self._update_text_states()
@@ -6757,7 +6771,7 @@ class MigrationGUI:
         if self.edit_mode.get():
             self.log("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="WARNING")
         else:
-            self._clear_list_selection()
+            self._blur_list_texts()
             self.log("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="INFO")
         self.save_config()
 
