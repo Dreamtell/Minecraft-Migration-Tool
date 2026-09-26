@@ -68,6 +68,8 @@ class DiffStore(QtCore.QObject):
             it.version = str(d[6])
             it.type = str(d[7])
             it.checked = (it.status == "新增")   # 「新增」默认勾上（和 Tk 版一致）
+            # sel_t 是卡片委托画"选中蓝底 + 左侧高亮条"用的进度，默认勾上的要有
+            it.sel_t = 1.0 if it.checked else 0.0
             it.scanned = True
             it.icon_path = None
             self._jar_of[id(it)] = str(d[8]) if len(d) > 8 else ""
@@ -141,11 +143,13 @@ class DiffStore(QtCore.QObject):
         if 0 <= row < len(self.order):
             it = self.at(row)
             it.checked = not it.checked
-            self.row_data.emit(row)
+            return it
+        return None
 
     def set_checked(self, pred):
         for it in self.items:
             it.checked = bool(pred(it))
+            it.sel_t = 1.0 if it.checked else 0.0     # 批量改直接到位，不逐个动画
         self.reset.emit()
 
 
@@ -268,6 +272,7 @@ class QtDiffView(QtWidgets.QWidget):
         self.resize(1280, 640)
         self._dc_row = None
         self._dialogs = []
+        self._sel_anims = {}          # id(Entry) -> Tk after job（卡片选中动画）
         self._build()
         self._icon_queue = list(range(len(self.store.items)))
         self._icon_timer = QtCore.QTimer(self)
@@ -518,28 +523,68 @@ class QtDiffView(QtWidgets.QWidget):
         self._update_progress()
 
     # ------------------------------------------------------------------ 交互
+    def _animate_sel(self, it):
+        """勾选/取消时让卡片的选中效果"长出来 / 收回去"（和放大窗口同一套）。
+
+        CardDelegate 画的是 `sel_t` 这个 0..1 的进度，不是 checked —— 只改 checked 的话
+        卡片上一点变化都看不到（表格那行倒是立刻变色）。动画由 Tk 的 after 驱动。
+        """
+        if it is None:
+            return
+        to_t = 1.0 if it.checked else 0.0
+        after = self.hooks.get("after")
+        cancel = self.hooks.get("after_cancel")
+        old = self._sel_anims.pop(id(it), None)
+        if old is not None and cancel is not None:
+            try:
+                cancel(old)
+            except Exception:
+                pass
+        if after is None:                       # 没有泵就直接到位
+            it.sel_t = to_t
+            r = self.store.row_of(it)
+            if r >= 0:
+                self.store.row_data.emit(r)
+            return
+        from_t = float(it.sel_t or 0.0)
+        state = {"n": 0}
+
+        def step():
+            state["n"] += 1
+            p = min(1.0, state["n"] / 10.0)     # 10 帧 × 16ms ≈ 160ms
+            it.sel_t = from_t + (to_t - from_t) * (1 - (1 - p) ** 3)
+            r = self.store.row_of(it)
+            if r >= 0:
+                self.store.row_data.emit(r)
+            if p >= 1.0:
+                self._sel_anims.pop(id(it), None)
+                return
+            self._sel_anims[id(it)] = after(16, step)
+
+        self._sel_anims[id(it)] = after(16, step)
+
     def _on_table_click(self, index):
         row = index.row()
         if self._dc_row == row:          # 双击的第二下：吃掉，别来回切
             self._dc_row = None
             return
-        self.store.toggle(row)
+        self._animate_sel(self.store.toggle(row))
         self._update_summary()
 
     def _on_table_double(self, index):
         row = index.row()
-        self.store.toggle(row)           # 撤回第一下造成的勾选变化
+        self._animate_sel(self.store.toggle(row))   # 撤回第一下造成的勾选变化
         self._dc_row = row
         QtCore.QTimer.singleShot(0, lambda: setattr(self, "_dc_row", None))
         self._update_summary()
         self._show_detail(row)
 
     def _on_card_click(self, index):
-        self.store.toggle(index.row())
+        self._animate_sel(self.store.toggle(index.row()))
         self._update_summary()
 
     def _on_card_double(self, index):
-        self.store.toggle(index.row())   # 撤回第一下
+        self._animate_sel(self.store.toggle(index.row()))   # 撤回第一下
         self._update_summary()
         self._show_detail(index.row())
 
@@ -729,6 +774,14 @@ class QtDiffView(QtWidgets.QWidget):
             self._icon_timer.stop()
         except Exception:
             pass
+        cancel = self.hooks.get("after_cancel")
+        for job in list(getattr(self, "_sel_anims", {}).values()):
+            if cancel is not None:
+                try:
+                    cancel(job)
+                except Exception:
+                    pass
+        self._sel_anims = {}
         for d in list(self._dialogs):
             try:
                 d.close()
