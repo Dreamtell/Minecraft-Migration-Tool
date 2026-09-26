@@ -102,19 +102,29 @@ def main():
     qt_splash = None
     splash_on = bool(load_raw_config().get("splash", True))
     splash_t0 = time.perf_counter()
+    splash_qt = None
+    qt_handle = None
     if splash_on and SPLASH_QT:
         try:
-            from ui import splash_qt
-            qt_splash = splash_qt.spawn()
+            from ui import splash_qt as splash_qt_mod
+            # 只把子进程拉起来、不等它就绪：它自己启动要 ~0.4s，正好和下面的
+            # emoji 预热（~0.3s）重叠，启动总时长省下这一截。
+            qt_handle = splash_qt_mod.launch()
+            splash_qt = splash_qt_mod
+        except Exception:
+            qt_handle = None
+            splash_qt = None
+
+    # emoji 那边的一次性开销（字体回退枚举 ~270ms + 首个带 emoji 的 Label 排版
+    # ~40ms）先做掉，再弹闪屏，闪屏一出现就是流畅的。这笔无论用哪个闪屏都要做。
+    warm_up_emoji_font()
+
+    # 预热这段时间里子进程多半已经 READY 了，这里一般只是确认一下
+    if qt_handle is not None:
+        try:
+            qt_splash = splash_qt.wait_ready(qt_handle)
         except Exception:
             qt_splash = None
-
-    # 先把 emoji 那边的一次性开销（字体回退枚举 ~270ms + 首个带 emoji 的 Label
-    # 排版 ~40ms）做掉，再弹闪屏。放这儿是为了"闪屏一出现就是流畅的"——挪到闪屏
-    # 出来之后做的话，用户会看到立方体先愣住 300ms 才开始转。
-    # 代价是双击之后要多等这 300ms 才看到卡片，但总时长不变（闪屏最短时长照算）。
-    # 设置里关掉启动动画时这笔预热照样做：界面里的 emoji 该卡还是会卡。
-    warm_up_emoji_font()
 
     # 弹出启动闪屏，盖住主界面构建期间的空窗（构建实测约 0.5~2s）
     # 优先用**独立进程**的 Qt 闪屏：构建期间主线程被占满，进程内的闪屏只有

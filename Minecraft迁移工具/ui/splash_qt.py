@@ -336,11 +336,11 @@ def _has_qt() -> bool:
     return False
 
 
-def spawn():
-    """尝试拉起独立进程闪屏。成功返回 QtSplashHandle，失败返回 None（调用方回落 Tk 闪屏）。
+def launch():
+    """只把闪屏子进程拉起来，**不等它 READY**（返回句柄；起不来返回 None）。
 
-    只有拿到子进程的 READY 才算成功：PySide6 没装、导入失败、或者启动太慢，
-    都会走回落，不会让程序卡在"没有闪屏也没主界面"的中间态。
+    给调用方一个"并行"的机会：子进程自己启动要 ~0.4s，这段时间主线程正好可以
+    去干别的（app.py 里的 emoji 预热约 0.3s），两边重叠，启动总时长就省下这一截。
     """
     if not _has_qt():
         return None
@@ -355,13 +355,28 @@ def spawn():
                                 errors="replace", cwd=str(Path(__file__).resolve().parents[1]))
     except Exception:
         return None
-    handle = QtSplashHandle(proc)
-    deadline = time.time() + READY_TIMEOUT_SEC
+    return QtSplashHandle(proc)
+
+
+def wait_ready(handle, timeout=READY_TIMEOUT_SEC):
+    """等子进程 READY；超时或它自己退了就 kill 掉并返回 None（调用方回落 Tk 闪屏）。
+
+    只有拿到 READY 才算成功：PySide6 没装、导入失败、或者启动太慢，都会走回落，
+    不会让程序卡在"没有闪屏也没主界面"的中间态。
+    """
+    if handle is None:
+        return None
+    deadline = time.time() + timeout
     while time.time() < deadline:
         if handle.ready:
             return handle
-        if proc.poll() is not None:            # 子进程自己退了（比如没装 Qt）
+        if handle.proc.poll() is not None:      # 子进程自己退了（比如没装 Qt）
             break
         time.sleep(0.02)
     handle.kill()
     return None
+
+
+def spawn(timeout=READY_TIMEOUT_SEC):
+    """老接口：拉起子进程并等它就绪（等价于 launch + wait_ready）。"""
+    return wait_ready(launch(), timeout)
