@@ -132,10 +132,17 @@ class SmoothScroller:
     """
 
     def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=0.30,
-                 bind_widgets=None, on_user_scroll=None, on_settle=None):
+                 bind_widgets=None, on_user_scroll=None, on_settle=None,
+                 accel=0.45, max_step_ratio=0.6):
         self.widget = widget
         self.frame_ms = frame_ms
         self.ease = ease
+        # 起步别"窜"：单帧最大位移限制在一格滚动的 45% 左右，速度再用 accel
+        # 渐近几帧涨上来（原来是剩余量直接 ×ease，第一帧就吃掉 30%，
+        # 观感是"猛一下窜出去、然后慢慢收"）。
+        self.accel = accel
+        self.max_step_ratio = max_step_ratio
+        self._vel = 0.0
         self.px_per_notch = px_per_notch
         self._mover = mover
         self._left = 0.0          # 还没滚完的像素（正=向下）
@@ -235,6 +242,7 @@ class SmoothScroller:
                 pass
             self._job = None
         self._left = 0.0
+        self._vel = 0.0
 
     # ------------------------------------------------------------------- 动画
     def _on_wheel(self, event):
@@ -266,16 +274,27 @@ class SmoothScroller:
             return
         if abs(self._left) < 1.0:
             self._left = 0.0
+            self._vel = 0.0
             self._settle()
             return
-        # 每帧走剩余量的 ease 倍；不足 1 像素也要走 1，否则会卡在最后一点点
-        move = self._left * self.ease
+        # 速度模型：目标速度 = 剩余量 × ease（越接近目标越慢），先限幅再让实际速度
+        # 向它渐近 —— 于是起步是"缓→快→缓"，而不是第一帧就窜掉三成。
+        v_target = self._left * self.ease
+        cap = abs(self.px_per_notch) * self.max_step_ratio or 1.0
+        if v_target > cap:
+            v_target = cap
+        elif v_target < -cap:
+            v_target = -cap
+        self._vel += (v_target - self._vel) * self.accel
+        move = self._vel
+        # 每帧至少走 1 像素，否则会卡在最后一点点
         if abs(move) < 1.0:
             move = 1.0 if move > 0 else -1.0
         before_left = self._left
         consumed, blocked = self._mover(move)
         if blocked:
             self._left = 0.0
+            self._vel = 0.0
             self._settle()
             return
         self._left -= consumed
@@ -284,6 +303,7 @@ class SmoothScroller:
         # 真出现这种情况就当滚到底直接停，宁可不动也别失控。
         if abs(self._left) > abs(before_left):
             self._left = 0.0
+            self._vel = 0.0
             self._settle()
             return
         self._job = self.widget.after(self.frame_ms, self._step)
