@@ -39,6 +39,7 @@ from PySide6 import QtCore, QtGui, QtWidgets   # noqa: E402
 
 from core.scanner import (get_full_mod_metadata, get_mod_icon,   # noqa: E402
                           guess_tags, split_cn_name)
+from core.migrator import _is_safe_path                          # noqa: E402
 from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E402
                              search_modrinth)
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
@@ -56,6 +57,16 @@ RADIUS = 9
 # 慢一点的双击认不出来，那种情况走右键菜单「ℹ 详情」（表格/卡片视图都有）。
 DOUBLE_CLICK_MS = 175
 
+
+# ---- 关于拖入：Qt 窗口上做不了（三种接法都实测会偶发崩解释器） ----
+# 1) Qt 自带的 OLE 拖放（setAcceptDrops + dragEnterEvent/dropEvent）：一拖就崩
+#    （Fatal Python error: PyEval_RestoreThread ... GIL is released）。
+# 2) QWidget.nativeEvent + WM_DROPFILES：连跑 6 次崩 3 次。
+# 3) QAbstractNativeEventFilter + WM_DROPFILES：连跑 8 次崩 6 次。
+# 共同病根：这些回调都是 Windows 消息层**直接**调进 Python，绕过了 Tk 的 after 泵 ——
+# 而这个进程里 Qt 的所有回调本来都靠那个泵在 Tk 主线程里派发。
+# 所以 Qt 窗口改成「Ctrl+V 粘贴文件」（纯 QClipboard API，不碰消息层，见 keyPressEvent），
+# 拖入继续由 Tk 侧提供：主界面三个清单区、Tk 版放大窗口。
 
 # 加载器 / 环境标签配色（与 card_list.TAG_COLORS 保持同一套观感）
 TAG_COLORS = {
@@ -1696,7 +1707,7 @@ class QtBigView(QtWidgets.QWidget):
         # ---- 底栏 ----
         # 原生窗口框自己就能从四边拖拽缩放，不需要 QSizeGrip
         bottom = QtWidgets.QHBoxLayout()
-        self.hint = QtWidgets.QLabel("单击=选中 · 双击=详情 · 右键=菜单 · Esc=关闭")
+        self.hint = QtWidgets.QLabel("单击=选中 · 双击=详情 · 右键=菜单 · Ctrl+V=粘贴文件 · Esc=关闭")
         bottom.addWidget(self.hint)
         bottom.addStretch(1)
         lay.addLayout(bottom)
@@ -2127,18 +2138,58 @@ class QtBigView(QtWidgets.QWidget):
                 pass
         执行()
 
-    # ---------------- 拖入文件（暂时没有） ----------------
-    # 结论：**Qt 放大查看窗口在当前的「Tk 主线程 + Qt 同进程」结构下没法安全地接拖入**，
-    # 两条路都试过了：
-    #   1. Qt 自带的 OLE 拖放（setAcceptDrops + dragEnterEvent/dropEvent）：
-    #      回调由 Windows 直接调进来、绕过 Tk 的 after 泵 —— 一拖就崩
-    #      （Fatal Python error: PyEval_RestoreThread ... GIL is released）。
-    #   2. 传统 WM_DROPFILES + 重写 nativeEvent（只读需要的字段、处理再 defer 回 Tk）：
-    #      连跑 6 次崩 3 次，崩点飘忽（有时在扫描线程的 pathlib.stat 上，有时栈里连
-    #      Python 帧都没有）—— nativeEvent 是**每个窗口消息**都要从 C++ 进一次 Python，
-    #      在这个混合进程里同样不可靠。
-    # 所以拖入只在 Tk 侧提供：主界面三个清单区、以及 Tk 版放大窗口（都是 Tk 原生拖放）。
-    # Qt 窗口里想加东西，用工具栏的「➕ 添加模组」。
+    # ---------------- 添加条目（Ctrl+V 粘贴 / 工具栏选择文件） ----------------
+    def _drop_paths(self, paths):
+        """把（粘贴或拖进来的）路径变成清单条目。
+
+        和 Tk 版一个口径：
+          · 模组窗口只收 `.jar`，存**完整路径**；
+          · config 窗口收文件/文件夹，存**相对 config 目录**的路径（用 / 分隔，
+            文件夹结尾加 /），带 `_is_safe_path` 校验，越界/不在 config 下的丢掉。
+        """
+        收, 跳过 = [], 0
+        if self.store.is_mod:
+            for p in paths:
+                if Path(p).suffix.lower() == ".jar":
+                    # 统一成本机风格的反斜杠路径：Qt 的 toLocalFile() 给的是正斜杠，
+                    # 和 Tk 版（拖入/选择文件）写进去的格式不一致，看着别扭也不好比对
+                    收.append(str(Path(p)))
+                else:
+                    跳过 += 1
+        else:
+            base = self.store.config_dir
+            if base is None:
+                self._message("添加提示", "请先在主界面设置源整合包目录，再往这里拖。")
+                return
+            for p in paths:
+                tp = Path(p)
+                try:
+                    rel = tp.relative_to(base)
+                except ValueError:
+                    跳过 += 1
+                    continue
+                rel_s = str(rel).replace("\\", "/")
+                if not _is_safe_path(rel_s):
+                    跳过 += 1
+                    continue
+                if (base / rel_s).is_dir():
+                    rel_s = rel_s.rstrip("/") + "/"
+                收.append(rel_s)
+        if not 收:
+            self._message("添加提示",
+                          "只支持拖入 .jar 模组文件。" if self.store.is_mod
+                          else "拖入的文件不在源整合包的 config 目录下。")
+            return
+        n = self._add_with_pop(收)
+        if not n:
+            self._message("添加提示", "这些条目已经在清单里了。")
+            return
+        self._write_back()
+        提示 = ("已添加 %d 个模组。" % n) if self.store.is_mod else ("已添加 %d 个条目。" % n)
+        if 跳过:
+            提示 += "（另有 %d 项被跳过）" % 跳过
+        self._message("添加成功", 提示)
+
     def _on_remove(self):
         if self._pending_remove is not None:
             return                          # 上一批的退场动画还没播完
@@ -2427,11 +2478,28 @@ class QtBigView(QtWidgets.QWidget):
         elif k == QtCore.Qt.Key_Delete:
             self._on_remove()
         elif ev.modifiers() & QtCore.Qt.ControlModifier:
-            if k == QtCore.Qt.Key_A:
+            if k == QtCore.Qt.Key_V:
+                # 把资源管理器里 Ctrl+C 复制的文件加进清单。
+                # 拖放在 Qt 窗口上做不了（三种接法都实测会偶发崩解释器，见文件头注释）；
+                # 粘贴走 QClipboard，纯 Qt API、不碰 Windows 消息层。
+                self._paste_files()
+            elif k == QtCore.Qt.Key_A:
                 self._on_check("all")
             elif k == QtCore.Qt.Key_F:
                 self.search.setFocus()
         super().keyPressEvent(ev)
+
+    def _paste_files(self):
+        """剪贴板里如果是"复制的文件"，就按添加条目处理（和拖入同一个入口）。"""
+        try:
+            md = QtWidgets.QApplication.clipboard().mimeData()
+            if md is None or not md.hasUrls():
+                return
+            paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+            if paths:
+                self._drop_paths(paths)
+        except Exception:
+            trace_exc("qt_big_view", "处理 Ctrl+V 粘贴")
 
     def closeEvent(self, ev):
         self._alive = False
