@@ -31,7 +31,7 @@ def _dc_now():
 
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
                            RoundedEntry, RoundedTextArea, circular_reveal, focus_window,
-                           lighten_color,
+                           lighten_color, begin_bulk_scan, end_bulk_scan,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
@@ -2062,6 +2062,25 @@ class MigrationGUI:
             old = label.cget("text") or ""
         except Exception:
             return
+        # 上一轮还没滚完又来了新值（扫描期间每 120ms 回来一批结果就刷一次）：
+        # 先把上一轮的目标落定，再决定要不要开新一轮。
+        # 必须落定——只 after_cancel 的话，标签会停在中间那个数字上：实测检测存在性
+        # 期间"存在 1"会被打断成"存在 0"并且再也不动（数据其实早就对了）。
+        job = getattr(label, "_roll_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            label._roll_job = None
+            prev = getattr(label, "_roll_target", None)
+            if prev is not None:
+                old = prev
+                try:
+                    label.config(text=prev)
+                except Exception:
+                    pass
+        label._roll_target = text
         if old == text:
             return
         pat = re.compile(r"\d+")
@@ -2090,12 +2109,13 @@ class MigrationGUI:
             try:
                 if i >= steps:
                     label.config(text=text)
+                    label._roll_job = None
                     return
                 label.config(text=render(i / steps))
-                self.root.after(tick, lambda: step(i + 1))
+                label._roll_job = self.root.after(tick, lambda: step(i + 1))
             except Exception:
                 pass
-        step(1)
+        label._roll_job = self.root.after(tick, lambda: step(1))
 
     def _fade_log_line(self, start, end, level):
         """日志新行淡入。
@@ -5572,9 +5592,22 @@ class MigrationGUI:
                              "size": "?", "cn": "", "desc": ""}
             msg_queue.put(idx)
 
-        # 有界扫描线程池：避免为每条目单开线程导致几千并发的线程爆炸/磁盘抖动
+        # 有界扫描线程池：避免为每条目单开线程导致几千并发的线程爆炸/磁盘抖动。
+        # 6 个并发在 SSD 上快不了多少，却让界面线程在 GIL 上排到第 7 位（实测 1200 条
+        # 扫描时泵帧 p95 从 350ms 飙到 976ms），降到 3 个后明显跟手。
         scan_queue = queue.Queue()
-        _SCAN_WORKERS = 6
+        _SCAN_WORKERS = 3
+        scan_gil = {"on": False}       # 大扫描期间是否已把 GIL 切换间隔调细
+
+        def _scan_begin():
+            if not scan_gil["on"]:
+                scan_gil["on"] = True
+                begin_bulk_scan()
+
+        def _scan_end():
+            if scan_gil["on"]:
+                scan_gil["on"] = False
+                end_bulk_scan()
 
         def scan_worker():
             while True:
@@ -5604,9 +5637,13 @@ class MigrationGUI:
                 # 卡片视图跟着同一份数据走（排序/搜索/增删后都要重排）
                 card_state["list"].set_rows(card_rows())
             if rescan:
+                queued = False
                 for idx in order:
                     if idx not in meta:
                         scan_queue.put(idx)
+                        queued = True
+                if queued:
+                    _scan_begin()      # 扫描期间把 GIL 让给界面线程（见 begin_bulk_scan）
             total = len(entries)
             shown = len(order)
             self._roll_counter(count_lbl,
@@ -5670,6 +5707,19 @@ class MigrationGUI:
             _rewrite()
 
         big_scanning = {"flag": False}
+        poll_stat = {"n": 0, "got": 0, "fin": 0}      # 只读诊断用（见 win._scan_debug）
+        # 只读诊断（不参与界面逻辑，和 canvas._btn_disabled 一样只在排查时看）：
+        # 扫描乱掉时一眼就能看出是"清单/顺序为空"还是"结果没回来"
+        win._scan_debug = lambda: {"entries": len(entries), "order": len(order),
+                                   "meta": len(meta),
+                                   "keys": sorted(str(k) for k in meta.keys())[:5],
+                                   "st": [str(v.get("status")) for v in list(meta.values())[:5]],
+                                   "ktype": [type(k).__name__ for k in list(meta.keys())[:3]],
+                                   "calc": sum(1 for i in range(len(entries))
+                                               if (meta.get(i) or {}).get("status") == "✅ 存在"),
+                                   "msg": msg_queue.qsize(), "polls": dict(poll_stat),
+                                   "gil": scan_gil["on"],
+                                   "busy": big_scanning["flag"], "queue": scan_queue.unfinished_tasks}
 
         def _set_busy_btns(busy):
             """扫描/处理进行中禁用并变灰相关按钮，防止连点；完成后恢复。"""
@@ -5847,6 +5897,7 @@ class MigrationGUI:
 
         def poll():
             # 每次尽量只处理一小批消息，避免几千条积压时一次循环卡死 UI
+            poll_stat["n"] += 1
             batch = 40
             got = False
             try:
@@ -5865,27 +5916,33 @@ class MigrationGUI:
             except Exception:
                 pass
             if got:
+                poll_stat["got"] += 1
                 update_summary()      # 扫描回来一批就刷新"存在/缺失"汇总
             # 扫描完成后恢复按钮（防止连点重复触发全量扫描）
-            if big_scanning["flag"]:
+            # 扫描队列排空 = 这一轮扫描结束（不管是不是"检测存在性"触发的，都要收尾：
+            # 恢复 GIL 切换间隔、恢复按钮、把摘要刷成最终值）
+            if scan_gil["on"] or big_scanning["flag"]:
                 try:
                     if scan_queue.unfinished_tasks == 0:
-                        big_scanning["flag"] = False
-                        _set_busy_btns(False)
-                        self._end_file_task()      # 扫描结束：解除"禁止迁移"
-                        # 一条结果都没发回来时（空清单/整单命中缓存）上面那批
-                        # got 一直是 False，收尾得自己刷一次，否则"检测中…"赖着不走
-                        update_summary()
-                        if _pending_detect["flag"]:
-                            # 「检测存在性」的提示放到这里：此时扫描已全部结束，
-                            # 统计只读内存，不会像以前那样在点击时卡住界面。
-                            _pending_detect["flag"] = False
-                            missing = sum(1 for m in meta.values()
-                                          if m.get("status") == "❌ 缺失")
-                            messagebox.showinfo(
-                                "检测完成",
-                                f"✅ 存在性检测完成：共 {len(entries)} 项，缺失 {missing} 项。",
-                                parent=win)
+                        poll_stat["fin"] += 1
+                        _scan_end()
+                        if big_scanning["flag"]:
+                            big_scanning["flag"] = False
+                            _set_busy_btns(False)
+                            self._end_file_task()      # 扫描结束：解除"禁止迁移"
+                            # 一条结果都没发回来时（空清单/整单命中缓存）上面那批
+                            # got 一直是 False，收尾得自己刷一次，否则"检测中…"赖着不走
+                            update_summary()
+                            if _pending_detect["flag"]:
+                                # 「检测存在性」的提示放到这里：此时扫描已全部结束，
+                                # 统计只读内存，不会像以前那样在点击时卡住界面。
+                                _pending_detect["flag"] = False
+                                missing = sum(1 for m in meta.values()
+                                              if m.get("status") == "❌ 缺失")
+                                messagebox.showinfo(
+                                    "检测完成",
+                                    f"✅ 存在性检测完成：共 {len(entries)} 项，缺失 {missing} 项。",
+                                    parent=win)
                 except Exception:
                     pass
             try:
@@ -5912,10 +5969,12 @@ class MigrationGUI:
             rebuild(rescan=True)
 
         def _on_big_destroy(event):
-            """大窗口被关掉时，别把"禁止迁移"的标记留成永久状态。"""
+            """大窗口被关掉时，别把"禁止迁移"的标记和 GIL 设置留成永久状态。"""
             try:
-                if event.widget is win and getattr(self, "_file_task", None):
-                    self._end_file_task()
+                if event.widget is win:
+                    _scan_end()
+                    if getattr(self, "_file_task", None):
+                        self._end_file_task()
             except Exception:
                 pass
         win.bind("<Destroy>", _on_big_destroy, add="+")

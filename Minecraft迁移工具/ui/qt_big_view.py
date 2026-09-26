@@ -41,8 +41,8 @@ from core.scanner import (get_full_mod_metadata, get_mod_icon,   # noqa: E402
                           guess_tags, split_cn_name)
 from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E402
                              search_modrinth)
-from utils.helpers import (get_icon_path, style_window_hwnd, trace_exc,   # noqa: E402
-                           trace_line)
+from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
+                           get_icon_path, style_window_hwnd, trace_exc, trace_line)
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
 CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
@@ -296,10 +296,15 @@ class Store(QtCore.QObject):
         self.mods_dir = (sp / "mods") if (sp and is_mod) else None
         self.config_dir = (sp / "config") if (sp and not is_mod) else None
         self._pool = QtCore.QThreadPool()
-        self._pool.setMaxThreadCount(6)     # 和 Tk 版一致的"有界扫描"，避免几千并发
+        # 6 个并发在 SSD 上换不来多少速度，却让界面线程在 GIL 上排到第 7 位；
+        # 3 个线程总耗时差不多（扫描大部分时间在等磁盘），界面明显更跟手
+        self._pool.setMaxThreadCount(3)
         self._signals = _ScanSignals()
         self._signals.done.connect(self._on_scanned)
         self._pending = set()
+        # 扫描结果先攒着，由窗口按「可见行」节流刷新（见 BigView._flush_rows）
+        self._dirty = set()
+        self._gil_lent = False          # 是否已经把 GIL 切换间隔调细（配对 end_bulk_scan）
 
     # ---- 查询 ----
     def ctx(self) -> dict:
@@ -326,6 +331,7 @@ class Store(QtCore.QObject):
             idxs.sort(key=self._sort_key(self.sort_col), reverse=self.sort_rev)
         self.order = idxs
         self._pos = {id(self.items[i]): r for r, i in enumerate(idxs)}
+        self._dirty.clear()             # reset 会把整个模型刷一遍，攒着的就没用了
         self.reset.emit()
 
     def _sort_key(self, col):
@@ -351,19 +357,43 @@ class Store(QtCore.QObject):
         self.rebuild()
 
     # ---- 扫描 ----
+    def _start_scan(self, item):
+        """起一条扫描任务，并保证"有一批在扫"期间 GIL 是让出来的。"""
+        self._pending.add(id(item))
+        if not self._gil_lent:
+            self._gil_lent = True
+            begin_bulk_scan()
+        self._pool.start(_ScanTask(item, self.ctx(), self._signals))
+
     def scan_all(self):
         for it in self.items:
             it.scanned = False
         self._pending = {id(it) for it in self.items}
+        self._dirty.clear()
+        if not self.items:
+            return
+        if not self._gil_lent:
+            self._gil_lent = True
+            begin_bulk_scan()
         for it in self.items:
             self._pool.start(_ScanTask(it, self.ctx(), self._signals))
 
     def _on_scanned(self, item, meta):
         item.apply(meta)
         self._pending.discard(id(item))
-        row = self.row_of(item)
-        if row >= 0:
-            self.row_data.emit(row)
+        if not self._pending and self._gil_lent:
+            self._gil_lent = False
+            end_bulk_scan()
+        # 这里**不**直接发 dataChanged：一千条就是一千次重绘请求，扫描还没跑完时
+        # 这些请求全叠在滚动/搜索上，用户感觉就是"检测没完之前窗口特别卡"。
+        # 先按 id 攒着（行号会被排序/搜索改掉），由窗口每 200ms 只刷看得见的那几行。
+        self._dirty.add(id(item))
+
+    def take_dirty(self) -> set:
+        """取走这轮攒下的"数据变了"的条目 id（取完即清空）。"""
+        out = self._dirty
+        self._dirty = set()
+        return out
 
     @property
     def scanning(self) -> bool:
@@ -430,8 +460,7 @@ class Store(QtCore.QObject):
         self.items.extend(Entry(p, is_new=True) for p in new)
         self.entries_changed()
         for it in self.items[-len(new):]:
-            self._pending.add(id(it))
-            self._pool.start(_ScanTask(it, self.ctx(), self._signals))
+            self._start_scan(it)
         return len(new)
 
     def entries_changed(self):
@@ -1652,7 +1681,7 @@ class QtBigView(QtWidgets.QWidget):
         self._summary_text = ""
         self._sum_timer = QtCore.QTimer(self)
         self._sum_timer.setInterval(200)
-        self._sum_timer.timeout.connect(self._update_summary)
+        self._sum_timer.timeout.connect(self._on_sum_tick)
         self._sum_timer.start()
         self.store.reset.connect(self._on_reset_view)
         self._apply_style()
@@ -2088,6 +2117,41 @@ class QtBigView(QtWidgets.QWidget):
     # ---------------- 状态 ----------------
     def _on_reset_view(self):
         self._update_summary()
+
+    def _active_view(self):
+        """当前露在外面的是表格还是卡片（哪张看得见就按哪张算可见行）。"""
+        return self.cards if self.stack.currentIndex() == 1 else self.table
+
+    def _on_sum_tick(self):
+        """200ms 一次：先把攒下的扫描结果刷给"看得见的行"，再更新摘要。"""
+        self._flush_rows()
+        self._update_summary()
+
+    def _flush_rows(self):
+        """只给可见行发 dataChanged（扫描期间一条一条全发会把窗口拖卡）。
+
+        不可见的行干脆不发：滚过去的时候视图本来就要重画它，那时直接从数据里读到的
+        已经是最新状态，所以不需要补发，也不用记账。
+        """
+        dirty = self.store.take_dirty()
+        if not dirty:
+            return
+        view = self._active_view()
+        pos = self.store._pos
+        try:
+            top = view.rowAt(0)
+            bot = view.rowAt(max(0, view.viewport().height() - 1))
+        except Exception:
+            top, bot = 0, len(self.store.order) - 1
+        count = len(self.store.order)
+        if top < 0:
+            top = 0
+        if bot < 0:
+            bot = count - 1
+        for i in dirty:
+            r = pos.get(i)
+            if r is not None and top <= r <= bot:
+                self.store.row_data.emit(r)
 
     def _update_summary(self):
         """顶部摘要行：按语义上色（整行一个灰白色太素，看不出哪个数字要紧）。
