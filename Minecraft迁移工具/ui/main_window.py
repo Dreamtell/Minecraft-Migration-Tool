@@ -17,6 +17,7 @@ from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
 from ui import button_prefs
+from ui.rounded_tabs import RoundedTabs
 def _dc_now():
     """读配置里的双击间隙遗留键（双击已改走原生事件，这里只负责保存时不丢数据）。"""
     try:
@@ -76,6 +77,7 @@ _BUTTON_GROUPS = (
     ("path_target", "路径区（目标）",    "left"),
     ("mods",        "模组清单区",        "left"),
     ("config",      "Config 清单区",     "left"),
+    ("extra",       "其它文件区",        "left"),
     ("action",      "动作按钮区",        "right"),
     ("log_left",    "执行日志区（左）",  "left"),
     ("log_right",   "执行日志区（右）",  "right"),
@@ -89,6 +91,10 @@ _DEFAULT_BUTTON_ORDER = {
                     "clear_mods", "check_mods"],
     "config":      ["cfg_magnify", "add_cfg_dir", "add_cfg_file", "clear_cfg",
                     "check_cfg"],
+    # 「其它文件」清单：相对整合包根目录（不是相对 config），
+    # 用来带走路径不在 mods/config/saves 里的东西：shaderpacks / resourcepacks /
+    # options.txt / servers.dat / kubejs / scripts 之类
+    "extra":       ["add_extra_dir", "add_extra_file", "clear_extra", "check_extra"],
     "action":      ["history", "rollback", "start"],
     "log_left":    ["log_big"],
     "log_right":   ["log_open", "log_clear"],
@@ -112,6 +118,10 @@ _BUTTON_LABELS = {
     "add_cfg_file": "📄 浏览添加文件",
     "clear_cfg": "🗑️ 清空 config 清单",
     "check_cfg": "🔎 检查 config 是否存在",
+    "add_extra_dir": "📁 浏览添加文件夹（其它文件）",
+    "add_extra_file": "📄 浏览添加文件（其它文件）",
+    "clear_extra": "🗑️ 清空其它文件清单",
+    "check_extra": "🔎 检查其它文件是否存在",
     "history": "📋 查看历史",
     "rollback": "⚠️ 回滚",
     "start": "🚀 开始迁移",
@@ -167,6 +177,7 @@ _GROUP_COLORS = {
     "path_target": "#26c6da",
     "mods":        "#66bb6a",
     "config":      "#ffa726",
+    "extra":       "#26a69a",
     "action":      "#ef5350",
     "log_left":    "#ab47bc",
     "log_right":   "#8d6e63",
@@ -176,6 +187,7 @@ _GROUP_ICONS = {
     "path_target": "📥",
     "mods":        "🧩",
     "config":      "⚙️",
+    "extra":       "📦",
     "action":      "🚀",
     "log_left":    "📜",
     "log_right":   "🗂️",
@@ -298,6 +310,11 @@ class MigrationGUI:
 
         self.config = self.load_config()
         self.edit_mode = tk.BooleanVar(value=self.config.get("edit_enabled", False))
+        # 「其它文件」清单遇到目标已有同名文件时怎么办：overwrite（先备份）/ skip
+        self.extra_conflict = tk.StringVar(
+            value=str(self.config.get("extra_conflict", "overwrite") or "overwrite"))
+        if self.extra_conflict.get() not in ("overwrite", "skip"):
+            self.extra_conflict.set("overwrite")
         self.current_theme = self.config.get("theme", "light")
         self.theme = LIGHT_THEME if self.current_theme == "light" else DARK_THEME
 
@@ -368,11 +385,15 @@ class MigrationGUI:
         self._stage("正在载入清单…")
         self.mod_text.insert("1.0", self.config.get("mod_list", ""))
         self.config_text.insert("1.0", self.config.get("config_list", ""))
+        self.extra_text.insert("1.0", self.config.get("extra_list", ""))
         self.mod_text.edit_reset()
         self.config_text.edit_reset()
+        self.extra_text.edit_reset()
         # 用自定义撤销栈替代 Tk 原生撤销（Tk 会把连续删除合并为一步撤销）
         self._setup_custom_undo(self.mod_text, "mod")
         self._setup_custom_undo(self.config_text, "config")
+        self._setup_custom_undo(self.extra_text, "extra")
+        self._refresh_list_badges()
         self.log("=" * 60, level="INFO", save=False)
         self.log("【免费声明】本工具完全免费，严禁用于商业用途或转卖。", level="WARNING", save=False)
         self.log("如有任何收费行为，请立即举报。作者不会以任何形式向你收费。", level="WARNING", save=False)
@@ -513,6 +534,8 @@ class MigrationGUI:
             "theme": self.current_theme,
             "mod_list": self.mod_text.get("1.0", tk.END).strip(),
             "config_list": self.config_text.get("1.0", tk.END).strip(),
+            "extra_list": self.extra_text.get("1.0", tk.END).strip(),
+            "extra_conflict": self.extra_conflict.get(),
             "edit_enabled": self.edit_mode.get(),
             "close_action": self.close_action,
             "splash": bool(getattr(self, "splash_enabled", True)),
@@ -748,14 +771,22 @@ class MigrationGUI:
                 self._configure_log_colors(self.log_text)
             except Exception:
                 pass
-        # 圆角文本框的填充/描边跟着主题重画（模组清单 / config 清单 / 执行日志 / 日志放大查看）
-        for _name in ("mod_text_box", "config_text_box", "log_text_box", "_log_big_box"):
+        # 圆角文本框的填充/描边跟着主题重画（模组清单 / config 清单 / 其它文件 / 执行日志 / 日志放大查看）
+        for _name in ("mod_text_box", "config_text_box", "extra_text_box",
+                      "log_text_box", "_log_big_box"):
             _box = getattr(self, _name, None)
             if _box is not None:
                 try:
                     _box.refresh()
                 except Exception:
                     pass
+        # 清单区的标签页（自绘圆角药丸）也要跟着换色
+        _tabs = getattr(self, "list_tabs", None)
+        if _tabs is not None:
+            try:
+                _tabs.set_theme(self.theme)
+            except Exception:
+                pass
         if hasattr(self, 'source_status'):
             self.source_status.configure(bg=self.theme["bg"])
         if hasattr(self, 'target_status'):
@@ -2132,7 +2163,18 @@ class MigrationGUI:
                 except Exception:
                     pass
 
-        self.root.after(0, _log)
+        try:
+            self.root.after(0, _log)
+        except RuntimeError:
+            # 工作线程里调 Tk 的 after 偶尔会抛 "main thread is not in main loop"
+            # （主线程那时如果不在 mainloop 里就会这样）。日志不能把迁移线程带崩，
+            # 所以退化成直接写一次；再失败就只保留文件里的记录。
+            try:
+                _log()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _flush_logs_to_file(self, include_header=False):
         """把缓存的日志写入本地文件；文件过大时先轮转（改名），避免无限增长。"""
@@ -2366,11 +2408,8 @@ class MigrationGUI:
         # ---- 路径选择 ----
         self._create_path_widgets()
         self._stage()               # 每建完一块就让出一帧，闪屏动画才不会被卡死
-        # ---- 模组清单 ----
+        # ---- 清单区（三个清单：模组 / config / 其它文件，共用一个区）----
         self._create_modlist_widgets()
-        self._stage()
-        # ---- Config 清单 ----
-        self._create_config_widgets()
         self._stage()
         # ---- 底部按钮 ----
         self._create_bottom_widgets()
@@ -2450,11 +2489,56 @@ class MigrationGUI:
         self.world_status.pack(side="left", padx=10)
 
     def _create_modlist_widgets(self):
-        frame_modlist = tk.LabelFrame(self.root, text="需要复制的模组清单（每行一个 .jar 文件名）",
-                                      padx=5, pady=5)
-        frame_modlist.pack(fill="both", expand=True, padx=10, pady=5)
+        """清单区：三个清单**共用一个区**（标签页），不再各占一大块地方。
 
-        self.mod_text_box = RoundedTextArea(frame_modlist, self.theme, height=8,
+        以前是"模组清单"和"config 清单"上下两块 LabelFrame、都被 expand 拉到 ~240px；
+        再加一个"其它文件"就会把窗口顶到屏幕外（1080 的窗口只剩 400px 余量）。
+        现在三页共用一块：净增高 0，标签上还能直接看到每页多少条。
+        """
+        area = tk.LabelFrame(self.root, text="清单（三个页共用一个区，点标签切换）",
+                             padx=5, pady=5)
+        area.pack(fill="both", expand=True, padx=10, pady=5)
+        self.list_area = area
+
+        # 编辑模式对三个清单都生效，所以工具条放在页外面（公共一行）
+        # 橙色（edit_bg）只用在勾选框那一小块，整栏和后面的警告文字都用普通背景——
+        # 这样既能突出"编辑模式"，又不会整条都在喊。
+        self.edit_toolbar = tk.Frame(area, bg=self.theme["bg"], relief=tk.RAISED, bd=2)
+        self.edit_toolbar.pack(fill="x", padx=5, pady=(0, 2))
+        self.edit_mode_cb = tk.Checkbutton(
+            self.edit_toolbar, text="🔓 启用主界面编辑（直接修改清单）",
+            variable=self.edit_mode, command=self.toggle_edit_mode,
+            bg=self.theme["edit_bg"], fg=self.theme["fg"],
+            activebackground=self.theme["edit_bg"],
+            activeforeground=self.theme["fg"],
+            selectcolor=self.theme["edit_bg"],
+            highlightthickness=0, font=("微软雅黑", 10, "bold"))
+        self.edit_mode_cb.pack(side="left", padx=5)
+        self._stage()
+        self.edit_warn_label = tk.Label(
+            self.edit_toolbar, text="⚠️ 编辑模式可能造成数据损坏，请谨慎操作！",
+            fg=self.theme["fail_fg"], bg=self.theme["bg"], font=("微软雅黑", 9))
+        self.edit_warn_label.pack(side="left", padx=10)
+        self._stage()
+
+        self.list_tabs = RoundedTabs(area, self.theme)
+        self.list_tabs.pack(fill="both", expand=True)
+        page_mod = self.list_tabs.page("🧩 模组清单")
+        page_cfg = self.list_tabs.page("⚙️ config 清单")
+        page_extra = self.list_tabs.page("📦 其它文件")
+        self._create_modlist_page(page_mod)
+        self._create_config_page(page_cfg)
+        self._create_extra_page(page_extra)
+        self._refresh_list_badges()
+
+    def _create_modlist_page(self, parent):
+        """模组清单页：每行一个 .jar 文件名。"""
+        tk.Label(parent,
+                 text=("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，或直接把 jar 拖进来）。"
+                       "同名匹配不区分大小写，改过名的也能对上。"),
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
+        self.mod_text_box = RoundedTextArea(parent, self.theme, height=8,
                                             wrap=tk.NONE, undo=True,
                                             font=("微软雅黑 Light", 10))
         self.mod_text_box.pack(fill="both", expand=True, padx=5, pady=5)
@@ -2484,31 +2568,10 @@ class MigrationGUI:
             self.mod_text.dnd_bind('<<Drop>>', self._on_mod_drop)
         except Exception:
             pass
+        self._bind_badge_refresh(self.mod_text)
         self._stage()               # ScrolledText 建一个要一百来毫秒，建完先让一帧
 
-        # 橙色（edit_bg）只用在勾选框那一小块，整栏和后面的警告文字都用普通背景——
-        # 这样既能突出"编辑模式"，又不会整条都在喊。
-        self.edit_toolbar = tk.Frame(frame_modlist, bg=self.theme["bg"],
-                                     relief=tk.RAISED, bd=2)
-        self.edit_toolbar.pack(fill="x", padx=5, pady=2)
-        self.edit_mode_cb = tk.Checkbutton(
-            self.edit_toolbar, text="🔓 启用主界面编辑（直接修改清单）",
-            variable=self.edit_mode, command=self.toggle_edit_mode,
-            bg=self.theme["edit_bg"], fg=self.theme["fg"],
-            activebackground=self.theme["edit_bg"],
-            activeforeground=self.theme["fg"],
-            selectcolor=self.theme["edit_bg"],
-            highlightthickness=0, font=("微软雅黑", 10, "bold"))
-        self.edit_mode_cb.pack(side="left", padx=5)
-        self._stage()
-        self.edit_warn_label = tk.Label(
-            self.edit_toolbar, text="⚠️ 编辑模式可能造成数据损坏，请谨慎操作！",
-            fg=self.theme["fail_fg"], bg=self.theme["bg"],
-            font=("微软雅黑", 9))
-        self.edit_warn_label.pack(side="left", padx=10)
-        self._stage()
-
-        btn_frame = tk.Frame(frame_modlist)
+        btn_frame = tk.Frame(parent)
         btn_frame.pack(fill="x", pady=5)
 
         # 统一渐变按钮（同高度/字体，语义配色，宽度按文字自适应）
@@ -2560,18 +2623,18 @@ class MigrationGUI:
         })
         self._stage()
 
-    def _create_config_widgets(self):
-        frame_config = tk.LabelFrame(self.root,
-                                     text="需要迁移的 config 内容（每行一个相对路径，相对于 config 目录）",
-                                     padx=5, pady=5)
-        frame_config.pack(fill="both", expand=True, padx=10, pady=5)
-
-        warning_config = tk.Label(frame_config,
+    def _create_config_page(self, parent):
+        """config 清单页：每行一个相对路径，相对源实例的 config 目录。"""
+        tk.Label(parent,
+                 text="每行一个相对路径，「相对源实例的 config 目录」（例：jei/jei.toml、sodium-options.json）。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
+        warning_config = tk.Label(parent,
                                   text="⚠️ 注意：复制将直接覆盖目标 config 中的同名文件/文件夹，请谨慎操作！",
                                   fg=self.theme["fail_fg"], font=("微软雅黑", 9, "bold"))
         warning_config.pack(anchor="w", padx=5, pady=2)
 
-        self.config_text_box = RoundedTextArea(frame_config, self.theme, height=6,
+        self.config_text_box = RoundedTextArea(parent, self.theme, height=6,
                                                wrap=tk.NONE, undo=True,
                                                font=("微软雅黑 Light", 10))
         self.config_text_box.pack(fill="both", expand=True, padx=5, pady=5)
@@ -2600,7 +2663,7 @@ class MigrationGUI:
             pass
         self._stage()
 
-        btn_config_frame = tk.Frame(frame_config)
+        btn_config_frame = tk.Frame(parent)
         btn_config_frame.pack(fill="x", pady=5)
 
         self.config_magnify_btn = create_gradient_button(
@@ -2637,7 +2700,154 @@ class MigrationGUI:
             "check_cfg": self.config_check_btn,
         })
         self._create_check_legend(btn_config_frame)
+        self._bind_badge_refresh(self.config_text)
         self._stage()
+
+    def _create_extra_page(self, parent):
+        """其它文件页：带走 mods / config / saves 之外的东西。
+
+        路径相对**整合包根目录**（不是 config）：shaderpacks/、resourcepacks/、
+        options.txt、servers.dat、kubejs/、scripts/ 这类都走这一页。
+        """
+        tk.Label(parent,
+                 text=("每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。\n"
+                       "例：shaderpacks/   resourcepacks/   options.txt   servers.dat   kubejs/"),
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
+
+        row_rule = tk.Frame(parent, bg=self.theme["bg"])
+        row_rule.pack(fill="x", padx=5, pady=(4, 2))
+        tk.Label(row_rule, text="目标已有同名文件时：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        for _val, _text in (("overwrite", "覆盖（先备份）"),
+                            ("skip", "跳过（目标保持不动）")):
+            tk.Radiobutton(
+                row_rule, text=_text, value=_val, variable=self.extra_conflict,
+                command=self.save_config, bg=self.theme["bg"], fg=self.theme["fg"],
+                activebackground=self.theme["bg"], activeforeground=self.theme["fg"],
+                selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
+                highlightthickness=0, bd=0, font=("微软雅黑", 9)).pack(side="left",
+                                                                       padx=(0, 14))
+
+        self.extra_text_box = RoundedTextArea(parent, self.theme, height=6,
+                                              wrap=tk.NONE, undo=True,
+                                              font=("微软雅黑 Light", 10))
+        self.extra_text_box.pack(fill="both", expand=True, padx=5, pady=5)
+        self.extra_text = self.extra_text_box.text
+        self._smooth(self.extra_text)
+        self.extra_text.bind("<Control-z>", lambda e: self._safe_undo(self.extra_text))
+        self.extra_text.bind("<Control-y>", lambda e: self._safe_redo(self.extra_text))
+        # 存在性检查的临时高亮（存在=绿 / 缺失=红 / 重复=黄），1 秒后自动恢复
+        self.extra_text.tag_configure(
+            "extra_ok", background=self.theme.get("success_bg", "#d4edda"),
+            foreground=self.theme.get("success_fg", "#000000"))
+        self.extra_text.tag_configure(
+            "extra_missing", background=self.theme.get("danger_bg", "#ffc7c7"),
+            foreground=self.theme.get("danger_fg", "#8b0000"))
+        self.extra_text.tag_configure(
+            "extra_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
+            foreground=self.theme.get("warn_fg", "#000000"))
+        # 从资源管理器拖入文件/文件夹 → 自动算成相对整合包根目录的条目
+        try:
+            from tkinterdnd2 import DND_FILES
+            self.extra_text.drop_target_register(DND_FILES)
+            self.extra_text.dnd_bind('<<Drop>>', self._on_extra_drop)
+        except Exception:
+            pass
+        self._bind_badge_refresh(self.extra_text)
+        self._stage()
+
+        btn_extra_frame = tk.Frame(parent)
+        btn_extra_frame.pack(fill="x", pady=5)
+        self.add_extra_dir_btn = create_gradient_button(
+            btn_extra_frame, "📁 浏览添加文件夹", self.browse_add_extra_entry,
+            colors=("#00c853", "#00e676"),
+            width=_grad_width("📁 浏览添加文件夹"), height=30, font=("微软雅黑", 9, "bold"))
+        self.add_extra_dir_btn.pack(side="left", padx=5)
+        self.add_extra_file_btn = create_gradient_button(
+            btn_extra_frame, "📄 浏览添加文件", self.browse_add_extra_file,
+            colors=("#00c853", "#00e676"),
+            width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
+        self.add_extra_file_btn.pack(side="left", padx=5)
+        self.clear_extra_btn = create_gradient_button(
+            btn_extra_frame, "🗑️ 清空其它文件清单", self.clear_extra_list,
+            colors=("#757575", "#9e9e9e"),
+            width=_grad_width("🗑️ 清空其它文件清单"), height=30, font=("微软雅黑", 9, "bold"))
+        self.clear_extra_btn.pack(side="left", padx=5)
+        self.extra_check_btn = create_gradient_button(
+            btn_extra_frame, "🔎 检查是否存在（源目录）", self.check_extralist_existence,
+            colors=("#fb8c00", "#ffb74d"),
+            width=_grad_width("🔎 检查是否存在（源目录）"), height=30,
+            font=("微软雅黑", 9, "bold"))
+        self.extra_check_btn.pack(side="left", padx=5)
+        self._btn_widgets.update({
+            "add_extra_dir": self.add_extra_dir_btn,
+            "add_extra_file": self.add_extra_file_btn,
+            "clear_extra": self.clear_extra_btn,
+            "check_extra": self.extra_check_btn,
+        })
+        self._stage()
+
+    # ---------- 清单页标签上的条数徽章 ----------
+    def _bind_badge_refresh(self, widget):
+        """文本框内容一变就刷新标签上的条数（<<Modified>> 覆盖键盘输入、粘贴、程序插入）。"""
+        def _on_modified(event):
+            try:
+                widget.edit_modified(False)
+            except Exception:
+                pass
+            self._schedule_badge_refresh()
+        try:
+            widget.bind("<<Modified>>", _on_modified, add="+")
+        except Exception:
+            pass
+
+    def _schedule_badge_refresh(self):
+        """防抖 300ms：连续输入时不要每敲一下都重排标签栏。"""
+        old = getattr(self, "_badge_job", None)
+        if old is not None:
+            try:
+                self.root.after_cancel(old)
+            except Exception:
+                pass
+        try:
+            self._badge_job = self.root.after(300, self._refresh_list_badges)
+        except Exception:
+            self._badge_job = None
+
+    def _refresh_list_badges(self):
+        """把三个清单的条数挂到标签上：🧩 模组清单 376 / ⚙️ config 清单 12 / 📦 其它文件 5。"""
+        self._badge_job = None
+        tabs = getattr(self, "list_tabs", None)
+        if tabs is None:
+            return
+
+        def count(widget, skip_comments=False):
+            try:
+                lines = widget.get("1.0", tk.END).splitlines()
+            except Exception:
+                return 0
+            n = 0
+            for ln in lines:
+                s = ln.strip()
+                if not s:
+                    continue
+                if skip_comments and s.startswith("#"):
+                    continue
+                n += 1
+            return n
+
+        try:
+            mods = count(getattr(self, "mod_text", None)) if hasattr(self, "mod_text") else 0
+            cfgs = count(getattr(self, "config_text", None), True) \
+                if hasattr(self, "config_text") else 0
+            extras = count(getattr(self, "extra_text", None), True) \
+                if hasattr(self, "extra_text") else 0
+            tabs.set_label(0, "🧩 模组清单 %d" % mods if mods else "🧩 模组清单")
+            tabs.set_label(1, "⚙️ config 清单 %d" % cfgs if cfgs else "⚙️ config 清单")
+            tabs.set_label(2, "📦 其它文件 %d" % extras if extras else "📦 其它文件")
+        except Exception:
+            pass
 
     def _create_bottom_widgets(self):
         self.opt_frame = tk.Frame(self.root, bg=self.theme["bg"])
@@ -3977,13 +4187,24 @@ class MigrationGUI:
                     messagebox.showwarning("不安全路径",
                                            f"Config 清单中的 '{line}' 包含 '..'，已自动跳过。")
 
-        if not modlist and not configlist:
-            messagebox.showwarning("提示", "模组清单和 config 清单均为空，没有可迁移的内容。")
+        # 其它文件清单：路径相对整合包根目录，安全校验和 config 一样
+        extralist_raw = self.extra_text.get(1.0, tk.END).splitlines()
+        extralist = []
+        for line in extralist_raw:
+            line = line.strip().replace("\\", "/")
+            if line and not line.startswith("#"):
+                if _is_safe_path(line):
+                    extralist.append(line.rstrip("/") or line)
+                else:
+                    self.log(f"⚠️ 跳过不安全的其它文件路径: {line}", level="WARNING")
+
+        if not modlist and not configlist and not extralist:
+            messagebox.showwarning("提示", "三个清单都是空的，没有可迁移的内容。")
             return
 
         # 计算要复制的文件数与总大小
         total_files, total_size = self._calculate_migration_stats(
-            src_path, tgt_path, world, modlist, configlist)
+            src_path, tgt_path, world, modlist, configlist, extralist)
         self.log(f"📦 待迁移文件 {total_files} 个，总大小 {total_size / 1024 / 1024:.1f} MB",
                  level="INFO")
 
@@ -4020,7 +4241,8 @@ class MigrationGUI:
             thread = threading.Thread(
                 target=self._run_migration_thread,
                 args=(src_path, tgt_path, world, modlist, configlist, True,
-                      self.overwrite_mods.get())
+                      self.overwrite_mods.get(), extralist,
+                      self.extra_conflict.get() != "skip")
             )
             thread.daemon = True
             thread.start()
@@ -4053,13 +4275,14 @@ class MigrationGUI:
         thread = threading.Thread(
             target=self._run_migration_thread,
             args=(src_path, tgt_path, world, modlist, configlist, False,
-                  self.overwrite_mods.get())
+                  self.overwrite_mods.get(), extralist,
+                  self.extra_conflict.get() != "skip")
         )
         thread.daemon = True
         thread.start()
 
     def _calculate_migration_stats(self, src_path, tgt_path, world, modlist,
-                                   configlist):
+                                   configlist, extralist=None):
         total_files = 0
         total_size = 0
 
@@ -4087,6 +4310,18 @@ class MigrationGUI:
         src_config = src_path / "config"
         for entry in configlist:
             src_entry = src_config / entry
+            if src_entry.is_file():
+                total_files += 1
+                total_size += src_entry.stat().st_size
+            elif src_entry.is_dir():
+                for f in src_entry.rglob("*"):
+                    if f.is_file():
+                        total_files += 1
+                        total_size += f.stat().st_size
+
+        # 其它文件清单：相对整合包根目录（shaderpacks/、options.txt、kubejs/ 这类）
+        for entry in (extralist or []):
+            src_entry = src_path / str(entry).replace("\\", "/")
             if src_entry.is_file():
                 total_files += 1
                 total_size += src_entry.stat().st_size
@@ -4125,11 +4360,11 @@ class MigrationGUI:
         return free >= needed, free, needed
 
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist,
-                              dry_run, overwrite):
+                              dry_run, overwrite, extralist=None, extra_overwrite=True):
         """迁移工作线程。
 
-        overwrite 由主线程读好再传进来：Tk 变量只能在主线程碰，子线程直接
-        self.overwrite_mods.get() 会抛 "main thread is not in main loop"。
+        overwrite / extra_overwrite 由主线程读好再传进来：Tk 变量只能在主线程碰，
+        子线程直接 self.overwrite_mods.get() 会抛 "main thread is not in main loop"。
         """
         def progress_callback(file_index, file_name, copied_bytes, step=None):
             if file_index is None:
@@ -4160,7 +4395,10 @@ class MigrationGUI:
                 add_history=True,
                 # 迁移标记：只改目标文件名，加载器认的是 jar 里的 modid，不受影响
                 rename_marker=(self.rename_marker
-                               if getattr(self, "rename_migrated_mods", False) else None)
+                               if getattr(self, "rename_migrated_mods", False) else None),
+                # 其它文件清单（相对整合包根目录）+ 同名冲突策略
+                extralist=extralist,
+                extra_overwrite=bool(extra_overwrite)
             )
         finally:
             self._migration_running = False
@@ -4355,6 +4593,8 @@ class MigrationGUI:
                         self._clear_config_status()
                     elif kind == "mod":
                         self._clear_mod_status()
+                    elif kind == "extra":
+                        self._clear_extra_status()
                 except Exception:
                     pass
             widget.edit_modified(False)
@@ -4373,11 +4613,12 @@ class MigrationGUI:
                     self._notify_modlist_change()
                 except Exception:
                     pass
-            else:
+            elif kind == "config":
                 try:
                     self._notify_config_change()
                 except Exception:
                     pass
+            # 其它文件清单没有对应的"放大查看"窗口，撤销后保存一下就够了
 
         def _set_content(text):
             # 先记住滚动位置和光标：delete+insert 会把两者都甩回开头，
@@ -4504,41 +4745,55 @@ class MigrationGUI:
             files = event.data
         self._mod_add_result(files, self._append_mods(files))
 
-    def _add_config_paths(self, paths):
-        """把拖入的路径转成相对 config 的条目，加入 config 清单。返回 (新增数, 失败列表)。"""
-        src = self.source_path.get().strip()
-        if not src:
-            return 0, ["尚未设置源实例根目录"]
-        src_config = Path(src) / "config"
-        if not src_config.exists():
-            return 0, ["源 config 目录不存在"]
-        lines = set(l.strip().rstrip("/") for l in self.config_text.get("1.0", tk.END).splitlines() if l.strip())
-        added = 0
-        failed = []
+    def _add_paths_to(self, text_widget, base_dir, paths):
+        """把绝对/相对路径转成"相对 base_dir"的条目，追加进某个清单文本框。
+
+        返回 (新增数, 失败列表)。config 清单和其它文件清单共用它，只是 base_dir 不同：
+        config 是"源实例/config"，其它文件是"源实例根目录"（shaderpacks、options.txt…）。
+        文件/文件夹都收；文件夹条目末尾加 "/" 与文件区分（去重按去掉末尾 "/" 归一化）；
+        安全校验沿用 _is_safe_path（挡 ".." 和绝对路径）。
+        """
+        if not str(base_dir or "").strip():
+            return 0, ["尚未设置源整合包实例根目录"]
+        base = Path(base_dir)
+        if not base.exists():
+            return 0, [f"基准目录不存在：{base}"]
+        lines = {l.strip().replace("\\", "/").rstrip("/")
+                 for l in text_widget.get("1.0", tk.END).splitlines() if l.strip()}
+        added, failed = 0, []
         for p in paths:
             tp = Path(p)
             try:
-                rel = tp.relative_to(src_config) if tp.is_absolute() else Path(p)
+                rel = tp.relative_to(base) if tp.is_absolute() else Path(p)
             except ValueError:
                 failed.append(str(tp))
                 continue
-            rel_s = str(rel)
+            rel_s = str(rel).replace("\\", "/")     # 清单里统一用正斜杠，好读也好比
             if not _is_safe_path(rel_s):
                 failed.append(str(tp))
                 continue
-            # 文件夹条目在末尾加 "/"（与文件区分）；去重按去掉末尾 "/" 归一化
-            if (src_config / rel_s).is_dir() and not rel_s.endswith("/"):
+            if (base / rel_s).is_dir() and not rel_s.endswith("/"):
                 rel_s = rel_s.rstrip("/") + "/"
             if rel_s.rstrip("/") not in lines:
-                self.config_text.configure(state=tk.NORMAL)
-                if self.config_text.get("1.0", tk.END).strip():
-                    self.config_text.insert(tk.END, "\n")
-                self.config_text.insert(tk.END, rel_s + "\n")
+                text_widget.configure(state=tk.NORMAL)
+                cur = text_widget.get("1.0", tk.END)
+                # 只有"已经有内容且末尾不是换行"时才补分隔换行，否则连续添加会出现空行
+                if cur.strip() and not cur.endswith("\n"):
+                    text_widget.insert(tk.END, "\n")
+                text_widget.insert(tk.END, rel_s + "\n")
                 lines.add(rel_s.rstrip("/"))
                 added += 1
-        self.save_config()
-        self._update_text_states()
+        return added, failed
+
+    def _add_config_paths(self, paths):
+        """（config 清单）路径相对 源实例/config。"""
+        src = self.source_path.get().strip()
+        if not src:
+            return 0, ["尚未设置源实例根目录"]
+        added, failed = self._add_paths_to(self.config_text, Path(src) / "config", paths)
         if added:
+            self.save_config()
+            self._update_text_states()
             # 内容已变化，之前的存在性高亮随之失效
             self._clear_config_status()
             self._notify_config_change()
@@ -4575,6 +4830,199 @@ class MigrationGUI:
         self.save_config()
         self._update_text_states()
         self._notify_config_change()
+
+    # ---------- 其它文件清单（路径相对**整合包根目录**） ----------
+    # 用途：mods / config / saves 之外、但你想一起带走的东西，
+    # 例：shaderpacks/、resourcepacks/、options.txt、servers.dat、kubejs/、scripts/
+    def _extra_base(self):
+        """其它文件清单的基准目录 = 源整合包根目录（没填就返回 None）。"""
+        src = self.source_path.get().strip()
+        return Path(src) if src else None
+
+    def _add_extra_paths(self, paths):
+        src = self.source_path.get().strip()
+        if not src:
+            return 0, ["尚未设置源整合包实例根目录"]
+        added, failed = self._add_paths_to(self.extra_text, Path(src), paths)
+        if added:
+            self.save_config()
+            self._update_text_states()
+            self._clear_extra_status()
+        return added, failed
+
+    def browse_add_extra_entry(self):
+        """浏览添加文件夹（可多选）：相对整合包根目录，例如 shaderpacks/。"""
+        base = self._extra_base()
+        if base is None:
+            self.root.bell()
+            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            return
+        if not base.exists():
+            self.root.bell()
+            self.log(f"❌ 源整合包目录不存在：{base}", level="ERROR")
+            return
+
+        selected, native_ok = None, False
+        try:
+            from utils.native_dialog import pick_folders
+            selected = pick_folders(
+                parent_hwnd=self.root.winfo_id(), initial_dir=str(base),
+                title="请选择要一起带走的文件夹（相对整合包根目录，可多选）")
+            native_ok = True
+        except Exception:
+            native_ok = False
+        if not native_ok:
+            one = filedialog.askdirectory(title="请选择要一起带走的文件夹",
+                                          initialdir=str(base))
+            selected = [one] if one else []
+        if not selected:
+            return
+
+        added, failed = self._add_extra_paths([str(p) for p in selected])
+        if added:
+            self.log(f"✅ 已添加 {added} 个其它文件条目（相对整合包根目录）", level="SUCCESS")
+        elif not failed:
+            self.log("ℹ️ 所选文件夹均已在其它文件清单中，未重复添加", level="INFO")
+        if failed:
+            messagebox.showwarning(
+                "添加提示",
+                f"⚠️ 有 {len(failed)} 项未添加（不在整合包目录下或不安全）：\n"
+                + "\n".join(str(f) for f in failed[:5]), parent=self.root)
+
+    def browse_add_extra_file(self):
+        """浏览添加文件（可多选）：相对整合包根目录，例如 options.txt。"""
+        base = self._extra_base()
+        if base is None:
+            self.root.bell()
+            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            return
+        if not base.exists():
+            self.root.bell()
+            self.log(f"❌ 源整合包目录不存在：{base}", level="ERROR")
+            return
+        selected = filedialog.askopenfilenames(
+            title="请选择要一起带走的文件（可多选，相对整合包根目录）",
+            initialdir=str(base), filetypes=[("所有文件", "*.*")])
+        if not selected:
+            return
+        added, failed = self._add_extra_paths(list(selected))
+        if added:
+            self.log(f"✅ 已添加 {added} 个其它文件条目", level="SUCCESS")
+        elif not failed:
+            self.log("ℹ️ 所选文件均已在其它文件清单中，未重复添加", level="INFO")
+        if failed:
+            messagebox.showwarning(
+                "添加提示",
+                f"⚠️ 有 {len(failed)} 项未添加（不在整合包目录下或不安全）：\n"
+                + "\n".join(str(f) for f in failed[:5]), parent=self.root)
+
+    def _on_extra_drop(self, event):
+        """从资源管理器拖入文件/文件夹 → 其它文件清单（自动算成相对整合包根目录）。"""
+        try:
+            files = self.root.tk.splitlist(event.data)
+        except Exception:
+            files = event.data
+        added, failed = self._add_extra_paths(list(files))
+        if added:
+            messagebox.showinfo("添加成功", f"✅ 已添加 {added} 个其它文件条目。",
+                               parent=self.root)
+        if failed:
+            messagebox.showwarning(
+                "添加提示",
+                f"⚠️ 有 {len(failed)} 项未添加（不在整合包目录下或不安全）：\n"
+                + "\n".join(str(f) for f in failed[:5]), parent=self.root)
+
+    def clear_extra_list(self):
+        """清空其它文件清单。"""
+        self.extra_text.configure(state=tk.NORMAL)
+        self.extra_text.delete("1.0", tk.END)
+        self._clear_extra_status()
+        self.save_config()
+        self._update_text_states()
+
+    def _clear_extra_status(self):
+        """清掉其它文件清单的存在性高亮。"""
+        try:
+            for tag in ("extra_ok", "extra_missing", "extra_duplicate"):
+                self.extra_text.tag_remove(tag, "1.0", tk.END)
+            self._extra_status_applied = False
+        except Exception:
+            pass
+
+    def check_extralist_existence(self):
+        """检查其它文件清单里每个条目（相对整合包根目录）在源目录是否存在并高亮。"""
+        now = time.time()
+        if now - getattr(self, "last_check_extra_time", 0) < 2:
+            self.root.bell()
+            self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
+            return
+        self.last_check_extra_time = now
+
+        base = self._extra_base()
+        if base is None:
+            self.root.bell()
+            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            return
+        if not base.exists():
+            self.root.bell()
+            self.log(f"❌ 源整合包目录不存在：{base}", level="ERROR")
+            return
+
+        entries = [l.strip() for l in self.extra_text.get("1.0", tk.END).splitlines()
+                   if l.strip() and not l.strip().startswith("#")]
+        if not entries:
+            self.root.bell()
+            self.log("⚠️ 当前其它文件清单为空", level="WARNING")
+            self._clear_extra_status()
+            return
+
+        def norm(e):
+            return e.replace("\\", "/").lower().rstrip("/")
+
+        counts = Counter(norm(e) for e in entries)
+        self._clear_extra_status()
+        ok = duplicate = missing = 0
+        missing_samples = []
+        for i, ln in enumerate(self.extra_text.get("1.0", tk.END).splitlines()):
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            idx, end = f"{i + 1}.0", f"{i + 1}.end"
+            if not (base / s.replace("\\", "/")).exists():
+                self.extra_text.tag_add("extra_missing", idx, end)
+                missing += 1
+                if len(missing_samples) < 60:
+                    missing_samples.append(s)
+            elif counts[norm(s)] > 1:
+                self.extra_text.tag_add("extra_duplicate", idx, end)
+                duplicate += 1
+            else:
+                self.extra_text.tag_add("extra_ok", idx, end)
+                ok += 1
+        self._extra_status_applied = True
+
+        self.log(f"📊 其它文件清单检查结果：总条目 {len(entries)}，去重后 {len(counts)} 个",
+                 level="INFO")
+        self.log(f"✅ 存在的条目：{ok}", level="SUCCESS")
+        if duplicate:
+            self.log(f"⚠️ 重复条目：{duplicate} 行", level="WARNING")
+        if missing:
+            self.log(f"❌ 缺失的条目：{missing}", level="ERROR")
+            self.root.bell()
+            for m in missing_samples[:50]:
+                self.log(f"  - {m}", level="ERROR")
+            if missing > 50:
+                self.log(f"  ... 还有 {missing - 50} 条未显示", level="WARNING")
+        elif not duplicate:
+            self.log("✅ 其它文件条目均存在且无重复。", level="SUCCESS")
+
+        old = getattr(self, "_extra_flash_after", None)
+        if old:
+            try:
+                self.root.after_cancel(old)
+            except Exception:
+                pass
+        self._extra_flash_after = self.root.after(1000, self._clear_extra_status)
 
     def _notify_modlist_change(self):
         """通知已打开的"放大查看"刷新模组清单。"""
@@ -5813,6 +6261,7 @@ class MigrationGUI:
         state = tk.NORMAL if self.edit_mode.get() else tk.DISABLED
         self.mod_text.configure(state=state)
         self.config_text.configure(state=state)
+        self.extra_text.configure(state=state)
         self._check_overflow()
 
     def toggle_edit_mode(self):

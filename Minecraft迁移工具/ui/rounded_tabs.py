@@ -60,6 +60,20 @@ class RoundedTabs(tk.Frame):
     def labels(self):
         return [t["label"] for t in self._tabs]
 
+    def set_label(self, index, text):
+        """只改某个标签的文字（主界面拿它挂条数徽章：🧩 模组清单 376）。
+
+        文字一变宽度就变，所以整条标签栏要重排（x 全部重算、药丸按新宽度重出图），
+        并且把选中块立刻贴回当前页 —— 这里**不做滑动动画**，条数刷新时不该看到它在动。
+        """
+        if not (0 <= index < len(self._tabs)):
+            return
+        if self._tabs[index]["label"] == text:
+            return
+        self._tabs[index]["label"] = text
+        self._layout_bar()          # 末尾会把选中块重新贴到当前页（含新宽度）
+        self._refresh_pills()
+
     def page(self, label):
         """建一页并返回它的容器（往里塞内容即可）。"""
         page = tk.Frame(self.body, bg=self.theme["bg"])

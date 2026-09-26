@@ -107,7 +107,7 @@ def save_history(target_path, history):
         pass
 
 
-def add_history_entry(target_path, src_path, modlist, configlist):
+def add_history_entry(target_path, src_path, modlist, configlist, extralist=None):
     history = load_history(target_path)
     entry = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -115,6 +115,9 @@ def add_history_entry(target_path, src_path, modlist, configlist):
         "target": str(target_path),
         "mod_count": len(modlist),
         "config_count": len(configlist),
+        # 「其它文件」清单（相对整合包根目录）
+        "extra_count": len(extralist or []),
+        "extras": list(extralist or []),
         "mods": modlist[:20],
         "configs": configlist,
         "rolled_back": False,
@@ -457,13 +460,20 @@ def run_migration(
         log_callback=None,
         check_cancel=None,
         add_history=True,
-        rename_marker=None
+        rename_marker=None,
+        extralist=None,
+        extra_overwrite=True
 ):
     """
     执行迁移主流程
     rename_marker: 非空时，复制过去的模组会在文件名前加这个前缀（如 "★ "），
                    方便用户在目标目录里一眼认出哪些是本次迁移带过去的。
                    只改目标文件名，不改内容；加载器只认 jar 里的 modid，不受影响。
+    extralist:     「其它文件」清单，路径**相对整合包根目录**（不是相对 config），
+                   用来带走 mods/config/saves 之外的东西：shaderpacks/、resourcepacks/、
+                   options.txt、servers.dat、kubejs/ 之类。文件或文件夹都行，文件夹递归。
+    extra_overwrite: 上面这份清单遇到"目标已有同名文件"时怎么办：
+                   True=覆盖（先备份，和其它清单一致）；False=跳过，目标保持不动。
     返回: 是否成功完成
     """
     src_path = Path(src_path)
@@ -724,9 +734,117 @@ def run_migration(
 
             log(f"config 复制完成: 成功 {success_cfg} 个, 失败 {len(failed_cfg)} 个", "INFO")
 
+        # -------- 其它文件（路径相对整合包根目录） --------
+        # 带走 mods / config / saves 之外的东西：shaderpacks/、resourcepacks/、
+        # options.txt、servers.dat、kubejs/ 这类。
+        # 同名冲突按 extra_overwrite：True=覆盖（先备份）；False=跳过，目标保持不动。
+        if not extralist:
+            log("ℹ️ 其它文件清单为空，跳过", "INFO")
+        else:
+            success_extra = skipped_extra = 0
+            failed_extra = []
+            total_extra = len(extralist)
+            for idx, raw_entry in enumerate(extralist):
+                if check_cancel and check_cancel():
+                    log("⚠️ 用户取消了迁移", "WARNING")
+                    return False
+
+                entry = str(raw_entry).strip().replace("\\", "/")
+                if not entry:
+                    continue
+                if not _is_safe_path(entry):
+                    log(f"⚠️ 跳过不安全路径: {entry}", "WARNING")
+                    continue
+
+                src_entry = src_path / entry
+                dst_entry = tgt_path / entry
+                if not src_entry.exists():
+                    failed_extra.append((entry, "源不存在"))
+                    log(f"❌ 源条目不存在: {entry}，跳过", "ERROR")
+                    continue
+
+                step = f"复制其它文件 ({idx + 1}/{total_extra})"
+
+                if src_entry.is_file():
+                    if dst_entry.exists() and not extra_overwrite:
+                        skipped_extra += 1
+                        log(f"⏭️ 目标已存在，按设置跳过: {entry}", "INFO")
+                        continue
+                    ok, msg = safe_copy(src_entry, dst_entry, dry_run, overwrite=True,
+                                        is_file=True)
+                    if ok:
+                        success_extra += 1
+                        file_index += 1
+                        copied_bytes += src_entry.stat().st_size
+                        if dry_run:
+                            log(f"[模拟] 将复制其它文件: {entry}", "SIMULATE")
+                        else:
+                            log(f"✅ 已复制其它文件: {entry}", "SUCCESS")
+                        progress(file_index, entry, copied_bytes, step)
+                    else:
+                        failed_extra.append((entry, msg))
+                        log(f"❌ 复制其它文件失败 {entry}: {msg}", "ERROR")
+
+                elif src_entry.is_dir():
+                    try:
+                        if not dry_run:
+                            dst_entry.mkdir(parents=True, exist_ok=True)
+                    except Exception as e:
+                        failed_extra.append((entry, f"创建目录失败: {e}"))
+                        log(f"❌ 创建目录 {entry} 失败: {e}", "ERROR")
+                        continue
+
+                    for src_item in sorted(src_entry.rglob("*")):
+                        if check_cancel and check_cancel():
+                            log("⚠️ 用户取消了迁移", "WARNING")
+                            return False
+
+                        rel = src_item.relative_to(src_entry)
+                        rel_s = "%s/%s" % (entry.rstrip("/"),
+                                           str(rel).replace(chr(92), "/"))
+                        dst_item = dst_entry / rel
+                        if src_item.is_dir():
+                            # 空文件夹也要保留，否则目标端目录结构不完整
+                            if dry_run:
+                                log(f"[模拟] 将创建目录: {rel_s}", "SIMULATE")
+                            else:
+                                try:
+                                    dst_item.mkdir(parents=True, exist_ok=True)
+                                except Exception as e:
+                                    failed_extra.append((rel_s, f"建目录失败: {e}"))
+                                    log(f"❌ 创建目录 {rel_s} 失败: {e}", "ERROR")
+                            continue
+                        if not src_item.is_file():
+                            continue
+                        if dst_item.exists() and not extra_overwrite:
+                            skipped_extra += 1
+                            log(f"⏭️ 目标已存在，按设置跳过: {rel_s}", "INFO")
+                            continue
+
+                        ok, msg = safe_copy(src_item, dst_item, dry_run, overwrite=True,
+                                            is_file=True)
+                        if ok:
+                            success_extra += 1
+                            file_index += 1
+                            copied_bytes += src_item.stat().st_size
+                            if dry_run:
+                                log(f"[模拟] 将复制其它文件: {rel_s}", "SIMULATE")
+                            else:
+                                log(f"✅ 已复制其它文件: {rel_s}", "SUCCESS")
+                            progress(file_index, rel_s, copied_bytes, step)
+                        else:
+                            failed_extra.append((rel_s, msg))
+                            log(f"❌ 复制其它文件失败 {rel_s}: {msg}", "ERROR")
+                else:
+                    log(f"⚠️ 条目 {entry} 非文件非目录，跳过", "WARNING")
+
+            log(f"其它文件复制完成: 成功 {success_extra} 个, 跳过 {skipped_extra} 个, "
+                f"失败 {len(failed_extra)} 个", "INFO")
+
         # -------- 记录历史 --------
         if not dry_run and add_history:
-            add_history_entry(tgt_path, src_path, modlist, configlist)
+            add_history_entry(tgt_path, src_path, modlist, configlist,
+                              extralist=extralist)
             log(f"📝 已记录迁移历史到 {get_history_path(tgt_path)}", "INFO")
 
         # -------- 完成 --------
