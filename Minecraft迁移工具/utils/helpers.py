@@ -2205,7 +2205,7 @@ class SwitchRow(tk.Canvas):
     _WARN_DARK = "#ff6b6b"
 
     def __init__(self, parent, theme, title, desc="", command=None, height=None,
-                 compact=False, accent="edit_bg", warn_desc=None, **kw):
+                 compact=False, accent=None, warn_desc=None, **kw):
         self._is_switch_row = True          # 给"点空白退出编辑"这类兜底逻辑认的标志
         try:
             bg = parent.cget("bg")
@@ -2225,7 +2225,9 @@ class SwitchRow(tk.Canvas):
         self._title = title
         self._desc = desc
         self._warn_desc = warn_desc or "⚠ 已开启"
-        self._accent = accent
+        # 开着时的底色：紧凑形态（替代复选框的那些）统一用亮蓝 switch_on；
+        # 卡片形态留给调用方按语义指定（主界面那个"编辑"开关是警示橙 edit_bg）
+        self._accent = accent or ("switch_on" if self._compact else "edit_bg")
         self._command = command
         self._on = False
         self._t = 0.0

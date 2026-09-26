@@ -46,6 +46,9 @@ LIGHT_THEME = {
     "hover_bg": "#e9eef5", "hover_fg": "#000000",
     # 卡片/表格的"选中"样式（模仿 PCL2：浅蓝底 + 左侧蓝条 + 蓝标题）
     "card_sel_bg": "#d4e6f8", "card_sel_fg": "#0d3d63", "card_sel_bar": "#2f7fd1",
+    # 开关（SwitchRow）打开时的底色：两种主题统一用这支亮蓝 ——
+    # 浅色主题下原来用的是卡片选中那种深蓝 #2f7fd1，当开关看太沉了
+    "switch_on": "#4da3f0",
     "hover_checked_bg": "#cde8cd", "hover_checked_fg": "#000000",
     "hover_missing_bg": "#ffd9d9", "hover_missing_fg": "#8b0000",
     "hover_new_bg": "#fff2c4", "hover_new_fg": "#000000",
@@ -107,6 +110,8 @@ DARK_THEME = {
     "hover_bg": "#3a3e44", "hover_fg": "#ffffff",
     # 卡片/表格的"选中"样式（深色版：暗蓝底 + 亮蓝条 + 亮蓝标题）
     "card_sel_bg": "#2b3b4d", "card_sel_fg": "#cfe8ff", "card_sel_bar": "#4da3f0",
+    # 开关打开时的底色（与浅色主题同一支亮蓝，见浅色主题里的说明）
+    "switch_on": "#4da3f0",
     "hover_checked_bg": "#3a5a3a", "hover_checked_fg": "#ffffff",
     "hover_missing_bg": "#5a3a3a", "hover_missing_fg": "#ffb3b3",
     "hover_new_bg": "#5a4a3a", "hover_new_fg": "#ffffff",

@@ -1589,7 +1589,7 @@ class MigrationGUI:
             box1, self.theme, "点空白处退出主界面编辑",
             desc="关闭后只能用编辑开关自己关",
             command=self._toggle_blank_exit_edit, compact=True,
-            accent="card_sel_bar")
+            accent="switch_on")
         self.settings_blank_exit_sw.pack(fill="x", pady=(10, 0))
         self.settings_blank_exit_sw.set(self.blank_exit_edit.get())
 
@@ -1615,7 +1615,7 @@ class MigrationGUI:
         # 正式迁移前的二次确认（默认开；关掉就点了按钮直接开跑）
         self.settings_confirm_sw = SwitchRow(
             box_m, self.theme, "正式迁移前再确认一次",
-            command=self._toggle_confirm_migrate, compact=True, accent="card_sel_bar")
+            command=self._toggle_confirm_migrate, compact=True, accent="switch_on")
         self.settings_confirm_sw.pack(fill="x", pady=(10, 0))
         self.settings_confirm_sw.set(self.confirm_migrate.get())
 
@@ -1652,7 +1652,7 @@ class MigrationGUI:
         # 跑完之后的完成态：总结 + 边框转绿，是按键关闭还是自动关闭
         self.settings_lock_key_sw = SwitchRow(
             box_lock, self.theme, "迁移完成后按任意键关闭",
-            command=self._toggle_lock_wait_key, compact=True, accent="card_sel_bar")
+            command=self._toggle_lock_wait_key, compact=True, accent="switch_on")
         self.settings_lock_key_sw.pack(fill="x", pady=(10, 0))
         self.settings_lock_key_sw.set(getattr(self, "lock_wait_key", True))
         tk.Label(box_lock,
@@ -1699,7 +1699,7 @@ class MigrationGUI:
         self.settings_qt_sw = SwitchRow(
             box_view, self.theme, "启用 PySide6 窗口",
             desc="关掉 = 纯 Tk 模式：主进程不再加载 Qt（重启后生效）",
-            command=self._on_qt_switch, accent="card_sel_bar")
+            command=self._on_qt_switch, accent="switch_on")
         self.settings_qt_sw.pack(fill="x", pady=(0, 8))
         self.settings_qt_sw.set(getattr(self, "qt_enabled", True))
         self.settings_view_var = tk.StringVar(value=getattr(self, "big_view_backend", "qt"))
@@ -3477,11 +3477,11 @@ class MigrationGUI:
         # 小开关 + 一行文字，不铺卡片底）。强调色用主题的选中蓝，别用橙 —— 它们不是危险操作。
         self.dry_run_sw = SwitchRow(
             self.opt_frame, self.theme, "模拟运行（仅显示操作）",
-            command=self._on_dry_run_switch, compact=True, accent="card_sel_bar")
+            command=self._on_dry_run_switch, compact=True, accent="switch_on")
         self.dry_run_sw.pack(side="left")
         self.overwrite_sw = SwitchRow(
             self.opt_frame, self.theme, "覆盖已存在的模组",
-            command=self._on_overwrite_switch, compact=True, accent="card_sel_bar")
+            command=self._on_overwrite_switch, compact=True, accent="switch_on")
         self.overwrite_sw.pack(side="left", padx=(20, 0))
         self.dry_run_sw.set(self.dry_run.get())
         self.overwrite_sw.set(self.overwrite_mods.get())
