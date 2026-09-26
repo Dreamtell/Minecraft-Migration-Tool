@@ -2,15 +2,21 @@
 """系统托盘图标：关掉主窗口后程序挂在后台，点托盘图标再叫出来。
 
 Shell_NotifyIcon 需要一个能收消息的窗口，而 Tk 不会把 WM_APP 这类消息交回
-Python，所以这里自己起一个隐藏窗口 + 消息循环，跑在单独的线程里。托盘上发生的
-事情（左键点图标、右键菜单选了什么）只往队列里塞一个字符串，由 Tk 主线程用
-root.after 轮询后执行——Tk 的 API 只能在主线程碰。
+Python，所以这里自己建一个隐藏窗口，**在主线程里**用 Tk 的 after 定期
+`pump()`（PeekMessage + DispatchMessage）把它的消息抽干。
+
+> 早先这条消息循环跑在一个后台线程里（`win32gui.PumpMessages`）。实测它会和主线程的
+> Qt 事件泵（放大查看 / 差异窗口那套，Tk 的 after 里 `processEvents`）撞在一起，出致命的
+> `Fatal Python error: PyEval_RestoreThread ... the GIL is released`，栈里就是
+> `tray.py 的 PumpMessages` + 主线程 `mainloop`（用户崩过两次）。
+> 现在全程只有主线程一个消息循环，那个组合从根上没了。
+
+托盘上发生的事情（左键点图标、右键菜单选了什么）仍然只往队列里塞一个字符串，
+由 app.py 的轮询取走执行。
 
 没装 pywin32 时 available() 返回 False，调用方直接退回"关窗口就退出"。
 """
-import gc
 import queue
-import threading
 
 try:
     import win32api
@@ -68,21 +74,54 @@ class TrayIcon:
         self.close_to_tray = True
         self._hwnd = None
         self._hicon = None
-        self._thread = None
-        self._ready = threading.Event()
         self._added = False
 
     # ------------------------------------------------------------ 对外接口
     def start(self, timeout=3.0):
-        """起后台线程并把图标挂上去；成功返回 True。"""
-        self._thread = threading.Thread(target=self._run, name="tray-icon",
-                                        daemon=True)
-        self._thread.start()
-        self._ready.wait(timeout)       # 等图标真的加上，别让关窗口时还没有托盘
+        """在主线程里把隐藏窗口和图标挂上去；成功返回 True。
+
+        （`timeout` 是为兼容旧签名留的：现在没有后台线程要等了。）
+        """
+        try:
+            hinst = win32api.GetModuleHandle(None)
+            wc = win32gui.WNDCLASS()
+            wc.hInstance = hinst
+            wc.lpszClassName = _CLASS_NAME
+            wc.lpfnWndProc = self._wndproc      # 绑在 self 上，别被回收
+            try:
+                atom = win32gui.RegisterClass(wc)
+            except Exception:
+                atom = _CLASS_NAME              # 类已注册（重启托盘）就直接用名字
+            self._hwnd = win32gui.CreateWindow(atom, "mctool-tray", 0,
+                                               0, 0, 0, 0, 0, 0, hinst, None)
+            self._add_icon()
+        except Exception:
+            self._added = False
+            self._hwnd = None
         return self._added
 
+    def pump(self):
+        """由 Tk 的 after 定期调用：把托盘窗口的消息抽干（主线程里跑）。
+
+        一次最多抽 32 条，免得某条消息刷屏时把这一帧卡住。
+        """
+        if not self._hwnd:
+            return
+        for _ in range(32):
+            try:
+                rc, msg = win32gui.PeekMessage(self._hwnd, 0, 0, win32con.PM_REMOVE)
+            except Exception:
+                return
+            if not rc:
+                return
+            try:
+                win32gui.TranslateMessage(msg)
+                win32gui.DispatchMessage(msg)
+            except Exception:
+                return
+
     def stop(self):
-        """撤掉图标并结束后台线程。可以重复调用。"""
+        """撤掉图标并销毁隐藏窗口。可以重复调用。"""
         hwnd, self._hwnd = self._hwnd, None
         if hwnd:
             try:
@@ -92,7 +131,7 @@ class TrayIcon:
                 pass
             self._added = False
             try:
-                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                win32gui.DestroyWindow(hwnd)        # 主循环可能已经停了，直接销毁
             except Exception:
                 pass
         self._hicon = None
@@ -110,31 +149,7 @@ class TrayIcon:
         except Exception:
             pass
 
-    # ------------------------------------------------------------ 后台线程
-    def _run(self):
-        try:
-            hinst = win32api.GetModuleHandle(None)
-            wc = win32gui.WNDCLASS()
-            wc.hInstance = hinst
-            wc.lpszClassName = _CLASS_NAME
-            wc.lpfnWndProc = self._wndproc      # 绑在 self 上，别被回收
-            try:
-                atom = win32gui.RegisterClass(wc)
-            except Exception:
-                atom = _CLASS_NAME              # 类已注册（重启托盘）就直接用名字
-            self._hwnd = win32gui.CreateWindow(atom, "mctool-tray", 0,
-                                               0, 0, 0, 0, 0, 0, hinst, None)
-            self._add_icon()
-        except Exception:
-            self._added = False
-            self._ready.set()
-            return
-        self._ready.set()
-        try:
-            win32gui.PumpMessages()             # 隐藏窗口的消息循环
-        except Exception:
-            pass
-
+    # ------------------------------------------------------------ 消息处理
     def _add_icon(self):
         hicon = 0
         if self.icon_path:
@@ -160,24 +175,12 @@ class TrayIcon:
             self._added = False
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
-        """窗口过程：跑在托盘的后台线程里。
+        """窗口过程：现在跑在**主线程**里（消息由 `pump()` 抽出来派发）。
 
-        这里**绝不能触发 Python 的 GC**：别的线程（比如主线程里的 PySide6 窗口）会
-        产生一堆 Qt 的 wrapper 对象，GC 一旦在这条线程里回收它们，shiboken 就要在
-        非主线程析构 Qt 的 C++ 对象 —— 表现是致命的
-        `PyEval_RestoreThread ... the GIL is released`（实测崩过：栈里就是本文件的
-        PumpMessages + 主线程的 mainloop）。GC 推迟到主线程做没有任何坏处。
+        以前它跑在托盘自己的后台线程里，和主线程的 Qt 事件泵撞在一起会出致命的
+        `PyEval_RestoreThread ... the GIL is released`（用户实测崩过两次）。
+        挪回主线程之后这里就是普通的 Tk 回调上下文，不再需要对 GC 做特殊处理。
         """
-        原 = gc.isenabled()
-        if 原:
-            gc.disable()
-        try:
-            return self._wndproc_inner(hwnd, msg, wparam, lparam)
-        finally:
-            if 原:
-                gc.enable()
-
-    def _wndproc_inner(self, hwnd, msg, wparam, lparam):
         if msg == WM_TRAY:
             if lparam in (win32con.WM_LBUTTONUP, win32con.WM_LBUTTONDBLCLK):
                 self.commands.put("open")

@@ -322,10 +322,18 @@ def main():
             pass
 
     def tray_poll():
-        """Tk 主线程这边轮询托盘线程塞进来的命令。"""
+        """Tk 主线程这边轮询：抽托盘窗口的消息 + 取托盘塞进来的命令。
+
+        托盘的消息循环现在就在这个线程里（`tray.pump()`），不再另起后台线程 ——
+        那条线程和 Qt 的事件泵会撞出致命的 GIL 错误（见 ui/tray.py 顶部说明）。
+        """
         if quitting["v"]:
             return
         if tray is not None:
+            try:
+                tray.pump()
+            except Exception:
+                pass
             try:
                 while True:
                     cmd = tray.commands.get_nowait()

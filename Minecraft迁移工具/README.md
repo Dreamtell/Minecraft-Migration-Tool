@@ -106,14 +106,19 @@
     撞在一起会让解释器直接崩（实测 `0xC0000409` / `PyEval_RestoreThread ... GIL is
     released`）；逐帧推的收尾落在 Tk 的 `after` 里，和其它 Tk 操作同一个上下文
   - **关掉的 Qt 窗口在主线程销毁**（`_pump_qt` + `deleteLater`）：Qt 的 C++ 对象不能在
-  别的线程里析构。托盘图标有一条自己的 win32 消息循环线程，它会触发 Python 的 GC ——
-  GC 一旦在那条线程里回收 PySide6 的 wrapper，shiboken 就在非主线程碰 Qt 的 C++ 层，
-  表现是致命的 `PyEval_RestoreThread ... the GIL is released`
-  （用户实测崩过：栈里正是 `tray.py` 的 `PumpMessages` + 主线程 `mainloop`）。
-  两道防线：① 窗口一关，泵就在主线程里 `deleteLater()`，并显式
-  `sendPostedEvents(None, QEvent.DeferredDelete)` 让它真的落地（实测只 `processEvents`
-  不会处理 DeferredDelete，C++ 对象一直不销毁）；② 托盘线程的窗口过程全程
-  `gc.disable()`（`finally` 里恢复），不让 GC 在那条线程里跑
+  别的线程里析构。
+- **托盘的消息循环也回到主线程**（`ui/tray.py`）：原来托盘自己起一条后台线程跑
+  `win32gui.PumpMessages`，那条线程和主线程的 Qt 事件泵（放大查看 / 差异窗口那套，
+  Tk 的 after 里 `processEvents`）撞在一起会出致命的
+  `Fatal Python error: PyEval_RestoreThread ... the GIL is released` ——
+  用户实测崩过两次，栈里正是 `tray.py` 的 `PumpMessages` + 主线程 `mainloop`。
+  现在托盘窗口建在主线程，消息由 `tray_poll`（Tk 的 after，80ms 一次）里的
+  `tray.pump()` 抽（`PeekMessage` + `TranslateMessage` + `DispatchMessage`，一次最多 32 条），
+  **全程只有一个线程**（验证脚本里断言"除主线程外线程数 = 0"）。
+  右键菜单弹出期间主界面会短暂无响应（`TrackPopupMenu` 是模态的），这是可接受的代价
+- **关掉的 Qt 窗口在主线程销毁**的配套：窗口一关，泵就在主线程里 `deleteLater()`，
+  并显式 `sendPostedEvents(None, QEvent.DeferredDelete)` 让它真的落地
+  （实测只 `processEvents` 不会处理 DeferredDelete，C++ 对象一直不销毁）
 - **顶部滚动进度条（液态）**：列表上方一条 6px 细条，**从左往右填充**，右边跟一个百分比
     数字 —— 滑到顶是 `0%`、滑到底 `100%`（内容不满一屏时直接满格）。填充段是「液态」的：
     底色横向渐变（左暗右亮）+ 一道柔光沿它循环流过，观感和锁屏遮罩那条流动红边同源
@@ -485,6 +490,14 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **托盘的消息循环挪回主线程（GIL 崩溃的真正根治）**：上一次只做了"Qt 对象在主线程
+  销毁 + 托盘线程禁 GC"，用户仍然崩了第二次（`0xC0000409` / `PyEval_RestoreThread`）。
+  根子是**托盘那条后台线程**（`win32gui.PumpMessages`）和主线程的 Qt 事件泵共存。
+  现在托盘窗口建在主线程，消息由 `tray_poll`（Tk after，80ms）里的 `tray.pump()`
+  用 `PeekMessage`/`TranslateMessage`/`DispatchMessage` 抽 —— 全程单线程，
+  那个组合从根上没有了。验证脚本断言"除主线程外线程数 = 0"，并跑通
+  `PostMessage → pump → 命令队列`（左键点图标 / 第二个实例敲门都验证了）。
+  代价：托盘右键菜单弹出期间主界面短暂无响应（`TrackPopupMenu` 是模态的）
 - **版本比大小：目标更高时叫「降级」而不是「更新」**（用户反馈）：原来只要版本字符串不同
   就一律判「更新」，于是"源 1.0 → 目标 2.0"也被当成可更新，勾上复制过去等于把目标**降版本**。
   现在 `core/scanner.compare_versions` 真比大小（逐段、数字段按数值、`1.0 > 1.0-beta`、
