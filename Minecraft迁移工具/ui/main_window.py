@@ -6725,9 +6725,24 @@ class MigrationGUI:
         except Exception:
             return
         self.edit_mode.set(False)
-        self.toggle_edit_mode()
+        self.toggle_edit_mode()                     # 里面会清选区 + 把焦点收回主窗口
+
+    def _clear_list_selection(self):
+        """清掉三个清单里的选中高亮（蓝底选区）。
+
+        退出编辑时用：焦点收走了、框也变回只读了，要是那段蓝色选区还留着，
+        看着就像"还在编辑"。tag 操作不受 Text 的 disabled 限制，所以顺序无所谓。
+        """
+        for 框 in (getattr(self, "mod_text", None), getattr(self, "config_text", None),
+                  getattr(self, "extra_text", None)):
+            if 框 is None:
+                continue
+            try:
+                框.tag_remove("sel", "1.0", "end")
+            except Exception:
+                pass
         try:
-            self.root.focus_set()                   # 顺手把键盘焦点收回主窗口
+            self.root.focus_set()               # 顺手把键盘焦点收回主窗口（描边跟着复位）
         except Exception:
             pass
 
@@ -6742,6 +6757,7 @@ class MigrationGUI:
         if self.edit_mode.get():
             self.log("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="WARNING")
         else:
+            self._clear_list_selection()
             self.log("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="INFO")
         self.save_config()
 
