@@ -2128,6 +2128,7 @@ class SwitchRow(tk.Canvas):
 
     def __init__(self, parent, theme, title, desc="", command=None, height=None,
                  compact=False, accent="edit_bg", warn_desc=None, **kw):
+        self._is_switch_row = True          # 给"点空白退出编辑"这类兜底逻辑认的标志
         try:
             bg = parent.cget("bg")
         except Exception:

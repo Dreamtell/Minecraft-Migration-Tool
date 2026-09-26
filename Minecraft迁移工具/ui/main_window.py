@@ -312,6 +312,9 @@ class MigrationGUI:
 
         self.config = self.load_config()
         self.edit_mode = tk.BooleanVar(value=self.config.get("edit_enabled", False))
+        # 点窗口空白处是否顺手退出「主界面编辑」（设置 →「🎨 外观与启动」可关）
+        self.blank_exit_edit = tk.BooleanVar(
+            value=self.config.get("blank_exit_edit", True))
         # 「其它文件」清单遇到目标已有同名文件时怎么办：overwrite（先备份）/ skip
         self.extra_conflict = tk.StringVar(
             value=str(self.config.get("extra_conflict", "overwrite") or "overwrite"))
@@ -544,6 +547,7 @@ class MigrationGUI:
             "extra_list": self.extra_text.get("1.0", tk.END).strip(),
             "extra_conflict": self.extra_conflict.get(),
             "edit_enabled": self.edit_mode.get(),
+            "blank_exit_edit": self.blank_exit_edit.get(),
             "close_action": self.close_action,
             "splash": bool(getattr(self, "splash_enabled", True)),
             "silent_background": bool(getattr(self, "silent_background", False)),
@@ -1502,6 +1506,17 @@ class MigrationGUI:
         self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
         check(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
               self._toggle_splash).pack(fill="x", pady=(6, 0))
+
+        # 点窗口空白处要不要顺手退出「主界面编辑」（默认开）。
+        # 开着：编辑时随手点一下背景就回只读；关掉：只能用编辑开关自己关，
+        # 免得手滑点到背景就把编辑状态丢了。
+        self.settings_blank_exit_sw = SwitchRow(
+            box1, self.theme, "点空白处退出主界面编辑",
+            desc="关闭后只能用编辑开关自己关",
+            command=self._toggle_blank_exit_edit, compact=True,
+            accent="card_sel_bar")
+        self.settings_blank_exit_sw.pack(fill="x", pady=(10, 0))
+        self.settings_blank_exit_sw.set(self.blank_exit_edit.get())
 
         # ---------- 迁移行为 ----------
         box_m = section("migrate", page_mig)
@@ -3124,6 +3139,14 @@ class MigrationGUI:
         """设置页里那个"迁移前再确认"开关：同步变量 + 存配置（开关只翻自己的状态）。"""
         try:
             self.confirm_migrate.set(self.settings_confirm_sw.get())
+        except Exception:
+            return
+        self.save_config()
+
+    def _toggle_blank_exit_edit(self):
+        """设置页里"点空白处退出主界面编辑"开关：同步变量 + 存配置。"""
+        try:
+            self.blank_exit_edit.set(self.settings_blank_exit_sw.get())
         except Exception:
             return
         self.save_config()
@@ -6661,30 +6684,43 @@ class MigrationGUI:
         self.edit_mode.set(self.edit_switch.get())
         self.toggle_edit_mode()
 
-    # 只有这几类控件才算"窗口空白"：Frame / LabelFrame / Label 是背景和说明文字，
-    # Tk、Toplevel 是窗口自身。按钮、输入框、滚动条、Canvas（含页签栏和渐变按钮）
-    # 都是"有意图的点击"，不当作空白。
-    _BLANK_CLASSES = ("Frame", "Labelframe", "Label", "Tk", "Toplevel")
+    # "有意图的交互"控件：点它们不算点空白（按钮/输入框/滚动条/勾选框/下拉框…）
+    _INTERACTIVE_CLASSES = ("Button", "TButton", "Entry", "TEntry", "TCombobox",
+                            "Spinbox", "TSpinbox", "Scale", "Checkbutton",
+                            "TCheckbutton", "Radiobutton", "TRadiobutton",
+                            "Scrollbar", "TScrollbar", "Menubutton", "TMenubutton",
+                            "Listbox", "Treeview", "TNotebook")
 
     def _on_blank_click(self, event):
         """点击窗口空白处 = 退出主界面编辑模式。
 
-        编辑模式下改清单不用先去找那个开关，随手点一下背景就回到只读。
-        - 清单区（含里面的留白、编辑开关、工具条）不算空白，点它照旧编辑；
-        - 按钮 / 输入框 / 滚动条 / 页签栏也不算空白，免得手一滑就退出编辑。
+        编辑模式下改清单不用先去找那个开关，随手点一下背景就回到只读
+        （设置 →「🎨 外观与启动」可以关掉这个行为）。
+
+        不算"空白"的只有两类：
+        - **清单区里的一切**（三个清单文本框、里面的留白、页签栏、区里的工具条）——
+          那正是要编辑的地方，点它不该退出；
+        - **有意图的交互控件**（按钮、输入框、滚动条、勾选框；渐变按钮和自绘开关是
+          Canvas，按标记属性认）。其余（背景 Frame/Label、日志文本框和它周围的圆角
+          底图、顶部自绘条…）一律当空白处理。
         """
         try:
-            if not self.edit_mode.get():
+            if not self.blank_exit_edit.get() or not self.edit_mode.get():
                 return
             w = event.widget
             x = w
-            for _ in range(6):                      # 往上找几层，看是不是在清单区里
+            for _ in range(30):                     # 往上找，看是不是在清单区里
                 if x is None:
-                    break
+                    break                   # （文本框 → 圆角底图 → 页 → body → 页签 → 清单区）
                 if x is getattr(self, "list_area", None):
                     return
                 x = getattr(x, "master", None)
-            if w.winfo_class() not in self._BLANK_CLASSES:
+            if w.winfo_class() in self._INTERACTIVE_CLASSES:
+                return
+            # 自绘控件：渐变按钮（Canvas + set_command）、开关卡片、圆角输入框
+            if getattr(w, "set_command", None) is not None:
+                return
+            if getattr(w, "_is_switch_row", False) or getattr(w, "_is_rounded_entry", False):
                 return
         except Exception:
             return
