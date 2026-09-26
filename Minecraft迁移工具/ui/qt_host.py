@@ -174,28 +174,9 @@ def run_host(argv):
             pass
         return 5
 
-    # 滚轮缓动：窗口里那套"泵"原来是主进程用 Tk 的 after 推的（`view.pump()`），
-    # 现在窗口在子进程里，改用一个 QTimer 推 —— 子进程有自己的事件循环，不跟谁抢。
-    # 只推**滚动缓动**，不调 `pump()`：那里面还有 processEvents，在 app.exec() 里
-    # 重入事件循环是另一类麻烦。
-    def _tick():
-        now = time.perf_counter()
-        for w in (getattr(view, "table", None), getattr(view, "cards", None)):
-            if w is None:
-                continue
-            try:
-                if getattr(w, "_sw_active", False):
-                    w.tick_scroll(now)
-            except Exception:
-                pass
-
-    泵 = QtCore.QTimer()
-    泵.setInterval(16)
-    泵.timeout.connect(_tick)
-    泵.start()
-    view._pump_timer = 泵                 # 留引用，别被回收
-
-    # 告诉主进程"窗口好了、缓动泵也起来了"（主进程日志/诊断用得到）
+    # 滚轮缓动现在由控件自己驱动（`_SmoothWheel._sw_ensure_timer`，收到滚轮就起一个
+    # 12ms 的 QTimer）。这里**不再额外 tick** —— 两处一起推会让动画速度翻倍。
+    # 只上报"窗口好了、缓动自驱可用"给主进程（诊断用）。
     写结果({"action": "ready", "kind": kind, "pump": True,
             "rows": (len(请求.get("data") or []) if kind == "diff"
                      else len(请求.get("entries") or []))})

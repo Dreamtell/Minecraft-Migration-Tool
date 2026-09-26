@@ -822,7 +822,7 @@ class _SmoothWheel:
         self._sw_target = self._sw_cur
 
     def tick_scroll(self, now=None) -> bool:
-        """泵每帧调一次，推进一步。返回是否还在动（用于省 CPU）。"""
+        """推进一步。返回是否还在动（用于省 CPU）。"""
         if not getattr(self, "_sw_active", False):
             return False
         now = time.perf_counter() if now is None else now
@@ -839,6 +839,33 @@ class _SmoothWheel:
         self._sw_cur += left * k
         bar.setValue(int(round(self._sw_cur)))
         return True
+
+    def _sw_ensure_timer(self):
+        """滚轮动画**自驱动**：收到滚轮就起一个 12ms 的 QTimer，走完自己停。
+
+        以前是靠外面每帧调 `tick_scroll()`（主进程那套：Tk 的 after 里
+        `view.pump()`）。窗口搬进独立子进程之后没人推了 —— 表现就是
+        "滚轮事件收到了、`_sw_active` 也置了，但画面不动"（用户实测）。
+        控件自带驱动就与谁在跑无关了。
+
+        早先不用 QTimer 是因为"进程内那套泵 16ms 一次，QTimer 12ms 比泵还快会吞帧"
+        —— 现在 Qt 窗口只跑在子进程里（`app.exec()` 正常工作线程事件循环），
+        不存在两个泵抢帧的问题。
+        """
+        timer = getattr(self, "_sw_timer", None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setInterval(12)
+            timer.timeout.connect(self._sw_step)
+            self._sw_timer = timer
+        timer.start()
+
+    def _sw_step(self):
+        if not self.tick_scroll(time.perf_counter()):
+            try:
+                self._sw_timer.stop()
+            except Exception:
+                pass
 
     def wheelEvent(self, ev):
         if not hasattr(self, "_sw_active"):
@@ -863,10 +890,11 @@ class _SmoothWheel:
         if not self._sw_active:
             self._sw_cur = float(bar.value())
             self._sw_target = self._sw_cur
-            self._sw_last = time.perf_counter()
+        self._sw_last = time.perf_counter()
         self._sw_target = max(float(bar.minimum()),
                               min(float(bar.maximum()), self._sw_target + delta))
         self._sw_active = True
+        self._sw_ensure_timer()                   # 自己驱动，不等外部泵
         ev.accept()
 
 
