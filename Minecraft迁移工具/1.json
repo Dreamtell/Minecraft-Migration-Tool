@@ -11,7 +11,7 @@
   },
   {
    "optionDest": "onefile",
-   "value": true
+   "value": false
   },
   {
    "optionDest": "console",
@@ -64,6 +64,10 @@
   {
    "optionDest": "hookspath",
    "value": "C:/Users/28278/Downloads/output/Minecraft\u8fc1\u79fb\u5de5\u5177"
+  },
+  {
+   "optionDest": "paths",
+   "value": "C:/Users/28278/Downloads/output/_qt"
   },
   {
    "optionDest": "hiddenimports",
