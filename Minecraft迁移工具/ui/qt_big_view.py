@@ -1162,13 +1162,14 @@ class OverviewBar(QtWidgets.QWidget):
                 y = r.top() + i * 每行
                 p.setBrush(画色)
                 if 够高:
-                    # 行高够：一行一个圆角小方块，留 1px 缝（像 minimap 的"文字行"）
+                    # 行高够：一行一个小方块，上下留 1px 缝（左右也各留 1px，
+                    # 免得色块顶到圆角背景的边上被啃掉一截）
                     p.drawRoundedRect(
-                        QtCore.QRectF(r.left() + 2.0, y, r.width() - 4.0,
+                        QtCore.QRectF(r.left() + 1.0, y, r.width() - 2.0,
                                       max(1.0, 每行 - 1.0)), 1.0, 1.0)
                 else:
                     # 太密：整宽铺一条极窄色带，缩略后就是一片"内容纹理"
-                    p.drawRect(QtCore.QRectF(r.left(), y, r.width(),
+                    p.drawRect(QtCore.QRectF(r.left() + 0.5, y, r.width() - 1.0,
                                              max(0.8, 每行)))
         # ---- 视口框：现在看得见的那一段 ----
         基色 = QtGui.QColor(th.get("card_sel_bar", "#2f7fd1"))
@@ -2108,7 +2109,7 @@ class QtBigView(QtWidgets.QWidget):
         # 列表 + 右侧总览条（VSCode minimap 那种：整份列表压成一条竖缩略图）
         列表行 = QtWidgets.QHBoxLayout()
         列表行.setContentsMargins(0, 0, 0, 0)
-        列表行.setSpacing(4)
+        列表行.setSpacing(0)            # 紧贴滚动条：中间留缝会让左边看着多出几像素
         列表行.addWidget(self.stack, 1)
         self.overview = OverviewBar(th, self)
         列表行.addWidget(self.overview)

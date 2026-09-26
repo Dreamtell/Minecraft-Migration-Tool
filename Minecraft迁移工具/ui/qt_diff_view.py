@@ -492,7 +492,7 @@ class QtDiffView(QtWidgets.QWidget):
         # 列表 + 右侧总览条（VSCode minimap 那种：整份差异压成一条竖缩略图）
         列表行 = QtWidgets.QHBoxLayout()
         列表行.setContentsMargins(0, 0, 0, 0)
-        列表行.setSpacing(4)
+        列表行.setSpacing(0)            # 紧贴滚动条：中间留缝会让左边看着多出几像素
         列表行.addWidget(self.stack, 1)
         self.overview = OverviewBar(th, self)
         列表行.addWidget(self.overview)
