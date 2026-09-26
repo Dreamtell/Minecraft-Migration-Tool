@@ -2003,9 +2003,10 @@ class SwitchRow(tk.Canvas):
     自绘（PIL 出图 + canvas 贴图）：圆角卡片底 + iOS 那种圆角开关 + 标题/说明文字。
 
     - 开关滑动约 130ms，**按真实时间插值**（Tk 的 after 精度只有 ~15ms，按帧数计时长会飘）；
-    - 所有静态图（卡片底、轨道、滑块）都缓存，动画每帧只做合成 + 贴图，帧间隔才稳得住；
-    - 圆角与圆形一律走 4 倍超采样（滑块原来直接 ellipse，圆边是有锯齿的）；
-    - 开启时卡片和开关染成主题强调色，说明文字换成警示语气；悬停整条微亮。
+    - 所有静态图（卡片底、轨道、滑块）都缓存，动画每帧只做合成 + 贴图；
+    - 圆角与圆形一律走 4 倍超采样（滑块要是直接画圆，边上是锯齿的）；
+    - 可点性靠**手型光标**提示，不做悬停高亮（用户要的干净）；
+    - 开启时卡片和开关染成主题强调色，说明文字换成**鲜红**警示语。
 
     用法：
         row = SwitchRow(parent, theme, "主界面编辑", "直接改动清单文字 · 谨慎使用",
@@ -2018,8 +2019,10 @@ class SwitchRow(tk.Canvas):
     _KNOB = 16                  # 滑块直径
     _PAD_L = 12                 # 左边距
     _GAP = 12                   # 开关与文字之间
-    _TICK_MS = 10               # 帧间隔；实际进度按真实时间算，所以这个数只影响细腻度
+    _TICK_MS = 10               # 帧间隔；实际进度按真实时间算，这个数只影响细腻度
     _DURATION = 0.13            # 动画时长（秒）
+    _WARN_LIGHT = "#e53935"     # 浅色主题下的警示红（比主题的 fail_fg 更艳）
+    _WARN_DARK = "#ff6b6b"      # 深色主题下用亮一点的红
 
     def __init__(self, parent, theme, title, desc="", command=None, height=46, **kw):
         try:
@@ -2035,8 +2038,6 @@ class SwitchRow(tk.Canvas):
         self._on = False
         self._t = 0.0               # 0=关，1=开（动画中间值）
         self._job = None
-        self._hover = False
-        self._hover_knob = False
         self._cw = 0
         self._photo = None
         self._img = self.create_image(0, 0, anchor="nw")
@@ -2045,11 +2046,12 @@ class SwitchRow(tk.Canvas):
         self._desc_id = self.create_text(0, 0, anchor="w", tags="txt",
                                          font=("微软雅黑", 9))
         self._cache_clear()
+        try:
+            self.configure(cursor="hand2")      # 可点：手型提示，不再靠悬停高亮
+        except Exception:
+            pass
         self.bind("<Configure>", lambda _e: self._on_resize())
         self.bind("<Button-1>", lambda _e: self.toggle())
-        self.bind("<Enter>", lambda _e: self._set_hover(True))
-        self.bind("<Leave>", lambda _e: self._set_hover(False))
-        self.bind("<Motion>", self._on_motion)
         self._layout_text()
 
     # ---------------------------------------------------------------- 对外
@@ -2091,23 +2093,21 @@ class SwitchRow(tk.Canvas):
         """主题/宽度变了就把出好的图丢掉重来。"""
         self._card_off = self._card_on = None
         self._track_off = self._track_on = None
-        self._knob = self._knob_shadow = None
+        self._knob = None
 
     def _on_resize(self):
         self._cache_clear()
         self._redraw()
         self._layout_text()
 
-    def _set_hover(self, on):
-        if on != self._hover:
-            self._hover = on
-            self._redraw()
-
-    def _on_motion(self, event):
-        在开关上 = self._PAD_L <= event.x <= self._PAD_L + self._SW
-        if 在开关上 != self._hover_knob:
-            self._hover_knob = 在开关上
-            self._redraw()
+    def _warn_color(self):
+        """警示语颜色：浅色主题用鲜红，深色主题用亮红 —— 都要够扎眼。"""
+        try:
+            if is_dark_theme(self.theme):
+                return self._WARN_DARK
+        except Exception:
+            pass
+        return self._WARN_LIGHT
 
     def _layout_text(self):
         """标题跟在开关右边，说明跟在标题右边（用画布文字，字体渲染比 PIL 好）。"""
@@ -2121,8 +2121,7 @@ class SwitchRow(tk.Canvas):
         self.itemconfig(
             self._desc_id,
             text=self._desc if not 开 else "⚠ 已开启：改动会直接写入清单",
-            fill=self.theme.get("fail_fg", "#c62828") if 开
-            else self.theme.get("muted_fg", "#888"))
+            fill=self._warn_color() if 开 else self.theme.get("muted_fg", "#888"))
         self.tag_raise("txt")
 
     def _text_width(self):
@@ -2180,14 +2179,12 @@ class SwitchRow(tk.Canvas):
                                        self._rgb(self.theme.get("edit_bg", "#ff9800")))
         return self._track_off, self._track_on
 
-    def _knob_imgs(self):
+    def _knob_img(self):
         if self._knob is None:
             # 圆形也走 _圆角矩形（半径=半边）—— 4 倍超采样，圆边才不会有锯齿
             self._knob = _圆角矩形((self._KNOB, self._KNOB), self._KNOB / 2.0,
                                    (255, 255, 255, 255))
-            尺寸 = self._KNOB + 4
-            self._knob_shadow = _圆角矩形((尺寸, 尺寸), 尺寸 / 2.0, (0, 0, 0, 42))
-        return self._knob, self._knob_shadow
+        return self._knob
 
     def _redraw(self):
         self._cw = max(60, int(self.winfo_width()))
@@ -2196,18 +2193,13 @@ class SwitchRow(tk.Canvas):
         off, on = self._card_imgs()
         卡片 = _PILImage.blend(off, on, max(0.0, min(1.0, 0.18 * self._t)))
         帧.alpha_composite(卡片, (0, 3))
-        if self._hover:                       # 悬停：整条微亮
-            白 = _PILImage.new("RGBA", (self._cw, 高 - 6), (255, 255, 255, 16))
-            帧.alpha_composite(白, (0, 3))
         toff, ton = self._track_imgs()
         轨道 = _PILImage.blend(toff, ton, max(0.0, min(1.0, self._t)))
         ox, oy = self._PAD_L, int((高 - self._SH) / 2)
         帧.alpha_composite(轨道, (ox, oy))
-        knob, shadow = self._knob_imgs()
+        knob = self._knob_img()
         行 = ox + 3 + int((self._SW - 6 - self._KNOB) * self._t)
         ky = oy + (self._SH - self._KNOB) // 2
-        if self._hover_knob:
-            帧.alpha_composite(shadow, (行 - 2, ky - 2))
         帧.alpha_composite(knob, (行, ky))
         try:
             self._photo = _PILImageTk.PhotoImage(帧)
