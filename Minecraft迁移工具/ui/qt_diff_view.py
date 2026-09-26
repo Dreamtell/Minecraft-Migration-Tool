@@ -107,8 +107,15 @@ class DiffStore(QtCore.QObject):
 
         刻意不掺"已勾选"：差异窗口里「新增」默认就是全勾的，一掺进去整条都是蓝的，
         反而看不出状态分布了。
+        「新增」= 正常状态 → 半透明淡下去；更新/降级/目标独有保持原色，才显眼。
         """
-        return [self.status_color(self.items[i]) for i in self.order]
+        淡 = OverviewBar._ALPHA_DIM
+        出 = []
+        for i in self.order:
+            it = self.items[i]
+            色 = self.status_color(it)
+            出.append((色, 淡) if getattr(it, "status", "") == "新增" else 色)
+        return 出
 
     def checked_data(self):
         """所有勾选条目的"显示名"（应用时给主界面写清单用）。"""

@@ -474,9 +474,8 @@ class Store(QtCore.QObject):
     def overview_colors(self, theme=None) -> list:
         """右侧总览条的配色：**每个当前显示的行**一个颜色（顺序 = 屏幕上的顺序）。
 
-        勾选 > 缺失 > 新加 > 存在 > 未知 —— 一眼能看出选区和哪几条不存在。
-        颜色交给控件去画，store 只负责"哪一行是什么色"（主题由窗口传进来，
-        Store 本身不存主题）。
+        "正常"的行给 `(色, 半透明)` 淡下去（存在 → 绿、未检测 → 灰），
+        需要一眼看到的给原色：勾选蓝、缺失红、新加橙。
         """
         th = dict(theme or {})
         选 = th.get("card_sel_bar", "#2f7fd1")
@@ -484,6 +483,7 @@ class Store(QtCore.QObject):
         在 = th.get("ok_fg", "#2e7d32")
         新 = th.get("warn_fg", "#e65100")
         灰 = th.get("muted_fg", "#9e9e9e")
+        淡 = OverviewBar._ALPHA_DIM
         出 = []
         for i in self.order:
             it = self.items[i]
@@ -494,9 +494,9 @@ class Store(QtCore.QObject):
             elif it.is_new:
                 出.append(新)
             elif it.status == "✅ 存在":
-                出.append(在)
+                出.append((在, 淡))            # 正常：半透明，当背景
             else:
-                出.append(灰)
+                出.append((灰, 淡))            # 还没检测：也淡
         return 出
 
     # ---- 增删 ----
@@ -1111,11 +1111,10 @@ class OverviewBar(QtWidgets.QWidget):
 
     jumped = QtCore.Signal(float)       # 0..1：视口中心要挪到整份列表的哪个位置
 
-    # 色块的不透明度：0=完全透明、255=原色。总览是"看分布"的，不是"看颜色"的 ——
-    # 原色铺满一条太抢眼（一屏"新增"就等于一根绿柱子）。做成**半透明**：色块盖在
-    # 轨道底色上，透出底色的那层灰，观感就是 minimap 那种淡淡的缩略，
-    # 而状态差异（绿/橙/红/灰）照样分得出来。
-    _ALPHA = 110
+    # 半透明的浓度：只给"正常"那一类状态用（0=看不见、255=原色）。
+    # 总览是"看分布 + 找异常"的：正常（存在 / 新增）淡下去当背景，
+    # 异常（缺失 / 降级 / 更新）用原色，一眼就从一片淡色里跳出来。
+    _ALPHA_DIM = 110
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
@@ -1131,6 +1130,11 @@ class OverviewBar(QtWidgets.QWidget):
 
     # ---- 对外 ----
     def set_colors(self, colors):
+        """颜色列表：每一项可以是 `"#rrggbb"`（原色），也可以是 `(色, alpha)`。
+
+        需要"淡下去"的行由调用方给成元组（正常状态）；异常状态给纯色就行 ——
+        这样"哪些该安静、哪些该醒目"由语义决定，控件只管画。
+        """
         self._colors = list(colors or [])
         self.update()
 
@@ -1159,13 +1163,17 @@ class OverviewBar(QtWidgets.QWidget):
             够高 = 每行 >= 1.2
             p.setRenderHint(QtGui.QPainter.Antialiasing, 够高)
             for i in range(n):
-                色 = self._colors[i]
-                if not 色:
+                项 = self._colors[i]
+                if not 项:
                     continue
+                if isinstance(项, (tuple, list)):
+                    色, 透明 = 项[0], int(项[1])
+                else:
+                    色, 透明 = 项, 255          # 纯色 = 原色（异常状态要醒目）
                 画色 = QtGui.QColor(色)
                 if not 画色.isValid():
                     continue
-                画色.setAlpha(self._ALPHA)          # 压淡：总览条别抢列表的注意力
+                画色.setAlpha(max(0, min(255, 透明)))
                 y = r.top() + i * 每行
                 p.setBrush(画色)
                 if 够高:
@@ -1184,7 +1192,9 @@ class OverviewBar(QtWidgets.QWidget):
         y1 = r.top() + 高 * self._v1
         框 = QtCore.QRectF(r.left(), y0, r.width(), max(6.0, y1 - y0))
         填充 = QtGui.QColor(基色)
-        填充.setAlpha(78 if (self._hover or self._dragging) else 34)
+        # 静止时**不填**：填一层半透明蓝会把下面的色块染偏色（"原色"就不准了），
+        # 悬停/拖动时才给一点填充，提示"你现在拖的就是这一段"
+        填充.setAlpha(70 if (self._hover or self._dragging) else 0)
         边色 = QtGui.QColor(基色)
         边色.setAlpha(235)
         笔 = QtGui.QPen(边色)
