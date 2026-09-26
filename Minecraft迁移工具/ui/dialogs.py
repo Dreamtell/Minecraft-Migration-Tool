@@ -805,7 +805,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
     copy_proj_btn.pack(side="right", padx=4)
 
     create_gradient_button(win, "关闭", win.destroy,
-                           colors=("#757575", "#9e9e9e"),
+                           colors=("#e53935", "#c62828"),
                            width=72, height=30, font=("微软雅黑", 9, "bold")).pack(pady=8)
 
     # ---- 状态与线程安全更新（队列 + 轮询） ----

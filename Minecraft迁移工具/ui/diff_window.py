@@ -547,7 +547,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                            width=102, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 2))
     create_gradient_button(btn_frame, "关闭", diff_win.destroy,
-                           colors=("#757575", "#9e9e9e"),
+                           colors=("#e53935", "#c62828"),
                            width=62, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
 

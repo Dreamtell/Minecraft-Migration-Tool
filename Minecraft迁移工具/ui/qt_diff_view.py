@@ -403,7 +403,7 @@ class QtDiffView(QtWidgets.QWidget):
         self.btn_dir = AnimButton("▲ 升序", "#607d8b", "#455a64", th)
         mid.addWidget(self.btn_dir)
         self.btn_apply = AnimButton("✅ 应用所选", "#00c853", "#00a344", th)
-        self.btn_close = AnimButton("✖ 关闭", "#757575", "#5a5a5a", th)
+        self.btn_close = AnimButton("✖ 关闭", "#e53935", "#c62828", th)
         mid.addWidget(self.btn_apply)
         mid.addWidget(self.btn_close)
         lay.addLayout(mid)

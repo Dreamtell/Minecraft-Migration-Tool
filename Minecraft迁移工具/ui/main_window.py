@@ -1732,7 +1732,7 @@ class MigrationGUI:
         row = tk.Frame(win, bg=self.theme["bg"])
         row.pack(fill="x", padx=14, pady=14)
         create_gradient_button(row, "关闭", win.destroy,
-                               colors=("#757575", "#9e9e9e"),
+                               colors=("#e53935", "#c62828"),
                                width=90, height=30,
                                font=("微软雅黑", 9, "bold")).pack(side="right")
 
@@ -2700,7 +2700,7 @@ class MigrationGUI:
         count_lbl.pack(side="left", padx=4)
         btn_close = create_gradient_button(
             toolbar, "❌ 关闭", win.destroy,
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=_grad_width("❌ 关闭"), height=28, font=("微软雅黑", 9, "bold"))
         btn_refresh = create_gradient_button(
             toolbar, "🔄 刷新",
@@ -4124,7 +4124,7 @@ class MigrationGUI:
                  fg=self.theme.get("muted_fg", "#808080")).pack(side="left")
         btn_close_hist = create_gradient_button(
             bottom, "✖ 关闭", hist_win.destroy,
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=_grad_width("✖ 关闭"), height=30, font=("微软雅黑", 9, "bold"))
         btn_close_hist.pack(side="right")
         apply_theme_to_widget_tree(hist_win, self.theme)
@@ -6978,7 +6978,7 @@ class MigrationGUI:
         # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click / _on_row_double）
         btn_close_big = create_gradient_button(
             row_btns, "✖ 关闭", lambda: _close_popup(win),
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=_BTN_W, height=30, font=("微软雅黑", 9, "bold"))
         # 右边这一排：同样按配置摆（卡片视图只有模组清单才有）
         self._pack_window_btns("bigview", row_btns,

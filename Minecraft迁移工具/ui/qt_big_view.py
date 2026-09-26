@@ -1385,6 +1385,9 @@ class DetailDialog(QtWidgets.QDialog):
         reveal = QtWidgets.QPushButton("📂 打开所在位置")
         reveal.clicked.connect(lambda: on_reveal(it.path))
         close = QtWidgets.QPushButton("关闭")
+        close.setStyleSheet("QPushButton{background:#e53935;color:#ffffff;border:none;"
+                            "border-radius:6px;padding:6px 18px;}"
+                            "QPushButton:hover{background:#c62828;}")
         close.clicked.connect(self.accept)
         btns.addWidget(reveal)
         btns.addWidget(close)
@@ -1667,7 +1670,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.btn_page = AnimButton("🌍 打开项目页", "#43a047", "#2e7d32", th)
         self.btn_dl = AnimButton("⬇️ 打开下载页", "#3f8ae0", "#2f6fd0", th)
         self.btn_copy = AnimButton("📋 复制下载链接", "#6b7280", "#4b5563", th)
-        self.btn_close = AnimButton("关闭", "#757575", "#616161", th)
+        self.btn_close = AnimButton("关闭", "#e53935", "#c62828", th)
         for b in (self.btn_page, self.btn_dl, self.btn_copy, self.btn_close):
             act.addWidget(b)
         act.addStretch(1)
