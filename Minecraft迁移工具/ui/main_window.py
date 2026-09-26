@@ -574,6 +574,74 @@ class MigrationGUI:
     }
     _LOG_TAGS = tuple(_LOG_COLOR_KEYS)
 
+    def _bind_log_locate(self, widget):
+        """给日志控件挂上"双击哪一行，就跳到那一条"（主日志和放大日志都用它）。"""
+        try:
+            widget.bind("<Double-Button-1>",
+                        lambda e, w=widget: self._locate_from_log(w, e), add="+")
+        except Exception:
+            pass
+
+    def _locate_from_log(self, widget, event=None):
+        """把日志里这一行提到的清单条目定位出来：切到对应页签、选中并滚到可见。
+
+        不去解析日志格式（"❌ 复制失败: xxx.jar（原因）"这种写法太容易变），而是拿清单里
+        的条目名去这一行里找 —— 谁被提到，谁就是"出错的位置"。
+        """
+        try:
+            if event is not None:
+                行 = widget.index("@%d,%d" % (event.x, event.y))
+            else:
+                行 = widget.index("insert")
+            行号 = int(行.split(".")[0])
+            文本 = widget.get("%d.0" % 行号, "%d.end" % 行号).strip()
+        except Exception:
+            return
+        if not 文本:
+            return
+        for 索引, 框, 页名 in ((0, self.mod_text, "模组清单"),
+                             (1, self.config_text, "config 清单"),
+                             (2, self.extra_text, "其它文件")):
+            try:
+                条目 = 框.get("1.0", "end-1c").splitlines()
+            except Exception:
+                continue
+            for i, 条 in enumerate(条目, start=1):
+                名 = Path(条.strip()).name
+                if 名 and 名 in 文本:
+                    self._goto_list_line(索引, 框, i, 名, 页名)
+                    return
+        messagebox.showinfo("定位", "这一行里没提到清单中的条目。", parent=self.root)
+
+    def _goto_list_line(self, 页索引, 框, 行号, 名, 页名):
+        """切到那一页、把这一行选中 + 滚到可见，并闪一下高亮。"""
+        try:
+            self.list_tabs.select(页索引, animate=False)
+        except Exception:
+            pass
+        只读 = str(框.cget("state")) == "disabled"
+        try:
+            if 只读:                      # 只读的 Text 没法选中，临时放开一下
+                框.configure(state=tk.NORMAL)
+            框.tag_remove("locate", "1.0", "end")
+            框.tag_configure("locate",
+                             background=self.theme.get("card_sel_bg", "#d4e6f8"),
+                             foreground=self.theme.get("card_sel_fg", "#0d3d63"))
+            框.tag_add("locate", "%d.0" % 行号, "%d.end" % 行号)
+            框.mark_set("insert", "%d.0" % 行号)
+            框.see("%d.0" % 行号)
+            框.focus_set()
+            self.root.after(1800, lambda w=框: w.tag_remove("locate", "1.0", "end"))
+        except Exception:
+            pass
+        finally:
+            if 只读:
+                try:
+                    框.configure(state=tk.DISABLED)
+                except Exception:
+                    pass
+        self.log(f"📍 已定位到「{名}」（{页名} 第 {行号} 行）", level="INFO", save=False)
+
     def init_log_colors(self):
         """按当前主题设置日志分类颜色（INFO/警告/错误/成功/模拟）。"""
         self._configure_log_colors(self.log_text)
@@ -586,6 +654,12 @@ class MigrationGUI:
             color = self.theme.get(key, default.get(tag, "gray"))
             try:
                 widget.tag_config(tag, foreground=color)
+            except Exception:
+                pass
+        # 错误/警告行再给个底色：一屏日志里能一眼扫到出问题的那几行
+        for tag, bkey in (("ERROR", "danger_bg"), ("WARNING", "warn_bg")):
+            try:
+                widget.tag_config(tag, background=self.theme.get(bkey, ""))
             except Exception:
                 pass
 
@@ -801,6 +875,13 @@ class MigrationGUI:
                     _bar.set_theme(self.theme)
                 except Exception:
                     pass
+        if hasattr(self, 'log_hint_label'):
+            try:
+                self.log_hint_label.configure(
+                    bg=self.theme["bg"],
+                    fg=self.theme.get("muted_fg", self.theme["fg"]))
+            except Exception:
+                pass
         # 清单区的标签页（自绘圆角药丸）也要跟着换色
         _tabs = getattr(self, "list_tabs", None)
         if _tabs is not None:
@@ -2354,6 +2435,7 @@ class MigrationGUI:
         big = self._log_big_box.text
         self._log_big_box.pack(fill="both", expand=True, padx=8, pady=8)
         self._log_big_text = big
+        self._bind_log_locate(big)               # 放大的日志窗也能双击定位
         self._smooth(big)
 
         # 使用与主日志一致的语义色（随主题）
@@ -2997,6 +3079,12 @@ class MigrationGUI:
             width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         btn_big_log.pack(side="left", padx=5)
         self.log_magnify_btn = btn_big_log      # 打开中要改它的文字
+        # 提示：日志里出错的行可以直接双击定位过去
+        self.log_hint_label = tk.Label(
+            log_toolbar, text="💡 双击日志行可定位到清单里的那条",
+            bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+            font=("微软雅黑", 8))
+        self.log_hint_label.pack(side="left", padx=(10, 0))
         btn_clear_log = create_gradient_button(
             log_toolbar, "🗑️ 清空日志", self.clear_log,
             colors=("#757575", "#9e9e9e"),
@@ -3020,6 +3108,7 @@ class MigrationGUI:
                                             fg=self.theme["log_fg"])
         self.log_text_box.pack(fill="both", expand=True, padx=2, pady=2)
         self.log_text = self.log_text_box.text
+        self._bind_log_locate(self.log_text)     # 双击日志行 → 定位到清单条目
         # 试验：日志区平滑滚动。手动往上滚时暂停"自动跟到底"，滚回底部再恢复，
         # 否则日志一边涌入、一边把你拽回底部，根本翻不上去。
         self._log_follow = True
