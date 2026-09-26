@@ -250,9 +250,9 @@ class _ScanTask(QtCore.QRunnable):
 # 数据
 # --------------------------------------------------------------------------- #
 class Entry:
-    """一条清单条目。sel_t = 选中动画进度(0..1)，由委托绘制使用。"""
-    __slots__ = ("entry", "key", "is_new", "checked", "sel_t", "status", "name", "path",
-                 "type", "modid", "version", "size", "cn", "disp", "desc", "tags",
+    """一条清单条目。sel_t = 选中动画进度(0..1)，pop_t = 进场/退场进度(0..1)，都由委托绘制使用。"""
+    __slots__ = ("entry", "key", "is_new", "checked", "sel_t", "pop_t", "status", "name",
+                 "path", "type", "modid", "version", "size", "cn", "disp", "desc", "tags",
                  "tags_online", "icon_path", "scanned")
 
     def __init__(self, entry: str, is_new: bool = False):
@@ -261,6 +261,7 @@ class Entry:
         self.is_new = is_new
         self.checked = False
         self.sel_t = 0.0
+        self.pop_t = 1.0            # 1=完全就位；新加的会先被设成 0，再动画到 1
         self.status = "…"
         self.name = Path(entry).name or entry
         self.path = str(entry)
@@ -892,6 +893,27 @@ class CardModel(QtCore.QAbstractListModel):
         return None
 
 
+class TableDelegate(QtWidgets.QStyledItemDelegate):
+    """表格视图的默认绘制 + 一点"进场/退场"效果。
+
+    表格本来用的是 Qt 默认委托（直接画文本），要动透明度就得自己包一层：
+    pop_t < 1 时整行半透明、并从左边 12px 滑到位。**不动其它任何绘制逻辑**，
+    pop_t 到 1 就直接交给父类，零额外开销。
+    """
+
+    def paint(self, painter, option, index):
+        it = index.data(ROLE_ITEM)
+        pop = float(getattr(it, "pop_t", 1.0) or 1.0) if it is not None else 1.0
+        if pop >= 0.999:
+            super().paint(painter, option, index)
+            return
+        painter.save()
+        painter.setOpacity(0.10 + 0.90 * pop)
+        painter.translate(-(1.0 - pop) * 12, 0)
+        super().paint(painter, option, index)
+        painter.restore()
+
+
 class CardDelegate(QtWidgets.QStyledItemDelegate):
     """自绘卡片：圆角 + 伪阴影 + 选中蓝底 + 左侧高亮条 + 悬停操作图标。"""
     ACTIONS = (("info", "ℹ"), ("reveal", "📂"), ("remove", "🗑"))
@@ -977,6 +999,11 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         rect = QtCore.QRectF(option.rect).adjusted(CARD_MARGIN, CARD_MARGIN // 2 + 1,
                                                    -CARD_MARGIN, -CARD_MARGIN // 2 - 1)
         sel = float(it.sel_t or 0.0)
+        # 进场/退场：半透明 + 从左边滑进来（pop_t 到 1 时这两步都是零成本）
+        pop = float(getattr(it, "pop_t", 1.0) or 1.0)
+        if pop < 0.999:
+            painter.setOpacity(0.10 + 0.90 * pop)
+            painter.translate(-(1.0 - pop) * 16, 0)
         hovered = (row == self.hover_row)
         card_bg = th.get("entry_bg", "#f7f7f7")
         fill = card_bg
@@ -1664,6 +1691,7 @@ class QtBigView(QtWidgets.QWidget):
         self.table.customContextMenuRequested.connect(self._on_table_menu)
         self.table.mouseMoveEvent = self._table_mouse_move
         self.table.leaveEvent = self._table_leave
+        self.table.setItemDelegate(TableDelegate(self.table))
 
         self.card_model = CardModel(self.store, self)
         self.cards = SmoothCards()
@@ -1699,6 +1727,9 @@ class QtBigView(QtWidgets.QWidget):
         lay.addLayout(bottom)
 
         self._sel_anims = {}
+        self._pop_anims = {}            # 进场/退场动画（键 = id(item)）
+        self._pending_remove = None     # 退场动画播完要真删的那批条目
+        self._remove_left = 0           # 还有几条退场动画没播完
         self._dialogs = []              # 非模态对话框/菜单的引用（防回收）
         self._card_hit = (-1, None)
         self._dc_row = None             # 双击后要吃掉一次 clicked 的行号（见 _eat_click）
@@ -1939,8 +1970,11 @@ class QtBigView(QtWidgets.QWidget):
         elif action == "toggle":
             self._toggle_row(row)          # 不依赖双击窗口的选中/取消选中
         elif action == "remove":
-            if self.store.remove_one(row):
-                self._write_back()
+            # 单条移除也播一下退场：播完再真删
+            it = self.store.at(row)
+            self._pending_remove = lambda r=row: self._finish_remove_one(r)
+            self._remove_left = 1
+            self._animate_pop(it, 0.0)
 
     # ---------------- 通用动作 ----------------
     def _toggle_row(self, row):
@@ -1989,6 +2023,90 @@ class QtBigView(QtWidgets.QWidget):
                                               self.table_model.index(row,
                                                                      self.table_model.columnCount() - 1))
 
+    # ---------------- 加/删的进场退场动画 ----------------
+    def _animate_pop(self, it, target, duration=190):
+        """条目进场（0→1）/ 退场（1→0）。
+
+        **逐帧用 Tk 的 after 推，不用 QVariantAnimation**：退场播完要立刻重建模型，
+        而 QVariantAnimation 的收尾和 beginResetModel 撞在一起会让解释器崩
+        （实测 0xC0000409 / PyEval_RestoreThread）。逐帧推的收尾就落在 Tk 的 after
+        回调里，和别的 Tk 操作同一个上下文，安全；顺带也和窗口里别的动画（平滑滚动）
+        用同一套驱动方式。
+
+        进场：新加的条目从半透明、略偏左滑到位；
+        退场：先播完再真正从清单里删（见 _do_remove_selected），不然行会「啪」地消失。
+        """
+        after = self.hooks.get("after")
+        key = id(it)
+        old = self._pop_anims.pop(key, None)
+        cancel = self.hooks.get("after_cancel")
+        if old is not None and cancel is not None:
+            try:
+                cancel(old)
+            except Exception:
+                pass
+        if after is None:                   # 没有 after 钩子（独立使用本模块时）：直接到位
+            it.pop_t = float(target)
+            self._on_pop_frame(it, target)
+            self._on_pop_done(key, it, float(target))
+            return
+        起点 = float(it.pop_t)
+        开始 = time.perf_counter()
+        秒 = max(0.001, duration / 1000.0)
+
+        def 帧():
+            k = min(1.0, max(0.0, (time.perf_counter() - 开始) / 秒))
+            缓动 = (1.0 - (1.0 - k) ** 3) if target >= 起点 else (k ** 3)
+            v = 起点 + (target - 起点) * 缓动
+            it.pop_t = v
+            self._on_pop_frame(it, v)
+            if k >= 1.0:
+                self._pop_anims.pop(key, None)
+                self._on_pop_done(key, it, float(target))
+                return
+            try:
+                self._pop_anims[key] = after(16, 帧)
+            except Exception:
+                self._pop_anims.pop(key, None)
+
+        帧()
+
+    def _on_pop_frame(self, it, v):
+        it.pop_t = float(v)
+        row = self.store.row_of(it)
+        if row < 0:
+            return
+        idx = self.card_model.index(row, 0)
+        self.card_model.dataChanged.emit(idx, idx)
+        self.table_model.dataChanged.emit(self.table_model.index(row, 0),
+                                          self.table_model.index(
+                                              row, self.table_model.columnCount() - 1))
+
+    def _on_pop_done(self, key, it, target):
+        self._pop_anims.pop(key, None)
+        it.pop_t = float(target)
+        if target > 0.001:                  # 进场播完，没事了
+            return
+        self._remove_left = max(0, self._remove_left - 1)
+        if self._remove_left == 0 and self._pending_remove is not None:
+            fn, self._pending_remove = self._pending_remove, None
+            self._run_pending_remove(fn)    # 这会儿在 Tk 的 after 回调里，可以放心重建模型
+
+    def _run_pending_remove(self, fn):
+        try:
+            fn()                            # 动画播完才真删
+        except Exception:
+            trace_exc("qt_big_view", "退场动画结束后执行删除")
+
+    def _add_with_pop(self, paths) -> int:
+        """加条目，并给新加的那几条播进场动画（返回新增数量）。"""
+        before = len(self.store.items)
+        n = self.store.add_entries(paths)
+        for it in self.store.items[before:before + n]:
+            it.pop_t = 0.0
+            self._animate_pop(it, 1.0)
+        return n
+
     def _on_detect(self):
         self.store.scan_all()
 
@@ -2007,14 +2125,32 @@ class QtBigView(QtWidgets.QWidget):
         self.store.set_query(text)
 
     def _write_back(self):
-        """把清单写回主界面（增删后立刻同步，和 Tk 版行为一致；关窗时再补一次）。"""
+        """把清单写回主界面（增删后立刻同步，和 Tk 版行为一致；关窗时再补一次）。
+
+        **必须交给 Tk 的 after 去写**：这里有时是从 Qt 的事件回调里进来的
+        （比如退场动画结束后那条 QTimer），而那时主线程正卡在 `processEvents()` 里。
+        在那里面直接改 Tk 控件会让两套消息循环打架 —— 实测删除时必崩
+        （`PyEval_RestoreThread ... the GIL is released`）。hooks 里给了 defer
+        就走它，没有就退化成直接调用（老调用方仍然能用）。
+        """
         cb = self.hooks.get("write_back")
         if cb is None:
             return
-        try:
-            cb(self.store.entry_texts())
-        except Exception:
-            pass
+        defer = self.hooks.get("defer")
+
+        def 执行():
+            try:
+                cb(self.store.entry_texts())
+            except Exception:
+                pass
+
+        if defer is not None:
+            try:
+                defer(执行)
+                return
+            except Exception:
+                pass
+        执行()
 
     # ---------------- 拖入文件 ----------------
     # 为什么不用 Qt 自带的拖放（setAcceptDrops + dropEvent）：
@@ -2091,7 +2227,7 @@ class QtBigView(QtWidgets.QWidget):
                           "只支持拖入 .jar 模组文件。" if self.store.is_mod
                           else "拖入的文件不在源整合包的 config 目录下。")
             return
-        n = self.store.add_entries(收)
+        n = self._add_with_pop(收)
         if not n:
             self._message("添加提示", "这些条目已经在清单里了。")
             return
@@ -2102,6 +2238,8 @@ class QtBigView(QtWidgets.QWidget):
         self._message("添加成功", 提示)
 
     def _on_remove(self):
+        if self._pending_remove is not None:
+            return                          # 上一批的退场动画还没播完
         n = len(self.store.selected_items())
         if not n:
             self._message("提示", "请先选中要移出的条目（单击行/卡片即选中）。")
@@ -2110,8 +2248,25 @@ class QtBigView(QtWidgets.QWidget):
                       self._do_remove_selected)
 
     def _do_remove_selected(self):
+        """先让「看得见的那几条」淡出，动画播完再真删；看不见的直接删掉就行。"""
+        items = self.store.selected_items()
+        可见 = [it for it in items if self.store.row_of(it) >= 0]
+        if not 可见:
+            self.store.remove_selected()
+            self._write_back()
+            return
+        self._pending_remove = self._finish_remove_selected
+        self._remove_left = len(可见)
+        for it in 可见:
+            self._animate_pop(it, 0.0)
+
+    def _finish_remove_selected(self):
         self.store.remove_selected()
         self._write_back()
+
+    def _finish_remove_one(self, row):
+        if self.store.remove_one(row):
+            self._write_back()
 
     def _on_add(self):
         dlg = QtWidgets.QFileDialog(self, "选择要添加的模组（可多选）")
@@ -2124,7 +2279,7 @@ class QtBigView(QtWidgets.QWidget):
         def _picked(files):
             if not files:
                 return
-            n = self.store.add_entries(list(files))
+            n = self._add_with_pop(list(files))
             if n:
                 self._write_back()
                 self._message("添加成功", "已添加 %d 个模组。" % n)

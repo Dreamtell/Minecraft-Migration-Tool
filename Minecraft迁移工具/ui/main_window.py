@@ -1701,7 +1701,13 @@ class MigrationGUI:
                 entries, is_mod, sp, title, self.theme,
                 online_tags=bool(getattr(self, "online_tags", False)),
                 cards=(getattr(self, "big_view_view", "table") == "cards"),
-                hooks={"write_back": lambda texts: self._qt_apply_entries(source_text, texts)})
+                hooks={"write_back": lambda texts: self._qt_apply_entries(source_text, texts),
+                       # 让 Qt 侧把"改 Tk 控件"和"逐帧动画"的活儿都丢回 Tk 的 after：
+                       # 从 Qt 的 processEvents 回调里直接改 Tk 控件会让两套消息循环打架
+                       # （实测退场动画结束后删除时会崩）。
+                       "defer": lambda fn: self.root.after(0, fn),
+                       "after": lambda ms, fn: self.root.after(ms, fn),
+                       "after_cancel": lambda job: self.root.after_cancel(job)})
         except Exception as e:
             self.log(f"⚠ PySide6 窗口创建失败：{e}", level="ERROR", save=False)
             return False
