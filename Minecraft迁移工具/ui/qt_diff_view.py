@@ -121,7 +121,14 @@ class DiffStore(QtCore.QObject):
             idxs.sort(key=self._sort_key(self.sort_col), reverse=self.sort_rev)
         self.order = idxs
         self._pos = {id(self.items[i]): r for r, i in enumerate(idxs)}
+        self._want_top = True          # 重新排序/过滤 → 列表回到顶部
         self.reset.emit()
+
+    def take_want_top(self):
+        """取一次"这次 reset 要不要把列表滚回顶部"，取完就清掉。"""
+        v = getattr(self, "_want_top", False)
+        self._want_top = False
+        return v
 
     def _sort_key(self, col):
         def key(i):
@@ -157,6 +164,7 @@ class DiffStore(QtCore.QObject):
         for it in self.items:
             it.checked = bool(pred(it))
             it.sel_t = 1.0 if it.checked else 0.0     # 批量改直接到位，不逐个动画
+        self._want_top = False        # 批量全选/清空不该把列表拽回顶部
         self.reset.emit()
 
 
@@ -476,6 +484,7 @@ class QtDiffView(QtWidgets.QWidget):
 
         self._apply_style()
         self._update_summary()
+        self.store.reset.connect(self._on_store_reset)
         self.store.rebuild()
 
     # ------------------------------------------------------------------ 主题
@@ -524,10 +533,40 @@ class QtDiffView(QtWidgets.QWidget):
         self.apply_theme(theme)
 
     # ------------------------------------------------------------------ 视图
+    def _on_store_reset(self):
+        """排序 / 搜索过滤之后，把列表滚回顶部。
+
+        不然卡片会停在原来的滚动位置（实测：换排序依据后滚动条仍是 1325、顶部可见第 12
+        条），看着就和表格"对不上"—— 用户反馈的正是这个。批量全选不跳（那不算重新排序）。
+        """
+        if not self.store.take_want_top():
+            return
+        for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
+            try:
+                sb.setValue(0)
+            except Exception:
+                pass
+        self._update_progress()
+
     def _toggle_view(self):
         cards = self.stack.currentIndex() == 0
+        # 切视图时按"当前第一行"把滚动位置对齐：表格一行 26px、卡片一张 104px，
+        # 直接沿用像素值会跳位置（看着像"两个视图显示的不是同一批"）
+        row_h = max(1, self.table.verticalHeader().defaultSectionSize())
+        if cards:
+            row = self.table.verticalScrollBar().value() // row_h
+            target = row * Q.CARD_H
+        else:
+            row = self.cards.verticalScrollBar().value() // max(1, Q.CARD_H)
+            target = row * row_h
         self.stack.setCurrentIndex(1 if cards else 0)
         self.btn_view.setText("📋 表格视图" if cards else "🗂 卡片视图")
+        view = self.cards if cards else self.table
+        sb = view.verticalScrollBar()
+        try:
+            sb.setValue(max(0, min(int(target), sb.maximum())))
+        except Exception:
+            pass
         self._update_progress()
 
     # ------------------------------------------------------------------ 交互
