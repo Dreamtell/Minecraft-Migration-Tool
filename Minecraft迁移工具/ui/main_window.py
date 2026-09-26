@@ -419,6 +419,7 @@ class MigrationGUI:
         # _migration_running 还没置位 —— 所以要有这个更早的标记挡住第二次。
         self._starting = False
         self.diff_window = None
+        self.diff_qt = None          # PySide6 版差异窗口（优先用它，见 _open_diff_window）
         self._scanning = False
         # 其它"动文件"的任务（检查存在性/导入变更日志/回滚/大窗口检测…）跑起来时登记名字，
         # 期间禁止启动迁移（模拟运行也禁），避免两个任务同时改同一批文件。
@@ -521,8 +522,7 @@ class MigrationGUI:
             return
         data, apply_callback = item
         try:
-            self.diff_window = show_diff_window(self.root, data, self.theme,
-                                                self.current_theme, apply_callback)
+            self._open_diff_window(data, apply_callback)
         except Exception:
             pass
 
@@ -1123,7 +1123,13 @@ class MigrationGUI:
             self.save_config()
             self.log(f"主题已切换为{'深色' if new_name == 'dark' else '浅色'}模式",
                      level="SUCCESS", save=False)
-            # 更新已打开的差异窗口
+            # 更新已打开的差异窗口（Qt 版是自绘控件，得显式喂新主题）
+            qt_diff = getattr(self, "diff_qt", None)
+            if qt_diff is not None and qt_diff.is_alive():
+                try:
+                    qt_diff.apply_theme(self.theme)
+                except Exception:
+                    pass
             if hasattr(self, 'diff_window') and self.diff_window is not None:
                 if self.diff_window.winfo_exists():
                     from ui.diff_window import update_diff_theme
@@ -4095,6 +4101,16 @@ class MigrationGUI:
 
     # ---------- 扫描相关 ----------
     def action_scan_mod_diff(self):
+        # 差异窗口已经开着就直接叫回来（Qt 版和 Tk 版各判断一次）
+        qt_diff = getattr(self, "diff_qt", None)
+        if qt_diff is not None and qt_diff.is_alive():
+            try:
+                qt_diff.show()
+                qt_diff.raise_()
+                qt_diff.activateWindow()
+            except Exception:
+                pass
+            return
         if hasattr(self,
                    'diff_window') and self.diff_window is not None and self.diff_window.winfo_exists():
             self.diff_window.lift()
@@ -4218,8 +4234,44 @@ class MigrationGUI:
             self._notify_task_done("扫描模组差异",
                                    f"发现 {len(data)} 项差异，点托盘图标查看")
             return
+        self._open_diff_window(data, apply_callback)
+
+    def _open_diff_window(self, data, apply_callback):
+        """开差异窗口：优先 PySide6 版（和「放大查看」同一套自绘控件）。
+
+        Tk 版（VirtualTable + card_list）留着当回退：PySide6 装不上或被策略挡住时，
+        功能不能没有。返回句柄（Qt 控件或 Tk 窗口）。
+        """
+        self.diff_qt = None
+        self.diff_window = None
+        try:
+            from ui import qt_diff_view as QD
+            if QD.available():
+                def _apply(files):
+                    # 回调里要改 Tk 清单：必须回到 Tk 的 after 里做，
+                    # 从 Qt 的 processEvents 回调里直接改会让两套消息循环打架
+                    self.root.after(0, lambda: apply_callback(files))
+
+                view = QD.show_diff_view(
+                    data, self.theme, apply_callback=_apply,
+                    hooks={"defer": lambda fn: self.root.after(0, fn),
+                           "after": lambda ms, fn: self.root.after(ms, fn),
+                           "after_cancel": lambda job: self.root.after_cancel(job)})
+                if not hasattr(self, "_qt_views"):
+                    self._qt_views = []
+                self._qt_views.append(view)
+                if not self._qt_views[:-1]:
+                    self._pump_qt()      # 首个 Qt 窗口才需要启动泵（多个泵会打架）
+                self.diff_qt = view
+                self.log(f"🗂 已打开 PySide6 差异窗口（{len(data)} 项）",
+                         level="INFO", save=False)
+                return view
+        except Exception as e:
+            self.log(f"⚠ 无法加载 PySide6 差异窗口（{e}），已回退到经典窗口",
+                     level="ERROR", save=False)
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback)
+        return self.diff_window
 
     # ---------- 迁移 ----------
     def _busy_task_name(self):
