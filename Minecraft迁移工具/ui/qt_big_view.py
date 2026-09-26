@@ -471,6 +471,34 @@ class Store(QtCore.QObject):
         miss = sum(1 for it in self.items if it.status == "❌ 缺失")
         return total, len(self.order), sel, ok, miss
 
+    def overview_colors(self, theme=None) -> list:
+        """右侧总览条的配色：**每个当前显示的行**一个颜色（顺序 = 屏幕上的顺序）。
+
+        勾选 > 缺失 > 新加 > 存在 > 未知 —— 一眼能看出选区和哪几条不存在。
+        颜色交给控件去画，store 只负责"哪一行是什么色"（主题由窗口传进来，
+        Store 本身不存主题）。
+        """
+        th = dict(theme or {})
+        选 = th.get("card_sel_bar", "#2f7fd1")
+        缺 = th.get("fail_fg", "#c62828")
+        在 = th.get("ok_fg", "#2e7d32")
+        新 = th.get("warn_fg", "#e65100")
+        灰 = th.get("muted_fg", "#9e9e9e")
+        出 = []
+        for i in self.order:
+            it = self.items[i]
+            if it.checked:
+                出.append(选)
+            elif it.status == "❌ 缺失" or it.failed:
+                出.append(缺)
+            elif it.is_new:
+                出.append(新)
+            elif it.status == "✅ 存在":
+                出.append(在)
+            else:
+                出.append(灰)
+        return 出
+
     # ---- 增删 ----
     def remove_selected(self) -> int:
         keep = [it for it in self.items if not it.checked]
@@ -1068,6 +1096,121 @@ class ScrollProgress(QtWidgets.QWidget):
             p.setBrush(QtGui.QBrush(光))
             p.drawRect(QtCore.QRectF(x, r.top(), 光宽, 高))
             p.restore()
+
+
+class OverviewBar(QtWidgets.QWidget):
+    """列表右侧那条"总览"（VSCode minimap 那种）：把整份列表压成一条竖缩略图。
+
+    - 每一行一个小色块，颜色由外部按语义给（状态 / 存在性 / 勾选）；
+    - 半透明方框 = 当前看得见的那一段；
+    - 点一下或按住拖 = 跳到那儿（把点到的那一行对到视口中间，和 VSCode 手感一致）。
+
+    行数少、根本不够一屏时方框占满整条 —— 那就当"整个列表长什么样"的缩略图看。
+    颜色是 `set_colors()` 整体塞进来的，控件本身不认识 store（两个窗口的 store 不一样）。
+    """
+
+    jumped = QtCore.Signal(float)       # 0..1：视口中心要挪到整份列表的哪个位置
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.theme = dict(theme)
+        self._colors = []
+        self._v0, self._v1 = 0.0, 1.0
+        self._hover = False
+        self._dragging = False
+        self.setFixedWidth(14)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setToolTip("总览：整份列表的缩略图 · 点或拖可跳转")
+
+    # ---- 对外 ----
+    def set_colors(self, colors):
+        self._colors = list(colors or [])
+        self.update()
+
+    def set_viewport(self, first, last):
+        self._v0 = max(0.0, min(1.0, float(first)))
+        self._v1 = max(self._v0, min(1.0, float(last)))
+        self.update()
+
+    def set_theme(self, theme):
+        self.theme = dict(theme)
+        self.update()
+
+    # ---- 画 ----
+    def paintEvent(self, _ev):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        r = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        th = self.theme
+        高 = r.height()
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(th.get("entry_bg", "#e8e8e8")))
+        p.drawRoundedRect(r, 3.0, 3.0)
+        n = len(self._colors)
+        if n and 高 > 2.0:
+            每行 = 高 / n
+            够高 = 每行 >= 1.2
+            p.setRenderHint(QtGui.QPainter.Antialiasing, 够高)
+            for i in range(n):
+                色 = self._colors[i]
+                if not 色:
+                    continue
+                画色 = QtGui.QColor(色)
+                if not 画色.isValid():
+                    continue
+                y = r.top() + i * 每行
+                p.setBrush(画色)
+                if 够高:
+                    # 行高够：一行一个圆角小方块，留 1px 缝（像 minimap 的"文字行"）
+                    p.drawRoundedRect(
+                        QtCore.QRectF(r.left() + 2.0, y, r.width() - 4.0,
+                                      max(1.0, 每行 - 1.0)), 1.0, 1.0)
+                else:
+                    # 太密：整宽铺一条极窄色带，缩略后就是一片"内容纹理"
+                    p.drawRect(QtCore.QRectF(r.left(), y, r.width(),
+                                             max(0.8, 每行)))
+        # ---- 视口框：现在看得见的那一段 ----
+        基色 = QtGui.QColor(th.get("card_sel_bar", "#2f7fd1"))
+        y0 = r.top() + 高 * self._v0
+        y1 = r.top() + 高 * self._v1
+        框 = QtCore.QRectF(r.left(), y0, r.width(), max(6.0, y1 - y0))
+        填充 = QtGui.QColor(基色)
+        填充.setAlpha(78 if (self._hover or self._dragging) else 34)
+        边色 = QtGui.QColor(基色)
+        边色.setAlpha(235)
+        笔 = QtGui.QPen(边色)
+        笔.setWidth(1)
+        p.setPen(笔)
+        p.setBrush(填充)
+        p.drawRoundedRect(框, 2.0, 2.0)
+
+    # ---- 交互 ----
+    def _比例(self, y):
+        return max(0.0, min(1.0, float(y) / max(1, self.height())))
+
+    def mousePressEvent(self, ev):
+        if ev.button() == QtCore.Qt.LeftButton:
+            self._dragging = True
+            self.jumped.emit(self._比例(ev.position().y()))
+
+    def mouseMoveEvent(self, ev):
+        if self._dragging:
+            self.jumped.emit(self._比例(ev.position().y()))
+
+    def mouseReleaseEvent(self, _ev):
+        self._dragging = False
+        self.update()
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+        super().leaveEvent(ev)
 
 
 class TableDelegate(QtWidgets.QStyledItemDelegate):
@@ -1962,7 +2105,16 @@ class QtBigView(QtWidgets.QWidget):
         lay.addLayout(滚动行)
         # 液太高光由 Tk 的 after 驱动（和窗口里别的动画同一个泵）
         self.scroll_progress.set_pump(self.hooks.get("after"), self.hooks.get("after_cancel"))
-        lay.addWidget(self.stack, 1)
+        # 列表 + 右侧总览条（VSCode minimap 那种：整份列表压成一条竖缩略图）
+        列表行 = QtWidgets.QHBoxLayout()
+        列表行.setContentsMargins(0, 0, 0, 0)
+        列表行.setSpacing(4)
+        列表行.addWidget(self.stack, 1)
+        self.overview = OverviewBar(th, self)
+        列表行.addWidget(self.overview)
+        lay.addLayout(列表行, 1)
+        self.overview.jumped.connect(self._jump_to_overview)
+        self._refresh_overview()        # 打开就有，不等 200ms 那次摘要刷新
         for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
             sb.valueChanged.connect(self._update_scroll_progress)
             sb.rangeChanged.connect(lambda *_a: self._update_scroll_progress())
@@ -2026,6 +2178,9 @@ class QtBigView(QtWidgets.QWidget):
             self.scroll_progress.set_theme(th)
             self.scroll_pct.setStyleSheet("color:%s;font-size:9pt;" % th.get("muted_fg"))
             self._update_scroll_progress()
+        if getattr(self, "overview", None) is not None:
+            self.overview.set_theme(th)
+            self._refresh_overview()
         # 表格配色走调色板，**绝不能**给它设 QSS（见 _style_view_palette 的注释）
         _style_view_palette(self.table, th)
         self.table.horizontalHeader().setStyleSheet(_header_qss(th))
@@ -2797,8 +2952,46 @@ class QtBigView(QtWidgets.QWidget):
             比例 = self.scroll_progress.set_range(sb.value(), sb.maximum(),
                                                  sb.pageStep(), rows=行数)
             self.scroll_pct.setText("%d%%" % round(比例 * 100))
+            self._sync_overview_viewport(sb)
         except Exception:
             trace_exc("qt_big_view", "更新滚动进度")
+
+    def _sync_overview_viewport(self, sb=None):
+        """总览条上的视口框：跟着滚动条走（0..1 的一小段）。"""
+        try:
+            if sb is None:
+                sb = self._active_view().verticalScrollBar()
+            总 = float(sb.maximum() + sb.pageStep())
+            if 总 <= 0:
+                self.overview.set_viewport(0.0, 1.0)
+                return
+            起 = sb.value() / 总
+            止 = (sb.value() + sb.pageStep()) / 总
+            self.overview.set_viewport(起, 止)
+        except Exception:
+            pass
+
+    def _refresh_overview(self):
+        """总览条的颜色：整个（当前显示的）列表一行一个色块。
+
+        跟着摘要一起刷 —— 勾选、扫描回数据、过滤、排序都会走到 `_update_summary`。
+        """
+        try:
+            self.overview.set_colors(self.store.overview_colors(self.theme))
+            self._sync_overview_viewport()
+        except Exception:
+            trace_exc("qt_big_view", "刷新总览条")
+
+    def _jump_to_overview(self, 比例):
+        """在总览条上点/拖：把那个位置对到视口中间（和 VSCode 一致）。"""
+        try:
+            sb = self._active_view().verticalScrollBar()
+            page = float(sb.pageStep())
+            总 = float(sb.maximum()) + page
+            目标 = int(比例 * 总 - page / 2.0)
+            sb.setValue(max(sb.minimum(), min(sb.maximum(), 目标)))
+        except Exception:
+            trace_exc("qt_big_view", "总览条跳转")
 
     def _on_sum_tick(self):
         """200ms 一次：先把攒下的扫描结果刷给"看得见的行"，再更新摘要。"""
@@ -2875,6 +3068,7 @@ class QtBigView(QtWidgets.QWidget):
         if title != getattr(self, "_title_shown", ""):
             self._title_shown = title
             self.title_label.setText(title)
+        self._refresh_overview()
 
     # ---------------- Tk 侧驱动 ----------------
     def pump(self):

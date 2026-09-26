@@ -18,9 +18,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ui import qt_big_view as Q
 from ui.qt_big_view import (AnimButton, CardDelegate, CardModel, DetailDialog,
-                            Entry, ScrollProgress, SmoothCards, SmoothTable,
-                            TableDelegate, _header_qss, _mix, _style_view_palette,
-                            ensure_app)
+                            Entry, OverviewBar, ScrollProgress, SmoothCards,
+                            SmoothTable, TableDelegate, _header_qss, _mix,
+                            _style_view_palette, ensure_app)
 
 ROLE_ITEM = Q.ROLE_ITEM
 
@@ -101,6 +101,14 @@ class DiffStore(QtCore.QObject):
         """状态圆点色（CardDelegate 的状态色钩子）：新增=绿、更新=橙、目标独有=灰。"""
         return self.theme.get(_STATUS_KEY.get(getattr(item, "status", ""), "muted_fg"),
                               "#808080")
+
+    def overview_colors(self):
+        """右侧总览条的配色：**每个当前显示的行**一个状态色块（顺序 = 屏幕顺序）。
+
+        刻意不掺"已勾选"：差异窗口里「新增」默认就是全勾的，一掺进去整条都是蓝的，
+        反而看不出状态分布了。
+        """
+        return [self.status_color(self.items[i]) for i in self.order]
 
     def checked_data(self):
         """所有勾选条目的"显示名"（应用时给主界面写清单用）。"""
@@ -481,7 +489,15 @@ class QtDiffView(QtWidgets.QWidget):
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(self.table)
         self.stack.addWidget(self.cards)
-        lay.addWidget(self.stack, 1)
+        # 列表 + 右侧总览条（VSCode minimap 那种：整份差异压成一条竖缩略图）
+        列表行 = QtWidgets.QHBoxLayout()
+        列表行.setContentsMargins(0, 0, 0, 0)
+        列表行.setSpacing(4)
+        列表行.addWidget(self.stack, 1)
+        self.overview = OverviewBar(th, self)
+        列表行.addWidget(self.overview)
+        lay.addLayout(列表行, 1)
+        self.overview.jumped.connect(self._jump_to_overview)
         for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
             sb.valueChanged.connect(self._update_progress)
             sb.rangeChanged.connect(lambda *_a: self._update_progress())
@@ -525,6 +541,9 @@ class QtDiffView(QtWidgets.QWidget):
         _style_view_palette(self.table, th)
         self.table.horizontalHeader().setStyleSheet(_header_qss(th))
         self.scroll_progress.set_theme(th)
+        if getattr(self, "overview", None) is not None:
+            self.overview.set_theme(th)
+            self._refresh_overview()
 
     def apply_theme(self, theme):
         """主界面切主题时调用（Qt 控件不吃 Tk 的 apply_theme_to_widget_tree）。"""
@@ -552,6 +571,7 @@ class QtDiffView(QtWidgets.QWidget):
         不然卡片会停在原来的滚动位置（实测：换排序依据后滚动条仍是 1325、顶部可见第 12
         条），看着就和表格"对不上"—— 用户反馈的正是这个。批量全选不跳（那不算重新排序）。
         """
+        self._update_summary()          # 排序/过滤后摘要与总览条的颜色要跟着重出
         if not self.store.take_want_top():
             return
         self._t("排序/过滤后回顶部")
@@ -902,6 +922,7 @@ class QtDiffView(QtWidgets.QWidget):
         parts.append("已选 %d" % picked)
         self.summary.setText(" ｜ ".join(parts))
         self.title_label.setText("🧩 模组差异扫描 · %d 项" % total)
+        self._refresh_overview()
 
     def _update_progress(self):
         view = self.table if self.stack.currentIndex() == 0 else self.cards
@@ -910,6 +931,42 @@ class QtDiffView(QtWidgets.QWidget):
         frac = self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep(),
                                               rows=len(self.store.order))
         self.scroll_pct.setText("%d%%" % round(frac * 100))
+        self._sync_overview_viewport(sb)
+
+    def _sync_overview_viewport(self, sb=None):
+        """总览条上的视口框：跟着滚动条走。"""
+        try:
+            if sb is None:
+                sb = (self.table if self.stack.currentIndex() == 0
+                      else self.cards).verticalScrollBar()
+            总 = float(sb.maximum() + sb.pageStep())
+            if 总 <= 0:
+                self.overview.set_viewport(0.0, 1.0)
+                return
+            self.overview.set_viewport(sb.value() / 总,
+                                       (sb.value() + sb.pageStep()) / 总)
+        except Exception:
+            pass
+
+    def _refresh_overview(self):
+        """总览条的颜色：整个（当前显示的）差异列表一行一个状态色块。"""
+        try:
+            self.overview.set_colors(self.store.overview_colors())
+            self._sync_overview_viewport()
+        except Exception:
+            trace_exc("qt_diff_view", "刷新总览条")
+
+    def _jump_to_overview(self, 比例):
+        """在总览条上点/拖：把那个位置对到视口中间。"""
+        try:
+            view = self.table if self.stack.currentIndex() == 0 else self.cards
+            sb = view.verticalScrollBar()
+            page = float(sb.pageStep())
+            总 = float(sb.maximum()) + page
+            目标 = int(比例 * 总 - page / 2.0)
+            sb.setValue(max(sb.minimum(), min(sb.maximum(), 目标)))
+        except Exception:
+            trace_exc("qt_diff_view", "总览条跳转")
 
     def _schedule_icon(self):
         """排下一张图标的解析（走 Tk 的 after；拿不到就退回 QTimer 单次触发）。"""
