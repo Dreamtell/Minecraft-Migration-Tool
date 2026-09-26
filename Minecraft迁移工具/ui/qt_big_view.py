@@ -112,6 +112,21 @@ def _qcolor(color, alpha: int = 255) -> QtGui.QColor:
     return c
 
 
+def _fail_red(theme: dict) -> str:
+    """"缺失 / 失败"用的红。
+
+    以前这里是 `theme.get("danger_fg", "#8b0000")` —— 主题里根本没有 `danger_fg`，
+    于是永远落到 #8b0000（暗红），在浅色背景上发褐、深色主题下更是几乎看不见。
+    现在按主题明暗取鲜红，和开关卡片上的警示红同一档。
+    """
+    try:
+        if _is_dark(theme):
+            return "#ff6b6b"
+    except Exception:
+        pass
+    return "#e53935"
+
+
 def _is_dark(theme: dict) -> bool:
     """主题是不是深色（按背景亮度算，和 Tk 侧 is_dark_theme 同一判据）。"""
     try:
@@ -239,9 +254,9 @@ class _ScanTask(QtCore.QRunnable):
 # --------------------------------------------------------------------------- #
 class Entry:
     """一条清单条目。sel_t = 选中动画进度(0..1)，pop_t = 进场/退场进度(0..1)，都由委托绘制使用。"""
-    __slots__ = ("entry", "key", "is_new", "checked", "sel_t", "pop_t", "status", "name",
-                 "path", "type", "modid", "version", "size", "cn", "disp", "desc", "tags",
-                 "tags_online", "icon_path", "scanned")
+    __slots__ = ("entry", "key", "is_new", "checked", "sel_t", "pop_t", "failed", "status",
+                 "name", "path", "type", "modid", "version", "size", "cn", "disp", "desc",
+                 "tags", "tags_online", "icon_path", "scanned")
 
     def __init__(self, entry: str, is_new: bool = False):
         self.entry = entry
@@ -250,6 +265,7 @@ class Entry:
         self.checked = False
         self.sel_t = 0.0
         self.pop_t = 1.0            # 1=完全就位；新加的会先被设成 0，再动画到 1
+        self.failed = False         # 迁移/扫描时报过错（主界面标红的那几条，见 _refresh_failed）
         self.status = "…"
         self.name = Path(entry).name or entry
         self.path = str(entry)
@@ -687,7 +703,7 @@ class TableModel(QtCore.QAbstractTableModel):
         if status in cache:
             return cache[status]
         color = {"✅ 存在": self.theme.get("ok_fg", "#2e7d32"),
-                 "❌ 缺失": self.theme.get("danger_fg", "#8b0000")}.get(
+                 "❌ 缺失": _fail_red(self.theme)}.get(
                      status, self.theme.get("muted_fg", "#808080"))
         pm = QtGui.QPixmap(12, 12)
         pm.fill(QtCore.Qt.transparent)
@@ -741,6 +757,12 @@ class TableModel(QtCore.QAbstractTableModel):
             if c is None:
                 c = self._fg_cache["sel"] = QtGui.QColor(
                     self.theme.get("card_sel_fg", "#0d3d63"))
+            return c
+        if role == QtCore.Qt.ForegroundRole and it.failed:
+            # 迁移报错的那几条：文字直接用鲜红，一眼能认出来
+            c = self._fg_cache.get("fail")
+            if c is None:
+                c = self._fg_cache["fail"] = QtGui.QColor(_fail_red(self.theme))
             return c
         return None
 
@@ -1145,12 +1167,14 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
             painter.drawRoundedRect(bar, 1.7, 1.7)
 
         fg = QtGui.QColor(th.get("card_sel_fg" if sel > 0.5 else "fg", "#222222"))
+        if it.failed and sel <= 0.5:
+            fg = QtGui.QColor(_fail_red(th))       # 出错条目：卡片标题也标红
         muted = QtGui.QColor(th.get("card_sel_fg" if sel > 0.5 else "muted_fg", "#777777"))
 
         # ---- 状态圆点 + 图标 ----
         dot_c = {"✅ 存在": th.get("ok_fg", "#2e7d32"),
-                 "❌ 缺失": th.get("danger_fg", "#8b0000")}.get(it.status,
-                                                               th.get("muted_fg", "#999999"))
+                 "❌ 缺失": _fail_red(th)}.get(it.status,
+                                               th.get("muted_fg", "#999999"))
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QColor(dot_c))
         painter.drawEllipse(QtCore.QPointF(rect.left() + 11, rect.top() + 11), 3.5, 3.5)
@@ -1725,12 +1749,16 @@ class QtBigView(QtWidgets.QWidget):
         self.btn_online = (AnimButton("🌐 联网搜索", "#7e57c2", "#5e35b1", th)
                            if is_mod else None)
         self.btn_view = AnimButton("🗂 卡片视图", "#0ea5a4", "#0b7f7f", th)
+        # 定位错误：跳到下一个"迁移/扫描时报过错的条目"（主界面记着那份名单，见 hooks.failed）
+        self.btn_fail = AnimButton("📍 定位错误", "#e53935", "#c62828", th)
+        self.btn_fail.setToolTip("跳到下一个出错的条目（清单里标红的那几条）")
         # 工具条按钮按「界面按钮」的配置摆：隐藏的不加、顺序照配置（和 Tk 版共用一套 key，
         # 两个窗口各自有哪几个按钮就摆哪几个）。改完设置后下次打开这个窗口生效。
         _btns = {"bv_detect": self.btn_detect, "bv_remove": self.btn_del,
                  "bv_add": self.btn_add, "bv_all": self.btn_all,
                  "bv_invert": self.btn_inv, "bv_none": self.btn_none,
-                 "bv_online": self.btn_online, "bv_view": self.btn_view}
+                 "bv_online": self.btn_online, "bv_view": self.btn_view,
+                 "bv_fail": self.btn_fail}
         try:
             from ui import button_prefs as _bp
             _seq = [k for k in _bp.keys("bigview") if k in _btns]
@@ -1758,6 +1786,7 @@ class QtBigView(QtWidgets.QWidget):
         self.btn_inv.clicked.connect(lambda: self._on_check("invert"))
         self.btn_none.clicked.connect(lambda: self._on_check("none"))
         self.btn_view.clicked.connect(self._toggle_view)
+        self.btn_fail.clicked.connect(self._goto_next_failed)
         if self.btn_online is not None:
             self.btn_online.clicked.connect(self._on_online_search)
         self.search.textChanged.connect(self._on_search)
@@ -1874,6 +1903,7 @@ class QtBigView(QtWidgets.QWidget):
         self.store.reset.connect(self._on_reset_view)
         self._apply_style()
         self._update_summary()
+        self._refresh_failed()               # 打开时先把主界面记着的出错条目标出来
         self.store.scan_all()
 
     # ---------------- 主题 ----------------
@@ -2389,6 +2419,53 @@ class QtBigView(QtWidgets.QWidget):
         dlg.filesSelected.connect(_picked)
         self._track(dlg)
         dlg.open()                       # 非阻塞对话框：Tk 主界面在这期间照样能响应
+
+    def _refresh_failed(self):
+        """把主界面记下的"出错条目"同步到列表（主界面 hooks.failed 给的是 [(页, 名, 页名)]）。"""
+        名单 = set()
+        try:
+            fn = self.hooks.get("failed")
+            for 项 in (fn() if fn else []):
+                try:
+                    名单.add(str(项[1]).lower())
+                except Exception:
+                    continue
+        except Exception:
+            名单 = set()
+        变化 = False
+        for it in self.store.items:
+            新值 = bool(it.key in 名单)
+            if 新值 != it.failed:
+                it.failed = 新值
+                变化 = True
+        if 变化:
+            self.store.reset.emit()          # 一次全刷，省得逐行发 dataChanged
+        return sum(1 for it in self.store.items if it.failed)
+
+    def _goto_next_failed(self):
+        """跳到下一个出错的条目（清单里标红那几条），循环跳。"""
+        n = self._refresh_failed()
+        if not n:
+            self._message("定位错误", "这次没有出错的条目。")
+            return
+        命中 = [r for r in range(len(self.store.order))
+               if self.store.at(r).failed]
+        if not 命中:
+            self._message("定位错误", "出错的条目都被搜索/过滤挡在外面了，先清一下搜索框。")
+            return
+        self._fail_cursor = (getattr(self, "_fail_cursor", -1) + 1) % len(命中)
+        row = 命中[self._fail_cursor]
+        视图 = self._active_view()
+        try:
+            模型 = 视图.model()
+            idx = 模型.index(row, 0)
+            视图.setCurrentIndex(idx)
+            视图.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
+        except Exception:
+            trace_exc("qt_big_view", "滚动到出错条目")
+        it = self.store.at(row)
+        self._message("定位错误", "第 %d/%d 个出错条目：%s"
+                      % (self._fail_cursor + 1, len(命中), it.name))
 
     def _toggle_view(self):
         to_cards = self.stack.currentIndex() == 0

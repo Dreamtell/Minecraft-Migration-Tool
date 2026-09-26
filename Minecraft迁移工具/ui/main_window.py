@@ -660,7 +660,12 @@ class MigrationGUI:
                 行 = widget.index("insert")
             行号 = int(行.split(".")[0])
             文本 = widget.get("%d.0" % 行号, "%d.end" % 行号).strip()
+            # 只有错误/警告行才响应双击：普通信息/成功行点了也没意义，
+            # 以前会给它们弹一句"没提到清单条目"，纯属骚扰
+            标签 = list(widget.tag_names("%d.0" % 行号) or [])
         except Exception:
+            return
+        if "ERROR" not in 标签 and "WARNING" not in 标签:
             return
         if not 文本:
             return
@@ -676,7 +681,8 @@ class MigrationGUI:
                 if 名 and 名 in 文本:
                     self._goto_list_line(索引, 框, i, 名, 页名)
                     return
-        messagebox.showinfo("定位", "这一行里没提到清单中的条目。", parent=self.root)
+        # 错误行里没提到清单条目：只在日志里记一句，不弹窗打扰
+        self.log("ℹ️ 这一行没提到清单中的条目，无法定位", level="INFO", save=False)
 
     def _goto_list_line(self, 页索引, 框, 行号, 名, 页名):
         """切到那一页、把这一行选中 + 滚到可见，并闪一下高亮。"""
@@ -1884,7 +1890,9 @@ class MigrationGUI:
                        # （实测退场动画结束后删除时会崩）。
                        "defer": lambda fn: self.root.after(0, fn),
                        "after": lambda ms, fn: self.root.after(ms, fn),
-                       "after_cancel": lambda job: self.root.after_cancel(job)})
+                       "after_cancel": lambda job: self.root.after_cancel(job),
+                       # 放大窗口里也要能"定位错误"：把主界面记下的出错条目给它
+                       "failed": lambda: list(getattr(self, "_failed_items", []))})
         except Exception as e:
             self.log(f"⚠ PySide6 窗口创建失败：{e}", level="ERROR", save=False)
             return False
