@@ -567,12 +567,15 @@ class MigrationGUI:
         self._check_overflow()
 
     # 日志分类文字色 -> 主题键
+    # PLAIN = 红字但不铺底：给"检查结果汇总"这种一行统计用（❌ 缺失的模组：3），
+    # 它本身不是故障，铺一坨红底只会让一屏里到处都是高亮
     _LOG_COLOR_KEYS = {
         "INFO": "log_info_fg",
         "WARNING": "log_warning_fg",
         "ERROR": "log_error_fg",
         "SUCCESS": "log_success_fg",
         "SIMULATE": "log_simulate_fg",
+        "PLAIN": "log_error_fg",
     }
     _LOG_TAGS = tuple(_LOG_COLOR_KEYS)
 
@@ -748,7 +751,8 @@ class MigrationGUI:
             except Exception:
                 pass
         # 只有错误行给底色：以前连警告也给（免责声明、跳过提示那种），
-        # 一屏里黄一块红一块，真正要看的反而看不出来
+        # 一屏里黄一块红一块，真正要看的反而看不出来。
+        # 汇总行走 PLAIN（红字无底），免得"❌ 缺失的模组：3"这种统计也铺一坨红
         try:
             widget.tag_config("ERROR", background=self.theme.get("danger_bg", ""))
         except Exception:
@@ -3415,7 +3419,8 @@ class MigrationGUI:
 
         self.log(f"📊 模组清单检查结果：总清单项数 {len(modlist)}", level="INFO")
         self.log(f"✅ 存在的模组：{len(found)}", level="SUCCESS")
-        self.log(f"❌ 缺失的模组：{len(missing)}", level="ERROR" if missing else "INFO")
+        self.log(f"❌ 缺失的模组：{len(missing)}",
+                 level="PLAIN" if missing else "INFO")
         if missing:
             self.root.bell()
             self.log("缺失列表：", level="WARNING")
@@ -5308,7 +5313,7 @@ class MigrationGUI:
         if duplicate:
             self.log(f"⚠️ 重复条目：{duplicate} 行", level="WARNING")
         if missing:
-            self.log(f"❌ 缺失的条目：{missing}", level="ERROR")
+            self.log(f"❌ 缺失的条目：{missing}", level="PLAIN")
             self.root.bell()
             for m in missing_samples[:50]:
                 self.log(f"  - {m}", level="ERROR")
@@ -5508,7 +5513,7 @@ class MigrationGUI:
         if duplicate:
             self.log(f"⚠️ 重复条目：{duplicate} 行", level="WARNING")
         if missing:
-            self.log(f"❌ 缺失的条目：{missing}", level="ERROR")
+            self.log(f"❌ 缺失的条目：{missing}", level="PLAIN")
             self.root.bell()
             self.log("缺失条目：", level="WARNING")
             for m in missing_samples[:50]:
