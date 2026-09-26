@@ -6699,7 +6699,8 @@ class MigrationGUI:
 
         只有下面这些"点下去有明确用途"的地方不算空白，点了不退出：
         - **三个清单文本框本身** —— 那正是要继续编辑的地方；
-        - **清单页签栏** —— 点它是切页，不是点空白；
+        - **清单页签上的药丸**（模组清单 / config 清单 / 其它文件）—— 点它是切页；
+          同一栏里药丸之外的那截空条**算空白**，点了会退出编辑；
         - **有意图的交互控件**：按钮、输入框、滚动条、勾选框、下拉框（渐变按钮和
           自绘开关是 Canvas，按标记属性认）。
         清单区里其余的留白（文本框外面那一圈圆角边、页签下方的空白）、背景
@@ -6716,7 +6717,13 @@ class MigrationGUI:
                     return
             bar = getattr(getattr(self, "list_tabs", None), "bar", None)
             if bar is not None and w is bar:
-                return
+                # 这一栏：点在**药丸**上是切页（不是点空白）；点在药丸之外的
+                # 那截空条上才算空白 —— 该退出编辑、该失焦
+                try:
+                    if self.list_tabs._hit(event.x) >= 0:
+                        return
+                except Exception:
+                    pass
             if w.winfo_class() in self._INTERACTIVE_CLASSES:
                 return
             # 自绘控件：渐变按钮（Canvas + set_command）、开关卡片、圆角输入框
