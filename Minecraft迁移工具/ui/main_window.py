@@ -624,7 +624,8 @@ class MigrationGUI:
     def _goto_next_fail(self):
         """在清单里循环跳到下一个出错的条目（比翻日志、双击都快）。"""
         if not self._failed_items:
-            messagebox.showinfo("定位错误", "这次没有出错的条目。", parent=self.root)
+            # 不弹窗（用户嫌烦），往日志里说一句就够了
+            self.log("ℹ️ 这次没有出错的条目", level="INFO", save=False)
             return
         索引, 名, 页名 = self._failed_items[self._fail_cursor % len(self._failed_items)]
         self._fail_cursor = (self._fail_cursor + 1) % len(self._failed_items)
@@ -637,7 +638,7 @@ class MigrationGUI:
             if Path(条.strip()).name == 名:
                 self._goto_list_line(索引, 框, i, 名, 页名)
                 return
-        messagebox.showinfo("定位错误", "「%s」已经不在清单里了。" % 名, parent=self.root)
+        self.log("ℹ️ 「%s」已经不在清单里了" % 名, level="INFO", save=False)
 
     def _bind_log_locate(self, widget):
         """给日志控件挂上"双击哪一行，就跳到那一条"（主日志和放大日志都用它）。"""
@@ -684,6 +685,25 @@ class MigrationGUI:
         # 错误行里没提到清单条目：只在日志里记一句，不弹窗打扰
         self.log("ℹ️ 这一行没提到清单中的条目，无法定位", level="INFO", save=False)
 
+    def _blink_locate(self, 框, 行号, 次数=3):
+        """让定位到的那一行闪几下再收干净（比一直亮着更抓眼，也不会留个高亮在那儿）。"""
+        def 一下(i):
+            try:
+                if i % 2 == 0:
+                    框.tag_add("locate", "%d.0" % 行号, "%d.end" % 行号)
+                else:
+                    框.tag_remove("locate", "1.0", "end")
+            except Exception:
+                return
+            if i < 次数 * 2 - 1:
+                self.root.after(240, lambda: 一下(i + 1))
+            else:
+                try:
+                    框.tag_remove("locate", "1.0", "end")
+                except Exception:
+                    pass
+        一下(0)
+
     def _goto_list_line(self, 页索引, 框, 行号, 名, 页名):
         """切到那一页、把这一行选中 + 滚到可见，并闪一下高亮。"""
         try:
@@ -702,7 +722,7 @@ class MigrationGUI:
             框.mark_set("insert", "%d.0" % 行号)
             框.see("%d.0" % 行号)
             框.focus_set()
-            self.root.after(1800, lambda w=框: w.tag_remove("locate", "1.0", "end"))
+            self._blink_locate(框, 行号)     # 闪几下比一直亮着更抓眼，也不会留痕迹
         except Exception:
             pass
         finally:
@@ -727,12 +747,12 @@ class MigrationGUI:
                 widget.tag_config(tag, foreground=color)
             except Exception:
                 pass
-        # 错误/警告行再给个底色：一屏日志里能一眼扫到出问题的那几行
-        for tag, bkey in (("ERROR", "danger_bg"), ("WARNING", "warn_bg")):
-            try:
-                widget.tag_config(tag, background=self.theme.get(bkey, ""))
-            except Exception:
-                pass
+        # 只有错误行给底色：以前连警告也给（免责声明、跳过提示那种），
+        # 一屏里黄一块红一块，真正要看的反而看不出来
+        try:
+            widget.tag_config("ERROR", background=self.theme.get("danger_bg", ""))
+        except Exception:
+            pass
 
     def apply_theme(self):
         self.root.configure(bg=self.theme["bg"])

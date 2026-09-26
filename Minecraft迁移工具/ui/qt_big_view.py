@@ -1881,7 +1881,9 @@ class QtBigView(QtWidgets.QWidget):
         # ---- 底栏 ----
         # 原生窗口框自己就能从四边拖拽缩放，不需要 QSizeGrip
         bottom = QtWidgets.QHBoxLayout()
-        self.hint = QtWidgets.QLabel("单击=选中 · 双击=详情 · 右键=菜单 · Ctrl+V=粘贴文件 · Esc=关闭")
+        self.hint = QtWidgets.QLabel(self._HINT_DEFAULT)
+        self._hint_backup = None
+        self._hint_timer = None
         bottom.addWidget(self.hint)
         bottom.addStretch(1)
         lay.addLayout(bottom)
@@ -2443,15 +2445,18 @@ class QtBigView(QtWidgets.QWidget):
         return sum(1 for it in self.store.items if it.failed)
 
     def _goto_next_failed(self):
-        """跳到下一个出错的条目（清单里标红那几条），循环跳。"""
+        """跳到下一个出错的条目（清单里标红那几条），循环跳。
+
+        **不弹窗**（用户嫌烦）：结果直接写在底栏提示上，3 秒后恢复。
+        """
         n = self._refresh_failed()
         if not n:
-            self._message("定位错误", "这次没有出错的条目。")
+            self._hint_temp("这次没有出错的条目")
             return
         命中 = [r for r in range(len(self.store.order))
                if self.store.at(r).failed]
         if not 命中:
-            self._message("定位错误", "出错的条目都被搜索/过滤挡在外面了，先清一下搜索框。")
+            self._hint_temp("出错的条目被搜索/过滤挡住了，先清一下搜索框")
             return
         self._fail_cursor = (getattr(self, "_fail_cursor", -1) + 1) % len(命中)
         row = 命中[self._fail_cursor]
@@ -2464,8 +2469,34 @@ class QtBigView(QtWidgets.QWidget):
         except Exception:
             trace_exc("qt_big_view", "滚动到出错条目")
         it = self.store.at(row)
-        self._message("定位错误", "第 %d/%d 个出错条目：%s"
-                      % (self._fail_cursor + 1, len(命中), it.name))
+        self._hint_temp("📍 第 %d/%d 个出错条目：%s"
+                        % (self._fail_cursor + 1, len(命中), it.name))
+
+    _HINT_DEFAULT = "单击=选中 · 双击=详情 · 右键=菜单 · Ctrl+V=粘贴文件 · Esc=关闭"
+
+    def _hint_temp(self, 文本, 毫秒=3000):
+        """底栏临时说一句（不弹窗），到点恢复原来的提示。"""
+        try:
+            if getattr(self, "_hint_backup", None) is None:
+                self._hint_backup = self.hint.text()  # 只记第一次的原话，连点几次也不会串味
+            self.hint.setText(文本 if 文本.startswith("📍") else "📍 " + 文本)
+            t = getattr(self, "_hint_timer", None)
+            if t is None:
+                t = QtCore.QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self._hint_restore)
+                self._hint_timer = t
+            t.start(毫秒)                              # 重开计时，最后点的那次说了算
+        except Exception:
+            pass
+
+    def _hint_restore(self):
+        try:
+            self.hint.setText(getattr(self, "_hint_backup", None) or self._HINT_DEFAULT)
+        except Exception:
+            pass
+        finally:
+            self._hint_backup = None
 
     def _toggle_view(self):
         to_cards = self.stack.currentIndex() == 0
