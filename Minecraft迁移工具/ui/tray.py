@@ -8,6 +8,7 @@ root.after 轮询后执行——Tk 的 API 只能在主线程碰。
 
 没装 pywin32 时 available() 返回 False，调用方直接退回"关窗口就退出"。
 """
+import gc
 import queue
 import threading
 
@@ -159,6 +160,24 @@ class TrayIcon:
             self._added = False
 
     def _wndproc(self, hwnd, msg, wparam, lparam):
+        """窗口过程：跑在托盘的后台线程里。
+
+        这里**绝不能触发 Python 的 GC**：别的线程（比如主线程里的 PySide6 窗口）会
+        产生一堆 Qt 的 wrapper 对象，GC 一旦在这条线程里回收它们，shiboken 就要在
+        非主线程析构 Qt 的 C++ 对象 —— 表现是致命的
+        `PyEval_RestoreThread ... the GIL is released`（实测崩过：栈里就是本文件的
+        PumpMessages + 主线程的 mainloop）。GC 推迟到主线程做没有任何坏处。
+        """
+        原 = gc.isenabled()
+        if 原:
+            gc.disable()
+        try:
+            return self._wndproc_inner(hwnd, msg, wparam, lparam)
+        finally:
+            if 原:
+                gc.enable()
+
+    def _wndproc_inner(self, hwnd, msg, wparam, lparam):
         if msg == WM_TRAY:
             if lparam in (win32con.WM_LBUTTONUP, win32con.WM_LBUTTONDBLCLK):
                 self.commands.put("open")

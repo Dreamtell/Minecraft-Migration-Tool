@@ -1925,20 +1925,62 @@ class MigrationGUI:
         self.save_config()
 
     def _pump_qt(self):
-        """Tk 的 after 循环里驱动 Qt 事件。
+        """Tk 的 after 循环里驱动 Qt 事件，并回收已经关掉的 Qt 窗口。
 
         两个事件循环同线程共存：Qt 的所有回调（点击/动画/绘制）都在这个
         after 回调里被调用，所以它们跑在主线程，从里面改 Tk 控件是安全的。
+
+        **关掉的窗口必须在这里 deleteLater()**：Qt 的 C++ 对象不能在别的线程里析构
+        —— 托盘图标的那个后台消息循环会触发 Python 的 GC，GC 一旦在托盘线程里回收
+        PySide6 的 wrapper，shiboken 就在非主线程碰 Qt 的 C++ 层，表现就是致命的
+        `PyEval_RestoreThread ... the GIL is released`（用户实测崩过：栈里正是
+        tray.py 的 PumpMessages + 主线程 mainloop）。
         """
         views = [v for v in getattr(self, "_qt_views", []) if v.is_alive()]
-        self._qt_views = views
         for v in views:
             try:
                 v.pump()
             except Exception as e:
                 self.log(f"⚠ PySide6 窗口事件循环异常：{e}", level="ERROR", save=False)
-        if views:
+        # 关掉的窗口（pump 之前就关了、或者就在这次 pump 里关的）都交给主线程销毁。
+        # 注意要拿"旧列表"和"现在还活着的"对比 —— 只看 views 的话，早就关掉的那些
+        # 第一步就被过滤掉了，永远轮不到 deleteLater（C++ 对象就一直挂着）
+        活的 = [v for v in views if v.is_alive()]
+        retired = getattr(self, "_qt_retired", None)
+        if retired is None:
+            retired = self._qt_retired = []
+        关掉的 = [v for v in getattr(self, "_qt_views", []) if v not in 活的]
+        for v in 关掉的:
+            retired.append(v)
+            try:
+                v.deleteLater()      # 主线程里安排销毁
+            except Exception:
+                pass
+        self._qt_views = 活的
+        if 关掉的:
+            self._flush_qt_deletes()
+        if len(retired) > 4:
+            del retired[:-4]             # 只留最近几个引用，别攒着不放
+        if 活的:
             self._qt_pump_after = self.root.after(12, self._pump_qt)
+        else:
+            self._qt_pump_after = None
+
+    def _flush_qt_deletes(self):
+        """把刚刚 `deleteLater()` 排下的销毁真正执行掉。
+
+        `processEvents()` **不会**处理 DeferredDelete（实测：只 processEvents 的话
+        C++ 对象一直不销毁），得显式 `sendPostedEvents` 一次。这一步必须在主线程做 ——
+        它正是"别让托盘线程里的 GC 去析构 Qt 对象"的落点。
+        """
+        try:
+            from PySide6 import QtCore as _QtCore, QtWidgets as _QtWidgets
+            app = _QtWidgets.QApplication.instance()
+            if app is not None:
+                app.sendPostedEvents(None, _QtCore.QEvent.DeferredDelete)
+                app.processEvents(_QtCore.QEventLoop.AllEvents, 8)
+        except Exception:
+            pass
 
     def _open_big_view_qt(self, source_text, title):
         """用 PySide6 打开"放大查看"。返回 True 表示已接管。"""

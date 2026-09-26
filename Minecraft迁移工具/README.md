@@ -96,7 +96,16 @@
     逐帧推**的，不是 `QVariantAnimation` —— 后者的收尾和紧随其后的 `beginResetModel`
     撞在一起会让解释器直接崩（实测 `0xC0000409` / `PyEval_RestoreThread ... GIL is
     released`）；逐帧推的收尾落在 Tk 的 `after` 里，和其它 Tk 操作同一个上下文
-  - **顶部滚动进度条（液态）**：列表上方一条 6px 细条，**从左往右填充**，右边跟一个百分比
+  - **关掉的 Qt 窗口在主线程销毁**（`_pump_qt` + `deleteLater`）：Qt 的 C++ 对象不能在
+  别的线程里析构。托盘图标有一条自己的 win32 消息循环线程，它会触发 Python 的 GC ——
+  GC 一旦在那条线程里回收 PySide6 的 wrapper，shiboken 就在非主线程碰 Qt 的 C++ 层，
+  表现是致命的 `PyEval_RestoreThread ... the GIL is released`
+  （用户实测崩过：栈里正是 `tray.py` 的 `PumpMessages` + 主线程 `mainloop`）。
+  两道防线：① 窗口一关，泵就在主线程里 `deleteLater()`，并显式
+  `sendPostedEvents(None, QEvent.DeferredDelete)` 让它真的落地（实测只 `processEvents`
+  不会处理 DeferredDelete，C++ 对象一直不销毁）；② 托盘线程的窗口过程全程
+  `gc.disable()`（`finally` 里恢复），不让 GC 在那条线程里跑
+- **顶部滚动进度条（液态）**：列表上方一条 6px 细条，**从左往右填充**，右边跟一个百分比
     数字 —— 滑到顶是 `0%`、滑到底 `100%`（内容不满一屏时直接满格）。填充段是「液态」的：
     底色横向渐变（左暗右亮）+ 一道柔光沿它循环流过，观感和锁屏遮罩那条流动红边同源
     （暗→亮→暗 + 每帧平移，只是这里用 `QLinearGradient` 直接画）。逐帧由 **Tk 的 after**
@@ -467,6 +476,15 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **修掉托盘线程 + Qt 窗口的 GIL 崩溃**：用户实测 `Fatal Python error: PyEval_RestoreThread
+  ... the GIL is released`，栈是 `tray.py:133 PumpMessages`（托盘后台线程）+
+  `app.py:389 mainloop`（主线程）。根因是 **Qt 的 C++ 对象被托盘线程里的 GC 析构**：
+  托盘的 `_wndproc` 分配对象时会触发 GC，而主线程那些 PySide6 窗口留下了待回收的
+  wrapper。两道防线：① `_pump_qt` 发现窗口关掉就地 `deleteLater()`，并
+  `sendPostedEvents(None, QEvent.DeferredDelete)` 强制落地（`processEvents` 不处理
+  DeferredDelete，实测只调它 C++ 对象一直不销毁）；② 托盘窗口过程全程 `gc.disable()`
+  （`finally` 恢复）。验证脚本 `_dctest/验证托盘与Qt共存.py` 反复开关 6 轮 + 空转，
+  并断言关掉的窗口 `shiboken6.isValid()` 变 False（= 在主线程销毁）
 - **差异窗口整个换成 PySide6 版**（`ui/qt_diff_view.py`）：上一版只是把 Tk 的表格换成
   自绘表格、卡片仍用早期的 `card_list`（那套代码问题多）。现在**和「放大查看」共用同一套
   控件**（`SmoothTable` / `SmoothCards` / `TableDelegate` / `CardDelegate` / `AnimButton` /
