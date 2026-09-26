@@ -9,10 +9,9 @@
   可见行只有十几行，一次重画 ≈ 3ms，比槽位复用简单且够快。
 - 滚动交给 SmoothScroller（像素级），跟其它列表手感一致。
 - 图标懒加载：只有滚到的行才去解 jar 取图标（9ms/个，缓存后 0ms）。
-- 单击行体 = 勾选（和表格视图一致），同一行快速点两下 = 开详情，
-  双击间隙用 DOUBLE_CLICK_SEC 自己判（Tk 的 <Double-Button-1> 走系统设置，太宽）。
+- 单击行体 = 勾选（和表格视图一致），双击 = 打开详情；双击由 Tk 原生
+  <Double-Button-1> 负责，间隔就是系统设置里的鼠标双击速度，程序不自己判。
 """
-import time
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -35,6 +34,11 @@ TAG_COLORS = {
     "音效":     ("#283593", "#ffffff"),
     "前置库":   ("#546e7a", "#ffffff"),
     "多人":     ("#455a64", "#ffffff"),
+    # 加载器品牌色：Fabric 用的就是它 logo 上那块布料的米黄（#dbb69b），配深棕字才看得清
+    "Fabric":   ("#dbb69b", "#3b2c22"),
+    "Quilt":    ("#8b5cf6", "#ffffff"),
+    "NeoForge": ("#f16436", "#ffffff"),
+    "Forge":    ("#5b6e7f", "#ffffff"),
 }
 
 
@@ -100,9 +104,8 @@ class ModCardList(tk.Frame):
     RADIUS = 8            # 卡片圆角半径
     ACTION_W = 22         # 悬停操作图标（详情/定位/移除）的边长
 
-    # 双击判定间隙：比系统默认（约 500ms）小得多，快速连点两行勾选不会被误判成双击。
-    # 想开详情窗口就在同一行上快速点两下。
-    DOUBLE_CLICK_SEC = 0.18
+    # 双击由 Tk 原生 <Double-Button-1> 负责（间隔 = 系统设置里的鼠标双击速度），
+    # 程序里不再自己算时间间隔，也不再自适应。
 
     def __init__(self, master, theme, icon_provider=None, on_click=None,
                  on_double_click=None, on_action=None, on_check=None,
@@ -127,7 +130,6 @@ class ModCardList(tk.Frame):
         self._sel = -1
         self._action_rects = {}                     # 行号 -> [(x0,y0,x1,y1,action)]
         self._hover_action = None
-        self._last_click = {"t": 0.0, "row": None}  # 自己做双击判定（见 DOUBLE_CLICK_SEC）
         self._sel_anim = {}                         # 行号 -> {"t": 选中进度 0~1, "job": id}
 
         self.canvas = tk.Canvas(self, bg=theme["bg"], highlightthickness=0, bd=0,
@@ -146,6 +148,9 @@ class ModCardList(tk.Frame):
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<Leave>", self._on_leave)
         self.canvas.bind("<Button-1>", self._on_click_evt)
+        # 双击用 Tk 原生事件（间隔就是系统设置里那个，程序不再自己判、也不再自适应）
+        if on_double_click is not None:
+            self.canvas.bind("<Double-Button-1>", self._on_double_evt)
         self.canvas.bind("<Button-3>", self._on_context_evt)
         # 键盘也要能用：↑↓ 一行、PgUp/PgDn 一屏、Home/End 两端、空格切勾选
         for seq in ("<Up>", "<Down>", "<Prior>", "<Next>", "<Home>", "<End>", "<space>"):
@@ -375,6 +380,35 @@ class ModCardList(tk.Frame):
             self.rows[index]["checked"] = bool(value)
             self.refresh_row(index)
 
+    def _toggle_instant(self, idx):
+        """不做动画地把选中态翻回去（双击撤销第一下时用）。
+
+        双击的第二下本来就会把状态翻回原样，但如果让它走动画，用户会看到
+        "高亮唰地亮起来、又唰地收回去" —— 双击应该完全不动高亮（原来是亮的就还亮着，
+        原来没亮就还没亮）。这里直接停掉本行的动画、清掉动画进度，让重画读数据里的最终值。
+        """
+        if not (0 <= idx < len(self.rows)) or self.on_check is None:
+            return
+        anim = self._sel_anim.pop(idx, None)
+        if anim and anim.get("job") is not None:
+            try:
+                self.after_cancel(anim["job"])
+            except Exception:
+                pass
+        self.on_check(idx)                     # 外部翻数据并触发本行重画
+        self._set_sel_progress(idx, self.rows[idx].get("checked"))
+
+    def _set_sel_progress(self, idx, checked):
+        """把某行的选中进度直接打到终值（不带动画），并只重画这一行。"""
+        try:
+            self._sel_anim.pop(idx, None)
+            self._sel_anim[idx] = {"t": 1.0 if checked else 0.0, "to": 1.0 if checked else 0.0,
+                                   "job": None, "final": True}
+            self._render_rows([idx])
+            self._sel_anim.pop(idx, None)
+        except Exception:
+            pass
+
     def _toggle_with_anim(self, idx):
         """切换某行的选中状态，并让高亮"渐变过去"（勾上=蓝底淡入，取消=淡出）。
 
@@ -437,26 +471,33 @@ class ModCardList(tk.Frame):
         if act and self.on_action:
             self.on_action(idx, act)
             return
-        # 行体：单击 = 选中/取消（和表格视图一致，点一下就能选中，带渐变）；
-        # 同一行在 DOUBLE_CLICK_SEC 内再点一次 = 双击开详情。
-        # 不用 Tk 的 <Double-Button-1>：那个阈值是系统设置（默认约 500ms），
-        # 想快速连点两下选中两行时会被误判成双击，把详情窗口弹出来。
-        now = time.time()
-        last = self._last_click
-        is_double = (last.get("row") == idx
-                     and (now - last.get("t", 0.0)) <= self.DOUBLE_CLICK_SEC)
+        # 行体：单击 = 选中/取消（和表格视图一致，点一下就能选中，带渐变）。
+        # 双击走 Tk 自己的 <Double-Button-1>（见 _on_double_evt），这里只处理单击。
         self._sel = idx
-        if is_double:
-            self._last_click = {"t": 0.0, "row": None}
-            if self.on_check:
-                self._toggle_with_anim(idx)   # 撤销第一次单击造成的选中（双击不该改选中）
-            if self.on_double_click:
-                self.on_double_click(idx, event)
-        else:
-            self._last_click = {"t": now, "row": idx}
-            if self.on_click:
-                self.on_click(idx, event)
-            self._toggle_with_anim(idx)
+        if self.on_click:
+            self.on_click(idx, event)
+        self._toggle_with_anim(idx)
+
+    def _on_double_evt(self, event):
+        """双击（Tk 原生 <Double-Button-1>）= 打开详情，选中状态保持原样。
+
+        第二次按下 Tk 只发 <Double-Button-1>（不再发 <Button-1>），所以第一下单击
+        造成的选中变化要在这里撤回来 —— 不走动画，双击不该看到高亮闪一下。
+        """
+        try:
+            self.canvas.focus_set()
+        except Exception:
+            pass
+        idx = self._row_at(event.y)
+        if idx < 0:
+            return
+        act = self._action_at(idx, event.x, event.y)
+        if act:                      # 连点悬停图标不算双击
+            return
+        if self.on_check:
+            self._toggle_instant(idx)
+        if self.on_double_click:
+            self.on_double_click(idx, event)
 
     # ---------------------------------------------------------------- 绘制
     def _icon_photo(self, row):
@@ -564,6 +605,31 @@ class ModCardList(tk.Frame):
         except Exception:
             return c0 if t < 0.5 else c1
 
+    def _corner_photo(self, fill, r):
+        """圆角用的"角圆"图（2r×2r 的实心圆）。尺寸和颜色固定，只会渲一次。"""
+        return self._photo_for(rounded_image(r * 2, r * 2, r, fill))
+
+    def _draw_rounded_rect(self, c, ctag, x, y, w, h, fill, radius=None):
+        """用"两块矩形 + 四个角圆"拼一个圆角矩形（几何上等价于 rounded_image）。
+
+        为什么不用 rounded_image：PIL 渲一张 880×58 的圆角图要 **约 10ms**（4 倍超采样 +
+        LANCZOS 缩放）。选中动画每帧换一个宽度，等于每帧重渲一张图 —— 实测动画卡就是它
+        拖的（帧耗时 9.8ms 中 9ms 是这里）。角圆尺寸恒定、只渲一次，之后每帧只是挪位置，
+        实测 0.03ms，快 300 倍。
+        """
+        r = self.RADIUS if radius is None else radius
+        r = max(0, min(int(r), int(w) // 2, int(h) // 2))
+        if r <= 0:
+            c.create_rectangle(x, y, x + w, y + h, fill=fill, outline="", tags=ctag)
+            return
+        c.create_rectangle(x, y + r, x + w, y + h - r, fill=fill, outline="", tags=ctag)
+        c.create_rectangle(x + r, y, x + w - r, y + h, fill=fill, outline="", tags=ctag)
+        corner = self._corner_photo(fill, r)
+        if corner is not None:
+            for cx, cy in ((x, y), (x + w - 2 * r, y),
+                           (x, y + h - 2 * r), (x + w - 2 * r, y + h - 2 * r)):
+                c.create_image(cx, cy, anchor="nw", image=corner, tags=ctag)
+
     def _draw_row(self, i):
         row = self.rows[i]
         y0 = (i - self._first) * self.ROW_H - self._offset
@@ -595,16 +661,10 @@ class ModCardList(tk.Frame):
             bg = self.theme.get("hover_bg", "#e9eef5")
         else:
             w_hl, x_hl = card_w, mx
-        # 和画布底色同色就别画了：整张 876×58 的图每帧要 3.5ms，画了也看不见
-        # （正常行就是这样，只有选中/悬停才有底色）。项数才是画布重绘的成本大头。
+        # 和画布底色同色就别画了：正常行就是这样，只有选中/悬停才有底色
+        # （项数才是画布重绘的成本大头）。
         if bg != self.theme["bg"]:
-            bg_photo = self._photo_for(rounded_image(int(w_hl), card_h, self.RADIUS, bg))
-            if bg_photo is not None:
-                c.create_image(x_hl, y0 + self.GAP // 2, anchor="nw", image=bg_photo,
-                               tags=ctag)
-            else:
-                c.create_rectangle(x_hl, y0 + self.GAP // 2, x_hl + w_hl,
-                                   y0 + self.GAP // 2 + card_h, fill=bg, outline="", tags=ctag)
+            self._draw_rounded_rect(c, ctag, x_hl, y0 + self.GAP // 2, w_hl, card_h, bg)
         if checked:
             # 竖杠跟着高亮左边缘，从中间往上下延伸（bar_t 略快，先立住再扫底色）
             bar_full = max(8, card_h - 16)

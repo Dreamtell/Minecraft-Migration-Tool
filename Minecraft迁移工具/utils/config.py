@@ -17,3 +17,20 @@ def load_raw_config():
             return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def save_raw_config(data):
+    """把整份配置写回去（先读-改-写，别把别的键冲掉）。
+
+    给独立的工具用（比如"双击间隙测试"要写自己测出来的间隔），不经过主界面实例。
+    主界面自己保存时是整体重建字典的，所以新加的键也必须出现在 save_config() 里，
+    否则用户下次在主界面里改任何设置都会把它抹掉。
+    """
+    try:
+        merged = load_raw_config()
+        merged.update(dict(data or {}))
+        CONFIG_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        return True
+    except Exception:
+        return False

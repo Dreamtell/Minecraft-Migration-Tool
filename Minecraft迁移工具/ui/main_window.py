@@ -1,6 +1,6 @@
 # ui/main_window.py
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 import json
 import time
@@ -9,14 +9,28 @@ import sys
 import queue
 import threading
 import shutil
+import functools
 from pathlib import Path
 import subprocess
 import re
 from collections import Counter
 from utils.config import CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME, apply_theme_to_widget_tree
+from ui import button_prefs
+def _dc_now():
+    """读配置里的双击间隙遗留键（双击已改走原生事件，这里只负责保存时不丢数据）。"""
+    try:
+        from utils.config import load_raw_config
+        cfg = load_raw_config()
+        return (float(cfg.get("double_click_sec", 0) or 0),
+                bool(cfg.get("double_click_auto", False)))
+    except Exception:
+        return (0.0, False)
+
+
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
-                           RoundedEntry, circular_reveal, focus_window, lighten_color,
+                           RoundedEntry, RoundedTextArea, circular_reveal, focus_window,
+                           lighten_color,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
@@ -65,7 +79,7 @@ _BUTTON_GROUPS = (
     ("action",      "动作按钮区",        "right"),
     ("log_left",    "执行日志区（左）",  "left"),
     ("log_right",   "执行日志区（右）",  "right"),
-)
+) + tuple((g[0], g[1], g[4]) for g in button_prefs.GROUPS)
 
 # 每组的默认顺序 = 现在的界面顺序；用户改过就用配置里的
 _DEFAULT_BUTTON_ORDER = {
@@ -79,6 +93,9 @@ _DEFAULT_BUTTON_ORDER = {
     "log_left":    ["log_big"],
     "log_right":   ["log_open", "log_clear"],
 }
+# 窗口工具栏按钮（放大查看 / 日志放大查看 / 右上角那两个）的定义在 ui/button_prefs.py，
+# 那份表是唯一的真源：设置窗的分组、默认顺序、标签都从它来
+_DEFAULT_BUTTON_ORDER.update(button_prefs.DEFAULTS)
 
 _BUTTON_LABELS = {
     "browse_source": "📂 浏览…（来源路径）",
@@ -102,6 +119,7 @@ _BUTTON_LABELS = {
     "log_open": "📂 打开日志文件夹",
     "log_clear": "🗑️ 清空日志",
 }
+_BUTTON_LABELS.update(button_prefs.LABELS)
 
 # 外部链接（设置窗口里的快捷入口）
 LINK_MINECRAFT = "https://www.minecraft.net/zh-hans"
@@ -112,13 +130,36 @@ _SECTION_STYLE = {
     "look":    ("外观与启动", "#8e24aa", "🎨"),
     "migrate": ("迁移行为", "#7e57c2", "🏷️"),
     "tags":    ("模组分类标签", "#00897b", "🌐"),
+    "lock":    ("任务与锁定", "#e53935", "🔒"),
+    "view":    ("放大查看窗口", "#00838f", "🗂"),
     "buttons": ("界面按钮（勾选显示 / 上下调整顺序）", "#00acc1", "🧩"),
     "close":   ("关闭与后台", "#fb8c00", "🚪"),
     "links":   ("快捷链接", "#43a047", "🔗"),
 }
 
+# 迁移时如何锁定主界面：不管选哪个，"所有操作按钮都会禁用"，区别只在盖不盖遮罩
+_LOCK_MODES = (
+    ("all",  "迁移时锁定界面：盖一层遮罩（正式迁移和模拟运行都锁）"),
+    ("real", "只锁正式迁移：模拟运行不盖遮罩（按钮照样禁用）"),
+    ("off",  "不锁屏：不盖遮罩，只把按钮全部禁用"),
+)
+
 # 迁移标记可选的符号：都是微软雅黑里有字形、且文件名安全的（不含 \ / : * ? " < > |）
 _RENAME_MARKERS = ("★", "☆", "▶", "◆", "●", "✦", "✚", "【新】", "NEW_")
+
+# 放大查看窗口的实现方式。PySide6 试点：圆角/阴影/逐帧动画是原生能力；
+# 缺库或想用回老窗口时切 tk。
+_BIG_VIEW_BACKENDS = (
+    ("qt", "🗂 PySide6 试点窗口（圆角卡片 + 原生动画，需已安装 PySide6）"),
+    ("tk", "🪟 经典 Tk 窗口（无需额外依赖）"),
+)
+
+# 「放大查看」打开时用哪个视图（表格 / 卡片）。两边都可以随时点按钮切换，
+# 这里只是定"刚打开时是哪个"。
+_BIG_VIEW_VIEWS = (
+    ("table", "📋 表格视图（打开就是列表，能改勾选/编辑）"),
+    ("cards", "🗂 卡片视图（打开就是卡片，只读预览）"),
+)
 
 # 按钮列表里每一排的主色 + 图标，用来给分组行上色
 _GROUP_COLORS = {
@@ -139,6 +180,8 @@ _GROUP_ICONS = {
     "log_left":    "📜",
     "log_right":   "🗂️",
 }
+_GROUP_ICONS.update({g[0]: g[2] for g in button_prefs.GROUPS})
+_GROUP_COLORS.update({g[0]: g[3] for g in button_prefs.GROUPS})
 
 
 def _mix(color_a, color_b, t):
@@ -219,6 +262,28 @@ def _close_popup(win):
         _destroy_after_callback(win)
 
 
+def _file_task_lock(name):
+    """装饰器：把整个方法登记成"文件类任务"。
+
+    作用有两条：
+    1. 期间禁止启动迁移（模拟运行也禁）—— 两个任务同时改同一批文件会互相踩；
+    2. 结束后自动解除，方法里有多少个 return 都不会漏（用 try/finally）。
+    """
+    def deco(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            if self._migration_running:
+                messagebox.showwarning("提示", f"迁移进行中，暂不能{name}。")
+                return None
+            self._begin_file_task(name)
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                self._end_file_task()
+        return wrapper
+    return deco
+
+
 class MigrationGUI:
     def __init__(self, root, on_stage=None):
         """on_stage(text)：可选的阶段回调。
@@ -250,11 +315,30 @@ class MigrationGUI:
         # 按钮显示/隐藏 与 自定义顺序
         self.hidden_buttons = list(self.config.get("buttons_hidden", []) or [])
         self.button_order = dict(self.config.get("button_order", {}) or {})
+        # 把"显示/隐藏 + 顺序"喂给窗口工具栏那边（放大查看 / 日志放大查看建工具栏时来查）
+        button_prefs.update(self.hidden_buttons, self.button_order)
         # 迁移标记：复制过去的模组加前缀，方便在目标 mods 里辨认（默认关，不改老行为）
         self.rename_migrated_mods = bool(self.config.get("rename_migrated_mods", False))
         self.rename_marker = str(self.config.get("rename_marker", "★") or "★")
         # 分类标签：默认用关键词推测；开启后去 Modrinth 取真实分类（有本地缓存）
         self.online_tags = bool(self.config.get("online_tags", False))
+        # 迁移时怎么锁主界面：all=正式+模拟都盖遮罩 / real=只锁正式 / off=不盖遮罩（按钮一律禁用）
+        self.lock_mode = str(self.config.get("lock_mode", "all") or "all")
+        if self.lock_mode not in ("all", "real", "off"):
+            self.lock_mode = "all"
+        # 放大查看窗口用哪个实现：qt=PySide6 试点（缺库时自动回落）/ tk=经典 Tk
+        self.big_view_backend = str(self.config.get("big_view_backend", "qt") or "qt")
+        if self.big_view_backend not in ("qt", "tk"):
+            self.big_view_backend = "qt"
+        # 放大查看窗口打开时用哪个视图：table=表格 / cards=卡片（设置里能选）
+        self.big_view_view = str(self.config.get("big_view_view", "table") or "table")
+        if self.big_view_view not in ("table", "cards"):
+            self.big_view_view = "table"
+        # 双击已经全部交给 Tk / Qt 原生事件（间隔 = 系统设置里的鼠标双击速度），
+        # 程序里不再有判定阈值。double_click_sec / double_click_auto 这两个键只是
+        # "双击间隙测试"留下的历史记录，读进来是为了保存设置时原样写回去、不丢数据。
+        self.double_click_sec_cfg = float(self.config.get("double_click_sec", 0) or 0)
+        self.double_click_auto_cfg = bool(self.config.get("double_click_auto", False))
 
         # 可自定义按钮的登记表：key -> 控件（在 create_widgets 里逐个登记）
         self._btn_widgets = {}
@@ -298,8 +382,26 @@ class MigrationGUI:
         self.progress_window = None
         self.after_id = None
         self._migration_running = False
+        # "准备阶段"（校验清单 / 统计文件 / 磁盘检查）也在跑：这期间主线程可能被弹窗
+        # 带着转过事件循环，用户再点一下就会重入 start_migration，而此刻
+        # _migration_running 还没置位 —— 所以要有这个更早的标记挡住第二次。
+        self._starting = False
         self.diff_window = None
         self._scanning = False
+        # 其它"动文件"的任务（检查存在性/导入变更日志/回滚/大窗口检测…）跑起来时登记名字，
+        # 期间禁止启动迁移（模拟运行也禁），避免两个任务同时改同一批文件。
+        self._file_task = None
+        # 迁移期间盖在主窗口上的"锁屏"遮罩
+        self._lock_overlay = None
+        self._mig_watch_job = None
+        self._lock_pulse_job = None
+        self._lock_pulse_on = False
+        self._lock_cfg_bind = None
+        self._lock_log_text = None      # 锁屏里那份执行日志（第二个视图）
+        self._flow_job = None           # 红边流动动画的定时器
+        self._flow_canvas = None
+        self._flow_items = []
+        self._flow_tiles = {}           # 渐变瓦片（水平/垂直各一张，缓存）
         # 下面两个由 app.py 注入：窗口挂在托盘里的时候，任务跑完要弹系统通知，
         # 扫描出来的差异窗口也要先压着，等窗口叫回来再开。
         self._task_done_cb = None
@@ -420,6 +522,12 @@ class MigrationGUI:
             "rename_migrated_mods": bool(getattr(self, "rename_migrated_mods", False)),
             "rename_marker": str(getattr(self, "rename_marker", "★")),
             "online_tags": bool(getattr(self, "online_tags", False)),
+            "lock_mode": str(getattr(self, "lock_mode", "all")),
+            "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
+            "big_view_view": str(getattr(self, "big_view_view", "table")),
+            # 实时读盘：不要用启动时的缓存值，否则外部改过的窗口会被这里覆盖回去
+            "double_click_sec": float(_dc_now()[0]),
+            "double_click_auto": bool(_dc_now()[1]),
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -582,6 +690,17 @@ class MigrationGUI:
                 pass
         self._big_view_windows = alive_big
 
+        # 同步 PySide6 试点窗口（自绘 Qt 控件，主题得显式喂过去）
+        alive_qt = []
+        for qv in getattr(self, '_qt_views', []):
+            try:
+                if qv.is_alive():
+                    qv.set_theme(self.theme)
+                    alive_qt.append(qv)
+            except Exception:
+                pass
+        self._qt_views = alive_qt
+
         # 同步主 config 清单的存在性状态标签颜色（跟随主题切换）
         if hasattr(self, 'config_text'):
             try:
@@ -629,6 +748,14 @@ class MigrationGUI:
                 self._configure_log_colors(self.log_text)
             except Exception:
                 pass
+        # 圆角文本框的填充/描边跟着主题重画（模组清单 / config 清单 / 执行日志 / 日志放大查看）
+        for _name in ("mod_text_box", "config_text_box", "log_text_box", "_log_big_box"):
+            _box = getattr(self, _name, None)
+            if _box is not None:
+                try:
+                    _box.refresh()
+                except Exception:
+                    pass
         if hasattr(self, 'source_status'):
             self.source_status.configure(bg=self.theme["bg"])
         if hasattr(self, 'target_status'):
@@ -987,6 +1114,7 @@ class MigrationGUI:
         keys = set(self.hidden_buttons or ())
         keys.add(key) if hidden else keys.discard(key)
         self.hidden_buttons = sorted(keys)
+        button_prefs.update(self.hidden_buttons, self.button_order)
         self._apply_button_layout()
         self.save_config()
         self._refresh_button_tree()
@@ -1003,6 +1131,7 @@ class MigrationGUI:
             return False
         order[i], order[j] = order[j], order[i]
         self.button_order[gkey] = order
+        button_prefs.update(self.hidden_buttons, self.button_order)
         self._apply_button_layout()
         self.save_config()
         self._refresh_button_tree()
@@ -1012,15 +1141,39 @@ class MigrationGUI:
         """恢复默认：全部显示 + 默认顺序。"""
         self.hidden_buttons = []
         self.button_order = {}
+        button_prefs.update(self.hidden_buttons, self.button_order)
         self._apply_button_layout()
         self.save_config()
         self._refresh_button_tree()
         self.log("🧩 界面按钮已恢复默认显示与顺序", level="INFO", save=False)
 
-    def open_settings(self):
-        """⚙ 设置：程序级偏好集中放这儿。
+    def _pack_window_btns(self, gkey, row, entries, side="left", padx=5):
+        """按「界面按钮」的配置摆一个窗口工具栏：隐藏的不摆、顺序照配置。
 
-        分四块：外观与启动 / 界面按钮（显示隐藏+排序）/ 关闭与后台 / 快捷链接。
+        entries 是 [(key, widget)]，按**默认顺序**给；widget 为 None 的直接跳过
+        （例如 config 清单里没有"添加模组"那个按钮）。
+        这类窗口每次打开现建，所以设置改完是下次打开生效。
+        """
+        table = {k: w for k, w in entries if w is not None}
+        seq = [k for k in button_prefs.keys(gkey) if k in table]
+        # 兜底：完全没登记进表的按钮也得摆出来（但不能把"被隐藏"的又加回来）
+        known = set(button_prefs.DEFAULTS.get(gkey, ()))
+        seq += [k for k in table if k not in known]
+        if side != "left":
+            seq = list(reversed(seq))                  # 靠右摆：先摆的最靠右
+        for key in seq:
+            try:
+                table[key].pack(side=side, padx=padx)
+            except Exception:
+                pass
+        return seq
+
+    def open_settings(self):
+        """⚙ 设置：程序级偏好按用途分成几个标签页。
+
+        标签页：外观与启动 / 迁移与分类 / 放大查看 / 界面按钮 / 后台与退出。
+        以前全塞一页，条目一多就挤成一条长条，所以改成标签页（自己画的圆角药丸标签，
+        见 ui/rounded_tabs.py：选中块滑动 + 页面滑入）。
         """
         win = getattr(self, "settings_win", None)
         if win is not None and win.winfo_exists():
@@ -1036,11 +1189,29 @@ class MigrationGUI:
         win.transient(self.root)
         set_window_icon(win)
 
-        def section(key):
+        # ---- 标签页容器（自己画的圆角药丸标签：ttk.Notebook 的标签是方的、也没法做动画）----
+        from ui.rounded_tabs import RoundedTabs
+        tabs = RoundedTabs(win, self.theme)
+        tabs.pack(fill="both", expand=True, padx=12, pady=(8, 0))
+        self.settings_tabs = tabs
+        pages = []
+
+        def tab(label):
+            page = tabs.page(label)
+            pages.append(page)
+            return page
+
+        page_look = tab("🎨 外观与启动")
+        page_mig = tab("🚚 迁移与分类")
+        page_view = tab("🗂 放大查看")
+        page_btn = tab("🔘 界面按钮")
+        page_close = tab("🚪 后台与退出")
+
+        def section(key, parent):
             """带主色描边 + 图标的分区：返回可以往里塞内容的容器。"""
             title, accent, icon = _SECTION_STYLE[key]
-            wrapper = tk.Frame(win, bg=self.theme["bg"])
-            wrapper.pack(fill="x", padx=14, pady=(10, 0))
+            wrapper = tk.Frame(parent, bg=self.theme["bg"])
+            wrapper.pack(fill="x", padx=4, pady=(10, 0))
             head = tk.Frame(wrapper, bg=self.theme["bg"])
             head.pack(fill="x")
             # 左边一个主色小色块当"图标底"，右边是主色标题
@@ -1072,8 +1243,8 @@ class MigrationGUI:
                 selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
                 highlightthickness=0, bd=0, font=("微软雅黑", 9), anchor="w")
 
-        # ---------- 1. 外观与启动 ----------
-        box1 = section("look")
+        # ---------- 外观与启动 ----------
+        box1 = section("look", page_look)
         self.settings_theme_var = tk.StringVar(value=self.current_theme)
         row_theme = tk.Frame(box1, bg=self.theme["bg"])
         row_theme.pack(fill="x")
@@ -1087,8 +1258,8 @@ class MigrationGUI:
         check(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
               self._toggle_splash).pack(fill="x", pady=(6, 0))
 
-        # ---------- 2. 迁移行为 ----------
-        box_m = section("migrate")
+        # ---------- 迁移行为 ----------
+        box_m = section("migrate", page_mig)
         self.settings_rename_var = tk.BooleanVar(value=self.rename_migrated_mods)
         check(box_m, "复制过去的模组加标记前缀（方便在目标 mods 里一眼认出）",
               self.settings_rename_var, self._toggle_rename_marker).pack(fill="x")
@@ -1106,8 +1277,8 @@ class MigrationGUI:
         self.settings_marker_preview.pack(anchor="w", pady=(4, 0))
         self._update_marker_preview()
 
-        # ---------- 3. 模组分类标签 ----------
-        box_t = section("tags")
+        # ---------- 模组分类标签 ----------
+        box_t = section("tags", page_mig)
         self.settings_tags_var = tk.BooleanVar(value=getattr(self, "online_tags", False))
         check(box_t, "联网获取真实分类（Modrinth；默认关闭）",
               self.settings_tags_var, self._toggle_online_tags).pack(fill="x")
@@ -1122,8 +1293,42 @@ class MigrationGUI:
         self.settings_tag_cache_lbl.pack(anchor="w", pady=(2, 0))
         self._update_tag_cache_label()
 
-        # ---------- 3. 界面按钮 ----------
-        box2 = section("buttons")
+        # ---------- 任务与锁定 ----------
+        box_lock = section("lock", page_mig)
+        self.settings_lock_var = tk.StringVar(value=getattr(self, "lock_mode", "all"))
+        for value, text in _LOCK_MODES:
+            radio(box_lock, text, value, self.settings_lock_var,
+                  lambda v=value: self._set_lock_mode(v)).pack(fill="x")
+        tk.Label(box_lock,
+                 text="三个选项都只是「盖不盖遮罩」的区别：迁移期间所有操作按钮一律禁用，"
+                      "执行日志始终留着，方便看进度。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
+                                                                          pady=(4, 0))
+
+        # ---------- 放大查看窗口用什么实现 ----------
+        box_view = section("view", page_view)
+        self.settings_view_var = tk.StringVar(value=getattr(self, "big_view_backend", "qt"))
+        _qt_ok, _qt_why = self._qt_available()
+        for value, text in _BIG_VIEW_BACKENDS:
+            radio(box_view, text, value, self.settings_view_var,
+                  lambda v=value: self._set_big_view_backend(v)).pack(fill="x")
+        tk.Label(box_view,
+                 text=("PySide6 当前%s。%s"
+                       % ("可用" if _qt_ok else "不可用", _qt_why)),
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
+                                                                          pady=(4, 0))
+        tk.Label(box_view, text="打开时用哪个视图：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
+        self.settings_view_mode_var = tk.StringVar(
+            value=getattr(self, "big_view_view", "table"))
+        for value, text in _BIG_VIEW_VIEWS:
+            radio(box_view, text, value, self.settings_view_mode_var,
+                  lambda v=value: self._set_big_view_view(v)).pack(fill="x")
+
+        # ---------- 界面按钮 ----------
+        box2 = section("buttons", page_btn)
         tree_wrap = tk.Frame(box2, bg=self.theme["bg"])
         tree_wrap.pack(fill="both", expand=True)
         self.settings_btn_tree = ttk.Treeview(
@@ -1158,9 +1363,14 @@ class MigrationGUI:
         tk.Label(box2, text="双击一行也能切换显示/隐藏；顺序只在同一排内调整。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8)).pack(anchor="w", pady=(4, 0))
+        tk.Label(box2, text="主界面的按钮改完立刻生效；放大查看 / 日志放大查看这些窗口里的"
+                            "按钮，是下次打开那个窗口时生效。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=520).pack(anchor="w",
+                                                                           pady=(2, 0))
 
-        # ---------- 3. 关闭与后台 ----------
-        box3 = section("close")
+        # ---------- 关闭与后台 ----------
+        box3 = section("close", page_close)
         self.settings_close_var = tk.StringVar(
             value=getattr(self, "close_action", "ask"))
         for value, text in (("tray", "收进系统托盘，程序继续在后台跑"),
@@ -1172,8 +1382,8 @@ class MigrationGUI:
         check(box3, "后台静默执行任务（不弹进度/结果窗口，完成后系统通知）",
               self.settings_silent_var, self._toggle_silent).pack(fill="x", pady=(6, 0))
 
-        # ---------- 4. 快捷链接 ----------
-        box4 = section("links")
+        # ---------- 快捷链接（放"外观与启动"页最下面）----------
+        box4 = section("links", page_look)
         row_link = tk.Frame(box4, bg=self.theme["bg"])
         row_link.pack(fill="x")
         create_gradient_button(row_link, "🌐 Minecraft 官网",
@@ -1200,7 +1410,14 @@ class MigrationGUI:
 
         win.protocol("WM_DELETE_WINDOW", win.destroy)
         win.update_idletasks()
-        center_window(win, max(win.winfo_reqwidth(), 640), win.winfo_reqheight())
+        # 按**最大的那一页**定窗口尺寸：换页时窗口不跳、内容也不会被裁
+        # （Notebook 只会请求当前页的尺寸，只看它会把别的页裁掉）
+        try:
+            pw = max(p.winfo_reqwidth() for p in pages) + 70
+            ph = max(p.winfo_reqheight() for p in pages) + 110
+        except Exception:
+            pw = ph = 0
+        center_window(win, max(pw, 700), max(ph, 520))
         win.deiconify()
         focus_window(win)
 
@@ -1229,7 +1446,9 @@ class MigrationGUI:
                                  text=f" {_GROUP_ICONS.get(gkey, '')} {glabel}",
                                  values=("",), open=True, tags=(f"grp_{gkey}",))
             for key in self._resolved_order(gkey):
-                if key not in self._btn_widgets:
+                # 主界面那几排看控件登记表；窗口工具栏的按钮（放大查看/日志放大查看）
+                # 不在登记表里 —— 它们是那个窗口打开时现建的，按分组认就行
+                if key not in self._btn_widgets and button_prefs.group_of(key) != gkey:
                     continue
                 is_hidden = key in hidden
                 tree.insert(parent, "end", iid=f"btn:{key}",
@@ -1339,6 +1558,115 @@ class MigrationGUI:
                             f"create-1.20.1-6.0.9.jar")
         except Exception:
             pass
+
+    def _set_lock_mode(self, value):
+        """迁移时怎么锁主界面（只影响"盖不盖遮罩"，按钮一律禁用）。"""
+        self.lock_mode = value if value in ("all", "real", "off") else "all"
+        self.save_config()
+        text = dict(_LOCK_MODES).get(self.lock_mode, self.lock_mode)
+        self.log(f"🔒 迁移锁定方式已改为：{text}", level="INFO", save=False)
+
+    # ------------------------------------------------------------------ #
+    # 放大查看：PySide6 试点窗口（Tk 主窗口 + root.after 驱动 Qt 事件循环）
+    # ------------------------------------------------------------------ #
+    def _qt_available(self):
+        """PySide6 是否可用。返回 (bool, 给用户看的原因)。"""
+        cached = getattr(self, "_qt_ok_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            from ui import qt_big_view as _q      # 模块顶层 import PySide6
+            _q.available()
+            reason = "窗口是 Qt 无边框圆角窗；关掉它不会影响主窗口。"
+            cached = (True, reason)
+        except Exception as e:
+            # 失败不缓存：用户中途 pip install 了 PySide6，下次打开就能直接用上
+            return (False, "装好 PySide6 后可切到试点窗口：pip install PySide6"
+                           f"（{type(e).__name__}: {e}）")
+        self._qt_ok_cache = cached
+        return cached
+
+    def _set_big_view_backend(self, value):
+        """放大查看窗口换实现（下一次打开生效）。"""
+        self.big_view_backend = value if value in ("qt", "tk") else "qt"
+        self.save_config()
+        used_qt = self.big_view_backend == "qt"
+        self.log("🗂 放大查看窗口已切换为：%s" % ("PySide6 试点窗口" if used_qt else "经典 Tk 窗口"),
+                 level="INFO", save=False)
+        if used_qt:
+            ok, why = self._qt_available()
+            if not ok:
+                self.log("⚠ " + why, level="WARNING", save=False)
+
+    def _set_big_view_view(self, value):
+        """放大查看窗口默认用哪个视图（下一次打开生效）。"""
+        self.big_view_view = value if value in ("table", "cards") else "table"
+        self.save_config()
+        self.log("🗂 放大查看窗口默认视图：%s"
+                 % ("卡片视图" if self.big_view_view == "cards" else "表格视图"),
+                 level="INFO", save=False)
+
+    def _qt_apply_entries(self, text_widget, entries):
+        """Qt 窗口关闭时把清单写回主界面（等价于 Tk 版的 write_back）。"""
+        content = "\n".join(entries)
+        try:
+            first = text_widget.yview()[0]
+        except Exception:
+            first = 0.0
+        text_widget.configure(state=tk.NORMAL)
+        text_widget.edit_separator()
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert("1.0", content + ("\n" if content else ""))
+        text_widget.edit_separator()
+        try:
+            text_widget.yview_moveto(first)
+        except Exception:
+            pass
+        self._update_text_states()
+        self.save_config()
+
+    def _pump_qt(self):
+        """Tk 的 after 循环里驱动 Qt 事件。
+
+        两个事件循环同线程共存：Qt 的所有回调（点击/动画/绘制）都在这个
+        after 回调里被调用，所以它们跑在主线程，从里面改 Tk 控件是安全的。
+        """
+        views = [v for v in getattr(self, "_qt_views", []) if v.is_alive()]
+        self._qt_views = views
+        for v in views:
+            try:
+                v.pump()
+            except Exception as e:
+                self.log(f"⚠ PySide6 窗口事件循环异常：{e}", level="ERROR", save=False)
+        if views:
+            self._qt_pump_after = self.root.after(12, self._pump_qt)
+
+    def _open_big_view_qt(self, source_text, title):
+        """用 PySide6 打开"放大查看"。返回 True 表示已接管。"""
+        try:
+            from ui import qt_big_view as Q
+        except Exception as e:
+            self.log(f"⚠ 无法加载 PySide6 窗口（{e}），已回退到经典窗口", level="ERROR", save=False)
+            return False
+        is_mod = "模组" in title or source_text is getattr(self, "mod_text", None)
+        entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines() if ln.strip()]
+        sp = self.source_path.get().strip() if hasattr(self, "source_path") else ""
+        try:
+            view = Q.show_big_view(
+                entries, is_mod, sp, title, self.theme,
+                online_tags=bool(getattr(self, "online_tags", False)),
+                cards=(getattr(self, "big_view_view", "table") == "cards"),
+                hooks={"write_back": lambda texts: self._qt_apply_entries(source_text, texts)})
+        except Exception as e:
+            self.log(f"⚠ PySide6 窗口创建失败：{e}", level="ERROR", save=False)
+            return False
+        if not hasattr(self, "_qt_views"):
+            self._qt_views = []
+        self._qt_views.append(view)
+        if not self._qt_views[:-1]:
+            self._pump_qt()          # 首个窗口才需要启动泵
+        self.log(f"🗂 已打开 PySide6 试点窗口：{title}（{len(entries)} 项）", level="INFO", save=False)
+        return True
 
     def _toggle_online_tags(self):
         """联网分类开关：开启后扫描会在后台去 Modrinth 取真实分类。"""
@@ -1743,12 +2071,12 @@ class MigrationGUI:
         self._log_fading = True
         color = self.theme.get(self._LOG_COLOR_KEYS.get(level, "log_info_fg"),
                               self.theme.get("log_fg", "#000000"))
-        # 14 帧 × 18ms ≈ 250ms：短于 150ms 基本看不出是"动画"，只会像闪一下。
-        # 同时从右侧 44px 滑进来 —— 位移比变色显眼得多。
+        # 9 帧 × 14ms ≈ 126ms：原来 14×18≈250ms 太慢，日志一行一行冒出来时明显拖沓。
+        # 位移同步从 44px 收到 26px —— 时长减半、速度（px/ms）基本不变，才不会"闪一下"。
         self._fade_text(self.log_text, [(start, end)],
                         self.theme.get("log_bg", "#ffffff"), color,
-                        frames=14, frame_ms=18,
-                        indent_from=44, indent_to=0,
+                        frames=9, frame_ms=14,
+                        indent_from=26, indent_to=0,
                         on_done=lambda: setattr(self, "_log_fading", False))
 
     def log(self, message, level="INFO", save=True):
@@ -1761,6 +2089,16 @@ class MigrationGUI:
             if getattr(self, "_log_follow", True):
                 self.log_text.see(tk.END)
             self.log_text.configure(state="disabled")
+            # 锁屏里那份日志是"第二个视图"：主日志照常记，这里同步追加一份
+            lock_log = getattr(self, "_lock_log_text", None)
+            if lock_log is not None:
+                try:
+                    lock_log.configure(state="normal")
+                    lock_log.insert(tk.END, message + "\n", level)
+                    lock_log.configure(state="disabled")
+                    lock_log.see(tk.END)
+                except Exception:
+                    self._lock_log_text = None
             try:
                 self._fade_log_line(start, end, level)
             except Exception:
@@ -1896,18 +2234,23 @@ class MigrationGUI:
             toolbar, "❌ 关闭", win.destroy,
             colors=("#757575", "#9e9e9e"),
             width=_grad_width("❌ 关闭"), height=28, font=("微软雅黑", 9, "bold"))
-        btn_close.pack(side="right", padx=4)
         btn_refresh = create_gradient_button(
             toolbar, "🔄 刷新",
             lambda: state.__setitem__("last", None),
             colors=("#00bcd4", "#3f51b5"),
             width=_grad_width("🔄 刷新"), height=28, font=("微软雅黑", 9, "bold"))
-        btn_refresh.pack(side="right", padx=4)
+        # 按「界面按钮」的配置摆（隐藏的不摆、顺序照配置；这类窗口下次打开生效）
+        self._pack_window_btns("logview", toolbar,
+                               [("lv_refresh", btn_refresh), ("lv_close", btn_close)],
+                               side="right", padx=4)
 
-        big = scrolledtext.ScrolledText(win, wrap=tk.WORD, state="disabled",
-                                        bg=self.theme["log_bg"], fg=self.theme["log_fg"],
-                                        font=("微软雅黑", 10))
-        big.pack(fill="both", expand=True, padx=8, pady=8)
+        self._log_big_box = RoundedTextArea(win, self.theme, wrap=tk.WORD,
+                                           state="disabled",
+                                           bg=self.theme["log_bg"],
+                                           fg=self.theme["log_fg"],
+                                           font=("微软雅黑", 10))
+        big = self._log_big_box.text
+        self._log_big_box.pack(fill="both", expand=True, padx=8, pady=8)
         self._log_big_text = big
         self._smooth(big)
 
@@ -2000,6 +2343,9 @@ class MigrationGUI:
         self.theme_btn.pack(side="right", padx=5)
         self.create_tooltip(self.theme_btn, "切换浅色 / 深色主题")
         self.create_tooltip(self.settings_btn, "设置")
+        # 这两个也登记进「界面按钮」表（分组：主界面右上角），显示/隐藏与顺序跟着设置走
+        self._btn_widgets["settings_btn"] = self.settings_btn
+        self._btn_widgets["theme_btn"] = self.theme_btn
         self._stage()
 
         # 警告横幅
@@ -2102,9 +2448,11 @@ class MigrationGUI:
                                       padx=5, pady=5)
         frame_modlist.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.mod_text = scrolledtext.ScrolledText(frame_modlist, height=8, wrap=tk.NONE,
-                                                  undo=True, font=("微软雅黑 Light", 10))
-        self.mod_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.mod_text_box = RoundedTextArea(frame_modlist, self.theme, height=8,
+                                            wrap=tk.NONE, undo=True,
+                                            font=("微软雅黑 Light", 10))
+        self.mod_text_box.pack(fill="both", expand=True, padx=5, pady=5)
+        self.mod_text = self.mod_text_box.text
         self._smooth(self.mod_text)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
@@ -2173,7 +2521,7 @@ class MigrationGUI:
             colors=("#00bcd4", "#3f51b5"),
             width=gw("🔍 扫描模组差异"), height=30, font=("微软雅黑", 9, "bold"))
         self.mod_magnify_btn = create_gradient_button(
-            btn_frame, "📂 放大查看", lambda: self.open_big_view(self.mod_text, "模组清单"),
+            btn_frame, "📂 放大查看", self.open_mod_big_view,
             colors=("#607d8b", "#90a4ae"),
             width=gw("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_mods_btn = create_gradient_button(
@@ -2217,10 +2565,11 @@ class MigrationGUI:
                                   fg=self.theme["fail_fg"], font=("微软雅黑", 9, "bold"))
         warning_config.pack(anchor="w", padx=5, pady=2)
 
-        self.config_text = scrolledtext.ScrolledText(frame_config, height=6,
-                                                     wrap=tk.NONE, undo=True,
-                                                     font=("微软雅黑 Light", 10))
-        self.config_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.config_text_box = RoundedTextArea(frame_config, self.theme, height=6,
+                                               wrap=tk.NONE, undo=True,
+                                               font=("微软雅黑 Light", 10))
+        self.config_text_box.pack(fill="both", expand=True, padx=5, pady=5)
+        self.config_text = self.config_text_box.text
         self._smooth(self.config_text)
         self.config_text.bind("<Control-z>",
                               lambda e: self._safe_undo(self.config_text))
@@ -2249,8 +2598,7 @@ class MigrationGUI:
         btn_config_frame.pack(fill="x", pady=5)
 
         self.config_magnify_btn = create_gradient_button(
-            btn_config_frame, "📂 放大查看",
-            lambda: self.open_big_view(self.config_text, "Config清单"),
+            btn_config_frame, "📂 放大查看", self.open_config_big_view,
             colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         self.config_magnify_btn.pack(side="left", padx=5)
@@ -2356,10 +2704,11 @@ class MigrationGUI:
         log_toolbar = tk.Frame(frame_log)
         log_toolbar.pack(fill="x", pady=(0, 5))
         btn_big_log = create_gradient_button(
-            log_toolbar, "📂 放大查看", self.open_log_big_view,
+            log_toolbar, "📂 放大查看", self.open_log_big_view_busy,
             colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
         btn_big_log.pack(side="left", padx=5)
+        self.log_magnify_btn = btn_big_log      # 打开中要改它的文字
         btn_clear_log = create_gradient_button(
             log_toolbar, "🗑️ 清空日志", self.clear_log,
             colors=("#757575", "#9e9e9e"),
@@ -2377,9 +2726,12 @@ class MigrationGUI:
         })
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
-        self.log_text = scrolledtext.ScrolledText(frame_log, height=22, wrap=tk.WORD,
-                                                  state="disabled")
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text_box = RoundedTextArea(frame_log, self.theme, height=22,
+                                            wrap=tk.WORD, state="disabled",
+                                            bg=self.theme["log_bg"],
+                                            fg=self.theme["log_fg"])
+        self.log_text_box.pack(fill="both", expand=True, padx=2, pady=2)
+        self.log_text = self.log_text_box.text
         # 试验：日志区平滑滚动。手动往上滚时暂停"自动跟到底"，滚回底部再恢复，
         # 否则日志一边涌入、一边把你拽回底部，根本翻不上去。
         self._log_follow = True
@@ -2508,6 +2860,7 @@ class MigrationGUI:
             self._set_status_semantic(self.world_status, "muted", "")
 
     # ---------- 检查模组存在性 ----------
+    @_file_task_lock("检查模组是否存在")
     def check_modlist_existence(self):
         now = time.time()
         if now - self.last_check_modlist_time < 2:
@@ -2515,7 +2868,6 @@ class MigrationGUI:
             self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
             return
         self.last_check_modlist_time = now
-
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
@@ -2611,8 +2963,9 @@ class MigrationGUI:
         set_window_icon(dialog)
         tk.Label(dialog,
                  text="请粘贴完整的变更日志文本（包含 'Added mods:' 和 'Updated mods:' 部分）：").pack(pady=5)
-        text_widget = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, height=20)
-        text_widget.pack(fill="both", expand=True, padx=10, pady=5)
+        text_box = RoundedTextArea(dialog, self.theme, wrap=tk.WORD, height=20)
+        text_widget = text_box.text
+        text_box.pack(fill="both", expand=True, padx=10, pady=5)
         self._smooth(text_widget)
 
         def extract_and_close():
@@ -2873,10 +3226,11 @@ class MigrationGUI:
         count_lbl = tk.Label(dlg, bg=theme["bg"], fg=theme["fg"], text="")
         count_lbl.pack(fill="x", padx=10, pady=(0, 4))
 
-        def mk_button(parent, text, cmd, guard_ms=300):
-            # 与渐变按钮一致：冷却期内的重复点击直接忽略
-            click_at = {"t": 0.0}
+        def mk_button(parent, text, cmd, colors=("#546e7a", "#78909c"), guard_ms=300):
+            """和程序里其它按钮同一款"灵动"渐变按钮（悬停浮起+扫光、按下弹回）。
 
+            冷却期内的重复点击直接忽略（这一点和渐变按钮一致）。
+            """
             def _run():
                 now = time.time()
                 if guard_ms and (now - click_at["t"]) * 1000 < guard_ms:
@@ -2884,18 +3238,10 @@ class MigrationGUI:
                 click_at["t"] = now
                 cmd()
 
-            # 普通 tk.Button 也走同一套高亮：悬停时把底色调亮，和渐变按钮一致
-            base_bg = theme["button_bg"]
-            hover_bg = lighten_color(base_bg)
-            btn = tk.Button(parent, text=text, command=_run, bg=base_bg,
-                            fg=theme["button_fg"], activebackground=hover_bg,
-                            activeforeground=theme["button_fg"], relief=tk.FLAT,
-                            padx=12, pady=4, font=("微软雅黑", 9))
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=hover_bg,
-                                                             activebackground=hover_bg))
-            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=base_bg,
-                                                             activebackground=base_bg))
-            return btn
+            click_at = {"t": 0.0}
+            return create_gradient_button(parent, text, _run, colors=colors,
+                                          width=_grad_width(text), height=30,
+                                          font=("微软雅黑", 9, "bold"))
 
         def select_top():
             checked.clear()
@@ -3074,6 +3420,7 @@ class MigrationGUI:
         focus_window(hist_win)
 
     # ---------- 回滚 ----------
+    @_file_task_lock("备份回滚")
     def action_rollback(self):
         if self._migration_running:
             messagebox.showwarning("提示", "迁移正在进行中，暂不能回滚。")
@@ -3142,6 +3489,7 @@ class MigrationGUI:
                             self.root.after_cancel(self.after_id)
                             self.after_id = None
                         self._migration_running = False
+                        self._unlock_main_window()      # 进度窗口关掉时同步解锁
                         self._notify_task_done(
                             "迁移", "任务已结束，点托盘图标打开主界面查看日志")
                         return
@@ -3284,9 +3632,246 @@ class MigrationGUI:
                                             self.current_theme, apply_callback)
 
     # ---------- 迁移 ----------
+    def _busy_task_name(self):
+        """当前正在跑的文件类任务名；没有就返回 None。
+
+        迁移、扫描差异、检查存在性、导入变更日志、回滚、大窗口检测都算 —— 它们都会碰文件，
+        同时跑就可能互相踩（比如迁移正复制文件时又去回滚）。
+        """
+        if self._migration_running:
+            return "迁移"
+        if self._scanning:
+            return "扫描模组差异"
+        return getattr(self, "_file_task", None)
+
+    def _begin_file_task(self, name):
+        """登记一个文件类任务：期间迁移按钮会变灰，start_migration 也会直接拒绝。"""
+        self._file_task = name
+        self._refresh_busy_state()
+
+    def _end_file_task(self):
+        self._file_task = None
+        self._refresh_busy_state()
+
+    # ---------- 锁屏遮罩：流动红边 + 内嵌执行日志 ----------
+    _BORDER_W = 4          # 边框厚度
+    _TILE = 240            # 渐变瓦片长度（定长 → 窗口缩放只要增减瓦片，不用重渲图）
+
+    def _flow_tile(self, vertical=False):
+        """一段“暗红→亮红→暗红”的渐变瓦片（做流动边框用）。
+
+        用定长瓦片首尾相接 + 每帧整体平移，而不是逐帧改每个格子的颜色：
+        前者每帧只有十几次 canvas.move，后者要上百次 itemconfigure。
+        """
+        cache = getattr(self, "_flow_tiles", None)
+        if cache is None:
+            cache = self._flow_tiles = {}
+        key = bool(vertical)
+        if key in cache:
+            return cache[key]
+        try:
+            from PIL import Image as _I, ImageDraw as _D, ImageTk as _IT
+            import math as _m
+            W, H = self._BORDER_W, self._TILE
+            im = _I.new("RGB", (W if vertical else H, H if vertical else W))
+            d = _D.Draw(im)
+            dark, bright = (0x8e, 0x00, 0x00), (0xff, 0x17, 0x44)
+            for i in range(H):
+                t = 0.5 - 0.5 * _m.cos(2 * _m.pi * i / H)      # 0→1→0 平滑
+                c = tuple(int(dark[k] + (bright[k] - dark[k]) * t) for k in range(3))
+                if vertical:
+                    d.line([(0, i), (self._BORDER_W - 1, i)], fill=c)
+                else:
+                    d.line([(i, 0), (i, self._BORDER_W - 1)], fill=c)
+            photo = _IT.PhotoImage(im)
+        except Exception:
+            photo = None
+        cache[key] = photo
+        return photo
+
+    def _build_flow_border(self, cv, w, h):
+        """围着窗口铺一圈流动红边（四边首尾相接，绕一圈同向流动）。"""
+        cv.delete("border")
+        horiz, vert = self._flow_tile(False), self._flow_tile(True)
+        items = []
+        bw, t = self._BORDER_W, self._TILE
+
+        def lay(anchor_x, anchor_y, length, horizontal, forward):
+            img = horiz if horizontal else vert
+            if img is None:
+                return
+            n = int(length // t) + 2
+            for i in range(n):
+                x = anchor_x + (i * t if horizontal else 0)
+                y = anchor_y + (0 if horizontal else i * t)
+                iid = cv.create_image(x, y, anchor="nw", image=img, tags="border")
+                items.append({"id": iid, "horizontal": horizontal, "forward": forward,
+                              "anchor": anchor_x if horizontal else anchor_y,
+                              "length": length, "span": n * t})
+
+        # 上边往右、右边往下、下边往左、左边往上 = 顺时针绕一圈
+        lay(0, 0, w, True, True)
+        lay(0, h - bw, w, True, False)
+        lay(w - bw, 0, h, False, True)
+        lay(0, 0, h, False, False)
+        self._flow_canvas = cv
+        self._flow_items = items
+
+    def _flow_step(self):
+        """每帧把瓦片整体平移几像素，越界的绕回另一端 —— 看着就是红光在边框里流动。"""
+        cv = getattr(self, "_flow_canvas", None)
+        items = getattr(self, "_flow_items", None)
+        if cv is None or not items:
+            self._flow_job = None
+            return
+        step = 3
+        try:
+            for it in items:
+                if it["horizontal"]:
+                    cv.move(it["id"], step if it["forward"] else -step, 0)
+                else:
+                    cv.move(it["id"], 0, step if it["forward"] else -step)
+                x, y = cv.coords(it["id"])
+                pos = x if it["horizontal"] else y
+                anchor, span, length = it["anchor"], it["span"], it["length"]
+                if it["forward"]:
+                    if pos > anchor + length - 1:                 # 从尾部绕回头部
+                        cv.move(it["id"], -span if it["horizontal"] else 0,
+                                0 if it["horizontal"] else -span)
+                else:
+                    if pos + self._TILE < anchor:                 # 从头部绕回尾部
+                        cv.move(it["id"], span if it["horizontal"] else 0,
+                                0 if it["horizontal"] else span)
+        except Exception:
+            pass
+        self._flow_job = self.root.after(32, self._flow_step)
+
+    def _lock_main_window(self, text="正在执行迁移任务"):
+        """迁移期间给主窗口盖一层遮罩（锁屏）：流动红边 + 内嵌执行日志。
+
+        盖不盖由设置里的 lock_mode 决定（all/real/off）；**不管盖不盖，操作按钮都会禁用**
+        （那是 _refresh_busy_state 的职责）。内嵌日志是“第二个视图”：主日志照常记录，
+        这里同步追加，锁屏期间不用去关窗口也能看进度。
+        """
+        if getattr(self, "_lock_overlay", None) is not None:
+            return
+        mode = getattr(self, "lock_mode", "all")
+        if mode == "off" or (mode == "real" and self.dry_run.get()):
+            self.log("🔓 按设置未锁定界面（操作按钮仍全部禁用）", level="INFO", save=False)
+            return
+        try:
+            bg = self.theme.get("bg", "#f0f0f0")
+            bw = self._BORDER_W
+            ov = tk.Frame(self.root, bg=bg)
+            ov.place(x=0, y=0, relwidth=1, relheight=1)
+            cv = tk.Canvas(ov, bg="#8e0000", highlightthickness=0, bd=0)
+            cv.place(x=0, y=0, relwidth=1, relheight=1)
+            inner = tk.Frame(ov, bg=bg)
+            inner.place(x=bw, y=bw, relwidth=1, relheight=1,
+                        width=-2 * bw, height=-2 * bw)
+
+            head = tk.Frame(inner, bg=bg)
+            head.pack(fill="x", pady=(16, 4))
+            tk.Label(head, text="🔒", font=("微软雅黑", 28), bg=bg,
+                     fg="#ff1744").pack()
+            tk.Label(head, text=text, font=("微软雅黑", 15, "bold"), bg=bg,
+                     fg=self.theme.get("fg", "#000000")).pack(pady=(4, 2))
+            tk.Label(head, text="主界面已锁定（操作按钮全部禁用）；下面是执行日志，"
+                               "不用关窗口也能看进度",
+                     font=("微软雅黑", 9), bg=bg,
+                     fg=self.theme.get("muted_fg", "#808080")).pack()
+
+            log_box = tk.Frame(inner, bg=bg)
+            log_box.pack(fill="both", expand=True, padx=26, pady=(10, 18))
+            lt = tk.Text(log_box, wrap="word", state="normal", relief="flat", bd=0,
+                         padx=10, pady=8, font=("微软雅黑", 9),
+                         bg=self.theme.get("log_bg", "#ffffff"),
+                         fg=self.theme.get("log_fg", "#000000"),
+                         highlightthickness=1,
+                         highlightbackground=self.theme.get("border", "#c8c8c8"))
+            sb = tk.Scrollbar(log_box, orient="vertical", command=lt.yview)
+            lt.configure(yscrollcommand=sb.set)
+            lt.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+            try:
+                self._configure_log_colors(lt)       # 级别配色和主日志保持一致
+                self._smooth(lt)                     # 平滑滚动
+                tail = self.log_text.get("1.0", tk.END).splitlines()[-200:]
+                if tail:
+                    lt.insert("1.0", "\n".join(tail) + "\n")
+                lt.see(tk.END)
+            except Exception:
+                pass
+            lt.configure(state="disabled")
+            self._lock_log_text = lt
+
+            ov.lift()
+            self._lock_overlay = ov
+            self._build_flow_border(cv, max(2, ov.winfo_width()), max(2, ov.winfo_height()))
+            self._flow_job = self.root.after(32, self._flow_step)
+            # 兜底：迁移线程结束时会在主线程里解锁，这里再盯一道 —— 万一那次跨线程
+            # after 没排上（Tk 在“没进 mainloop”的驱动方式下会直接拒绝跨线程调用），
+            # 遮罩也不该一直盖着。
+            self._mig_watch_job = self.root.after(250, self._watch_migration_end)
+            self._lock_cfg_bind = self.root.bind("<Configure>", self._on_lock_configure, add="+")
+        except Exception:
+            self._lock_overlay = None
+            self._lock_log_text = None
+
+    def _on_lock_configure(self, event=None):
+        """窗口大小变了：重铺一圈瓦片（瓦片图定长，不用重渲）。"""
+        ov = getattr(self, "_lock_overlay", None)
+        cv = getattr(self, "_flow_canvas", None)
+        if ov is None or cv is None:
+            return
+        try:
+            self._build_flow_border(cv, max(2, ov.winfo_width()),
+                                   max(2, ov.winfo_height()))
+        except Exception:
+            pass
+
+    def _watch_migration_end(self):
+        """盯迁移结束：结束了就解锁（幂等，和线程侧的解锁互为保险）。"""
+        self._mig_watch_job = None
+        if self._migration_running:
+            self._mig_watch_job = self.root.after(250, self._watch_migration_end)
+            return
+        self._unlock_main_window()
+        self._refresh_busy_state()
+
+    def _unlock_main_window(self):
+        for attr in ("_mig_watch_job", "_lock_pulse_job", "_flow_job"):
+            job = getattr(self, attr, None)
+            if job is not None:
+                try:
+                    self.root.after_cancel(job)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._flow_canvas = None
+        self._flow_items = []
+        self._lock_log_text = None
+        if getattr(self, "_lock_cfg_bind", None) is not None:
+            try:
+                self.root.unbind("<Configure>", self._lock_cfg_bind)
+            except Exception:
+                pass
+            self._lock_cfg_bind = None
+        ov = getattr(self, "_lock_overlay", None)
+        self._lock_overlay = None
+        if ov is not None:
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+
     def _refresh_busy_state(self):
-        """迁移/扫描进行中时禁用主界面所有操作/内容变更类按钮，防止连点或误操作。"""
-        busy = self._migration_running or self._scanning
+        """迁移/扫描进行中时禁用主界面所有操作/内容变更类按钮，防止连点或误操作。
+
+        注意 `_starting` 也要算"忙"：准备阶段（统计文件那几秒）按钮必须一直是灰的，
+        否则轮询收尾的 _watch_migration_end 会把它当成"没在跑"而重新点亮。
+        """
+        busy = bool(self._busy_task_name()) or bool(getattr(self, "_starting", False))
         state = "disabled" if busy else "normal"
         btns = (
             self.start_btn, self.rollback_btn, self.scan_btn,
@@ -3294,16 +3879,62 @@ class MigrationGUI:
             self.clear_mods_btn, self.check_mods_btn, self.config_magnify_btn,
             self.add_config_dir_btn, self.add_config_file_btn, self.clear_config_btn,
             self.config_check_btn,
+            # 路径区那三个：迁移期间改来源/目标路径同样是误操作，一起禁掉
+            self._btn_widgets.get("browse_source"), self._btn_widgets.get("copy_target"),
+            self._btn_widgets.get("browse_target"),
+            # 右上角的设置/主题
+            getattr(self, "settings_btn", None), getattr(self, "theme_btn", None),
+            # 日志区那三个（遮罩不盖日志，这里靠禁用挡住）
+            getattr(self, "log_magnify_btn", None),
+            self._btn_widgets.get("log_open"), self._btn_widgets.get("log_clear"),
         )
         for btn in btns:
+            if btn is None:
+                continue
             try:
                 btn.state(state)
             except Exception:
                 pass
 
     def start_migration(self):
+        """开始迁移（按钮入口）。
+
+        两段式：先挡住重入、立刻把按钮变灰，再走原来的准备+执行逻辑。
+        为什么必须这样：准备阶段（校验清单 / 统计文件大小 / 磁盘检查）可能要几秒，
+        期间只要出现过弹窗（messagebox 会开嵌套事件循环），排队的那次点击就会被派发，
+        而那时 _migration_running 还没置位 —— 于是一次点击变两次迁移。
+        """
+        if self._migration_running or getattr(self, "_starting", False):
+            self.log("⚠️ 已有迁移在进行中（或正在准备），这次点击已忽略",
+                     level="WARNING", save=False)
+            return
+        self._starting = True
+        # 立刻禁用：既是视觉反馈，也让"点了没反应"变成"按钮本来就是灰的"
+        try:
+            self.start_btn.state("disabled")
+        except Exception:
+            pass
+        try:
+            self._start_migration_locked()
+        finally:
+            self._starting = False
+            if not self._migration_running:
+                # 提前返回（校验没过/磁盘不足/备份失败…）：把按钮恢复
+                self._refresh_busy_state()
+
+    def _start_migration_locked(self):
         if self._migration_running:
             messagebox.showwarning("提示", "迁移正在进行中，请勿重复启动")
+            return
+        # 别的文件任务在跑时禁止迁移：模拟运行也禁（它同样会读整份清单/校验路径，
+        # 而且用户容易把"模拟"当成安全的并行操作，实际它和真迁移共用同一套流程）。
+        task = self._busy_task_name()
+        if task:
+            messagebox.showwarning(
+                "提示",
+                f"正在执行「{task}」，为避免两个任务同时改动同一批文件，"
+                "请等它结束后再开始迁移（模拟运行同样需要等待）。")
+            self.log(f"⚠️ 已拦截：{task} 进行中，暂不允许启动迁移", level="WARNING")
             return
 
         src = self.source_path.get().strip()
@@ -3366,9 +3997,11 @@ class MigrationGUI:
                 "空间不足，请清理目标磁盘后重试。")
             return
 
-        # 置为"迁移中"，禁用相关按钮，防止重复触发
+        # 置为"迁移中"，禁用相关按钮、并给主窗口上锁，防止重复触发/误操作
         self._migration_running = True
         self._refresh_busy_state()
+        self._lock_main_window("正在执行迁移任务" if not self.dry_run.get()
+                              else "正在执行迁移任务（模拟运行）")
 
         # 模拟模式
         if self.dry_run.get():
@@ -3394,6 +4027,7 @@ class MigrationGUI:
             self.log(f"❌ 备份失败：{e}", level="ERROR")
             messagebox.showerror("备份错误", f"备份目标实例失败：{e}\n迁移已取消。")
             self._migration_running = False
+            self._unlock_main_window()
             self._refresh_busy_state()
             return
 
@@ -3525,6 +4159,7 @@ class MigrationGUI:
         finally:
             self._migration_running = False
             try:
+                self.root.after(0, self._unlock_main_window)     # 解掉主窗口遮罩
                 self.root.after(0, self._refresh_busy_state)
             except Exception:
                 pass
@@ -3605,6 +4240,73 @@ class MigrationGUI:
                                    self._is_text_overflow(self.mod_text))
         self._set_magnify_overflow(self.config_magnify_btn,
                                    self._is_text_overflow(self.config_text))
+
+    # ---------- 放大查看：按钮先变"打开中" ----------
+    # 建那个窗口是同步的（大清单要几百毫秒），这期间界面不会自己重绘，
+    # 点下去看着就像没反应。所以先把按钮切成"打开中"并强制刷一次。
+    def _magnify_busy(self, btn, text="⏳ 打开中…"):
+        if btn is None:
+            return False
+        try:
+            btn.set_text(text)
+            btn.set_gradient("#9e9e9e", "#bdbdbd")
+            btn.state("disabled")            # 顺带防连点
+            self.root.update_idletasks()     # 关键：不刷这一下"打开中"根本看不见
+            return True
+        except Exception:
+            return False
+
+    def _magnify_idle(self, btn, text="📂 放大查看"):
+        if btn is None:
+            return
+        try:
+            btn.set_text(text)
+            base = getattr(btn, "_base_colors", ("#607d8b", "#90a4ae"))
+            hov = getattr(btn, "_base_hover", None)
+            if hov:
+                btn.set_gradient(base[0], base[1], hov[0], hov[1])
+            else:
+                btn.set_gradient(base[0], base[1])
+            btn.state("normal")
+            # 恢复后再按"内容溢出"重新着色（溢出时本来是橙色的）
+            self._check_overflow()
+        except Exception:
+            pass
+
+    def _with_busy_btn(self, btn, func, busy_text="⏳ 打开中…",
+                       idle_text="📂 放大查看"):
+        """同步执行 func，期间按钮显示"打开中"，结束后恢复。"""
+        started = self._magnify_busy(btn, busy_text)
+        try:
+            func()
+        finally:
+            if started:
+                self._magnify_idle(btn, idle_text)
+
+    def _open_big_view_dispatch(self, source_text, title):
+        """按设置选择放大查看窗口的实现；Qt 不可用就自动回落到 Tk 版。"""
+        if getattr(self, "big_view_backend", "qt") == "qt":
+            ok, why = self._qt_available()
+            if ok and self._open_big_view_qt(source_text, title):
+                return
+            if not ok:
+                self.log("⚠ " + why + "，本次用经典窗口打开", level="WARNING", save=False)
+        self.open_big_view(source_text, title)
+
+    def open_mod_big_view(self):
+        """模组清单 → 放大查看"""
+        self._with_busy_btn(self.mod_magnify_btn,
+                            lambda: self._open_big_view_dispatch(self.mod_text, "模组清单"))
+
+    def open_config_big_view(self):
+        """config 清单 → 放大查看"""
+        self._with_busy_btn(self.config_magnify_btn,
+                            lambda: self._open_big_view_dispatch(self.config_text, "Config清单"))
+
+    def open_log_big_view_busy(self):
+        """执行日志 → 放大查看"""
+        self._with_busy_btn(getattr(self, "log_magnify_btn", None),
+                            self.open_log_big_view)
 
     def _safe_undo(self, widget):
         try:
@@ -4116,6 +4818,7 @@ class MigrationGUI:
             win, columns, self.theme,
             font=("微软雅黑", 12), row_height=26, header_height=32,
             on_row_click=lambda row, ev: _on_row_click(row, ev),
+            on_row_double=(lambda row, ev: _on_row_double(row, ev)) if is_mod else None,
             on_header_click=lambda key, ev: sort_by(key),
             on_row_hover=lambda row, ev: _on_row_hover(row, ev),
             on_leave=lambda ev: _tip_hide(),
@@ -4653,29 +5356,23 @@ class MigrationGUI:
             except Exception:
                 pass
 
-        # 快速双击阈值（秒）：同一行两次点击间隔小于该值才算双击。
-        # 原来 0.25 太长——想快速连点两行勾选时会被误判成双击，莫名其妙弹出详情窗口。
-        _DOUBLE_CLICK_SEC = 0.18
-        _last_click = {"t": 0.0, "row": None}
-
+        # 点击规则交给 Tk 自己的事件，不再手写双击判定：
+        #   单击（<Button-1>）         = 切换勾选
+        #   双击（<Double-Button-1>）  = 打开详情；Tk 对第二次按下只发这一个事件
+        #                              （<Double-Button-1> 比 <Button-1> 更具体），
+        #                              所以这里再 toggle 一次把单击那下撤回来，勾选不变。
         def _on_row_click(row: int, event):
-            """单击切换勾选；模组清单快速双击同一行则打开模组详情。"""
+            """单击切换勾选。"""
             if row < 0:
                 return
-            if not is_mod:
-                toggle_row(row)
-                return
-            now = time.time()
-            if (now - _last_click["t"]) <= _DOUBLE_CLICK_SEC and row == _last_click["row"]:
-                # 快速双击：撤销第一次点击造成的勾选切换（双击不应改变勾选状态）
-                toggle_row(row)
-                _last_click["t"] = 0.0
-                _last_click["row"] = None
-                open_mod_detail(row)
-                return
-            _last_click["t"] = now
-            _last_click["row"] = row
             toggle_row(row)
+
+        def _on_row_double(row: int, event):
+            """模组清单双击同一行 = 打开详情（勾选状态保持不变）。"""
+            if row < 0:
+                return
+            toggle_row(row)          # 撤回双击第一次按下造成的勾选切换
+            open_mod_detail(row)
 
         def sort_by(col):
             if sort_state["col"] == col:
@@ -4713,6 +5410,7 @@ class MigrationGUI:
                     if scan_queue.unfinished_tasks == 0:
                         big_scanning["flag"] = False
                         _set_busy_btns(False)
+                        self._end_file_task()      # 扫描结束：解除"禁止迁移"
                         if _pending_detect["flag"]:
                             # 「检测存在性」的提示放到这里：此时扫描已全部结束，
                             # 统计只读内存，不会像以前那样在点击时卡住界面。
@@ -4738,11 +5436,24 @@ class MigrationGUI:
             以前这里在界面线程里对每个条目 resolve() 查一次磁盘，上千个模组会卡好几秒。"""
             if big_scanning["flag"]:
                 return
+            if self._migration_running:
+                messagebox.showwarning("提示", "迁移进行中，暂不能检测存在性。", parent=win)
+                return
             big_scanning["flag"] = True
             _set_busy_btns(True)
+            self._begin_file_task("检测模组是否存在")   # 期间禁止启动迁移
             meta.clear()
             _pending_detect["flag"] = True
             rebuild(rescan=True)
+
+        def _on_big_destroy(event):
+            """大窗口被关掉时，别把"禁止迁移"的标记留成永久状态。"""
+            try:
+                if event.widget is win and getattr(self, "_file_task", None):
+                    self._end_file_task()
+            except Exception:
+                pass
+        win.bind("<Destroy>", _on_big_destroy, add="+")
 
         # 顶部工具栏分两行：第一行计数+搜索，第二行按钮。
         # 挤在一行时（7 个按钮 + 搜索框）总宽会超过窗口，尾部按钮被裁掉一半；
@@ -4818,19 +5529,16 @@ class MigrationGUI:
                                             colors=("#43a047", "#66bb6a"),
                                             width=_BTN_W, height=30,
                                             font=("微软雅黑", 9, "bold"))
-        detect_btn.pack(side="left", padx=_PAD)
         del_btn = create_gradient_button(row_btns, "🗑️ 删除选中", del_selected,
                                          colors=("#e53935", "#ff7043"),
                                          width=_BTN_W, height=30,
                                          font=("微软雅黑", 9, "bold"))
-        del_btn.pack(side="left", padx=_PAD)
         add_btn = None
         if is_mod:
             add_btn = create_gradient_button(row_btns, "➕ 添加模组", add_mods,
                                              colors=("#00c853", "#00e676"),
                                              width=_BTN_W, height=30,
                                              font=("微软雅黑", 9, "bold"))
-            add_btn.pack(side="left", padx=_PAD)
             # 拖拽（仅模组可拖入 .jar）
             try:
                 from tkinterdnd2 import DND_FILES
@@ -4854,7 +5562,11 @@ class MigrationGUI:
             width=88, height=30, font=("微软雅黑", 9, "bold"))
         btn_sel.set_command(lambda: sel_menu.tk_popup(
             btn_sel.winfo_rootx(), btn_sel.winfo_rooty() + btn_sel.winfo_height()))
-        btn_sel.pack(side="left", padx=_PAD)
+        # 左边这一排按钮：按「界面按钮」的配置摆（隐藏的不摆、顺序照配置；下次打开生效）
+        self._pack_window_btns("bigview", row_btns,
+                               [("bv_detect", detect_btn), ("bv_remove", del_btn),
+                                ("bv_add", add_btn), ("bv_select", btn_sel)],
+                               side="left", padx=_PAD)
 
         def make_row(idx: int):
             """生成一条卡片数据（图标懒加载，只有滚到的行才解压）。"""
@@ -4874,6 +5586,8 @@ class MigrationGUI:
                 "version": str(m.get("version") or ""),
                 "desc": str(m.get("desc") or ""),
                 "icon_key": m.get("path") or "",
+                # 稳定身份（行号会因为扫描/排序/搜索而变化；卡片列表的键盘/滚动用得到）
+                "dc_key": key_of(entries[idx]) if idx < len(entries) else "",
                 "tags": m.get("tags") or [],
                 "tags_online": bool(m.get("tags_online")),
                 # 存在性状态 + 勾选态：卡片视图跟表格共用同一份数据
@@ -4925,14 +5639,24 @@ class MigrationGUI:
                 self.log(f"🗑 已从清单移除：{name}", level="WARNING", save=False)
 
         def card_menu(i: int, event):
-            """卡片右键菜单：单行操作（详情/定位/移除）+ 批量勾选，省得去顶栏点。"""
+            """单行操作（详情/定位/移除）+ 批量勾选，省得去顶栏点。
+
+            「模组详情」只有模组清单才有 —— config 清单里那一行是配置文件/文件夹，
+            弹出来只会是"该行没有可查看的模组文件"。
+            """
             menu = tk.Menu(win, tearoff=0)
             if i >= 0:
-                menu.add_command(label="ℹ 查看详情", command=lambda: open_mod_detail(i))
+                if is_mod:
+                    menu.add_command(label="ℹ 查看详情",
+                                     command=lambda: open_mod_detail(i))
                 menu.add_command(label="📂 在文件夹中定位",
                                  command=lambda: reveal_path(_path_of_row(i)))
                 menu.add_separator()
                 menu.add_command(label="🗑 从清单移除", command=lambda: card_action(i, "remove"))
+                # 选中/取消选中：给一个不依赖时间的入口（慢手速时双击可能认不出来）
+                _is_on = bool(checked.get(key_of(entries[order[i]]))) if i < len(order) else False
+                menu.add_command(label=("☐ 取消选中" if _is_on else "☑ 选中"),
+                                 command=lambda: toggle_row(i))
                 menu.add_separator()
             menu.add_command(label="✅ 全选（当前显示）",
                              command=lambda: set_checked_mode("all"))
@@ -4948,13 +5672,28 @@ class MigrationGUI:
                 except Exception:
                     pass
 
+        def table_menu(event):
+            """表格视图右键 = 和卡片视图同一套菜单。
+
+            慢手速时 Tk 的双击窗口（系统 0.5s）可能认不出来，这是不依赖时间的入口。
+            """
+            try:
+                row = table.row_at(event.y)
+            except Exception:
+                return
+            if row >= 0:
+                card_menu(row, event)
+
+        table.body.bind("<Button-3>", table_menu)
+
         def _ensure_card():
             if card_state["list"] is not None:
                 return card_state["list"]
             from ui.card_list import ModCardList, default_fallback_icon
             card = ModCardList(win, self.theme, icon_provider=_card_icon,
                                fallback_icon=default_fallback_icon(),
-                               on_double_click=lambda i, e: open_mod_detail(i),
+                               on_double_click=((lambda i, e: open_mod_detail(i))
+                                                if is_mod else None),
                                on_action=card_action,
                                on_context=card_menu,
                                on_check=card_check)
@@ -4994,8 +5733,8 @@ class MigrationGUI:
             row_btns, "🗂 卡片视图", toggle_view,
             colors=("#7e57c2", "#9575cd"),
             width=118, height=30, font=("微软雅黑", 9, "bold"))
-        if is_mod:
-            btn_view.pack(side="right", padx=_PAD)
+        if getattr(self, "big_view_view", "table") == "cards":
+            toggle_view()          # 设置里选的是"打开就是卡片"
 
         # 卡片视图没有表头可点，排序收进一个下拉按钮（表格视图也能用）
         sort_menu = tk.Menu(win, tearoff=0)
@@ -5009,14 +5748,17 @@ class MigrationGUI:
             width=88, height=30, font=("微软雅黑", 9, "bold"))
         btn_sort.set_command(lambda: sort_menu.tk_popup(
             btn_sort.winfo_rootx(), btn_sort.winfo_rooty() + btn_sort.winfo_height()))
-        if is_mod:
-            btn_sort.pack(side="right", padx=_PAD)
-        # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click）
+        # 单击/双击由 VirtualTable 识别出行号后回调（见 _on_row_click / _on_row_double）
         btn_close_big = create_gradient_button(
             row_btns, "✖ 关闭", lambda: _close_popup(win),
             colors=("#757575", "#9e9e9e"),
             width=_BTN_W, height=30, font=("微软雅黑", 9, "bold"))
-        btn_close_big.pack(side="right", padx=_PAD)
+        # 右边这一排：同样按配置摆（卡片视图只有模组清单才有）
+        self._pack_window_btns("bigview", row_btns,
+                               [("bv_view", btn_view if is_mod else None),
+                                ("bv_sort", btn_sort if is_mod else None),
+                                ("bv_close", btn_close_big)],
+                               side="right", padx=_PAD)
         # 标题栏的 × 同样走原生关闭
         try:
             win.protocol("WM_DELETE_WINDOW", lambda: _close_popup(win))

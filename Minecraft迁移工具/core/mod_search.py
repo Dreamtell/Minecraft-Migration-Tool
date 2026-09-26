@@ -14,7 +14,10 @@ from pathlib import Path
 USER_AGENT = "MinecraftMigrateTool/1.0 (contact: local)"
 
 MODRINTH_SEARCH = "https://api.modrinth.com/v2/search?query={query}&limit={limit}&index=downloads"
-MODRINTH_VERSIONS = "https://api.modrinth.com/v2/project/{project_id}/version"
+# 取版本列表：**必须带 limit=1**。实测 JEI 这类版本极多的项目，不带参数会一次拉回
+# 6.58MB / 53.9 秒；带 limit=1 只要 8KB / 0.82 秒（65 倍），而且返回的就是同一条最新版本
+# （该接口默认按 date_published 倒序，versions[0] 就是最新）。
+MODRINTH_VERSIONS = "https://api.modrinth.com/v2/project/{project_id}/version?limit=1"
 
 
 def _json_get(url, timeout=15):

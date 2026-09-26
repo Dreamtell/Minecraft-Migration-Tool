@@ -58,6 +58,17 @@ def _shade(hex_color, amount):
         return hex_color
 
 
+def _mix_color(c0, c1, t):
+    """两个 #rrggbb 按 t 混合（t=0 全取 c0，t=1 全取 c1）。做过渡帧用。"""
+    try:
+        a = [int(c0[i:i + 2], 16) for i in (1, 3, 5)]
+        b = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+        return "#%02x%02x%02x" % tuple(
+            max(0, min(255, int(a[k] + (b[k] - a[k]) * t))) for k in range(3))
+    except Exception:
+        return c0 if t < 0.5 else c1
+
+
 def hover_pair(colors):
     """悬停时的配色 = 基色两个色标都调亮同样一档。
 
@@ -329,6 +340,112 @@ def style_window(win, dark=False, round_corners=True):
     return True
 
 
+# --------------------------------------------------------------------------- #
+# 双击：**直接用 Qt / Tk 自带的双击事件**，不再自己算间隔
+# --------------------------------------------------------------------------- #
+# 走过的弯路：手写"两次点击间隔 ≤ X 秒"这套（X 试过 0.18/0.5/0.7/0.85/1.2/1.5/2.5/3.0，
+# 还做过按手速自学放宽），每种都在某个人身上失准，还引入过"程序跑着时改配置不生效"
+# "保存设置又把配置写回旧值"这类坑。
+#
+# 现在：Qt 侧用 QAbstractItemView 的 doubleClicked、Tk 侧用 <Double-Button-1>，
+# 判定完全交给框架（Windows 的"双击速度"设置就是标准）。唯一动过的参数是 Qt 的
+# 双击间隔（见 qt_big_view.DOUBLE_CLICK_MS），因为 Windows 最长只能设到 0.9s。
+# 单击只负责选中/取消，双击只负责开详情，两者互不干扰。
+
+
+def measured_double_click_sec():
+    """配置里那份"双击间隙测试"量出来的值（秒）—— 只作参考，程序判定不再读它。"""
+    try:
+        from utils.config import load_raw_config
+        v = float(load_raw_config().get("double_click_sec", 0) or 0)
+        return v if 0.10 <= v <= 5.0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def system_double_click_sec():
+    """Windows 的"双击速度"（秒），默认 0.5s。Tk 的 <Double-Button-1> 就按它判。
+
+    只能读，不能靠改它来放宽：实测 SystemParametersInfoW(SPI_SETDOUBLECLICKTIME) 把
+    GetDoubleClickTime() 改成 1500ms 之后，真实鼠标事件下 0.5/0.9/1.2s 的两下仍然不算
+    双击（系统那套双击判定不认这个改写）。所以 Tk 窗口的双击窗口就是 0.5s 左右；手慢的
+    用户在 Tk 列表里走右键菜单「详情」，Qt 放大查看窗口另有自己的间隔（见 qt_big_view）。
+    """
+    try:
+        import ctypes
+        ms = int(ctypes.windll.user32.GetDoubleClickTime())
+        return max(0.10, min(5.0, ms / 1000.0))
+    except Exception:
+        return 0.50
+
+
+def _click_log_path():
+    try:
+        from utils.config import CONFIG_FILE
+        return CONFIG_FILE.parent / ".minecraft_migrate_clicks.log"
+    except Exception:
+        return None
+
+
+def trace_line(msg):
+    """往日志里补一行（记录详情窗有没有真的弹出来之类）。"""
+    p = _click_log_path()
+    if p is None:
+        return
+    try:
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("%s | %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except Exception:
+        pass
+
+
+def trace_exc(where, exc):
+    """把回调里吞掉的异常写进日志（PySide6 只把它打到 stderr，界面看着就是"没反应"）。"""
+    try:
+        import traceback
+        trace_line("!! %s 抛异常: %s" % (where, "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__))[-600:]))
+    except Exception:
+        pass
+
+
+def style_window_hwnd(hwnd, dark=False, round_corners=True):
+    """给任意 HWND 上原生外观：深色标题栏 + 标题栏配色 + Win11 原生圆角。
+
+    和 style_window() 是同一套 DWM 属性，只是入口换成 HWND：PySide6 的窗口拿不到
+    Tk 的 winfo_id()，只能用它自己的 winId()。
+
+    **不用半透明、不做无边框**：窗口一旦是 layered（WS_EX_LAYERED），DWM 会跳过
+    自己的弹出/关闭/最小化动画（实测就是"窗口啪一下就没了"）。所以 Qt 窗口也用
+    原生框：拿回系统动画 + 原生阴影 + 边缘拖拽缩放。
+    """
+    try:
+        import ctypes
+        dwm = ctypes.windll.dwmapi
+        h = ctypes.c_void_p(int(hwnd))
+
+        def _set(attr, value):
+            v = ctypes.c_int(value)
+            dwm.DwmSetWindowAttribute(h, ctypes.c_uint(attr), ctypes.byref(v),
+                                      ctypes.sizeof(v))
+
+        _set(20, 1 if dark else 0)                     # DWMWA_USE_IMMERSIVE_DARK_MODE
+        if dark:
+            r = g = b = 0x20
+            tr = tg = tb = 0xff
+        else:
+            r = g = b = 0xf0
+            tr = tg = tb = 0x00
+        # DWMWA_CAPTION_COLOR / DWMWA_TEXT_COLOR，值是 COLORREF(0x00BBGGRR)
+        _set(35, r | (g << 8) | (b << 16))
+        _set(36, tr | (tg << 8) | (tb << 16))
+        if round_corners:
+            _set(33, 2)                                # DWMWA_WINDOW_CORNER_PREFERENCE=圆角
+        return True
+    except Exception:
+        return False
+
+
 def _text_notch_px(widget):
     """一格滚轮的像素数 = 3 行（跟 Tk 默认的滚动距离一致）。"""
     try:
@@ -350,14 +467,33 @@ def tree_row_px(widget=None, default=20):
 
 try:
     from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageTk as _PILImageTk
+    from PIL import ImageChops as _PILImageChops
     _PIL_OK = True
 except Exception:      # 没有 Pillow 也能跑：退回原来的直角矩形画法
     _PIL_OK = False
 
-_BTN_RADIUS = 6        # 渐变按钮圆角半径（像素）；按钮太矮时按高度收紧
+_BTN_RADIUS = 8        # 渐变按钮圆角半径（像素）；按钮太矮时按高度收紧
+                       # 8 是跟 Qt 版 AnimButton 对齐的值（那边 drawRoundedRect(r, 8, 8)）
 _BTN_SS = 4            # 超采样倍数：4 倍画完再缩回来，圆角边缘才不会有锯齿
 _BTN_CACHE_MAX = 512
 _btn_cache = {}
+
+
+# --------------------------------------------------------------------------- #
+# 灵动动画的缓动 + 混亮用的白图（对齐 Qt 版 AnimButton 的 QEasingCurve）
+# --------------------------------------------------------------------------- #
+def _ease_out_cubic(x):
+    return 1 - (1 - x) ** 3
+
+
+def _ease_out_back(x):
+    """末端带过冲 —— "灵动"就是从这个过冲来的（Qt 版用的 QEasingCurve.OutBack）。"""
+    c1 = 1.70158
+    c3 = c1 + 1
+    return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2
+
+
+_white_cache = {}      # (宽,高,圆角) -> 纯白图缓存（保留：以后要做别的混色可以直接用）
 
 # 圆角输入框的底图缓存：(宽,高,圆角,填充,描边,父底色) -> PIL 图
 _field_cache = {}
@@ -599,6 +735,176 @@ class RoundedEntry(tk.Frame):
             pass
 
 
+class RoundedTextArea(tk.Frame):
+    """圆角外框的文本框（模组清单 / config 清单 / 执行日志那种大文本框）。
+
+    Tk 的 Text 是方的、也不支持透明背景，所以做法是"垫一张圆角底图 + 把 Text 往里缩几像素"：
+    四个角露出底图的圆角，效果和圆角输入框（RoundedEntry）同一套。底图同样有
+    "拖动时用 1 倍超采样、停手后补精细版"的处理，拖窗口不会卡。
+    注意 pad 要 ≥ radius：Text 是方的、盖在底图上，只留出 pad 这一圈，留窄了就只能
+    看到圆角弧的最外面一点点、看着还是直角（radius=8 / pad=9 和输入框一致）。
+
+    用法：
+        box = RoundedTextArea(parent, theme, height=8, wrap=tk.NONE)
+        box.pack(fill="both", expand=True)
+        text = box.text          # 就是原来的 ScrolledText，照旧用
+    """
+
+    def __init__(self, parent, theme, radius=8, pad=9, **text_kw):
+        base_bg = None
+        try:
+            base_bg = parent.cget("bg")
+        except Exception:
+            base_bg = None
+        if not base_bg or str(base_bg).startswith("System"):
+            base_bg = theme.get("bg", "#f0f0f0")
+        super().__init__(parent, bg=base_bg)
+        self.theme = dict(theme)
+        self._radius = int(radius)
+        self._pad = int(pad)
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=base_bg)
+        self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        # 和渐变按钮同一个协议：主题遍历（apply_theme_to_widget_tree）看到这个属性，
+        # 会把"父容器的真实底色"喂进来，圆角外面露出的颜色才不会跟周围差一档
+        self.canvas.set_corner_bg = self._set_corner_bg
+        import tkinter.scrolledtext as scrolledtext
+        # 底色必须在建的时候就给：Tk 的默认值是系统色 SystemWindow，PIL 认不出来，
+        # 那样圆角图会生成失败、退回直角框（主题生效前正好会踩到）
+        text_kw.setdefault("bg", theme.get("text_bg", "#ffffff"))
+        text_kw.setdefault("fg", theme.get("text_fg", "#000000"))
+        text_kw.setdefault("insertbackground", theme.get("fg", "#000000"))
+        text_kw.setdefault("selectbackground", theme.get("ttk_select_bg", "#d0d0d0"))
+        text_kw.setdefault("selectforeground", theme.get("ttk_select_fg", "#000000"))
+        text_kw.setdefault("relief", "flat")
+        text_kw.setdefault("bd", 0)
+        text_kw.setdefault("highlightthickness", 0)
+        self.text = scrolledtext.ScrolledText(self, **text_kw)
+        self.text.place(x=self._pad, y=self._pad, relwidth=1, relheight=1,
+                        width=-2 * self._pad, height=-2 * self._pad)
+        self._img_id = self.canvas.create_image(0, 0, anchor="nw")
+        self._photo = None
+        self._last_size = None
+        self._fine_job = None
+        self._focus = False
+        self.canvas.bind("<Configure>", lambda e: self._on_configure())
+        # 正在编辑那个框要有明显反馈：描边变亮蓝并加粗到 2px（和圆角输入框一个观感）
+        self.text.bind("<FocusIn>", lambda e: self._set_focus(True), add="+")
+        self.text.bind("<FocusOut>", lambda e: self._set_focus(False), add="+")
+        self.after_idle(self._redraw)
+
+    # ---------------------------------------------------------------- 外观
+    def refresh(self):
+        """主题切换后重画（填充/描边跟着主题走）。"""
+        try:
+            self.configure(bg=self._base_bg())
+            self.canvas.configure(bg=self._base_bg())
+        except Exception:
+            pass
+        self._last_size = None
+        self._redraw()
+
+    def _base_bg(self):
+        """圆角外面露出的底色 = 父容器的真实底色（系统色一律换成主题底色）。"""
+        bg = None
+        try:
+            bg = self.master.cget("bg")
+        except Exception:
+            bg = None
+        if not bg or str(bg).startswith("System"):
+            bg = self.theme.get("bg", "#f0f0f0")
+        return bg
+
+    def _set_corner_bg(self, color):
+        """主题遍历喂进来的圆角外底色（协议同渐变按钮）。"""
+        try:
+            self.configure(bg=color)
+            self.canvas.configure(bg=color)
+        except Exception:
+            pass
+        self._last_size = None
+        self._redraw()
+
+    def _set_focus(self, focused):
+        """获得/失去焦点：描边高亮（就是"编辑中"的提示）。"""
+        focused = bool(focused)
+        if focused == self._focus:
+            return
+        self._focus = focused
+        self._redraw()
+
+    def _on_configure(self):
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w <= 2 or h <= 2:
+            return
+        if (w, h) != self._last_size:
+            self._last_size = (w, h)
+            self._redraw(fast=True)
+            if self._fine_job is not None:
+                try:
+                    self.after_cancel(self._fine_job)
+                except Exception:
+                    pass
+            self._fine_job = self.after(160, self._fine_redraw)
+        else:
+            self._redraw()
+
+    def _fine_redraw(self):
+        self._fine_job = None
+        self._redraw()
+
+    def _redraw(self, fast=False):
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w <= 2 or h <= 2:
+            try:
+                w, h = self.winfo_width(), self.winfo_height()
+            except Exception:
+                return
+        if w <= 2 or h <= 2:
+            return
+        try:
+            fill = self.text.cget("bg")
+        except Exception:
+            fill = self.theme.get("text_bg", "#ffffff")
+        dark = is_dark_theme(self.theme)
+        if self._focus:
+            # 正在编辑：亮蓝 + 2px（深色主题用更亮的蓝，浅色主题用中蓝）
+            border = "#64b5f6" if dark else "#4a90d9"
+            bw = 2
+        else:
+            # 没在编辑的保持低调（深色主题的 #bebebe 在暗底上太抢眼）
+            border = "#4a4a4a" if dark else self.theme.get("border", "#c8c8c8")
+            bw = 1
+        corner = self.canvas.cget("bg")
+        img = _rounded_field_image(w, h, self._radius, fill, border, corner, bw,
+                                   ss=1 if fast else None)
+        try:
+            if img is not None and _PIL_OK:
+                self._photo = _PILImageTk.PhotoImage(img)
+                self.canvas.itemconfigure(self._img_id, image=self._photo)
+            else:
+                self.canvas.itemconfigure(self._img_id, image="")
+                self.canvas.delete("fallback")
+                self.canvas.create_rectangle(0, 0, w - 1, h - 1, outline=border,
+                                             tags="fallback")
+                self.canvas.tag_lower("fallback")
+            self.canvas.coords(self._img_id, 0, 0)
+        except Exception:
+            pass
+
+    def set_theme(self, theme):
+        self.theme = dict(theme or {})
+        self.refresh()
+
+    # 让外层 Frame 也能像 Text 一样被调用（少改调用方）
+    def __getattr__(self, name):
+        if name in ("text", "canvas", "theme", "_redraw"):
+            raise AttributeError(name)
+        text = self.__dict__.get("text")
+        if text is None:
+            raise AttributeError(name)
+        return getattr(text, name)
+
+
 def _tk_rgb(widget, color):
     """Tk 颜色（#rrggbb 或系统色名）→ PIL 用的 0~255 三元组。"""
     if isinstance(color, (tuple, list)) and len(color) == 3:
@@ -713,22 +1019,26 @@ def make_theme_icon(kind, size=20, color="#ffffff"):
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            width=180, height=32, font=("微软雅黑", 10, "bold"),
                            click_guard_ms=300):
-    state = {"colors": colors, "hover": hover_pair(colors), "text": text, "icon": None}
+    state = {"colors": colors, "hover": hover_pair(colors), "text": text, "icon": None,
+             "fg": "white"}
     radius = max(0, min(_BTN_RADIUS, height // 3))
     use_img = bool(_PIL_OK and radius > 0)
     canvas = tk.Canvas(parent, width=width, height=height, highlightthickness=0,
                        bg=parent.cget("bg"))
     canvas.pack_propagate(False)
     canvas._icon_photo = None
+    canvas._btn_disabled = False        # 只读标记：测试/排查时看按钮禁用状态
     bg_id = {"id": None}
 
     def _photos():
+        """旧的"整图换图"方案用（只在没有 Pillow 的退路里用得上）。"""
         got = _rounded_gradient(width, height, state["colors"], state["hover"],
                                radius, parent)
         return {k: _PILImageTk.PhotoImage(v) for k, v in got.items()}
 
-    # PhotoImage 必须留引用，否则会被回收成空白
-    canvas._btn_photos = _photos() if use_img else {}
+    # PhotoImage 必须留引用，否则会被回收成空白；灵动动画那条路直接用 PIL 帧图，
+    # 不需要这张整图（少渲染一次）
+    canvas._btn_photos = {} if use_img else {}
 
     def draw_bg(hover=False):
         if use_img:
@@ -762,17 +1072,283 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             canvas._icon_photo = _PILImageTk.PhotoImage(icon)   # 必须留引用
             canvas.icon_id = canvas.create_image(width // 2, height // 2,
                                                  image=canvas._icon_photo, tags="icon")
+        else:
+            canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
+                                                fill=state.get("fg") or "white",
+                                                font=font, tags="text")
+        # 内容永远盖在动画帧（阴影/面/扫光）上面
+        try:
+            canvas.tag_raise("text")
+            canvas.tag_raise("icon")
+        except Exception:
+            pass
+        if use_img:
+            _render()                 # 重画后按当前浮起/按下量重新摆一次
+
+    # ---- 灵动动画：悬停浮起 + 扫光、按下沉下去再弹回（对齐 Qt 版 AnimButton） ----
+    # 参数和 Qt 版一模一样：浮起 1.6px / 按下 1.4px / 悬停 190ms OutBack（带过冲）/
+    # 离开 150ms OutCubic / 扫光 340ms 一次 / 按下 90ms、松手 200ms OutBack。
+    # 帧图按"档位"懒生成并缓存（面 6 档亮度、阴影 4 档、扫光 6 帧），动画里只改坐标和
+    # itemconfigure，实测单帧 ~0.2ms —— 只有鼠标底下那一个按钮在动。
+    FACE_LV, SHADOW_LV, SWEEP_LV = 6, 4, 6
+    PADX, PADY = 1.5, 2.0            # 按钮面四周留白：浮起/沉下去都在这个范围内，不会被裁
+    frames = {}
+    items = {"shadow": None, "face": None, "sweep": None}
+    anim = {"job": None, "sweep_on": False}
+    tw = {
+        "hover": {"cur": 0.0, "a": 0.0, "b": 0.0, "t0": 0.0, "dur": 0.19,
+                  "ease": _ease_out_back, "done": True},
+        "press": {"cur": 0.0, "a": 0.0, "b": 0.0, "t0": 0.0, "dur": 0.09,
+                  "ease": None, "done": True},
+        "sweep": {"cur": 0.0, "a": 0.0, "b": 0.0, "t0": 0.0, "dur": 0.34,
+                  "ease": _ease_out_cubic, "done": True},
+    }
+    face_size = (max(1, width - int(PADX * 2)), max(1, height - int(PADY * 2)))
+
+    def _face_base():
+        """按钮面的底图：**按面自己的尺寸**渲染圆角渐变（不是从整图裁）。
+
+        为什么不能裁：圆角弧长只有 8px，裁掉四周 1.5/2px 之后弧的外半段没了，
+        剩下的角看着就是直角 —— 鼠标一碰（面浮起来）轮廓还会挪，角就更"不统一"。
+        按面尺寸渲染只多一次渲染，但和整图那张二选一，总次数不变。
+        """
+        colors = ("#9e9e9e", "#bdbdbd") if flags.get("disabled") else state["colors"]
+        return _rounded_gradient(face_size[0], face_size[1], colors, colors,
+                                 radius, parent)["normal"]
+
+    def _band(level):
+        """扫光带：一张 L 图（值=透明度，已按圆角裁形），直接当 paste 的 mask 用。
+
+        为什么不做成单独的 canvas 图片盖上去：Tk 的 canvas 图片**不混合半透明像素**
+        （实测 alpha=44 的亮带会被画成纯白），所以只能把光带烤进"面"里。
+        """
+        key = ("band", level)
+        hit = frames.get(key)
+        if hit is not None:
+            return hit
+        u = level / max(1, SWEEP_LV - 1)
+        band = _PILImage.new("L", face_size, 0)
+        db = _PILDraw.Draw(band)
+        bw = max(8, int(face_size[0] * 0.55))
+        x0 = int(-face_size[0] * 1.1 + u * face_size[0] * 2.2)
+        for i in range(bw):
+            f = i / max(1, bw - 1)
+            a = int(44 * max(0.0, 1 - abs(f - 0.5) * 2))
+            if a > 0:
+                # 竖直一条，中间最亮、两侧渐隐（斜着画会被"面"裁掉大半，看不出光）
+                db.line([(x0 + i, 0), (x0 + i, face_size[1])], fill=a, width=1)
+        mask = _PILImage.new("L", face_size, 0)
+        _PILDraw.Draw(mask).rounded_rectangle(
+            [0, 0, face_size[0] - 1, face_size[1] - 1], radius=radius, fill=255)
+        hit = _PILImageChops.multiply(band, mask)
+        frames[key] = hit
+        return hit
+
+    def _brighten(base, k):
+        """把按钮面往白色混 k（0~1），**只动颜色、不动 alpha**。
+
+        不能直接 `Image.blend(base, 白圆角图, k)`：两张图的圆角轮廓差一点点（面是从
+        整图裁出来的），混完在四角会多出一圈半透明白边 —— 表现就是"鼠标一碰，圆角就
+        不一样了"。所以这里只混 RGB，alpha 原样保留，轮廓永远和常态一模一样。
+        """
+        if k <= 0.02:
+            return base
+        r, g, b, a = base.split()
+        rgb = _PILImage.blend(_PILImage.merge("RGB", (r, g, b)),
+                              _PILImage.new("RGB", base.size, (255, 255, 255)),
+                              min(0.36, k))
+        return _PILImage.merge("RGBA", (rgb.split() + (a,)))
+
+    def _frame(kind, level, sweep=None):
+        key = (kind, level, sweep)
+        if key in frames:
+            return frames[key]
+        photo = None
+        try:
+            if kind == "face":
+                base = _face_base()
+                img = _brighten(base, 0.30 * (1.18 * level / max(1, FACE_LV - 1)))
+                if sweep is not None:
+                    img = img.copy()
+                    img.paste((255, 255, 255), (0, 0), _band(sweep))
+            elif kind == "shadow":
+                kf = 0.4 + 0.6 * (level / max(1, SHADOW_LV - 1))
+                img = _PILImage.new("RGBA", (width, height), (0, 0, 0, 0))
+                d = _PILDraw.Draw(img)
+                for dy, a in ((3.6, 20), (2.4, 30), (1.2, 42)):
+                    d.rounded_rectangle(
+                        [PADX, PADY + dy, width - PADX, height - PADY + dy],
+                        radius=radius, fill=(0, 0, 0, int(a * kf)))
+            else:
+                img = _PILImage.new("RGBA", face_size, (0, 0, 0, 0))
+            photo = _PILImageTk.PhotoImage(img)
+        except Exception as _exc:
+            photo = None
+            trace_exc("button_frame", _exc)     # 生成失败要留痕，别静默变成"没反应"
+        if len(frames) > 64:                 # 兜底：别让某个按钮缓存无限涨
+            _drop_frames()
+        frames[key] = photo
+        return photo
+
+    def _ensure_items():
+        if items["face"] is not None or not use_img:
             return
-        canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
-                                            fill="white", font=font, tags="text")
+        items["shadow"] = canvas.create_image(0, 0, anchor="nw", tags="btnshadow")
+        items["face"] = canvas.create_image(PADX, PADY, anchor="nw", tags="btnface")
+
+    def _drop_frames():
+        """丢掉帧图缓存前先把它们从 canvas 上摘下来。
+
+        否则 item 还引用着被回收的 PhotoImage，下一句 itemconfigure 就报
+        "image pyimageN doesn't exist"。
+        """
+        try:
+            for it in items.values():
+                if it is not None:
+                    canvas.itemconfigure(it, image="")
+        except Exception:
+            pass
+        frames.clear()
+
+    def _render():
+        if not use_img or items["face"] is None:
+            return
+        hov = max(0.0, tw["hover"]["cur"])
+        pr = min(1.0, max(0.0, tw["press"]["cur"]))
+        # 浮起：悬停抬 1.6px；按下时抬的量收掉一半、再往下沉 1.4px（像真被按下去）
+        lift = -1.6 * min(1.0, hov) * (1.0 - pr * 0.5) + 1.4 * pr
+        face_lv = int(round(min(1.0, hov / 1.18) * (FACE_LV - 1)))
+        sh_lv = int(round(min(1.0, hov) * (1 - 0.55 * pr) * (SHADOW_LV - 1)))
+        sw_lv = (int(round(min(1.0, max(0.0, tw["sweep"]["cur"])) * (SWEEP_LV - 1)))
+                 if anim["sweep_on"] else None)
+        f = _frame("face", face_lv, sw_lv)
+        sh = _frame("shadow", sh_lv)
+        if f is not None:
+            canvas.itemconfigure(items["face"], image=f)
+        if sh is not None:
+            canvas.itemconfigure(items["shadow"], image=sh)
+        canvas.coords(items["face"], PADX, PADY + lift)
+        tid = getattr(canvas, "text_id", None)
+        if tid is not None:
+            canvas.coords(tid, width // 2, height // 2 + lift)
+        if getattr(canvas, "icon_id", None):
+            canvas.coords(canvas.icon_id, width // 2, height // 2 + lift)
+
+    def _start(name, dst, dur, ease=None):
+        t = tw[name]
+        t["a"] = t["cur"]
+        t["b"] = float(dst)
+        t["t0"] = time.perf_counter()
+        t["dur"] = max(0.001, float(dur))
+        t["ease"] = ease
+        t["done"] = False
+        if name == "sweep":
+            anim["sweep_on"] = True      # 必须在这里置位：_tick 里"扫光结束"会把它清掉
+        _tick()
+
+    def _tick():
+        now = time.perf_counter()
+        busy = False
+        for t in tw.values():
+            if t["done"]:
+                continue
+            k = min(1.0, (now - t["t0"]) / t["dur"])
+            t["cur"] = t["a"] + (t["b"] - t["a"]) * (t["ease"] or (lambda x: x))(k)
+            if k >= 1.0:
+                t["done"] = True
+                t["cur"] = t["b"]
+            else:
+                busy = True
+        if tw["sweep"]["done"]:
+            anim["sweep_on"] = False
+        _render()
+        if busy:
+            try:
+                anim["job"] = canvas.after(15, _tick)
+            except Exception:
+                anim["job"] = None
+        else:
+            anim["job"] = None
+
+    # ---- 没有 Pillow 时的退路：整块换图（旧行为） ----
+    tween = {"seq": [], "i": 0, "job": None}
+
+    def _tween_seq():
+        if tween["seq"] or not use_img:
+            return tween["seq"]
+        try:
+            c0, c1 = state["colors"]
+            h0, h1 = state["hover"]
+            steps = 4
+            seq = []
+            for k in range(steps + 1):
+                t = k / steps
+                pair = (_mix_color(c0, h0, t), _mix_color(c1, h1, t))
+                got = _rounded_gradient(width, height, pair, hover_pair(pair),
+                                        radius, parent)
+                seq.append(_PILImageTk.PhotoImage(got["normal"]))
+            tween["seq"] = seq
+        except Exception:
+            tween["seq"] = []
+        return tween["seq"]
+
+    def _show_frame(i):
+        seq = tween["seq"]
+        if not seq or bg_id["id"] is None:
+            return
+        try:
+            canvas.itemconfigure(bg_id["id"],
+                                 image=seq[max(0, min(len(seq) - 1, i))])
+        except Exception:
+            pass
+
+    def animate_bg(hover):
+        if use_img:
+            return                       # 有 Pillow：走上面的灵动动画（浮起+扫光）
+        draw_bg(bool(hover))             # 没有 Pillow：退回整块换图
+        return
+        seq = _tween_seq()
+        if not seq:
+            draw_bg(bool(hover))             # 没有 Pillow 或生成失败：退回瞬时切换
+            return
+        if tween["job"] is not None:
+            try:
+                canvas.after_cancel(tween["job"])
+            except Exception:
+                pass
+            tween["job"] = None
+        if bg_id["id"] is None:
+            draw_bg(False)
+        target = len(seq) - 1 if hover else 0
+
+        def step():
+            cur = tween["i"]
+            if cur == target:
+                tween["job"] = None
+                return
+            tween["i"] = cur + (1 if target > cur else -1)
+            _show_frame(tween["i"])
+            try:
+                tween["job"] = canvas.after(16, step)
+            except Exception:
+                tween["job"] = None
+        try:
+            tween["job"] = canvas.after(1, step)
+        except Exception:
+            tween["job"] = None
 
     def set_gradient(c0, c1, h0=None, h1=None):
         """热切换渐变配色（用于溢出提示等）。没给悬停色就按新基色重算高亮。"""
         state["colors"] = (c0, c1)
         state["hover"] = (h0, h1) if (h0 and h1) else hover_pair((c0, c1))
         if use_img:
+            _drop_frames()                   # 配色变了，帧图（含禁用色）作废重出
+            _render()
+        else:
             canvas._btn_photos = _photos()
-        draw_bg(False)
+            tween["seq"] = []                # 没有 Pillow：过渡帧作废（下次悬停重新生成）
+            tween["i"] = 0
+            draw_bg(False)
         draw_content()
 
     canvas.set_gradient = set_gradient
@@ -811,20 +1387,70 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     flags = {"disabled": False}
     def state_get(key):
         return flags.get(key, False)
-    canvas.state = lambda new_state=None: (None if new_state is None else flags.update(
-        {"disabled": str(new_state).lower() == "disabled"}))
     canvas._base_colors = tuple(colors)
     canvas._base_hover = tuple(state["hover"])
 
+    def set_state(new_state=None):
+        """像 tk.Button 一样切 normal/disabled；禁用时整颗按钮变灰（对齐 Qt 版）。"""
+        if new_state is None:
+            return
+        want = str(new_state).lower() == "disabled"
+        if want == flags.get("disabled"):
+            return
+        flags["disabled"] = want
+        canvas._btn_disabled = want          # 给测试/排查看的只读标记
+        state["fg"] = "#f0f0f0" if want else "#ffffff"
+        if want:                          # 禁用时把动画收干净：不许停在"浮起/按下"的样子
+            for name in ("hover", "press"):
+                tw[name]["cur"] = 0.0
+                tw[name]["done"] = True
+            anim["sweep_on"] = False
+        if use_img:
+            _drop_frames()               # 灰面/彩色面都要重出
+            _render()
+        draw_content()
+    canvas.state = set_state
+
     def on_enter(e):
         if not state_get("disabled"):
-            draw_bg(True)
+            if use_img:
+                _start("hover", 1.0, 0.19, _ease_out_back)
+                _start("sweep", 1.0, 0.34, _ease_out_cubic)   # 扫光每次进来重来一遍
+            else:
+                animate_bg(True)
             draw_content()
     def on_leave(e):
         if not state_get("disabled"):
-            draw_bg(False)
+            if use_img:
+                _start("hover", 0.0, 0.15, _ease_out_cubic)
+            else:
+                animate_bg(False)
             draw_content()
     click_at = {"t": 0.0}
+
+    def on_press(e):
+        """按下：沉下去（Qt 版 90ms）。"""
+        if not state_get("disabled"):
+            if use_img:
+                _start("press", 1.0, 0.09)
+            else:
+                try:
+                    canvas.move("text", 0, 1)
+                    canvas.move("icon", 0, 1)
+                except Exception:
+                    pass
+
+    def on_release(e):
+        """松手：200ms OutBack 弹回来（过冲就是这个"弹"）。"""
+        if not state_get("disabled"):
+            if use_img:
+                _start("press", 0.0, 0.20, _ease_out_back)
+            else:
+                try:
+                    canvas.move("text", 0, -1)
+                    canvas.move("icon", 0, -1)
+                except Exception:
+                    pass
 
     def on_click(e):
         if state_get("disabled") or cmd["fn"] is None:
@@ -834,13 +1460,19 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         if click_guard_ms and (now - click_at["t"]) * 1000 < click_guard_ms:
             return
         click_at["t"] = now
-        cmd["fn"]()
+        on_press(e)                      # 注意：<Button-1> 和 <ButtonPress-1> 是同一个
+        cmd["fn"]()                      # 事件，绑两个会互相覆盖，所以下沉放这里
 
-    draw_bg(False)
+    _ensure_items()
+    if use_img:
+        _render()
+    else:
+        draw_bg(False)
     draw_content()
     canvas.bind("<Enter>", on_enter)
     canvas.bind("<Leave>", on_leave)
     canvas.bind("<Button-1>", on_click)
+    canvas.bind("<ButtonRelease-1>", on_release)
     return canvas
 
 def center_window(win, w=None, h=None):

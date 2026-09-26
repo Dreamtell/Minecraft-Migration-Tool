@@ -39,7 +39,7 @@ class VirtualTable(tk.Frame):
                  hover_style=None, row_height=23, header_height=28,
                  status_key="status", font=("微软雅黑", 11),
                  on_row_click=None, on_header_click=None, on_row_hover=None,
-                 on_leave=None, on_scroll=None):
+                 on_row_double=None, on_leave=None, on_scroll=None):
         super().__init__(master, bg=theme.get("bg", "#ffffff"))
 
         self.theme = theme
@@ -51,6 +51,7 @@ class VirtualTable(tk.Frame):
         self.on_row_click = on_row_click
         self.on_header_click = on_header_click
         self.on_row_hover = on_row_hover
+        self.on_row_double = on_row_double
         self.on_leave = on_leave
         self.on_scroll = on_scroll
 
@@ -169,6 +170,10 @@ class VirtualTable(tk.Frame):
         self.header.bind("<Motion>", self._ev_header_motion)
         self.header.bind("<Leave>", self._ev_header_leave)
         self.body.bind("<Button-1>", self._ev_click)
+        # 只有调用方要双击时才绑定：Tk 对第二次按下只发 <Double-Button-1>（它比
+        # <Button-1> 更具体），没绑的话那一下就什么也不做，正好保持"点两下=两次单击"。
+        if self.on_row_double is not None:
+            self.body.bind("<Double-Button-1>", self._ev_double)
         self.body.bind("<Motion>", self._ev_motion)
         self.body.bind("<Leave>", self._ev_leave)
         # 纵向滚轮交给 SmoothScroller（在 __init__ 里装），这里只管横向
@@ -560,6 +565,11 @@ class VirtualTable(tk.Frame):
         row = self.row_at(event.y)
         if row >= 0 and self.on_row_click:
             self.on_row_click(row, event)
+
+    def _ev_double(self, event):
+        row = self.row_at(event.y)
+        if row >= 0 and self.on_row_double:
+            self.on_row_double(row, event)
 
     def _ev_header_motion(self, event):
         """列头鼠标经过：高亮那一格（列头点一下能排序，得给反馈）。"""

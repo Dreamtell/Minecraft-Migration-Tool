@@ -19,3 +19,13 @@ dist/
 *.log
 Thumbs.db
 desktop.ini
+
+# 开发期兜底的 PySide6（解压出来的一份，205MB，别进仓库；正式用 pip install PySide6）
+/_qt/
+
+# Qt 试点窗口的截图与 demo 脚本（开发时看效果用的）
+/_qt_demo.py
+/_qt_*.png
+
+# 本轮排查用的临时脚本与截图（真建界面、真发鼠标事件那批）
+/_dctest/

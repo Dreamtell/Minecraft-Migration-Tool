@@ -1,10 +1,21 @@
 # app.py
+import os
 import queue
 import sys
 import ctypes
 import time
 import tkinter as tk
 from tkinter import messagebox
+
+# ---- 独立进程闪屏的子进程入口 ----
+# 必须放在所有重活之前：子进程只负责画闪屏，绝不碰 Tk/单实例锁/托盘。
+if "--splash-child" in sys.argv:
+    try:
+        from ui.splash_qt import run_child
+    except Exception:
+        sys.exit(2)
+    sys.exit(run_child())
+
 from tendo import singleton
 from ui.main_window import MigrationGUI
 from ui.dialogs import ask_close_action
@@ -16,6 +27,12 @@ from winotify import Notification, audio
 # 闪屏最短显示时长（秒）。主界面构建只要 ~0.7s，不兜底的话立方体刚起转就淡出了；
 # 超过这个时间就立刻淡出，不会平白拖慢启动。
 SPLASH_MIN_SEC = 1.5
+
+# 是否用独立进程的 Qt 闪屏（PySide6 可用时默认开）。它不受主线程构建影响，
+# 实测主线程连续忙 1.95s 期间仍是 59~62fps；进程内的 Tk 闪屏在那段时间只有
+# ~25fps 且最大冻结 325ms（因为只有 on_stage 时才泵得到一帧）。
+# 出问题时可以用环境变量 DSH_NO_QT_SPLASH=1 关掉，退回进程内闪屏。
+SPLASH_QT = os.environ.get("DSH_NO_QT_SPLASH") != "1"
 
 # 单实例锁的持有者：必须活到进程结束（被回收就释放锁，程序会变成可多开）
 _LOCK_HOLDER = None
@@ -79,15 +96,32 @@ def main():
     # 出来之后做的话，用户会看到立方体先愣住 300ms 才开始转。
     # 代价是双击之后要多等这 300ms 才看到卡片，但总时长不变（闪屏最短时长照算）。
     # 设置里关掉启动动画时这笔预热照样做：界面里的 emoji 该卡还是会卡。
-    splash = None
+    # 闪屏子进程先起来（它自己启动要 ~0.4s），再去做 emoji 预热 —— 两件事并行，
+    # 等主界面开始构建时闪屏正好已经画出来了。放在预热之后的话，用户会先愣一下
+    # 才看到卡片。
+    qt_splash = None
+    splash_on = bool(load_raw_config().get("splash", True))
     splash_t0 = time.perf_counter()
+    if splash_on and SPLASH_QT:
+        try:
+            from ui import splash_qt
+            qt_splash = splash_qt.spawn()
+        except Exception:
+            qt_splash = None
+
+    # 先把 emoji 那边的一次性开销（字体回退枚举 ~270ms + 首个带 emoji 的 Label
+    # 排版 ~40ms）做掉，再弹闪屏。放这儿是为了"闪屏一出现就是流畅的"——挪到闪屏
+    # 出来之后做的话，用户会看到立方体先愣住 300ms 才开始转。
+    # 代价是双击之后要多等这 300ms 才看到卡片，但总时长不变（闪屏最短时长照算）。
+    # 设置里关掉启动动画时这笔预热照样做：界面里的 emoji 该卡还是会卡。
     warm_up_emoji_font()
 
-    # 启动动画可以在设置里关掉：关掉就直接建主界面，不再等 SPLASH_MIN_SEC
-    splash_on = bool(load_raw_config().get("splash", True))
-
-    # 弹出启动闪屏，盖住主界面构建期间的空窗（构建实测约 0.5s）
-    if splash_on:
+    # 弹出启动闪屏，盖住主界面构建期间的空窗（构建实测约 0.5~2s）
+    # 优先用**独立进程**的 Qt 闪屏：构建期间主线程被占满，进程内的闪屏只有
+    # on_stage 那几下能泵到帧（实测最大 325ms 完全静止）；独立进程有自己的事件
+    # 循环，主线程再忙也照样 59~62fps。拿不到 PySide6 / 起不来就回落进程内 Tk 闪屏。
+    splash = None
+    if splash_on and qt_splash is None:
         try:
             from ui.splash import SplashScreen
             splash = SplashScreen(root, icon_path=icon_path)
@@ -143,7 +177,18 @@ def main():
 
     # 构建如果太快（约 0.4s），立方体刚起转就收起了，所以给闪屏一个最短显示时长；
     # 等待期间继续 update，动画照常跑。
-    if splash is not None:
+    if qt_splash is not None:
+        # 独立进程闪屏：它自己按 60fps 播，这里只需要凑够最短显示时长，
+        # 然后发个 close 让它播"收起"动画（不阻塞），主界面立刻显形 —— 闪屏在最上层
+        # 缩没了自然露出主界面。
+        remain = SPLASH_MIN_SEC - (time.perf_counter() - splash_t0)
+        while remain > 0 and time.time() < splash_t0 + SPLASH_MIN_SEC:
+            time.sleep(0.01)
+            remain = SPLASH_MIN_SEC - (time.perf_counter() - splash_t0)
+        reveal_main_window()
+        qt_splash.close()
+        _make_sure_visible()
+    elif splash is not None:
         remain = SPLASH_MIN_SEC - (time.perf_counter() - splash_t0)
         deadline = time.time() + remain
         while remain > 0 and time.time() < deadline:

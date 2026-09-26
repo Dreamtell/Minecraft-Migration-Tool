@@ -348,6 +348,14 @@ def _chip_colors(kind, text, theme):
     if kind == "version":
         return theme.get("accent_bg", "#b3d9ff"), theme.get("accent_fg", "#000000")
     if kind == "type":
+        # 加载器用自己的品牌色（Fabric 那块布料的米黄就是 #dbb69b）
+        try:
+            from ui.card_list import TAG_COLORS
+            hit = TAG_COLORS.get(str(text))
+            if hit:
+                return hit
+        except Exception:
+            pass
         return theme.get("info_bg", "#d0f0f0"), theme.get("info_fg", "#000000")
     if kind == "env":
         return theme.get("neutral_bg", "#f8f9fa"), theme.get("neutral_fg", "#000000")

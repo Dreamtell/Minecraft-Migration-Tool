@@ -2,7 +2,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
-import time
 from utils.helpers import (set_window_icon, create_gradient_button, lighten_color,
                            SmoothScroller, tree_row_px, RoundedEntry)
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
@@ -219,10 +218,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         # 强制刷新
         tree.update_idletasks()
 
-    # ---- 交互事件（自定义快速双击判定） ----
-    DOUBLE_CLICK_SEC = 0.18  # 快速双击阈值（秒）：和放大查看/卡片视图保持一致
-    last_click_time = [0.0]
-    last_click_row = [None]
+    # ---- 交互事件（双击交给 Tk 原生 <Double-Button-1>，不再手写判定） ----
 
     def apply_toggle(row_id):
         """切换并刷新勾选状态"""
@@ -248,24 +244,26 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                 messagebox.showerror("错误", "找不到模组文件")
 
     def toggle_selection(event):
+        """单击：切换勾选。"""
         row_id = tree.identify_row(event.y)
         if not row_id:
             return
-        now = time.time()
-        # 快速双击：同一行、两次点击间隔小于阈值 -> 打开模组详情
-        if (now - last_click_time[0]) <= DOUBLE_CLICK_SEC and row_id == last_click_row[0]:
-            # 撤销第一次点击造成的勾选切换（双击不应改变勾选状态）
-            apply_toggle(row_id)
-            last_click_time[0] = 0.0
-            last_click_row[0] = None
-            open_mod_detail(row_id)
-            return
-        # 普通单击：记录并切换勾选
-        last_click_time[0] = now
-        last_click_row[0] = row_id
         apply_toggle(row_id)
 
+    def on_double_click(event):
+        """双击：打开模组详情，勾选状态保持不变。
+
+        第二次按下 Tk 只发 <Double-Button-1>（<Button-1> 不再触发），所以这里把
+        单击那一下的勾选切换撤回来。
+        """
+        row_id = tree.identify_row(event.y)
+        if not row_id:
+            return
+        apply_toggle(row_id)
+        open_mod_detail(row_id)
+
     tree.bind("<ButtonRelease-1>", toggle_selection)
+    tree.bind("<Double-Button-1>", on_double_click)
 
     # ---- 排序功能 ----
     sort_field = tk.StringVar(value="文件名")
