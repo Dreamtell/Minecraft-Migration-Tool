@@ -165,7 +165,8 @@ def run_host(argv):
                 写结果({"action": "apply", "files": list(files)})
 
             view = QtDiffView(请求.get("data") or [], 主题,
-                              hooks=hooks, apply_callback=应用)
+                              hooks=hooks, apply_callback=应用,
+                              cards=bool(请求.get("cards", False)))
         view.show_centered()
     except Exception as e:
         import traceback
@@ -180,6 +181,7 @@ def run_host(argv):
     # 12ms 的 QTimer）。这里**不再额外 tick** —— 两处一起推会让动画速度翻倍。
     # 只上报"窗口好了、缓动自驱可用"给主进程（诊断用）。
     写结果({"action": "ready", "kind": kind, "pump": True,
+            "cards": bool(请求.get("cards", False)),
             "rows": (len(请求.get("data") or []) if kind == "diff"
                      else len(请求.get("entries") or []))})
 

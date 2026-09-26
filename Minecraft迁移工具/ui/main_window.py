@@ -198,6 +198,12 @@ _BIG_VIEW_VIEWS = (
     ("cards", "🗂 卡片视图（打开就是卡片，只读预览）"),
 )
 
+# 「模组差异」窗口打开时用哪个视图（同样只是定"刚打开时是哪个"）
+_DIFF_VIEWS = (
+    ("table", "📋 列表视图（一行一条差异，信息密度高）"),
+    ("cards", "🗂 卡片视图（带图标的大卡片，看得清描述）"),
+)
+
 # 按钮列表里每一排的主色 + 图标，用来给分组行上色
 _GROUP_COLORS = {
     "path":        "#42a5f5",
@@ -397,6 +403,10 @@ class MigrationGUI:
         self.big_view_view = str(self.config.get("big_view_view", "table") or "table")
         if self.big_view_view not in ("table", "cards"):
             self.big_view_view = "table"
+        # 模组差异窗口打开时用哪个视图（同样是 table / cards，设置里能选）
+        self.diff_view = str(self.config.get("diff_view", "table") or "table")
+        if self.diff_view not in ("table", "cards"):
+            self.diff_view = "table"
         # 双击已经全部交给 Tk / Qt 原生事件（间隔 = 系统设置里的鼠标双击速度），
         # 程序里不再有判定阈值。double_click_sec / double_click_auto 这两个键只是
         # "双击间隙测试"留下的历史记录，读进来是为了保存设置时原样写回去、不丢数据。
@@ -606,6 +616,7 @@ class MigrationGUI:
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
             "qt_enabled": bool(getattr(self, "qt_enabled", True)),
             "big_view_view": str(getattr(self, "big_view_view", "table")),
+            "diff_view": str(getattr(self, "diff_view", "table")),
             # 实时读盘：不要用启动时的缓存值，否则外部改过的窗口会被这里覆盖回去
             "double_click_sec": float(_dc_now()[0]),
             "double_click_auto": bool(_dc_now()[1]),
@@ -1733,6 +1744,13 @@ class MigrationGUI:
         for value, text in _BIG_VIEW_BACKENDS:
             radio(box_view, text, value, self.settings_diff_backend_var,
                   lambda v=value: self._set_diff_backend(v)).pack(fill="x")
+        tk.Label(box_view, text="差异窗口打开时用哪个视图：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
+        self.settings_diff_view_var = tk.StringVar(
+            value=getattr(self, "diff_view", "table"))
+        for value, text in _DIFF_VIEWS:
+            radio(box_view, text, value, self.settings_diff_view_var,
+                  lambda v=value: self._set_diff_view(v)).pack(fill="x")
         tk.Label(box_view,
                  text="两个窗口默认都用 PySide6；如果遇到窗口相关的异常，可以把它们切回"
                       "经典 Tk 实现（功能和数据完全一样，只是观感旧一些）。",
@@ -2143,6 +2161,14 @@ class MigrationGUI:
         self.save_config()
         self.log("🗂 放大查看窗口默认视图：%s"
                  % ("卡片视图" if self.big_view_view == "cards" else "表格视图"),
+                 level="INFO", save=False)
+
+    def _set_diff_view(self, value):
+        """模组差异窗口默认用哪个视图（下一次打开生效）。"""
+        self.diff_view = value if value in ("table", "cards") else "table"
+        self.save_config()
+        self.log("🧩 模组差异窗口默认视图：%s"
+                 % ("卡片视图" if self.diff_view == "cards" else "列表视图"),
                  level="INFO", save=False)
 
     def _qt_apply_entries(self, text_widget, entries):
@@ -4535,12 +4561,16 @@ class MigrationGUI:
         self.diff_qt = None
         self.diff_window = None
         _qt_ok = self._qt_available()[0]
+        _想卡片 = (getattr(self, "diff_view", "table") == "cards")
         if getattr(self, "diff_backend", "qt") != "qt" or not _qt_ok:
             # 设置里选了经典 Tk 版，或总开关关了 PySide6，或 PySide6 不可用
             self.diff_window = show_diff_window(self.root, data, self.theme,
-                                                self.current_theme, apply_callback)
+                                                self.current_theme, apply_callback,
+                                                cards=_想卡片)
             return self.diff_window
-        if self._start_qt_host("diff", {"data": data}, apply_callback):
+        if self._start_qt_host("diff",
+                               {"data": data, "cards": _想卡片},
+                               apply_callback):
             try:
                 from utils.helpers import trace_line
                 trace_line("打开 Qt 差异窗口（子进程）rows=%d" % len(data))
@@ -4551,7 +4581,8 @@ class MigrationGUI:
             return None
         self.log("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口", level="WARNING", save=False)
         self.diff_window = show_diff_window(self.root, data, self.theme,
-                                            self.current_theme, apply_callback)
+                                            self.current_theme, apply_callback,
+                                            cards=_想卡片)
         return self.diff_window
 
     # ---------- Qt 窗口的独立子进程宿主 ----------

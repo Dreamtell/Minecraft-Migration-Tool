@@ -8,7 +8,7 @@ from ui.dialogs import show_mod_detail, update_mod_detail_theme
 from ui.virtual_table import VirtualTable
 
 
-def show_diff_window(parent, data, theme, current_theme, apply_callback):
+def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=False):
     """
     显示差异列表窗口
     parent: 父窗口
@@ -574,6 +574,15 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     x = (diff_win.winfo_screenwidth() // 2) - (cur_width // 2)
     y = (diff_win.winfo_screenheight() // 2) - (cur_height // 2)
     diff_win.geometry(f"{cur_width}x{cur_height}+{x}+{y}")
+
+    # 设置里选了"打开就是卡片"：直接切过去（等价于用户点一下那个切换按钮）。
+    # 放在 deiconify 之前 —— 先把视图摆好再显示，不然会看到"先表格后卡片"闪一下。
+    if cards:
+        try:
+            toggle_view()
+        except Exception:
+            pass
+
     diff_win.deiconify()
     diff_win.focus_force()
     table.body.focus_set()

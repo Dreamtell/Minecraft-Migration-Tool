@@ -295,12 +295,15 @@ class DiffTableModel(QtCore.QAbstractTableModel):
 class QtDiffView(QtWidgets.QWidget):
     """差异扫描窗口（由 Tk 侧 after 泵驱动）。"""
 
-    def __init__(self, data, theme, hooks=None, apply_callback=None, parent=None):
+    def __init__(self, data, theme, hooks=None, apply_callback=None, parent=None,
+                 cards=False):
         super().__init__(parent)
         self.theme = dict(theme)
         self.hooks = hooks or {}
         self.apply_callback = apply_callback
         self._alive = True
+        # 打开时用表格还是卡片：默认视图在设置里选（_DIFF_VIEWS），这里只管摆好初始状态
+        self._start_cards = bool(cards)
         self.store = DiffStore(data, theme, parent=self)
         self.setWindowTitle("智能模组差异扫描（元数据级）")
         self.setMinimumSize(1120, 520)
@@ -509,6 +512,9 @@ class QtDiffView(QtWidgets.QWidget):
             sb.valueChanged.connect(self._update_progress)
             sb.rangeChanged.connect(lambda *_a: self._update_progress())
         self.stack.currentChanged.connect(lambda *_a: self._update_progress())
+        if self._start_cards:                 # 设置里选了"打开就是卡片"
+            self.stack.setCurrentIndex(1)
+            self.btn_view.setText("📋 表格视图")
 
         # ---- 底栏 ----
         bottom = QtWidgets.QHBoxLayout()
