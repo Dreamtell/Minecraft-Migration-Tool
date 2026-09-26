@@ -259,6 +259,102 @@ def ask_close_action(parent, theme):
     return result["action"], result["remember"]
 
 
+def _shorten_path(p, 限=52):
+    """路径太长就掐掉中间，保留头尾 —— 确认框里宽度有限，但头尾都想知道。"""
+    s = str(p or "")
+    if len(s) <= 限:
+        return s
+    头 = max(8, (限 - 3) // 2)
+    尾 = max(8, 限 - 3 - 头)
+    return s[:头] + "…" + s[-尾:]
+
+
+def ask_migrate_confirm(parent, theme, info):
+    """正式开始迁移前的二次确认（设置里可以关掉这次确认）。
+
+    迁移会覆盖目标整合包里的同名文件（覆盖前会整体备份），误点一次的代价太大，
+    所以把"要动什么"摊开给用户看一眼再走。返回 True 表示用户点了开始迁移。
+
+    这是个模态窗口：wait_window() 等用户选完，期间 Tk 主循环照常转。
+    """
+    result = {"ok": False}
+
+    win = tk.Toplevel(parent)
+    win.withdraw()
+    win.title("确认开始迁移")
+    win.configure(bg=theme["bg"])
+    win.transient(parent)
+    win.resizable(False, False)
+
+    tk.Label(win, text="⚠ 即将开始迁移（会覆盖目标整合包里的同名文件）",
+             bg=theme["bg"], fg=theme.get("fail_fg", "#c62828"),
+             font=("微软雅黑", 11, "bold")).pack(padx=26, pady=(18, 10))
+
+    卡 = tk.Frame(win, bg=theme.get("entry_bg", theme["bg"]))
+    卡.pack(fill="x", padx=22)
+
+    def 一行(标签, 值, 强调=False):
+        框 = tk.Frame(卡, bg=卡["bg"])
+        框.pack(fill="x", padx=12, pady=3)
+        tk.Label(框, text=标签, width=9, anchor="w", bg=卡["bg"],
+                 fg=theme.get("muted_fg", theme["fg"]),
+                 font=("微软雅黑", 9)).pack(side="left")
+        tk.Label(框, text=值, anchor="w", bg=卡["bg"],
+                 fg=theme.get("fail_fg", "#c62828") if 强调 else theme.get("fg"),
+                 font=("微软雅黑", 9, "bold" if 强调 else "normal")).pack(side="left")
+
+    一行("源", _shorten_path(info.get("源")))
+    一行("目标", _shorten_path(info.get("目标")))
+    一行("存档", str(info.get("存档") or "（未填）"))
+    一行("要复制", "模组 %d · config %d · 其它 %d ｜ 共 %d 个文件 / %.1f MB"
+       % (info.get("模组", 0), info.get("config", 0), info.get("其它文件", 0),
+          info.get("文件数", 0), info.get("大小MB", 0.0)))
+    覆盖 = bool(info.get("覆盖模组"))
+    一行("同名文件", "模组：%s ｜ 其它文件：%s"
+       % ("覆盖（先备份）" if 覆盖 else "跳过（目标保持不动）",
+          "覆盖（先备份）" if info.get("其它文件冲突") == "overwrite"
+          else "跳过（目标保持不动）"),
+       强调=覆盖)
+
+    tk.Label(win, text="迁移前会自动备份目标实例的 mods / config / saves，出问题可一键回滚。",
+             bg=theme["bg"], fg=theme.get("muted_fg", theme["fg"]),
+             font=("微软雅黑", 8), justify="left").pack(padx=26, pady=(10, 0), anchor="w")
+    tk.Label(win, text="不想每次都问：设置 → 🚚 迁移与分类 → 关掉「正式迁移前再确认一次」。",
+             bg=theme["bg"], fg=theme.get("muted_fg", theme["fg"]),
+             font=("微软雅黑", 8), justify="left").pack(padx=26, anchor="w")
+
+    def 选(ok):
+        result["ok"] = bool(ok)
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    行 = tk.Frame(win, bg=theme["bg"])
+    行.pack(padx=20, pady=16)
+    create_gradient_button(行, "开始迁移", lambda: 选(True),
+                           colors=("#00c853", "#00e676"),
+                           width=150, height=34,
+                           font=("微软雅黑", 10, "bold")).pack(side="left", padx=6)
+    create_gradient_button(行, "取消", lambda: 选(False),
+                           colors=("#757575", "#9e9e9e"),
+                           width=104, height=34,
+                           font=("微软雅黑", 10, "bold")).pack(side="left", padx=6)
+
+    win.protocol("WM_DELETE_WINDOW", lambda: 选(False))
+    set_window_icon(win)
+    win.update_idletasks()
+    center_window(win, max(560, win.winfo_reqwidth()), win.winfo_reqheight())
+    win.deiconify()
+    focus_window(win)
+    try:
+        win.grab_set()
+    except Exception:
+        pass
+    win.wait_window()
+    return result["ok"]
+
+
 def _configure_mod_detail_styles(theme):
     """配置模组详情窗口使用的 ttk 样式（Treeview/滚动条），跟随主题。"""
     style = ttk.Style()

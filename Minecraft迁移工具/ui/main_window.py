@@ -47,7 +47,8 @@ from core.migrator import (
 )
 from core.scanner import (scan_mod_differences, get_full_mod_metadata,
                           split_cn_name, get_mod_icon, guess_tags)
-from ui.dialogs import ProgressWindow, ScanProgressWindow, show_mod_detail, update_mod_detail_theme
+from ui.dialogs import (ProgressWindow, ScanProgressWindow, show_mod_detail,
+                        update_mod_detail_theme, ask_migrate_confirm)
 from ui.diff_window import show_diff_window
 from ui.virtual_table import VirtualTable
 
@@ -324,6 +325,8 @@ class MigrationGUI:
         self.world_name = tk.StringVar(value=self.config.get("world", "老子的世界"))
         self.dry_run = tk.BooleanVar(value=self.config.get("dry_run", True))
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
+        # 正式迁移前再确认一次（默认开；设置里可以关）
+        self.confirm_migrate = tk.BooleanVar(value=self.config.get("confirm_migrate", True))
         # 关闭窗口时的行为：ask（每次问）/ tray（收进托盘）/ exit（直接退出）
         self.close_action = self.config.get("close_action", "ask")
         # 启动动画：设置里可关（app.py 启动时直接读配置文件，这里只负责保存）
@@ -532,6 +535,7 @@ class MigrationGUI:
             "world": self.world_name.get(),
             "dry_run": self.dry_run.get(),
             "overwrite": self.overwrite_mods.get(),
+            "confirm_migrate": self.confirm_migrate.get(),
             "theme": self.current_theme,
             "mod_list": self.mod_text.get("1.0", tk.END).strip(),
             "config_list": self.config_text.get("1.0", tk.END).strip(),
@@ -1330,6 +1334,13 @@ class MigrationGUI:
             fg=self.theme.get("muted_fg", self.theme["fg"]), font=("微软雅黑", 8))
         self.settings_marker_preview.pack(anchor="w", pady=(4, 0))
         self._update_marker_preview()
+
+        # 正式迁移前的二次确认（默认开；关掉就点了按钮直接开跑）
+        self.settings_confirm_sw = SwitchRow(
+            box_m, self.theme, "正式迁移前再确认一次",
+            command=self._toggle_confirm_migrate, compact=True, accent="card_sel_bar")
+        self.settings_confirm_sw.pack(fill="x", pady=(10, 0))
+        self.settings_confirm_sw.set(self.confirm_migrate.get())
 
         # ---------- 模组分类标签 ----------
         box_t = section("tags", page_mig)
@@ -2893,6 +2904,14 @@ class MigrationGUI:
         except Exception:
             pass
 
+    def _toggle_confirm_migrate(self):
+        """设置页里那个"迁移前再确认"开关：同步变量 + 存配置（开关只翻自己的状态）。"""
+        try:
+            self.confirm_migrate.set(self.settings_confirm_sw.get())
+        except Exception:
+            return
+        self.save_config()
+
     def _on_dry_run_switch(self):
         """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""
         self.dry_run.set(self.dry_run_sw.get())
@@ -4276,6 +4295,18 @@ class MigrationGUI:
                 f"本次迁移约需 {needed / 1024 / 1024:.1f} MB（含备份余量）。\n"
                 "空间不足，请清理目标磁盘后重试。")
             return
+
+        # 正式迁移前再确认一次（模拟运行不用 —— 它不改任何文件）。设置里可以关掉。
+        if not self.dry_run.get() and self.confirm_migrate.get():
+            if not ask_migrate_confirm(self.root, self.theme, {
+                    "源": src, "目标": tgt, "存档": world,
+                    "模组": len(modlist), "config": len(configlist),
+                    "其它文件": len(extralist), "文件数": total_files,
+                    "大小MB": total_size / 1024 / 1024,
+                    "覆盖模组": self.overwrite_mods.get(),
+                    "其它文件冲突": self.extra_conflict.get()}):
+                self.log("ℹ️ 已取消：确认框里点了「取消」，没有动任何文件。", level="INFO")
+                return
 
         # 置为"迁移中"，禁用相关按钮、并给主窗口上锁，防止重复触发/误操作
         self._migration_running = True
