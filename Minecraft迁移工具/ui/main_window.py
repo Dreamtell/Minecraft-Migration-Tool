@@ -870,6 +870,17 @@ class MigrationGUI:
                 pass
         self._big_view_tables = alive_tables
 
+        # 迁移历史窗口的自绘表格（VirtualTable 不是普通控件，得显式喂新主题）
+        _ht = getattr(self, "_hist_table", None)
+        if _ht is not None:
+            try:
+                if _ht.winfo_exists():
+                    _ht.apply_theme(self.theme)
+                else:
+                    self._hist_table = None
+            except Exception:
+                self._hist_table = None
+
         # 放大查看的"卡片视图"也一样要跟着主题换色（自绘控件，得显式调用）
         alive_cards = []
         for cdl in getattr(self, '_big_view_cards', []):
@@ -3902,81 +3913,98 @@ class MigrationGUI:
         hist_win.geometry("900x500")
         hist_win.transient(self.root)
         set_window_icon(hist_win)
+        # ---- 头部：图标 + 标题 + 目标实例（和模组详情窗口同一套排法） ----
+        head = tk.Frame(hist_win, bg=self.theme["bg"])
+        head.pack(fill="x", padx=16, pady=(14, 2))
+        tk.Label(head, text="🕒", font=("微软雅黑", 20), bg=self.theme["bg"],
+                 fg=self.theme.get("data_fg", "#1565c0")).pack(side="left",
+                                                               padx=(0, 12), anchor="n")
+        head_box = tk.Frame(head, bg=self.theme["bg"])
+        head_box.pack(side="left", fill="x", expand=True)
+        tk.Label(head_box, text="迁移历史记录", font=("微软雅黑", 14, "bold"),
+                 bg=self.theme["bg"], fg=self.theme["fg"], anchor="w").pack(fill="x")
+        DataText(head_box, self.theme,
+                 [("目标实例：", "muted_fg"), (str(target_path), "data_fg")],
+                 font=("微软雅黑", 9)).pack(anchor="w", pady=(3, 0))
+
+        # ---- 汇总一行：共几次、回滚几次（数字用数据色） ----
+        回滚数 = sum(1 for e in history if e.get("rolled_back", False))
         DataText(hist_win, self.theme,
-                 [("目标实例：", "muted_fg"),
-                  (str(target_path), "data_fg")],
-                 font=("微软雅黑", 9, "bold")).pack(pady=5)
+                 [("共 ", "muted_fg"), (str(len(history)), "data_num_fg"),
+                  (" 次迁移", "muted_fg"), ("　·　", "muted_fg"),
+                  ("回滚 ", "muted_fg"), (str(回滚数), "data_num_fg"),
+                  (" 次", "muted_fg")],
+                 font=("微软雅黑", 9)).pack(anchor="w", padx=18, pady=(4, 6))
 
-        columns = ("时间", "来源", "模组数", "Config数", "状态")
-        # 配置 Treeview 样式（使用当前主题）
-        style = ttk.Style()
-        if style.theme_use() != 'clam':
-            try:
-                style.theme_use('clam')
-            except:
-                pass
-        style.configure(
-            "History.Treeview",
-            background=self.theme["ttk_bg"],
-            foreground=self.theme["ttk_fg"],
-            fieldbackground=self.theme["ttk_bg"],
-            selectbackground=self.theme["ttk_select_bg"],
-            selectforeground=self.theme["ttk_select_fg"]
-        )
-        style.configure(
-            "History.Treeview.Heading",
-            background=self.theme["button_bg"],
-            foreground=self.theme["fg"]
-        )
-        style.map(
-            "History.Treeview.Heading",
-            background=[("active", lighten_color(self.theme["button_bg"]))]
-        )
+        # ---- 表格：自绘的 VirtualTable（和"放大查看"窗口同一套，不再是 ttk.Treeview）----
+        # Treeview 是系统方角样式、改一行颜色要重绘整屏；换成自绘表后表头/行高/悬停/
+        # 彩色状态圆点都跟界面其它地方统一。最新一次迁移放最上面。
+        rows = list(reversed(history))
+        columns = (("status", "🔵 状态", 104, "w"),
+                   ("time", "🕒 迁移时间", 168, "w"),
+                   ("source", "📁 来源路径", 400, "w"),
+                   ("mods", "🧩 模组数", 92, "center"),
+                   ("configs", "⚙️ Config数", 104, "center"),
+                   ("extras", "📦 其它文件", 104, "center"))
 
-        tree = ttk.Treeview(
-            hist_win,
-            columns=columns,
-            show="headings",
-            height=18,
-            style="History.Treeview"
-        )
-        self._smooth(tree, rows=True)
-        tree.heading("时间", text="🕒 迁移时间")
-        tree.heading("来源", text="📁 来源路径")
-        tree.heading("模组数", text="🧩 模组数")
-        tree.heading("Config数", text="⚙️ Config数")
-        tree.heading("状态", text="✅ 状态")
+        def _h_cell(row, key):
+            e = rows[row] if 0 <= row < len(rows) else {}
+            if key == "time":
+                return str(e.get("timestamp", "?"))
+            if key == "source":
+                return str(e.get("source", "?"))
+            if key == "mods":
+                return str(e.get("mod_count", 0))
+            if key == "configs":
+                return str(e.get("config_count", 0))
+            if key == "extras":
+                return str(e.get("extra_count", 0))
+            return ""            # 状态列的文字由 dot() 画，单元格文本留空
 
-        tree.column("时间", width=160)
-        tree.column("来源", width=400)
-        tree.column("模组数", width=70, anchor="center")
-        tree.column("Config数", width=70, anchor="center")
-        tree.column("状态", width=100, anchor="center")
+        def _h_dot(row):
+            """状态列的 (圆点颜色, 文字)：绿=正常，橙=已回滚。"""
+            e = rows[row] if 0 <= row < len(rows) else {}
+            if e.get("rolled_back", False):
+                return self.theme.get("log_warning_fg", "#e65100"), "已回滚"
+            return self.theme.get("ok_fg", "#2e7d32"), "正常"
 
-        scrollbar = ttk.Scrollbar(hist_win, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        tree.pack(side="left", fill="both", expand=True, padx=10, pady=5)
-        scrollbar.pack(side="right", fill="y")
+        def _h_tags(row):
+            e = rows[row] if 0 <= row < len(rows) else {}
+            return ("rolled_back",) if e.get("rolled_back", False) else ("normal",)
 
-        for entry in reversed(history):
-            status_text = "✅ 已回滚" if entry.get("rolled_back", False) else "🟢 正常"
-            tags = ("rolled_back",) if entry.get("rolled_back", False) else ("normal",)
-            tree.insert("", "end", values=(
-                entry.get("timestamp", "?"),
-                entry.get("source", "?"),
-                entry.get("mod_count", 0),
-                entry.get("config_count", 0),
-                status_text
-            ), tags=tags)
+        class _HistModel:
+            row_count = staticmethod(lambda: len(rows))
+            cell = staticmethod(_h_cell)
+            dot = staticmethod(_h_dot)
+            tags = staticmethod(_h_tags)
 
-        tree.tag_configure("rolled_back", background=self.theme["badge_rollback_bg"])
-        tree.tag_configure("normal", background=self.theme["badge_normal_bg"])
+        table = VirtualTable(
+            hist_win, columns, self.theme,
+            font=("微软雅黑", 10), row_height=26, header_height=30,
+            tag_styles={
+                "rolled_back": (self.theme.get("badge_rollback_bg", "#ffdddd"),
+                                self.theme.get("fg", "#000000")),
+                "normal": (self.theme.get("badge_normal_bg", "#ffffff"),
+                           self.theme.get("ttk_fg", "#000000")),
+            })
+        table.set_model(_HistModel())
+        table.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+        self._hist_table = table          # 主题切换时 apply_theme 会喂新配色
+
+        # ---- 底部：说明 + 关闭 ----
+        bottom = tk.Frame(hist_win, bg=self.theme["bg"])
+        bottom.pack(fill="x", padx=14, pady=(0, 12))
+        tk.Label(bottom, text="越靠上越新 · 滚轮翻阅", font=("微软雅黑", 8),
+                 bg=self.theme["bg"],
+                 fg=self.theme.get("muted_fg", "#808080")).pack(side="left")
         btn_close_hist = create_gradient_button(
-            hist_win, "关闭", hist_win.destroy,
+            bottom, "✖ 关闭", hist_win.destroy,
             colors=("#757575", "#9e9e9e"),
-            width=_grad_width("关闭"), height=30, font=("微软雅黑", 9, "bold"))
-        btn_close_hist.pack(pady=10)
+            width=_grad_width("✖ 关闭"), height=30, font=("微软雅黑", 9, "bold"))
+        btn_close_hist.pack(side="right")
         apply_theme_to_widget_tree(hist_win, self.theme)
+        hist_win.update_idletasks()
+        table.fit_now()                   # 显示前先把列宽排好，避免二次闪烁
         _center_window(hist_win, 900, 500)
         hist_win.deiconify()
         focus_window(hist_win)
