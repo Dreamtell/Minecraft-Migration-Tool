@@ -365,8 +365,11 @@ class QtDiffView(QtWidgets.QWidget):
         combo_menu.addAction("更新 + 目标独有",
                              lambda: self._by_status("更新", "目标独有"))
         self._combo_menu = combo_menu
+        # 用 popup 而不是 exec：exec 会开一层**嵌套事件循环**，而这段代码是跑在
+        # Tk 的 after → processEvents 回调里的，嵌套事件循环是这类"两套循环共存"
+        # 崩溃的高发区。popup 不阻塞，菜单的交互交给同一个 processEvents 泵。
         self.btn_combo.clicked.connect(
-            lambda: combo_menu.exec(self.btn_combo.mapToGlobal(
+            lambda: combo_menu.popup(self.btn_combo.mapToGlobal(
                 QtCore.QPoint(0, self.btn_combo.height()))))
         self._search_timer = QtCore.QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -705,11 +708,55 @@ class QtDiffView(QtWidgets.QWidget):
         self.store.set_checked(pred)
         self._update_summary()
 
+    def _prune_dialogs(self):
+        """清掉已经关掉的详情窗。
+
+        **释放动作要延后到 Tk 的 after**：这里是 Qt 回调（processEvents）栈里，
+        在这个栈上让 wrapper 引用归零会让 shiboken 在事件处理中析构 Qt 对象，
+        踩到它的 tstate 保存/恢复 —— 就是那个致命的 PyEval_RestoreThread。
+        """
+        live, dead = [], []
+        for d in getattr(self, "_dialogs", []):
+            try:
+                (live if d.isVisible() else dead).append(d)
+            except RuntimeError:
+                dead.append(d)
+        self._dialogs = live
+        if not dead:
+            return
+
+        def _drop():
+            for d in list(dead):
+                try:
+                    d.deleteLater()
+                except Exception:
+                    pass
+            dead.clear()
+
+        defer = self.hooks.get("defer")
+        if defer is not None:
+            try:
+                defer(_drop)
+                return
+            except Exception:
+                pass
+        _drop()
+
     def _show_detail(self, row):
         if not (0 <= row < len(self.store.order)):
-            return
+            return None
+        self._prune_dialogs()
         it = self.store.at(row)
         jar = self.store.jar_of(it)
+        # 同一个模组只开一个窗：连点 ℹ 不该堆窗口
+        for d in self._dialogs:
+            try:
+                if getattr(d, "_detail_key", None) == it.key and d.isVisible():
+                    d.raise_()
+                    d.activateWindow()
+                    return d
+            except RuntimeError:
+                continue
 
         def _reveal(path):
             """在资源管理器里定位文件（Qt 的 QProcess，不碰 Windows 消息层）。"""
@@ -719,10 +766,17 @@ class QtDiffView(QtWidgets.QWidget):
                 pass
 
         dlg = DetailDialog(it, self.theme, _reveal, self)
+        dlg._detail_key = it.key
         self._dialogs.append(dlg)
-        dlg.finished.connect(lambda _r, d=dlg: self._dialogs.remove(d)
-                             if d in self._dialogs else None)
         dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        try:
+            from utils.helpers import trace_line
+            trace_line("差异窗口打开详情 row=%d %s" % (row, it.name))
+        except Exception:
+            pass
+        return dlg
 
     # ------------------------------------------------------------------ 应用
     def _apply(self):
@@ -839,7 +893,26 @@ class QtDiffView(QtWidgets.QWidget):
                 d.close()
             except Exception:
                 pass
-        self._dialogs = []
+        # 引用归零也放到 Tk 的 after 里做（closeEvent 同样是 Qt 的处理栈）
+        dialogs, self._dialogs = self._dialogs, []
+        if dialogs:
+            defer = self.hooks.get("defer")
+
+            def _drop():
+                for d in list(dialogs):
+                    try:
+                        d.deleteLater()
+                    except Exception:
+                        pass
+                dialogs.clear()
+
+            if defer is not None:
+                try:
+                    defer(_drop)
+                except Exception:
+                    _drop()
+            else:
+                _drop()
         super().closeEvent(ev)
 
 

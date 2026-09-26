@@ -2549,29 +2549,71 @@ class QtBigView(QtWidgets.QWidget):
     # 回调推着跑的 —— 一旦 exec()，那个 after 就回不来，整个 Tk 主界面会冻住
     # （实测 549ms 的对话框期间 Tk 心跳 0 次）。所以全部改成 open()/popup() + 回调。
     def _track(self, widget):
-        """登记非模态窗口，防止被 Python 回收；顺手清掉已经销毁的。"""
-        live = []
+        """登记非模态窗口，防止被 Python 回收。
+
+        清理"已经关掉的"要**先攒着，再交给 Tk 的 after 去释放**：这个方法是在 Qt 的
+        processEvents 回调里被调到的，如果在 Qt 的事件处理栈里让 wrapper 的引用归零
+        （shiboken 随即析构 C++ 对象），就会踩到 shiboken 的 tstate 保存/恢复 ——
+        表现是致命的 `PyEval_RestoreThread ... the GIL is released`（用户实测：反复
+        开关模组详情窗口时崩）。
+        """
+        live, dead = [], []
         for d in getattr(self, "_dialogs", []):
             try:
-                d.isVisible()
-                live.append(d)
+                if d.isVisible():
+                    live.append(d)
+                else:
+                    dead.append(d)
             except RuntimeError:          # C++ 对象已销毁
-                pass
+                dead.append(d)
         live.append(widget)
         self._dialogs = live
+        if dead:
+            self._drop_dialogs(dead)
         return widget
+
+    def _drop_dialogs(self, dialogs):
+        """把一批已关闭的窗口交回主线程释放（绝不在 Qt 回调栈里析构）。"""
+        def _drop():
+            for d in list(dialogs):
+                try:
+                    d.deleteLater()
+                except Exception:
+                    pass
+            dialogs.clear()               # 引用在这里才归零，而这是在 Tk 的 after 里
+
+        defer = self.hooks.get("defer")
+        if defer is not None:
+            try:
+                defer(_drop)
+                return
+            except Exception:
+                pass
+        _drop()
 
     def _open_detail(self, row):
         """打开详情窗（非模态）：主界面和放大查看窗口都能继续用。
 
         「模组详情」只对模组清单成立 —— config 清单里那行是配置文件，这里直接挡掉，
         免得以后哪条路又把它放出来（菜单/双击/悬停图标都各自拦了一道）。
+        **同一个模组只开一个窗**：连点两下 ℹ 不该堆出两个窗口来（也是之前崩的诱因之一）。
         """
         if not self.store.is_mod:
             return None
         try:
             it = self.store.at(row)
+            key = it.key
+            for d in getattr(self, "_dialogs", []):
+                try:
+                    if getattr(d, "_detail_key", None) == key and d.isVisible():
+                        d.raise_()
+                        d.activateWindow()
+                        trace_line("detail 复用 row=%d key=%s" % (row, key))
+                        return d
+                except RuntimeError:
+                    continue
             dlg = DetailDialog(it, self.theme, self._reveal, self)
+            dlg._detail_key = key
             dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
             self._track(dlg)
             dlg.show()
@@ -2807,12 +2849,32 @@ class QtBigView(QtWidgets.QWidget):
             self.scroll_progress.stop()     # 别让液太高光在窗口没了以后还排 after
         except Exception:
             pass
-        for d in list(getattr(self, "_dialogs", [])):
+        dialogs = list(getattr(self, "_dialogs", []))
+        for d in dialogs:
             try:
                 d.close()
             except RuntimeError:
                 pass
+        # 引用归零交给 Tk 的 after（closeEvent 也在 Qt 的处理栈上）
         self._dialogs = []
+        if dialogs:
+            defer = self.hooks.get("defer")
+
+            def _drop():
+                for d in list(dialogs):
+                    try:
+                        d.deleteLater()
+                    except Exception:
+                        pass
+                dialogs.clear()
+
+            if defer is not None:
+                try:
+                    defer(_drop)
+                except Exception:
+                    _drop()
+            else:
+                _drop()
         self.store._pool.waitForDone(1500)
         self._write_back()
         super().closeEvent(ev)

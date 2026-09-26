@@ -38,6 +38,30 @@ SPLASH_QT = os.environ.get("DSH_NO_QT_SPLASH") != "1"
 _LOCK_HOLDER = None
 
 
+def _enable_fatal_log():
+    """把致命错误（段错误 / GIL 致命错误 / 崩溃）的栈落一份到文件里。
+
+    这些东西默认只写 stderr；GUI 启动方式下常常一闪而过、抓不到。写文件之后
+    用户直接把文件发过来就能看到**所有线程**的栈和当时的调用链。
+    """
+    try:
+        import faulthandler
+        from pathlib import Path
+        log = Path.home() / ".minecraft_migrate_fatal.log"
+        fh = open(log, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(fh, all_threads=True)
+        try:
+            fh.write("\n===== 启动 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            pass
+        return fh
+    except Exception:
+        return None
+
+
+_FATAL_LOG = _enable_fatal_log()
+
+
 def send_toast(title, msg):
     """弹一条 Windows 系统通知（winotify，兼容 Win10/11）。"""
     try:

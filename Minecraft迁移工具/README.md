@@ -107,6 +107,19 @@
     released`）；逐帧推的收尾落在 Tk 的 `after` 里，和其它 Tk 操作同一个上下文
   - **关掉的 Qt 窗口在主线程销毁**（`_pump_qt` + `deleteLater`）：Qt 的 C++ 对象不能在
   别的线程里析构。
+- **关掉的对话框不能在 Qt 回调栈里释放**（`_track` / `_drop_dialogs` / `_prune_dialogs`）：
+  点卡片上的 ℹ 打开模组详情时，代码正跑在 `processEvents` 的回调里；这时候如果让
+  Python wrapper 的引用归零（shiboken 随即析构 C++ 对象），就会踩到它的 tstate 保存/恢复，
+  又是那个 `PyEval_RestoreThread` 致命错误。现在"查出已关闭的对话框"和"真正释放"分成两步，
+  释放统一丢回 Tk 的 after（`hooks["defer"]`）。顺带给详情窗做了**单实例**：同一个模组
+  连点两下 ℹ 只把已有窗口抬到前面，不再堆窗口（用户实际就是连点两下崩的）
+- **两个 Qt 窗口都能切回 Tk**（设置 →「🗂 放大查看」）：`big_view_backend` 和
+  `diff_backend` 都是 `qt` / `tk` 二选一。遇到窗口相关的怪问题可以先把它们切到经典实现，
+  功能和数据完全一样，只是观感旧一点
+- **崩溃现场会落文件**：`app.py` 启动时 `faulthandler.enable(..., all_threads=True)`
+  写到 `~/.minecraft_migrate_fatal.log`（默认只打 stderr，GUI 启动经常看不到）；
+  另外 `~/.minecraft_migrate_clicks.log` 记着关键操作（打开详情/开关 Qt 窗口等）的时间线，
+  排查时把它和致命日志一起看就能还原"崩之前做了什么"
 - **托盘的消息循环也回到主线程**（`ui/tray.py`）：原来托盘自己起一条后台线程跑
   `win32gui.PumpMessages`，那条线程和主线程的 Qt 事件泵（放大查看 / 差异窗口那套，
   Tk 的 after 里 `processEvents`）撞在一起会出致命的
@@ -490,6 +503,17 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **按操作日志定位到的第三个崩溃点：详情窗在 Qt 回调栈里被释放**。用户第三次崩（这次栈里
+  已经没有托盘线程了），他说"点 ℹ 打开模组详情"时崩；翻 `~/.minecraft_migrate_clicks.log`
+  发现他**2 秒内对同一行连点了两次 ℹ** —— 于是每次都新建详情窗，清理旧窗口时又是在
+  `processEvents` 的回调栈里让 wrapper 引用归零（shiboken 当场析构 C++ 对象，踩到 tstate
+  保存/恢复）。修法两条：① "查出已关闭的对话框"与"真正释放"分开，释放一律 `defer` 回
+  Tk 的 after；② 详情窗**单实例**（同一模组连点只把窗口抬到前面，
+  验证脚本断言"历史最多 1 个窗口"）。另外把 `combo_menu.exec` 换成 `popup`
+  （`exec` 会开一层嵌套事件循环，是这类崩溃的高发区），并给 `app.py` 装上
+  `faulthandler` 落盘 + 扩展操作追踪日志，方便下次一次定位
+- **设置里可以选差异窗口的实现**：`diff_backend`（qt / tk），和放大查看窗口那个
+  `big_view_backend` 一样。遇到窗口相关的怪问题时可以先把两个窗口都切回经典 Tk 实现
 - **托盘的消息循环挪回主线程（GIL 崩溃的真正根治）**：上一次只做了"Qt 对象在主线程
   销毁 + 托盘线程禁 GC"，用户仍然崩了第二次（`0xC0000409` / `PyEval_RestoreThread`）。
   根子是**托盘那条后台线程**（`win32gui.PumpMessages`）和主线程的 Qt 事件泵共存。

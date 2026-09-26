@@ -354,6 +354,10 @@ class MigrationGUI:
         self.big_view_backend = str(self.config.get("big_view_backend", "qt") or "qt")
         if self.big_view_backend not in ("qt", "tk"):
             self.big_view_backend = "qt"
+        # 差异窗口用哪个实现（同样的 qt / tk 二选一；出问题时可以切回 Tk 版）
+        self.diff_backend = str(self.config.get("diff_backend", "qt") or "qt")
+        if self.diff_backend not in ("qt", "tk"):
+            self.diff_backend = "qt"
         # 放大查看窗口打开时用哪个视图：table=表格 / cards=卡片（设置里能选）
         self.big_view_view = str(self.config.get("big_view_view", "table") or "table")
         if self.big_view_view not in ("table", "cards"):
@@ -560,6 +564,7 @@ class MigrationGUI:
             "online_tags": bool(getattr(self, "online_tags", False)),
             "lock_mode": str(getattr(self, "lock_mode", "all")),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
+            "diff_backend": str(getattr(self, "diff_backend", "qt")),
             "big_view_view": str(getattr(self, "big_view_view", "table")),
             # 实时读盘：不要用启动时的缓存值，否则外部改过的窗口会被这里覆盖回去
             "double_click_sec": float(_dc_now()[0]),
@@ -1626,6 +1631,21 @@ class MigrationGUI:
             radio(box_view, text, value, self.settings_view_mode_var,
                   lambda v=value: self._set_big_view_view(v)).pack(fill="x")
 
+        # ---------- 差异窗口用哪个实现 ----------
+        tk.Label(box_view, text="差异扫描窗口用哪个实现：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
+        self.settings_diff_backend_var = tk.StringVar(
+            value=getattr(self, "diff_backend", "qt"))
+        for value, text in _BIG_VIEW_BACKENDS:
+            radio(box_view, text, value, self.settings_diff_backend_var,
+                  lambda v=value: self._set_diff_backend(v)).pack(fill="x")
+        tk.Label(box_view,
+                 text="两个窗口默认都用 PySide6；如果遇到窗口相关的异常，可以把它们切回"
+                      "经典 Tk 实现（功能和数据完全一样，只是观感旧一些）。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
+                                                                          pady=(2, 0))
+
         # ---------- 界面按钮 ----------
         box2 = section("buttons", page_btn)
         tree_wrap = tk.Frame(box2, bg=self.theme["bg"])
@@ -1897,6 +1917,18 @@ class MigrationGUI:
             if not ok:
                 self.log("⚠ " + why, level="WARNING", save=False)
 
+    def _set_diff_backend(self, value):
+        """差异窗口用哪个实现（下一次扫描生效）。"""
+        self.diff_backend = value if value in ("qt", "tk") else "qt"
+        self.save_config()
+        self.log("🧩 差异窗口已切换为：%s"
+                 % ("PySide6 窗口" if self.diff_backend == "qt" else "经典 Tk 窗口"),
+                 level="INFO", save=False)
+        if self.diff_backend == "qt":
+            ok, why = self._qt_available()
+            if not ok:
+                self.log("⚠ " + why, level="WARNING", save=False)
+
     def _set_big_view_view(self, value):
         """放大查看窗口默认用哪个视图（下一次打开生效）。"""
         self.big_view_view = value if value in ("table", "cards") else "table"
@@ -1954,6 +1986,11 @@ class MigrationGUI:
             retired.append(v)
             try:
                 v.deleteLater()      # 主线程里安排销毁
+            except Exception:
+                pass
+            try:
+                from utils.helpers import trace_line
+                trace_line("qt 窗口关闭 %s" % type(v).__name__)
             except Exception:
                 pass
         self._qt_views = 活的
@@ -4286,6 +4323,11 @@ class MigrationGUI:
         """
         self.diff_qt = None
         self.diff_window = None
+        if getattr(self, "diff_backend", "qt") != "qt":
+            # 设置里选了经典 Tk 版（或从 Qt 版遇到过问题时手动切过来）
+            self.diff_window = show_diff_window(self.root, data, self.theme,
+                                                self.current_theme, apply_callback)
+            return self.diff_window
         try:
             from ui import qt_diff_view as QD
             if QD.available():
@@ -4305,6 +4347,11 @@ class MigrationGUI:
                 if not self._qt_views[:-1]:
                     self._pump_qt()      # 首个 Qt 窗口才需要启动泵（多个泵会打架）
                 self.diff_qt = view
+                try:
+                    from utils.helpers import trace_line
+                    trace_line("打开 Qt 差异窗口 rows=%d" % len(data))
+                except Exception:
+                    pass
                 self.log(f"🗂 已打开 PySide6 差异窗口（{len(data)} 项）",
                          level="INFO", save=False)
                 return view
