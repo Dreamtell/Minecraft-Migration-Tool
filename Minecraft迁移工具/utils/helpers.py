@@ -180,6 +180,35 @@ class SmoothScroller:
                    or _text_notch_px(widget), bind_widgets=bind_widgets, **kw)
 
     @classmethod
+    def for_canvas(cls, widget, px_per_notch=48, on_render=None, bind_widgets=None, **kw):
+        """Canvas 自绘的列表（ui.virtual_table.VirtualTable）：也是**像素级**平滑。
+
+        Canvas 的 `yview_scroll` 单位是 "units"，而 unit 由 `yscrollincrement` 决定：
+        设成行高就退化成"整行跳"（和 ttk.Treeview 一样一顿一顿），设成 1 就是 1 像素
+        —— 于是能停在半行上，做出编辑器那种顺滑滚动。`on_render` 在每帧滚完调用，
+        让表格重画新露出来的行。
+        """
+        def mover(px):
+            n = int(round(px))
+            if n == 0:
+                n = 1 if px > 0 else -1
+            before = widget.canvasy(0)
+            try:
+                widget.yview_scroll(n, "units")
+            except Exception:
+                return 0, True
+            moved = abs(widget.canvasy(0) - before) > 1e-9
+            if moved and on_render is not None:
+                try:
+                    on_render()
+                except Exception:
+                    pass
+            return (n, False) if moved else (0, True)
+
+        return cls(widget, mover, px_per_notch=px_per_notch,
+                   bind_widgets=bind_widgets, **kw)
+
+    @classmethod
     def for_rows(cls, widget, row_px, on_render=None, bind_widgets=None,
                  ms_per_row=None, **kw):
         """按行滚动的控件（Treeview / 自绘表格）：攒够一行走一行，其余交给动画。

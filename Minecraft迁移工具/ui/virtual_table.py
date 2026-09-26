@@ -88,8 +88,10 @@ class VirtualTable(tk.Frame):
         self._scroller = None
         try:
             from utils.helpers import SmoothScroller
-            self._scroller = SmoothScroller.for_rows(
-                self.body, self.row_height, on_render=self._after_scroll,
+            # 像素级平滑（不是整行跳）：unit=1 像素，一格滚轮 = 3 行
+            self._scroller = SmoothScroller.for_canvas(
+                self.body, px_per_notch=self.row_height * 3,
+                on_render=self._after_scroll,
                 bind_widgets=[self.body, self.header])
         except Exception:
             self._scroller = None
@@ -131,6 +133,16 @@ class VirtualTable(tk.Frame):
         self._invalidate()
         self._render()
 
+    def set_tag_styles(self, styles):
+        """换一套行底色（tag → (底色, 前景)）并整表重画。
+
+        调用方（比如差异窗口）的行底色是自己按语义算的，主题一换就要重算 ——
+        apply_theme 里的默认 tag_styles 只认 checked/missing/new，不够用。
+        """
+        self.tag_styles = dict(styles or {})
+        self._invalidate()
+        self._render()
+
     # -------------------------------------------------------------- 构建/绑定
     def _build(self):
         self.grid_rowconfigure(1, weight=1)
@@ -145,7 +157,10 @@ class VirtualTable(tk.Frame):
 
         self.body = tk.Canvas(self, bd=0, highlightthickness=0, bg=self._base_bg)
         self.body.grid(row=1, column=0, sticky="nsew")
-        self.body.configure(yscrollincrement=self.row_height)
+        self.body.configure(yscrollincrement=1)
+        # ↑ 滚动单位 = 1 像素：Canvas 的 "units" 由 yscrollincrement 定义，设成行高就
+        #   只能整行跳（像 ttk.Treeview）；设成 1 就能停在半行上 —— 自绘表格做
+        #   "PyCharm 那种像素级平滑滚动"靠的就是这个（配合 SmoothScroller.for_canvas）
 
         self.vsb = tk.Scrollbar(self, orient="vertical", command=self._yview)
         self.vsb.grid(row=1, column=1, sticky="ns")
@@ -295,15 +310,17 @@ class VirtualTable(tk.Frame):
         self._render()
 
     def _scroll_to_fraction(self, frac):
-        """把滚动条的「跳转」换算成按行增量滚动。
+        """把滚动条的「跳转」换算成像素增量滚动。
+
         Tk 的 canvas 只有按增量滚动时才会用位块传输复用画面，直接 moveto 会让
-        整个可见区域重绘（2000 行时实测约 66ms，而按行滚动约 12ms）。"""
+        整个可见区域重绘（2000 行时实测约 66ms，而按增量滚动约 12ms）。
+        unit 是 1 像素（见 __init__ 的 yscrollincrement），所以这里按像素算增量。
+        """
         total = self._row_count * self.row_height
         view = max(self.body.winfo_height(), 1)
         max_top = max(total - view, 0)
-        target = int((frac * max_top) // self.row_height)
-        cur = int(self.body.canvasy(0) // self.row_height)
-        delta = target - cur
+        target = frac * max_top
+        delta = int(target - self.body.canvasy(0))
         if delta:
             self.body.yview_scroll(delta, "units")
         else:
@@ -323,7 +340,9 @@ class VirtualTable(tk.Frame):
             pass
 
     def _ev_wheel(self, event):
-        self.body.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        # unit = 1 像素，所以一格滚轮要显式滚一个行高
+        self.body.yview_scroll(-self.row_height if event.delta > 0 else self.row_height,
+                               "units")
         self._render()
         if self.on_scroll:
             self.on_scroll()

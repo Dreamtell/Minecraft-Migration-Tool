@@ -3,8 +3,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 from utils.helpers import (set_window_icon, create_gradient_button, lighten_color,
-                           SmoothScroller, tree_row_px, RoundedEntry)
+                           RoundedEntry)
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
+from ui.virtual_table import VirtualTable
 
 
 def show_diff_window(parent, data, theme, current_theme, apply_callback):
@@ -43,7 +44,8 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
              font=("微软雅黑", 10), bg=theme["bg"], fg=theme["fg"]).grid(
         row=0, column=0, columnspan=2, pady=5, sticky="w", padx=10)
 
-    # ---- 配置 Treeview 样式（使用独立样式名） ----
+    # 要让 ttk 的 Combobox（搜索范围/排序依据）跟着主题走，得先在 clam 主题下
+    # 配置样式 —— 原来这里还配了 Diff.Treeview / TScrollbar，换成自绘表格后不需要了
     style = ttk.Style()
     if style.theme_use() != 'clam':
         try:
@@ -51,221 +53,143 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         except:
             pass
 
-    # 配置 Treeview 主体样式
-    style.configure(
-        "Diff.Treeview",
-        background=theme["ttk_bg"],
-        fieldbackground=theme["ttk_bg"],  # 空行/字段背景跟随主题，避免深色下出现白色
-        foreground=theme["ttk_fg"],
-        selectbackground=theme["ttk_select_bg"],
-        selectforeground=theme["ttk_select_fg"],
-        bordercolor=theme["bg"],  # 边框跟随主题
-        borderwidth=0,
-        rowheight=24
-    )
+    # ---- 创建自绘表格（和「放大查看」「迁移历史」同一套） ----
+    # 原来这里是 ttk.Treeview：它**只能整行滚**（yview_scroll 的单位就是行），
+    # 一格 3 行必然一跳一跳的，做不出编辑器那种顺滑手感。自绘表格把
+    # yscrollincrement 设成 1、滚动单位变成 1 像素，才能"停在半行上"。
+    columns = (("选择", "☑ 选择", 64, "center"),
+               ("文件名", "📄 文件名", 250, "w"),
+               ("状态", "🔵 状态", 96, "w"),
+               ("类型", "🧩 类型", 84, "center"),
+               ("Mod ID", "🆔 Mod ID", 150, "w"),
+               ("版本", "🔖 版本", 120, "w"),
+               ("大小(KB)", "💾 大小(KB)", 92, "e"),
+               ("备注", "📝 备注", 300, "w"))
+    列名 = [c[0] for c in columns]
 
-    # 配置 Treeview 列标题样式
-    style.configure(
-        "Diff.Treeview.Heading",
-        background=theme["button_bg"],
-        foreground=theme["fg"],
-        relief="flat",
-        borderwidth=0,
-        font=("微软雅黑", 9, "bold")
-    )
-    style.map(
-        "Diff.Treeview.Heading",
-        background=[('active', lighten_color(theme["button_bg"]))]
-    )
+    def make_tag_styles(th):
+        """行底色：勾选(选中蓝) > 新增(绿) / 更新(橙) / 目标独有(灰)。"""
+        return {
+            "highlight": (th.get("card_sel_bg", "#d4e6f8"),
+                          th.get("card_sel_fg", "#0d3d63")),
+            "new": (th["success_bg"], th["success_fg"]),
+            "update": (th["warn_bg"], th["warn_fg"]),
+            "target_only": (th["neutral_bg"], th["neutral_fg"]),
+        }
 
-    # 配置滚动条样式
-    style.configure(
-        "Diff.Vertical.TScrollbar",
-        background=theme["button_bg"],
-        troughcolor=theme["bg"],
-        arrowcolor=theme["fg"],
-        bordercolor=theme["bg"],
-        lightcolor=theme["button_bg"],
-        darkcolor=theme["button_bg"],
-        relief="flat",
-        borderwidth=0
-    )
-    style.configure(
-        "Diff.Horizontal.TScrollbar",
-        background=theme["button_bg"],
-        troughcolor=theme["bg"],
-        arrowcolor=theme["fg"],
-        bordercolor=theme["bg"],
-        lightcolor=theme["button_bg"],
-        darkcolor=theme["button_bg"],
-        relief="flat",
-        borderwidth=0
-    )
-
-    # ---- 创建 Treeview（指定样式） ----
-    columns = ("选择", "文件名", "状态", "类型", "Mod ID", "版本", "大小(KB)", "备注")
-    tree = ttk.Treeview(
-        diff_win,
-        columns=columns,
-        show="headings",
-        height=18,
-        style="Diff.Treeview"
-    )
-    # 禁用内置选择，完全由 tag 控制
-    tree.configure(selectmode="none")
-    # 列名是内部 key（排序/取值都按它），只把「表头显示文字」换成带图标的版本
-    _HEAD = {"选择": "☑ 选择", "文件名": "📄 文件名", "状态": "🔵 状态",
-             "类型": "🧩 类型", "Mod ID": "🆔 Mod ID", "版本": "🔖 版本",
-             "大小(KB)": "💾 大小(KB)", "备注": "📝 备注"}
-    for col in columns:
-        tree.heading(col, text=_HEAD.get(col, col))
-    tree.column("选择", width=60, anchor="center", minwidth=60)
-    tree.column("文件名", width=250, minwidth=150)
-    tree.column("状态", width=100, minwidth=80)
-    tree.column("类型", width=80, anchor="center", minwidth=60)
-    tree.column("Mod ID", width=150, minwidth=100)
-    tree.column("版本", width=120, minwidth=80)
-    tree.column("大小(KB)", width=90, anchor="center", minwidth=80)
-    tree.column("备注", width=300, minwidth=200, stretch=True)
-
-    vsb = ttk.Scrollbar(diff_win, orient="vertical", command=tree.yview,
-                        style="Diff.Vertical.TScrollbar")
-    hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview,
-                        style="Diff.Horizontal.TScrollbar")
-    # 平滑滚动：Treeview 只能整行滚，引擎负责把零头攒起来做动画。
-    # ms_per_row 给每行之间留一口气 —— 不给的话一帧一行，3 行 40ms 就窜过去了，
-    # 差异列表这种要"一行一行对着看"的地方显得又快又硬。
-    SmoothScroller.for_rows(tree, tree_row_px(tree), ms_per_row=50)
-    # 横向滚动条只在内容真的超出可视宽度时才出现：默认宽度下「备注」列会拉伸填满，
-    # 常驻一条拖不动的滚动条只会让人困惑。
-    hsb_state = {"shown": True}
-
-    def on_xscroll(first, last):
-        hsb.set(first, last)
-        need = float(first) > 0.001 or float(last) < 0.999
-        try:
-            if need and not hsb_state["shown"]:
-                hsb.grid()
-                hsb_state["shown"] = True
-            elif not need and hsb_state["shown"]:
-                hsb.grid_remove()
-                hsb_state["shown"] = False
-        except Exception:
-            pass
-
-    tree.configure(yscrollcommand=vsb.set, xscrollcommand=on_xscroll)
-    tree.grid(row=1, column=0, sticky="nsew")
-    vsb.grid(row=1, column=1, sticky="ns")
-    hsb.grid(row=2, column=0, sticky="ew")
-
+    table = VirtualTable(
+        diff_win, columns, theme,
+        font=("微软雅黑", 10), row_height=26, header_height=30,
+        status_key="状态",                  # 状态列用彩色圆点 + 文字
+        tag_styles=make_tag_styles(theme),
+        on_row_click=lambda row, ev: _click_row(row),
+        on_row_double=lambda row, ev: _double_row(row),
+        on_header_click=lambda key, ev: sort_by_column(key))
+    diff_win._make_tag_styles = make_tag_styles      # 主题切换时重算行底色
+    diff_win._diff_table = table
+    table.grid(row=1, column=0, sticky="nsew")
     diff_win.grid_rowconfigure(1, weight=1)
     diff_win.grid_columnconfigure(0, weight=1)
 
-    # ---- 定义高亮 tag 颜色 ----
-    def update_highlight_color():
-        # 选中高亮：用和卡片视图同一套"选中蓝"
-        # 注意：Treeview 里同一个 item 挂多个 tag 且都设了 background 时，
-        # **tags 列表里靠前的那个生效**（实测：("status","highlight") 显示的是 status 色）。
-        # 所以下面所有地方都必须把 "highlight" 放在最前面，否则选中根本看不出来。
-        tree.tag_configure("highlight", background=theme.get("card_sel_bg", "#d4e6f8"),
-                           foreground=theme.get("card_sel_fg", "#0d3d63"))
-
-    update_highlight_color()
-
     # ---- 数据加载 ----
     all_data = data[:]
-    selection_state = {}
+    selection_state = {}          # all_data 的下标 -> 是否勾选（与搜索过滤无关）
+    visible = []                  # 表格当前显示的行 -> all_data 下标
 
     for idx, item in enumerate(all_data):
-        display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
-        default_checked = (status == "新增")
-        checked_char = "☑" if default_checked else "☐"
-        # 状态标签（颜色含义）
-        status_tag = {"新增": "new", "更新": "update"}.get(status, "target_only")
-        # "highlight" 必须排在最前，否则会被状态 tag 的 background 盖掉（见 update_highlight_color）
-        tags = ["highlight", status_tag] if default_checked else [status_tag]
+        selection_state[idx] = (item[1] == "新增")     # 「新增」默认勾上
 
-        iid = str(idx)
-        tree.insert("", "end", iid=iid, values=(
-            checked_char,
-            display_name,
-            status,
-            mod_type,
-            modid,
-            version,
-            size_kb,
-            note
-        ), tags=tuple(tags))
-        selection_state[iid] = default_checked
+    def _row_item(row):
+        return all_data[visible[row]] if 0 <= row < len(visible) else None
 
-    # 配置状态标签颜色（与高亮分开）
-    tree.tag_configure("new", background=theme["success_bg"],
-                       foreground=theme["success_fg"])
-    tree.tag_configure("update", background=theme["warn_bg"],
-                       foreground=theme["warn_fg"])
-    tree.tag_configure("target_only", background=theme["neutral_bg"],
-                       foreground=theme["neutral_fg"])
+    def _status_color(status):
+        return {"新增": theme.get("ok_fg", "#2e7d32"),
+                "更新": theme.get("log_warning_fg", "#e65100")}.get(
+                    status, theme.get("muted_fg", "#808080"))
 
-    # ---- 核心函数：同步高亮 ----
-    def update_highlight():
-        """根据 selection_state 更新每行的 tags，并强制刷新"""
-        for iid, checked in selection_state.items():
-            # 被搜索过滤掉的行不在树里，必须跳过，否则 tree.item 会抛 TclError
-            if not tree.exists(iid):
-                continue
-            current_tags = [t for t in tree.item(iid, "tags") if t != "highlight"]
-            # highlight 必须放最前（Treeview 里靠前的 tag 胜出），否则选中看不出来
-            new_tags = (["highlight"] + current_tags) if checked else current_tags
-            tree.item(iid, tags=tuple(new_tags))
-        # 强制刷新
-        tree.update_idletasks()
+    def _cell(row, key):
+        it = _row_item(row)
+        if it is None:
+            return ""
+        # item = (display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path)
+        if key == "选择":
+            return "☑" if selection_state.get(visible[row]) else "☐"
+        if key == "文件名":
+            return str(it[0])
+        if key == "状态":
+            return str(it[1])
+        if key == "类型":
+            return str(it[7])
+        if key == "Mod ID":
+            return str(it[5])
+        if key == "版本":
+            return str(it[6])
+        if key == "大小(KB)":
+            return str(it[3])
+        if key == "备注":
+            return str(it[4])
+        return ""
 
-    # ---- 交互事件（双击交给 Tk 原生 <Double-Button-1>，不再手写判定） ----
+    def _dot(row):
+        """状态列：彩色圆点 + 文字（新增=绿、更新=橙、目标独有=灰）。"""
+        it = _row_item(row)
+        st = str(it[1]) if it is not None else ""
+        return _status_color(st), st
 
-    def apply_toggle(row_id):
-        """切换并刷新勾选状态"""
-        current = selection_state.get(row_id, False)
-        new_state = not current
-        selection_state[row_id] = new_state
-        tree.set(row_id, "选择", "☑" if new_state else "☐")
-        update_highlight()
+    def _tags(row):
+        """行底色：勾选(选中蓝) 优先于 状态底色 —— 和原来 Treeview 的 tag 顺序一致。"""
+        it = _row_item(row)
+        if it is None:
+            return ()
+        st = {"新增": "new", "更新": "update"}.get(it[1], "target_only")
+        if selection_state.get(visible[row]):
+            return ("highlight", st)
+        return (st,)
 
-    def open_mod_detail(iid):
-        """打开指定 iid 行的模组详情"""
+    class _DiffModel:
+        row_count = staticmethod(lambda: len(visible))
+        cell = staticmethod(_cell)
+        dot = staticmethod(_dot)
+        tags = staticmethod(_tags)
+
+    table.set_model(_DiffModel())
+
+    # ---- 交互：单击切勾选，双击开详情（勾选状态不变） ----
+
+    def _click_row(row):
+        if not (0 <= row < len(visible)):
+            return
+        idx = visible[row]
+        selection_state[idx] = not selection_state.get(idx, False)
+        table.repaint_row(row)
+
+    def _double_row(row):
+        """双击：开详情，勾选保持不变。
+
+        第二下 Tk 只发 <Double-Button-1>（<Button-1> 不再触发），所以单击那次
+        切换要在这里撤回来 —— 和原 Treeview 版的逻辑一致。
+        """
+        if not (0 <= row < len(visible)):
+            return
+        idx = visible[row]
+        selection_state[idx] = not selection_state.get(idx, False)
+        table.repaint_row(row)
+        open_mod_detail(idx)
+
+    def open_mod_detail(idx):
+        """打开第 idx 条（all_data 下标）的模组详情。"""
         try:
-            idx = int(iid)
+            idx = int(idx)
         except (ValueError, TypeError):
             return
         if 0 <= idx < len(all_data):
             file_path = all_data[idx][8]
             if file_path and os.path.exists(file_path):
                 # 使用当前主题（切换主题后仍正确）
-                show_mod_detail(diff_win, file_path, getattr(diff_win, '_current_theme',
-                                                             theme))
+                show_mod_detail(diff_win, file_path,
+                                getattr(diff_win, '_current_theme', theme))
             else:
                 messagebox.showerror("错误", "找不到模组文件")
-
-    def toggle_selection(event):
-        """单击：切换勾选。"""
-        row_id = tree.identify_row(event.y)
-        if not row_id:
-            return
-        apply_toggle(row_id)
-
-    def on_double_click(event):
-        """双击：打开模组详情，勾选状态保持不变。
-
-        第二次按下 Tk 只发 <Double-Button-1>（<Button-1> 不再触发），所以这里把
-        单击那一下的勾选切换撤回来。
-        """
-        row_id = tree.identify_row(event.y)
-        if not row_id:
-            return
-        apply_toggle(row_id)
-        open_mod_detail(row_id)
-
-    tree.bind("<ButtonRelease-1>", toggle_selection)
-    tree.bind("<Double-Button-1>", on_double_click)
 
     # ---- 排序功能 ----
     sort_field = tk.StringVar(value="文件名")
@@ -327,53 +251,34 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                     break
         return hits
 
-    def sort_items():
-        _sorted_once[0] = True          # 之后表头才显示 ▲/▼
+    def refresh_rows():
+        """按当前搜索/排序条件重算「表格里显示哪些行」，然后刷新表格。
+
+        不动 `_sorted_once`：刚打开时数据保持扫描顺序，表头也不该标个 ▲/▼。
+        """
         key_func = get_sort_key(sort_field.get())
         # 先按搜索条件过滤，再排序：表格里只放命中项
-        visible = matched_indices()
-        visible.sort(key=lambda i: key_func(all_data[i]), reverse=sort_reverse.get())
-
-        # 清空 Treeview
-        for child in tree.get_children():
-            tree.delete(child)
-
-        # 重新插入
-        for new_pos, idx in enumerate(visible):
-            iid = str(idx)
-            item = all_data[idx]
-            display_name, status, real_name, size_kb, note, modid, version, mod_type, file_path = item
-            checked = selection_state.get(iid, False)
-            checked_char = "☑" if checked else "☐"
-            status_tag = {"新增": "new", "更新": "update"}.get(status, "target_only")
-            # highlight 放最前，不然会被状态色盖掉
-            tags = ["highlight", status_tag] if checked else [status_tag]
-            tree.insert("", "end", iid=iid, values=(
-                checked_char,
-                display_name,
-                status,
-                mod_type,
-                modid,
-                version,
-                size_kb,
-                note
-            ), tags=tuple(tags))
-
-        # 强制刷新
-        tree.update_idletasks()
-        sort_btn.set_text("▼ 降序" if sort_reverse.get() else "▲ 升序")
-        update_sort_indicators()
+        visible[:] = matched_indices()
+        if _sorted_once[0]:
+            visible.sort(key=lambda i: key_func(all_data[i]),
+                         reverse=sort_reverse.get())
+        table.refresh()
         # 底部统计：搜索过滤时提示「实际显示了几项」
         try:
-            shown = len(tree.get_children())
             head = f"总计 {len(all_data)} 项差异"
             if search_var.get().strip():
-                head += f"（已过滤，显示 {shown} 项）"
+                head += f"（已过滤，显示 {len(visible)} 项）"
             stat_lbl.configure(
                 text=f"{head} | 新增 {new_count} | 更新 {update_count} | "
                      f"目标独有 {target_only_count}")
         except Exception:
             pass
+
+    def sort_items():
+        _sorted_once[0] = True          # 之后表头才显示 ▲/▼
+        refresh_rows()
+        sort_btn.set_text("▼ 降序" if sort_reverse.get() else "▲ 升序")
+        update_sort_indicators()
 
     def toggle_sort_direction():
         sort_reverse.set(not sort_reverse.get())
@@ -434,17 +339,10 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         """把 ▲/▼ 标在当前排序列的表头上，点了哪列一眼能看出来。
 
         没手动排过序时不标箭头：刚打开时表格是扫描顺序，标个"▲ 文件名"会误导。
+        自绘表格自己画箭头（和「放大查看」一致）。
         """
-        cur = sort_field.get()
-        arrow = "▼" if sort_reverse.get() else "▲"
-        for col in columns:
-            txt = _HEAD.get(col, col)
-            if _sorted_once[0] and col == cur:
-                txt = f"{arrow} {txt}"
-            try:
-                tree.heading(col, text=txt)
-            except Exception:
-                pass
+        table.set_sort(sort_field.get() if _sorted_once[0] else None,
+                       sort_reverse.get())
 
     def sort_by_column(col):
         """点表头：换一列就按新列升序，点同一列则切换升降序。"""
@@ -457,9 +355,6 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
             sort_reverse.set(False)
         sort_items()
 
-    for _col in columns:
-        if _col in _SORT_COLS:
-            tree.heading(_col, command=lambda c=_col: sort_by_column(c))
     update_sort_indicators()
 
     # 右侧按钮区域
@@ -468,42 +363,26 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
     def select_by_status(*statuses):
         """按一个或多个状态组合全选（例如 ("新增","更新") 即排除"目标独有"）。
-        勾选状态记在 selection_state 里，与搜索过滤无关；
-        但只有出现在表格里的行才能去 set，被过滤掉的行必须跳过。"""
-        for iid, item in enumerate(all_data):
-            on = item[1] in statuses
-            key = str(iid)
-            selection_state[key] = on
-            if tree.exists(key):
-                tree.set(key, "选择", "☑" if on else "☐")
-        update_highlight()
+        勾选状态记在 selection_state 里，与搜索过滤无关 —— 被过滤掉的行一样会被应用。"""
+        for idx, item in enumerate(all_data):
+            selection_state[idx] = (item[1] in statuses)
+        table.refresh()
 
     def select_all():
-        for iid in selection_state.keys():
-            selection_state[iid] = True
-            if tree.exists(iid):
-                tree.set(iid, "选择", "☑")
-        update_highlight()
+        for idx in list(selection_state):
+            selection_state[idx] = True
+        table.refresh()
 
     def deselect_all():
-        for iid in selection_state.keys():
-            selection_state[iid] = False
-            if tree.exists(iid):
-                tree.set(iid, "选择", "☐")
-        update_highlight()
+        for idx in list(selection_state):
+            selection_state[idx] = False
+        table.refresh()
 
     def apply_selection():
         """应用所选：直接按 all_data 取值，不依赖表格行——
         这样即使某行正被搜索过滤掉，它仍然会被正确应用。"""
-        selected_files = []
-        for iid, checked in selection_state.items():
-            if not checked:
-                continue
-            try:
-                selected_files.append(all_data[int(iid)][0])
-            except Exception:
-                if tree.exists(iid):
-                    selected_files.append(tree.item(iid, "values")[1])
+        selected_files = [all_data[idx][0]
+                          for idx, checked in selection_state.items() if checked]
         if not selected_files:
             messagebox.showwarning("提示", "没有勾选任何模组")
             return
@@ -582,6 +461,8 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
     # ---- 窗口居中 ----
     diff_win.update_idletasks()
+    refresh_rows()               # 首次把数据填进表格（原来 Treeview 是建表时直接 insert）
+    table.fit_now()              # 显示前先按实际宽度排好列宽，避免二次闪烁
     cur_width = diff_win.winfo_width()
     cur_height = diff_win.winfo_height()
     x = (diff_win.winfo_screenwidth() // 2) - (cur_width // 2)
@@ -589,7 +470,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     diff_win.geometry(f"{cur_width}x{cur_height}+{x}+{y}")
     diff_win.deiconify()
     diff_win.focus_force()
-    tree.focus_set()
+    table.body.focus_set()
     return diff_win
 
 
@@ -602,7 +483,15 @@ def update_diff_theme(diff_win, theme, current_theme):
 
     def update_widgets(widget):
         try:
-            if isinstance(widget, tk.Label):
+            if isinstance(widget, VirtualTable):
+                # 自绘表格：底色/表头/行都要显式喂新主题；行底色是按语义算的，
+                # 得用建窗时留下的那套（apply_theme 自带的默认 tag 不够用）。
+                # 注意必须排在最前 —— 它是 tk.Frame 的子类，会被 tk.Frame 分支吃掉。
+                widget.apply_theme(theme)
+                maker = getattr(diff_win, "_make_tag_styles", None)
+                if maker is not None:
+                    widget.set_tag_styles(maker(theme))
+            elif isinstance(widget, tk.Label):
                 widget.configure(bg=theme["bg"], fg=theme["fg"])
             elif isinstance(widget, tk.Button):
                 text = widget.cget("text")
@@ -628,31 +517,6 @@ def update_diff_theme(diff_win, theme, current_theme):
                                 fieldbackground=theme["ttk_field_bg"],
                                 background=theme["ttk_bg"],
                                 foreground=theme["ttk_fg"])
-            elif isinstance(widget, ttk.Treeview):
-                style = ttk.Style()
-                style.configure("Diff.Treeview",
-                                background=theme["ttk_bg"],
-                                fieldbackground=theme["ttk_bg"],
-                                foreground=theme["ttk_fg"],
-                                selectbackground=theme["ttk_select_bg"],
-                                selectforeground=theme["ttk_select_fg"],
-                                bordercolor=theme["bg"])
-                style.configure("Diff.Treeview.Heading",
-                                background=theme["button_bg"],
-                                foreground=theme["fg"])
-                # 更新高亮 tag 颜色（和卡片视图同一套"选中蓝"）
-                widget.tag_configure("highlight",
-                                     background=theme.get("card_sel_bg", "#d4e6f8"),
-                                     foreground=theme.get("card_sel_fg", "#0d3d63"))
-                # 更新状态标签颜色
-                widget.tag_configure("new", background=theme["success_bg"],
-                                     foreground=theme["success_fg"])
-                widget.tag_configure("update", background=theme["warn_bg"],
-                                     foreground=theme["warn_fg"])
-                widget.tag_configure("target_only", background=theme["neutral_bg"],
-                                     foreground=theme["neutral_fg"])
-                # 强制刷新 Treeview
-                widget.update_idletasks()
             elif isinstance(widget, ttk.Scrollbar):
                 style = ttk.Style()
                 style_name = widget.cget("style")
