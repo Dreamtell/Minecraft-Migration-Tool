@@ -1764,6 +1764,30 @@ def set_window_icon(window):
             pass
 
 
+def _圆角矩形(尺寸, 半径, 填充色, 超采样=4):
+    """出一张抗锯齿的圆角矩形图。
+
+    PIL 的 rounded_rectangle 是硬边的（圆角处一格一格的），所以按 4 倍画完再用
+    LANCZOS 缩回来 —— 渐变按钮那套自绘也是这么做的。
+    """
+    宽, 高 = max(1, int(尺寸[0])), max(1, int(尺寸[1]))
+    大 = _PILImage.new("RGBA", (宽 * 超采样, 高 * 超采样), (0, 0, 0, 0))
+    _PILDraw.Draw(大).rounded_rectangle(
+        [0, 0, 宽 * 超采样 - 1, 高 * 超采样 - 1], radius=max(0.5, 半径 * 超采样),
+        fill=填充色)
+    return 大.resize((宽, 高), _PILImage.LANCZOS)
+
+
+def _圆角遮罩(尺寸, 半径, 超采样=4):
+    """同上的抗锯齿圆角，但出一张 L 通道遮罩（给 putalpha 用）。"""
+    宽, 高 = max(1, int(尺寸[0])), max(1, int(尺寸[1]))
+    大 = _PILImage.new("L", (宽 * 超采样, 高 * 超采样), 0)
+    _PILDraw.Draw(大).rounded_rectangle(
+        [0, 0, 宽 * 超采样 - 1, 高 * 超采样 - 1], radius=max(0.5, 半径 * 超采样),
+        fill=255)
+    return 大.resize((宽, 高), _PILImage.LANCZOS)
+
+
 class LiquidProgress(tk.Canvas):
     """一条"液态"进度条：从左往右填充，填充段上有一道柔光循环流过。
 
@@ -1790,6 +1814,8 @@ class LiquidProgress(tk.Canvas):
         self._fill = None           # 填充段（渐变 + 圆角），按宽度缓存
         self._fill_w = 0
         self._light = None          # 柔光带
+        self._mask = None           # 圆角遮罩（按填充宽度缓存）
+        self._mask_w = 0
         # 先塞一张 1x1 的透明占位图：Tk 的 create_image 不带 image= 会报错
         self._photo = _PILImageTk.PhotoImage(_PILImage.new("RGBA", (1, 1), (0, 0, 0, 0)))
         self._img = self.create_image(0, 0, anchor="nw", image=self._photo)
@@ -1856,14 +1882,20 @@ class LiquidProgress(tk.Canvas):
     def _track_img(self):
         if self._track is not None:
             return self._track
-        图 = _PILImage.new("RGBA", (self._cw, self._h), (0, 0, 0, 0))
-        _PILDraw.Draw(图).rounded_rectangle(
-            [0, 0, self._cw - 1, self._h - 1], radius=self._h / 2.0,
-            fill=self._rgb("entry_bg", "#e8e8e8"))
-        self._track = 图
-        return 图
+        self._track = _圆角矩形((self._cw, self._h), self._h / 2.0,
+                                self._rgb("entry_bg", "#e8e8e8"))
+        return self._track
+
+    def _round_mask(self, 宽):
+        """填充段的圆角遮罩（超采样 + LANCZOS 缩回来，边缘才不会有台阶）。"""
+        if self._mask is not None and self._mask_w == 宽:
+            return self._mask
+        self._mask = _圆角遮罩((宽, self._h), self._h / 2.0)
+        self._mask_w = 宽
+        return self._mask
 
     def _fill_img(self, 宽):
+        """填充段的底：横向渐变（左暗右亮）。**先不裁圆角** —— 高光要一起裁。"""
         if self._fill is not None and self._fill_w == 宽:
             return self._fill
         高 = self._h
@@ -1877,14 +1909,9 @@ class LiquidProgress(tk.Canvas):
         for x in range(宽):             # 先做 1px 的横向渐变再拉高，比逐像素铺满快得多
             t = x / max(1, 宽 - 1)
             px[x, 0] = tuple(int(a + (b - a) * t) for a, b in zip(c0, c1))
-        图 = 渐变.resize((宽, 高)).convert("RGBA")
-        遮罩 = _PILImage.new("L", (宽, 高), 0)
-        _PILDraw.Draw(遮罩).rounded_rectangle([0, 0, 宽 - 1, 高 - 1],
-                                              radius=高 / 2.0, fill=255)
-        图.putalpha(遮罩)
-        self._fill = 图
+        self._fill = 渐变.resize((宽, 高)).convert("RGBA")
         self._fill_w = 宽
-        return 图
+        return self._fill
 
     def _light_img(self):
         if self._light is not None:
@@ -1906,13 +1933,15 @@ class LiquidProgress(tk.Canvas):
         帧 = self._track_img().copy()
         if self._fraction > 0.002:
             宽 = max(self._h, int(self._cw * self._fraction))
-            帧.alpha_composite(self._fill_img(宽), (0, 0))
+            条 = self._fill_img(宽).copy()
             光 = self._light_img()
             光宽 = 光.width
             x = int(-光宽 + (宽 + 光宽) * self._flow)
             左, 右 = max(0, x), min(宽, x + 光宽)
-            if 右 > 左:                 # 柔光只贴在填充段里，不溢到空轨道上
-                帧.alpha_composite(光.crop((左 - x, 0, 右 - x, self._h)), (左, 0))
+            if 右 > 左:                 # 高光先贴，再和填充一起裁圆角（这样两端不会露方角）
+                条.alpha_composite(光.crop((左 - x, 0, 右 - x, self._h)), (左, 0))
+            条.putalpha(self._round_mask(宽))
+            帧.alpha_composite(条, (0, 0))
         try:
             self._photo = _PILImageTk.PhotoImage(帧)
             self.itemconfig(self._img, image=self._photo)

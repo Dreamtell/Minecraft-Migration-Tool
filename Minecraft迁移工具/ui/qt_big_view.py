@@ -993,7 +993,10 @@ class ScrollProgress(QtWidgets.QWidget):
         # 液态高光：一道柔光沿填充段循环流过（和锁屏红边一个路子）
         if self._job is not None and 宽 > 36.0:
             p.save()
-            p.setClipRect(填充.toRect())
+            # 按**圆角路径**裁，不是矩形：否则高光会在两端圆角外面露出方角
+            圆角路径 = QtGui.QPainterPath()
+            圆角路径.addRoundedRect(填充, 半径, 半径)
+            p.setClipPath(圆角路径)
             光宽 = max(48.0, 宽 * 0.38)
             x = 填充.left() - 光宽 + (宽 + 光宽) * self._flow
             光 = QtGui.QLinearGradient(x, 0.0, x + 光宽, 0.0)
