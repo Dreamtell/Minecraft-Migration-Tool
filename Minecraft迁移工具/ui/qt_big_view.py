@@ -1567,7 +1567,9 @@ class QtBigView(QtWidgets.QWidget):
         self.search.textChanged.connect(self._on_search)
 
         # ---- 摘要 ----
+        # 富文本：每段数字按语义单独上色（见 _update_summary），别再整行一个灰白
         self.summary = QtWidgets.QLabel("")
+        self.summary.setTextFormat(QtCore.Qt.RichText)
         lay.addWidget(self.summary)
 
         # ---- 内容：表格 / 卡片 ----
@@ -1670,7 +1672,12 @@ class QtBigView(QtWidgets.QWidget):
             "padding:0 10px;}"
             "QLineEdit:focus{border:2px solid %s;}"
             % (th.get("entry_bg"), th.get("fg"), th.get("muted_fg"), th.get("card_sel_bar")))
-        self.summary.setStyleSheet("color:%s;" % th.get("muted_fg"))
+        # 摘要行是富文本（每段数字单独染色），这里只管字号和行距，颜色写在 HTML 里
+        self.summary.setStyleSheet("color:%s;font-size:10pt;padding:2px 0;"
+                                  % th.get("muted_fg"))
+        # 摘要行是富文本，换主题后颜色写在 HTML 里，得立刻重出一遍（否则要等 200ms 那次刷新）
+        if hasattr(self, "_summary_text"):
+            self._update_summary()
         self.hint.setStyleSheet("color:%s;" % th.get("muted_fg"))
         self.hint_tag.setStyleSheet("color:%s;" % th.get("muted_fg"))
         # 表格配色走调色板，**绝不能**给它设 QSS（见 _style_view_palette 的注释）
@@ -2083,17 +2090,45 @@ class QtBigView(QtWidgets.QWidget):
         self._update_summary()
 
     def _update_summary(self):
+        """顶部摘要行：按语义上色（整行一个灰白色太素，看不出哪个数字要紧）。
+
+        QLabel 支持富文本，就把每段数字单独染色：
+        总数=主题前景色加粗、已选>0=选中蓝、存在>0=绿、缺失>0=红（为 0 的那个压成灰，
+        免得"存在 0"顶着绿色看着像好消息）、正在扫描=橙。主题换了也会跟着重出
+        （_apply_style 里会立刻调一次）。
+        """
         total, shown, sel, ok, miss = self.store.counts()
-        txt = "共 %d 项" % total
+        th = self.theme
+        fg = th.get("fg", "#eeeeee")
+        muted = th.get("muted_fg", "#9a9a9a")
+        accent = th.get("card_sel_bar", "#2f7fd1")
+        good = th.get("ok_fg") or th.get("log_success_fg", "#2e7d32")
+        bad = th.get("fail_fg", "#c62828")
+        warn = th.get("log_warning_fg", "#e65100")
+        dot = '<span style="color:%s;"> · </span>' % muted
+
+        def num(text, color, bold=False):
+            body = "<b>%s</b>" % text if bold else text
+            return '<span style="color:%s;">%s</span>' % (color, body)
+
+        def label(text, color=muted):
+            return '<span style="color:%s;">%s</span>' % (color, text)
+
+        parts = [num("共 %d 项" % total, fg, True)]
         if shown != total:
-            txt += " · 显示 %d 项" % shown
-        txt += " · 已选 %d 项" % sel
-        txt += " · 存在 %d / 缺失 %d" % (ok, miss)
+            # 搜索/过滤把显示数压下来了，值得单独提示一句
+            parts.append(num("显示 %d 项" % shown, accent if shown else muted, True))
+        parts.append(num("已选 %d 项" % sel, accent if sel else muted, bool(sel)))
+        parts.append(
+            label("存在 ") + num("%d" % ok, good if ok else muted, bool(ok))
+            + label(" / 缺失 ") + num("%d" % miss, bad if miss else muted, bool(miss)))
         if self.store.scanning:
-            txt += " · 检测中…"
-        if txt != self._summary_text:           # 内容没变就不 setText，省掉重绘
-            self._summary_text = txt
-            self.summary.setText(txt)
+            parts.append(label("检测中…", warn))
+
+        html = dot.join(parts)
+        if html != self._summary_text:          # 内容没变就不 setText，省掉重绘
+            self._summary_text = html
+            self.summary.setText(html)
         title = "🗂 放大查看 · %s（%d）" % (self.title_text, total)
         if title != getattr(self, "_title_shown", ""):
             self._title_shown = title

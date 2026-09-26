@@ -697,14 +697,22 @@ class MigrationGUI:
                 if bww.winfo_exists():
                     apply_theme_to_widget_tree(bww, self.theme)
                     alive_big.append(bww)
-                    # 汇总标签是自己管颜色（_keep_fg），主题切换时得手动补一次
-                    for attr, key in (("_sel_lbl", "ok_fg"), ("_stat_lbl", "muted_fg")):
-                        lbl = getattr(bww, attr, None)
-                        if lbl is not None:
-                            try:
-                                lbl.config(fg=self.theme.get(key, self.theme["fg"]))
-                            except Exception:
-                                pass
+                    # 汇总标签是自己管颜色（_keep_fg，按"有选中/有缺失"动态变色），
+                    # 主题切换时得让它们按新主题重算一遍，不能只喂一个固定色
+                    updater = getattr(bww, "_update_summary_ui", None)
+                    if updater is not None:
+                        try:
+                            updater()
+                        except Exception:
+                            pass
+                    else:
+                        for attr, key in (("_sel_lbl", "muted_fg"),):
+                            lbl = getattr(bww, attr, None)
+                            if lbl is not None:
+                                try:
+                                    lbl.config(fg=self.theme.get(key, self.theme["fg"]))
+                                except Exception:
+                                    pass
                     # 顺带同步该放大查看窗口打开的模组详情窗口
                     for detail_win in getattr(bww, '_mod_detail_windows', []):
                         if detail_win.winfo_exists():
@@ -5865,6 +5873,9 @@ class MigrationGUI:
                         big_scanning["flag"] = False
                         _set_busy_btns(False)
                         self._end_file_task()      # 扫描结束：解除"禁止迁移"
+                        # 一条结果都没发回来时（空清单/整单命中缓存）上面那批
+                        # got 一直是 False，收尾得自己刷一次，否则"检测中…"赖着不走
+                        update_summary()
                         if _pending_detect["flag"]:
                             # 「检测存在性」的提示放到这里：此时扫描已全部结束，
                             # 统计只读内存，不会像以前那样在点击时卡住界面。
@@ -5927,24 +5938,41 @@ class MigrationGUI:
         count_lbl.pack(side="left", padx=(0, _PAD * 2))
         # 选中/存在性汇总：这两个数字是"我现在到底选了多少、有多少缺失"，
         # 表格和卡片视图共用（改勾选的地方都会调 update_summary）。
+        # 颜色按语义走：有选中=选中蓝、存在>0=绿、缺失>0=红，为 0 的那个压成灰。
         sel_lbl = tk.Label(row_search, text="未选择", bg=self.theme["bg"],
-                           fg=self.theme.get("ok_fg", "#2e7d32"),
+                           fg=self.theme.get("muted_fg", "#808080"),
                            font=("微软雅黑", 9, "bold"))
         sel_lbl._keep_fg = True
         sel_lbl.pack(side="left", padx=(0, _PAD * 3))
-        stat_lbl = tk.Label(row_search, text="", bg=self.theme["bg"],
+        # 存在/缺失拆成两个标签，各自上色（原来一整条灰字，扫一眼分不出好坏）
+        exist_lbl = tk.Label(row_search, text="", bg=self.theme["bg"],
+                             fg=self.theme.get("muted_fg", "#808080"),
+                             font=("微软雅黑", 9, "bold"))
+        exist_lbl._keep_fg = True
+        exist_lbl.pack(side="left", padx=(0, _PAD))
+        miss_lbl = tk.Label(row_search, text="", bg=self.theme["bg"],
                             fg=self.theme.get("muted_fg", "#808080"),
+                            font=("微软雅黑", 9, "bold"))
+        miss_lbl._keep_fg = True
+        miss_lbl.pack(side="left", padx=(0, _PAD * 3))
+        scan_lbl = tk.Label(row_search, text="", bg=self.theme["bg"],
+                            fg=self.theme.get("log_warning_fg", "#e65100"),
                             font=("微软雅黑", 8))
-        stat_lbl._keep_fg = True
-        stat_lbl.pack(side="left", padx=(0, _PAD * 3))
+        scan_lbl._keep_fg = True
+        scan_lbl.pack(side="left")
         win._sel_lbl = sel_lbl
-        win._stat_lbl = stat_lbl
+        win._exist_lbl = exist_lbl
+        win._miss_lbl = miss_lbl
+        win._scan_lbl = scan_lbl
 
         def update_summary():
             """刷新"已选 N / 总数"和"存在/缺失"两个汇总（数字带滚动动画）。"""
             try:
                 total = len(entries)
                 picked = sum(1 for e in entries if checked.get(key_of(e)))
+                accent = self.theme.get("card_sel_bar", "#2f7fd1")
+                muted = self.theme.get("muted_fg", "#808080")
+                sel_lbl.config(fg=accent if picked else muted)
                 self._roll_counter(sel_lbl,
                                    f"已选 {picked} / {total} 项" if picked else "未选择")
                 exist = miss = 0
@@ -5954,10 +5982,14 @@ class MigrationGUI:
                         exist += 1
                     elif st == "❌ 缺失":
                         miss += 1
-                self._roll_counter(stat_lbl,
-                                   f"存在 {exist} · 缺失 {miss}" if (exist or miss) else "")
+                exist_lbl.config(fg=self.theme.get("ok_fg", "#2e7d32") if exist else muted)
+                self._roll_counter(exist_lbl, f"存在 {exist}" if total else "")
+                miss_lbl.config(fg=self.theme.get("fail_fg", "#c62828") if miss else muted)
+                self._roll_counter(miss_lbl, f"· 缺失 {miss}" if total else "")
+                scan_lbl.config(text="检测中…" if big_scanning["flag"] else "")
             except Exception:
                 pass
+        win._update_summary_ui = update_summary
         update_summary()
         # 搜索（模组区/Config区都可用）：单独一行，可以占满宽度，长名字也能看全
         tk.Label(row_search, text="搜索:", bg=self.theme["bg"],
