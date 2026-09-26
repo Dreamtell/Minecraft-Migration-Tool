@@ -425,7 +425,9 @@ class MigrationGUI:
         # _migration_running 还没置位 —— 所以要有这个更早的标记挡住第二次。
         self._starting = False
         self.diff_window = None
-        self.diff_qt = None          # PySide6 版差异窗口（优先用它，见 _open_diff_window）
+        self.diff_qt = None          # 进程内 Qt 差异窗口（老路径，现在默认走子进程）
+        self._qt_hosts = {}          # Qt 窗口的独立子进程：kind -> {proc, req, res, cmd, err, ...}
+        self._qt_host_poll = None
         self._scanning = False
         # 其它"动文件"的任务（检查存在性/导入变更日志/回滚/大窗口检测…）跑起来时登记名字，
         # 期间禁止启动迁移（模拟运行也禁），避免两个任务同时改同一批文件。
@@ -1899,23 +1901,33 @@ class MigrationGUI:
     # 放大查看：PySide6 试点窗口（Tk 主窗口 + root.after 驱动 Qt 事件循环）
     # ------------------------------------------------------------------ #
     def _qt_available(self):
-        """PySide6 是否可用。返回 (bool, 给用户看的原因)。"""
+        """PySide6 是否可用。返回 (bool, 给用户看的原因)。
+
+        **只探测、不 import**：主进程一旦 import 了 PySide6 就等于把 Qt 载了进来，
+        而现在的架构是"Qt 窗口跑在 `ui/qt_host.py` 子进程里"，主进程要保持干净
+        （否则又回到"Tk 与 Qt 共享主线程"那条老路）。所以这里用 find_spec 探一下。
+        """
         if not getattr(self, "qt_enabled", True):
             return (False, "已在设置里关掉 PySide6（纯 Tk 模式）：主进程不再加载 Qt。")
         cached = getattr(self, "_qt_ok_cache", None)
         if cached is not None:
             return cached
         try:
-            from ui import qt_big_view as _q      # 模块顶层 import PySide6
-            _q.available()
-            reason = "窗口是 Qt 无边框圆角窗；关掉它不会影响主窗口。"
-            cached = (True, reason)
+            import importlib.util
+            for cand in (Path(__file__).resolve().parent.parent / "_qt",
+                         Path(__file__).resolve().parent.parent.parent / "_qt"):
+                try:
+                    if cand.is_dir() and str(cand) not in sys.path:
+                        sys.path.insert(0, str(cand))
+                except Exception:
+                    pass
+            if importlib.util.find_spec("PySide6") is not None:
+                cached = (True, "Qt 窗口由独立子进程渲染；它崩了也不会带走主程序。")
+                self._qt_ok_cache = cached
+                return cached
+            return (False, "装好 PySide6 后可切到 Qt 版窗口：pip install PySide6")
         except Exception as e:
-            # 失败不缓存：用户中途 pip install 了 PySide6，下次打开就能直接用上
-            return (False, "装好 PySide6 后可切到试点窗口：pip install PySide6"
-                           f"（{type(e).__name__}: {e}）")
-        self._qt_ok_cache = cached
-        return cached
+            return (False, "PySide6 探测失败（%s: %s）" % (type(e).__name__, e))
 
     def _set_qt_enabled(self, value):
         """总开关：关掉之后主进程完全不碰 Qt（放大查看/差异窗口都走 Tk 版）。
@@ -2051,47 +2063,35 @@ class MigrationGUI:
             pass
 
     def _open_big_view_qt(self, source_text, title):
-        """用 PySide6 打开"放大查看"。返回 True 表示已接管。"""
+        """放大查看的 Qt 版 —— **跑在独立子进程里**（`ui/qt_host.py`）。
+
+        返回 True 表示已接管。
+        """
         ok, why = self._qt_available()
         if not ok:
             self.log("ℹ " + why, level="INFO", save=False)
             return False
-        try:
-            from ui import qt_big_view as Q
-        except Exception as e:
-            self.log(f"⚠ 无法加载 PySide6 窗口（{e}），已回退到经典窗口", level="ERROR", save=False)
-            return False
         is_mod = "模组" in title or source_text is getattr(self, "mod_text", None)
-        entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines() if ln.strip()]
+        entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines()
+                   if ln.strip()]
         sp = self.source_path.get().strip() if hasattr(self, "source_path") else ""
-        try:
-            view = Q.show_big_view(
-                entries, is_mod, sp, title, self.theme,
-                online_tags=bool(getattr(self, "online_tags", False)),
-                cards=(getattr(self, "big_view_view", "table") == "cards"),
-                hooks={"write_back": lambda texts: self._qt_apply_entries(source_text, texts),
-                       # 让 Qt 侧把"改 Tk 控件"和"逐帧动画"的活儿都丢回 Tk 的 after：
-                       # 从 Qt 的 processEvents 回调里直接改 Tk 控件会让两套消息循环打架
-                       # （实测退场动画结束后删除时会崩）。
-                       "defer": lambda fn: self.root.after(0, fn),
-                       "after": lambda ms, fn: self.root.after(ms, fn),
-                       "after_cancel": lambda job: self.root.after_cancel(job),
-                       # 放大窗口里也要能"定位错误"：把主界面记下的出错条目给它
-                       "failed": lambda: list(getattr(self, "_failed_items", []))})
-        except Exception as e:
-            self.log(f"⚠ PySide6 窗口创建失败：{e}", level="ERROR", save=False)
+        if self._qt_host_alive("bigview"):
+            self._send_qt_host_command("raise", kind="bigview")
+            return True
+        载荷 = {"entries": entries, "is_mod": is_mod, "source_path": sp,
+                "title": title,
+                "online_tags": bool(getattr(self, "online_tags", False)),
+                "cards": (getattr(self, "big_view_view", "table") == "cards"),
+                "failed": [list(x) for x in getattr(self, "_failed_items", [])]}
+        if not self._start_qt_host("bigview", 载荷, source_text=source_text):
             return False
-        if not hasattr(self, "_qt_views"):
-            self._qt_views = []
-        self._qt_views.append(view)
-        if not self._qt_views[:-1]:
-            self._pump_qt()          # 首个窗口才需要启动泵
-        self.log(f"🗂 已打开 PySide6 试点窗口：{title}（{len(entries)} 项）", level="INFO", save=False)
         try:
             from utils.helpers import trace_line
-            trace_line("打开 Qt 放大查看 %s rows=%d" % (title, len(entries)))
+            trace_line("打开 Qt 放大查看（子进程）%s rows=%d" % (title, len(entries)))
         except Exception:
             pass
+        self.log(f"🗂 已打开 Qt 放大查看：{title}（{len(entries)} 项，独立进程）",
+                 level="INFO", save=False)
         return True
 
     def _toggle_online_tags(self):
@@ -4220,7 +4220,10 @@ class MigrationGUI:
 
     # ---------- 扫描相关 ----------
     def action_scan_mod_diff(self):
-        # 差异窗口已经开着就直接叫回来（Qt 版和 Tk 版各判断一次）
+        # 差异窗口已经开着就直接叫回来（Qt 子进程 / 进程内 Qt / Tk 各判断一次）
+        if self._qt_host_alive("diff"):
+            self._send_qt_host_command("raise", kind="diff")
+            return
         qt_diff = getattr(self, "diff_qt", None)
         if qt_diff is not None and qt_diff.is_alive():
             try:
@@ -4356,10 +4359,13 @@ class MigrationGUI:
         self._open_diff_window(data, apply_callback)
 
     def _open_diff_window(self, data, apply_callback):
-        """开差异窗口：优先 PySide6 版（和「放大查看」同一套自绘控件）。
+        """开差异窗口。
 
-        Tk 版（VirtualTable + card_list）留着当回退：PySide6 装不上或被策略挡住时，
-        功能不能没有。返回句柄（Qt 控件或 Tk 窗口）。
+        Qt 版**跑在独立子进程里**（`ui/qt_host.py`）：主进程一行 Qt 都不碰。
+        之前是在主进程里用"Tk 的 after 驱动 processEvents"，用户机器上反复触发致命的
+        `PyEval_RestoreThread ... the GIL is released`（崩点全在 Qt 窗口的操作路径上：
+        打开窗口、切卡片、开详情），几轮加固都没根治 —— 根子是"两个 GUI 库共享主线程"。
+        子进程建不起来时才回退到进程内 Tk 版（`show_diff_window`），功能不能少。
         """
         self.diff_qt = None
         self.diff_window = None
@@ -4369,39 +4375,166 @@ class MigrationGUI:
             self.diff_window = show_diff_window(self.root, data, self.theme,
                                                 self.current_theme, apply_callback)
             return self.diff_window
-        try:
-            from ui import qt_diff_view as QD
-            if QD.available():
-                def _apply(files):
-                    # 回调里要改 Tk 清单：必须回到 Tk 的 after 里做，
-                    # 从 Qt 的 processEvents 回调里直接改会让两套消息循环打架
-                    self.root.after(0, lambda: apply_callback(files))
-
-                view = QD.show_diff_view(
-                    data, self.theme, apply_callback=_apply,
-                    hooks={"defer": lambda fn: self.root.after(0, fn),
-                           "after": lambda ms, fn: self.root.after(ms, fn),
-                           "after_cancel": lambda job: self.root.after_cancel(job)})
-                if not hasattr(self, "_qt_views"):
-                    self._qt_views = []
-                self._qt_views.append(view)
-                if not self._qt_views[:-1]:
-                    self._pump_qt()      # 首个 Qt 窗口才需要启动泵（多个泵会打架）
-                self.diff_qt = view
-                try:
-                    from utils.helpers import trace_line
-                    trace_line("打开 Qt 差异窗口 rows=%d" % len(data))
-                except Exception:
-                    pass
-                self.log(f"🗂 已打开 PySide6 差异窗口（{len(data)} 项）",
-                         level="INFO", save=False)
-                return view
-        except Exception as e:
-            self.log(f"⚠ 无法加载 PySide6 差异窗口（{e}），已回退到经典窗口",
-                     level="ERROR", save=False)
+        if self._start_qt_host("diff", {"data": data}, apply_callback):
+            try:
+                from utils.helpers import trace_line
+                trace_line("打开 Qt 差异窗口（子进程）rows=%d" % len(data))
+            except Exception:
+                pass
+            self.log(f"🗂 已打开 Qt 差异窗口（{len(data)} 项，独立进程）",
+                     level="INFO", save=False)
+            return None
+        self.log("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口", level="WARNING", save=False)
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback)
         return self.diff_window
+
+    # ---------- Qt 窗口的独立子进程宿主 ----------
+    def _qt_host_alive(self, kind):
+        """某个 Qt 窗口的子进程还活着吗。"""
+        信息 = (getattr(self, "_qt_hosts", None) or {}).get(kind)
+        if not 信息:
+            return False
+        proc = 信息.get("proc")
+        return proc is not None and proc.poll() is None
+
+    def _start_qt_host(self, kind, payload, apply_callback=None, source_text=None):
+        """把 Qt 窗口丢到独立子进程里跑；主进程只写请求文件、轮询结果文件。
+
+        已经有一个同类窗口在跑就只写一条 "raise" 命令把它叫回来（不重复开窗）。
+        """
+        try:
+            import subprocess
+            import tempfile
+            if self._qt_host_alive(kind):
+                self._send_qt_host_command("raise", kind=kind)
+                return True
+            根 = Path(__file__).resolve().parent.parent
+            临时 = Path(tempfile.gettempdir()) / ("mctool_qt_%d" % os.getpid())
+            临时.mkdir(parents=True, exist_ok=True)
+            序号 = getattr(self, "_qt_host_seq", 0) + 1
+            self._qt_host_seq = 序号
+            req = 临时 / ("%s%d.req.json" % (kind, 序号))
+            res = 临时 / ("%s%d.res.json" % (kind, 序号))
+            cmd = 临时 / ("%s%d.cmd.json" % (kind, 序号))
+            err = 临时 / ("%s%d.log" % (kind, 序号))
+            for p in (res, cmd, err):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+            请求 = dict(payload)
+            请求.update({"kind": kind, "theme": self.theme,
+                         "result": str(res), "command": str(cmd)})
+            req.write_text(json.dumps(请求, ensure_ascii=False), encoding="utf-8")
+            if getattr(sys, "frozen", False):        # 打包成 exe 后没有 app.py 可传
+                命令 = [sys.executable, "--qt-host", str(req)]
+            else:
+                命令 = [sys.executable, str(根 / "app.py"), "--qt-host", str(req)]
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            errf = open(err, "wb")                   # 子进程的输出留档，崩了能看
+            proc = subprocess.Popen(命令, cwd=str(根), creationflags=flags,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=errf, stderr=subprocess.STDOUT)
+            if not hasattr(self, "_qt_hosts"):
+                self._qt_hosts = {}
+            self._qt_hosts[kind] = {"proc": proc, "req": req, "res": res, "cmd": cmd,
+                                    "err": err, "apply_cb": apply_callback,
+                                    "source_text": source_text}
+            if not getattr(self, "_qt_host_poll", None):
+                self._poll_qt_host()
+            return True
+        except Exception as e:
+            self.log(f"⚠ 无法启动 Qt 子进程：{e}", level="ERROR", save=False)
+            return False
+
+    def _send_qt_host_command(self, cmd, kind=None):
+        """给 Qt 子进程写一条命令（目前只有 raise = 把窗口叫到前面）。"""
+        try:
+            主机们 = getattr(self, "_qt_hosts", None) or {}
+            目标 = [kind] if kind else list(主机们)
+            for k in 目标:
+                路径 = (主机们.get(k) or {}).get("cmd")
+                if 路径 is None:
+                    continue
+                with open(路径, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"cmd": cmd}) + "\n")
+        except Exception:
+            pass
+
+    def _poll_qt_host(self):
+        """Tk 主线程里轮询各个子进程的结果文件（150ms 一次）。"""
+        self._qt_host_poll = None
+        主机们 = getattr(self, "_qt_hosts", None) or {}
+        if not 主机们:
+            return
+        for kind, 信息 in list(主机们.items()):
+            proc = 信息.get("proc")
+            res = 信息.get("res")
+            if res is not None and res.exists():
+                行们 = []
+                try:
+                    行们 = res.read_text(encoding="utf-8").splitlines()
+                    res.unlink()
+                except Exception:
+                    行们 = []
+                for line in 行们:
+                    try:
+                        消息 = json.loads(line)
+                    except Exception:
+                        continue
+                    self._handle_qt_host(kind, 信息, 消息)
+            if proc is not None and proc.poll() is not None:
+                code = proc.returncode
+                主机们.pop(kind, None)
+                if code not in (0, None):
+                    err = 信息.get("err")
+                    尾巴 = ""
+                    try:
+                        if err is not None and err.exists():
+                            尾巴 = err.read_text(encoding="utf-8",
+                                                 errors="ignore")[-400:]
+                    except Exception:
+                        pass
+                    self.log("⚠ Qt 窗口进程异常退出（%s）%s" % (code, 尾巴),
+                             level="ERROR", save=False)
+        if 主机们:
+            self._qt_host_poll = self.root.after(150, self._poll_qt_host)
+
+    def _handle_qt_host(self, kind, 信息, 消息):
+        """子进程报上来的动作 —— 这里已经在 Tk 的 after 上下文里，改 Tk 是安全的。"""
+        动作 = 消息.get("action")
+        if 动作 == "apply":
+            cb = 信息.get("apply_cb")
+            if cb is not None:
+                try:
+                    cb(list(消息.get("files") or []))
+                except Exception:
+                    pass
+        elif 动作 == "write_back":
+            st = 信息.get("source_text")
+            if st is not None:
+                try:
+                    self._qt_apply_entries(st, list(消息.get("entries") or []))
+                except Exception:
+                    pass
+
+    def stop_qt_host(self):
+        """退出前把所有 Qt 子进程收掉。"""
+        poll, self._qt_host_poll = getattr(self, "_qt_host_poll", None), None
+        if poll is not None:
+            try:
+                self.root.after_cancel(poll)
+            except Exception:
+                pass
+        主机们, self._qt_hosts = getattr(self, "_qt_hosts", None) or {}, {}
+        for 信息 in 主机们.values():
+            proc = 信息.get("proc")
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
 
     # ---------- 迁移 ----------
     def _busy_task_name(self):

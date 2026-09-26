@@ -119,13 +119,20 @@
   又是那个 `PyEval_RestoreThread` 致命错误。现在"查出已关闭的对话框"和"真正释放"分成两步，
   释放统一丢回 Tk 的 after（`hooks["defer"]`）。顺带给详情窗做了**单实例**：同一个模组
   连点两下 ℹ 只把已有窗口抬到前面，不再堆窗口（用户实际就是连点两下崩的）
+- **Qt 窗口跑在独立子进程里**（`ui/qt_host.py` + `python app.py --qt-host <req.json>`）：
+  这是那个反复出现的 GIL 致命错误的**最终解法**。Tk 和 Qt 都要求"GUI 跑在主线程"，
+  共享主线程就只能交替处理事件（Tk 的 `after` 里 `processEvents`），那套组合在用户机器上
+  崩了 7 次（崩点全在 Qt 窗口的操作路径：打开窗口 / 切卡片视图 / 打开详情）——
+  前后试过托盘线程单线程化、Qt 对象主线程 `deleteLater`、对话框延后释放、建窗也 defer
+  回 Tk，都没根治，说明问题在架构本身。现在：**主进程一行 Qt 都不跑**（`sys.modules` 里
+  没有 PySide6/shiboken6，验证脚本有断言），子进程里只有 Qt、用正常的 `app.exec()` 主循环。
+  主进程写请求 JSON、用 Tk 的 `after` 轮询结果 JSON（150ms），"应用所选/清单写回"都在
+  Tk 的 after 上下文里执行。附带好处：**Qt 窗口就算崩了也带不走主程序**。
+  打开同一种窗口时只写一条 `raise` 命令把它叫回来，不重复开窗；退出前统一 `terminate`
 - **两个 Qt 窗口都能切回 Tk**（设置 →「🗂 放大查看」）：`big_view_backend` 和
   `diff_backend` 都是 `qt` / `tk` 二选一；上面还有一个**总开关「启用 PySide6 窗口」**
-  （`qt_enabled`）—— 关掉之后**主进程完全不再加载 Qt**（连启动闪屏都不碰，
-  `_qt_available()` 直接返回 False，放大查看/差异窗口都走 Tk 版）。
-  验证脚本断言"`sys.modules` 里没有 PySide6 / shiboken6"。
-  遇到那个 GIL 致命错误时先关它：如果不再崩，问题就锁定在"Tk 与 Qt 同进程"；
-  如果还崩，就与 Qt 无关，得往 PIL / pywin32 / Tk 那边查
+  （`qt_enabled`）—— 关掉之后连子进程都不开（放大查看/差异窗口都走 Tk 版，
+  连启动闪屏都不碰 Qt）
 - **崩溃现场会落文件**：`app.py` 启动时 `faulthandler.enable(..., all_threads=True)`
   写到 `~/.minecraft_migrate_fatal.log`（默认只打 stderr，GUI 启动经常看不到）；
   另外 `~/.minecraft_migrate_clicks.log` 记着关键操作（打开详情/开关 Qt 窗口等）的时间线，
@@ -513,6 +520,19 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **Qt 窗口搬进独立子进程 —— 那个 GIL 致命错误的最终解法**。第七次崩溃的日志最后一行是
+  `差异窗口 切到卡片`（细粒度追踪生效），加上前几次的"打开窗口 / 打开详情"，可以确认
+  崩点全在 Qt 窗口的操作路径上。既然进程内加固（托盘单线程化、主线程 deleteLater、
+  对话框延后释放、建窗 defer）都治不住，就换架构：新增 `ui/qt_host.py`，Qt 窗口由
+  `python app.py --qt-host <req.json>` 子进程渲染，主进程**一行 Qt 都不跑**
+  （`sys.modules` 里没有 PySide6/shiboken6，有断言），子进程用正常的 `app.exec()` 主循环。
+  主进程写请求 / 轮询结果（Tk 的 after，150ms），"应用所选""清单写回"都在 Tk 上下文里执行；
+  同类窗口已开就写 `raise` 叫回来；退出时统一 terminate。
+  验证脚本 `_dctest/验证Qt子进程.py`：两个窗口都真的建出来了（按标题 `FindWindow` 找到句柄）、
+  结果回传、单实例、收尾干净。附带好处：**Qt 窗口崩了也带不走主程序**
+- **`_qt_available()` 改成只探测不 import**：以前它为了检查可用性会 `import qt_big_view`，
+  等于把 PySide6 拉进主进程 —— 那"Qt 只在子进程里跑"就白搭了。现在用
+  `importlib.util.find_spec` 探一下就行
 - **加了"纯 Tk 模式"总开关来切分问题域**（设置 →「🗂 放大查看」→「启用 PySide6 窗口」，
   配置键 `qt_enabled`）。关掉后**主进程完全不加载 Qt**：`_qt_available()` 直接返回 False、
   放大查看/差异窗口走 Tk 版、连启动闪屏都不去 `import splash_qt`（那一步会顺带把 PySide6

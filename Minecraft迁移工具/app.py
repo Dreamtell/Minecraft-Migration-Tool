@@ -16,6 +16,16 @@ if "--splash-child" in sys.argv:
         sys.exit(2)
     sys.exit(run_child())
 
+# ---- Qt 窗口的子进程入口 ----
+# 关键：这条分支要**在 import tkinter 之外**先跑掉，子进程里只有 Qt、没有 Tk
+# （见 ui/qt_host.py 顶部：两个 GUI 库共享主线程会出致命的 GIL 错误）。
+if "--qt-host" in sys.argv:
+    try:
+        from ui.qt_host import run_host
+    except Exception:
+        sys.exit(2)
+    sys.exit(run_host(sys.argv))
+
 from tendo import singleton
 from ui.main_window import MigrationGUI
 from ui.dialogs import ask_close_action
@@ -425,6 +435,10 @@ def main():
     root.mainloop()
 
     # 主循环结束（不管从哪条路退出）：统一收尾
+    try:
+        app.stop_qt_host()          # Qt 窗口子进程不能留在后台
+    except Exception:
+        pass
     if tray is not None:
         try:
             tray.stop()
