@@ -882,29 +882,31 @@ class CardModel(QtCore.QAbstractListModel):
 
 
 class ScrollProgress(QtWidgets.QWidget):
-    """列表上方那条细进度条：整条 = 全部内容，亮的那一段 = 当前看到的一屏。
+    """列表上方那条细进度条：**从左往右填充**，填到哪儿就是看到哪儿（到底 100%）。
 
-    为什么不直接用 `QProgressBar`：那个自带百分比文字和厚边框，想要 6px 细条得拿 QSS
-    一点点抠掉；自绘反而更短，颜色也能直接跟着主题走。
+    为什么不直接用 `QProgressBar`：那个自带百分比文字和厚边框（还有动画/忙碌态），
+    想要 6px 细条得拿 QSS 一点点抠掉；自绘反而更短，颜色也能直接跟着主题走。
+    百分比数字由旁边那个小 QLabel 显示（见 _build 里的 scroll_pct）。
     """
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = dict(theme)
-        self._pos = 0.0                     # 视口起点（0..1）
-        self._span = 1.0                    # 视口长度（占全部的比例）
+        self._fill = 1.0                    # 0..1：已经滑过的比例
         self.setFixedHeight(6)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
     def set_range(self, value, maximum, page):
-        """按滚动条的值算位置与长度（内容不满一屏时整条都是亮的）。"""
-        总 = float(maximum) + float(page)
-        if 总 <= 0 or float(page) >= 总:
-            self._pos, self._span = 0.0, 1.0
+        """按滚动条算进度：顶部 0%、滑到底 100%。返回填充比例。
+
+        内容不满一屏（maximum 为 0）时直接满格 —— 屏幕上摆着的就是全部内容。
+        """
+        if maximum <= 0:
+            self._fill = 1.0
         else:
-            self._pos = max(0.0, min(1.0, float(value) / 总))
-            self._span = max(0.015, min(1.0, float(page) / 总))
+            self._fill = max(0.0, min(1.0, float(value) / float(maximum)))
         self.update()
+        return self._fill
 
     def set_theme(self, theme):
         self.theme = dict(theme)
@@ -920,10 +922,10 @@ class ScrollProgress(QtWidgets.QWidget):
         p.setPen(QtCore.Qt.NoPen)
         p.setBrush(QtGui.QColor(th.get("entry_bg", "#e8e8e8")))          # 轨道
         p.drawRoundedRect(r, 半径, 半径)
-        p.setBrush(QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))      # 当前这一屏
-        x = r.left() + r.width() * self._pos
-        宽 = max(8.0, r.width() * self._span)
-        p.drawRoundedRect(QtCore.QRectF(x, r.top(), 宽, 高), 半径, 半径)
+        if self._fill > 0.0:
+            p.setBrush(QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))  # 已经滑过的部分
+            宽 = max(6.0, r.width() * self._fill)
+            p.drawRoundedRect(QtCore.QRectF(r.left(), r.top(), 宽, 高), 半径, 半径)
 
 
 class TableDelegate(QtWidgets.QStyledItemDelegate):
@@ -1744,9 +1746,17 @@ class QtBigView(QtWidgets.QWidget):
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(self.table)
         self.stack.addWidget(self.cards)
-        # 列表上方的滚动进度条：整条 = 全部内容，亮段 = 当前看到的一屏
+        # 列表上方的滚动进度条：从左往右填充，右边跟一个百分比数字
         self.scroll_progress = ScrollProgress(th, self)
-        lay.addWidget(self.scroll_progress)
+        self.scroll_pct = QtWidgets.QLabel("100%")
+        self.scroll_pct.setFixedWidth(44)
+        self.scroll_pct.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        滚动行 = QtWidgets.QHBoxLayout()
+        滚动行.setContentsMargins(2, 0, 2, 0)
+        滚动行.setSpacing(8)
+        滚动行.addWidget(self.scroll_progress, 1)
+        滚动行.addWidget(self.scroll_pct)
+        lay.addLayout(滚动行)
         lay.addWidget(self.stack, 1)
         for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
             sb.valueChanged.connect(self._update_scroll_progress)
@@ -1806,6 +1816,7 @@ class QtBigView(QtWidgets.QWidget):
         self.hint_tag.setStyleSheet("color:%s;" % th.get("muted_fg"))
         if getattr(self, "scroll_progress", None) is not None:
             self.scroll_progress.set_theme(th)
+            self.scroll_pct.setStyleSheet("color:%s;font-size:9pt;" % th.get("muted_fg"))
             self._update_scroll_progress()
         # 表格配色走调色板，**绝不能**给它设 QSS（见 _style_view_palette 的注释）
         _style_view_palette(self.table, th)
@@ -2397,10 +2408,11 @@ class QtBigView(QtWidgets.QWidget):
         return self.cards if self.stack.currentIndex() == 1 else self.table
 
     def _update_scroll_progress(self):
-        """按当前视图的滚动条更新顶部那条进度条（内容不满一屏时它就是整条亮的）。"""
+        """按当前视图的滚动条更新顶部进度条与右边那个百分比。"""
         try:
             sb = self._active_view().verticalScrollBar()
-            self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep())
+            比例 = self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep())
+            self.scroll_pct.setText("%d%%" % round(比例 * 100))
         except Exception:
             trace_exc("qt_big_view", "更新滚动进度")
 
