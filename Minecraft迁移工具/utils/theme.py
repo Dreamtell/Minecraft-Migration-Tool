@@ -56,8 +56,8 @@ LIGHT_THEME = {
     # "数据"文本配色：界面上一眼分得清"哪个是数据、哪个是说明"
     #   data_fg     路径、文件名、存档名这类主体数据
     #   data_num_fg 数量、条数、大小这类数字
-    #   data_id_fg  Mod ID、版本、哈希这类标识符
-    "data_fg": "#1565c0", "data_num_fg": "#6a1b9a", "data_id_fg": "#00695c"
+    #   data_id_fg  Mod ID、版本、世界名这类标识符（绿色）
+    "data_fg": "#1565c0", "data_num_fg": "#6a1b9a", "data_id_fg": "#2e7d32"
 }
 
 DARK_THEME = {
@@ -112,7 +112,7 @@ DARK_THEME = {
     "log_error_fg": "#ff6b6b", "log_success_fg": "#7ee787",
     "log_simulate_fg": "#64b5f6",
     # "数据"文本配色（深色主题用亮一档的同类色）
-    "data_fg": "#79b8ff", "data_num_fg": "#d2a8ff", "data_id_fg": "#56d4c4"
+    "data_fg": "#79b8ff", "data_num_fg": "#d2a8ff", "data_id_fg": "#7ee787"
 }
 
 
