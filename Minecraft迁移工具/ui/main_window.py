@@ -440,6 +440,8 @@ class MigrationGUI:
         self._saved_logs = []
         self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
         self._last_log_key = None
+        self._failed_items = []          # 出错的清单条目：(页索引, 条目名, 页名)
+        self._fail_cursor = 0            # 「定位错误」跳到第几个了
         self._stage("就绪")
 
     def _stage(self, text=""):
@@ -573,6 +575,69 @@ class MigrationGUI:
         "SIMULATE": "log_simulate_fg",
     }
     _LOG_TAGS = tuple(_LOG_COLOR_KEYS)
+
+    def _mark_failed_from_log(self, 文本):
+        """日志里报错时，去三个清单里找出被提到的条目：标红 + 记进失败列表。
+
+        和双击定位同一个思路 —— 不解析日志格式，拿清单条目名反查，谁被提到谁就是出错的。
+        """
+        if not 文本:
+            return
+        for 索引, 框, 页名 in ((0, self.mod_text, "模组清单"),
+                             (1, self.config_text, "config 清单"),
+                             (2, self.extra_text, "其它文件")):
+            try:
+                条目 = 框.get("1.0", "end-1c").splitlines()
+            except Exception:
+                continue
+            for i, 条 in enumerate(条目, start=1):
+                名 = Path(条.strip()).name
+                if not 名 or 名 not in 文本:
+                    continue
+                try:
+                    框.tag_add("migrate_fail", "%d.0" % i, "%d.end" % i)
+                except Exception:
+                    pass
+                if all(名 != x[1] for x in self._failed_items):
+                    self._failed_items.append((索引, 名, 页名))
+                    self._refresh_fail_button()
+                return
+
+    def _clear_fail_marks(self):
+        """清掉上一次留下的"出错标红"（每次开始新迁移时调）。"""
+        self._failed_items = []
+        self._fail_cursor = 0
+        for 框 in (self.mod_text, self.config_text, self.extra_text):
+            try:
+                框.tag_remove("migrate_fail", "1.0", "end")
+            except Exception:
+                pass
+        self._refresh_fail_button()
+
+    def _refresh_fail_button(self):
+        n = len(self._failed_items)
+        try:
+            self.btn_fail_locate.set_text("📍 定位错误" + (" (%d)" % n if n else ""))
+        except Exception:
+            pass
+
+    def _goto_next_fail(self):
+        """在清单里循环跳到下一个出错的条目（比翻日志、双击都快）。"""
+        if not self._failed_items:
+            messagebox.showinfo("定位错误", "这次没有出错的条目。", parent=self.root)
+            return
+        索引, 名, 页名 = self._failed_items[self._fail_cursor % len(self._failed_items)]
+        self._fail_cursor = (self._fail_cursor + 1) % len(self._failed_items)
+        框 = (self.mod_text, self.config_text, self.extra_text)[索引]
+        try:
+            条目 = 框.get("1.0", "end-1c").splitlines()
+        except Exception:
+            条目 = []
+        for i, 条 in enumerate(条目, start=1):
+            if Path(条.strip()).name == 名:
+                self._goto_list_line(索引, 框, i, 名, 页名)
+                return
+        messagebox.showinfo("定位错误", "「%s」已经不在清单里了。" % 名, parent=self.root)
 
     def _bind_log_locate(self, widget):
         """给日志控件挂上"双击哪一行，就跳到那一条"（主日志和放大日志都用它）。"""
@@ -880,6 +945,17 @@ class MigrationGUI:
                 self.log_hint_label.configure(
                     bg=self.theme["bg"],
                     fg=self.theme.get("muted_fg", self.theme["fg"]))
+            except Exception:
+                pass
+        # 清单里"出错标红"的配色也跟着主题走
+        for _框 in (getattr(self, "mod_text", None), getattr(self, "config_text", None),
+                   getattr(self, "extra_text", None)):
+            if _框 is None:
+                continue
+            try:
+                _框.tag_configure("migrate_fail",
+                                  background=self.theme.get("danger_bg", "#ffc7c7"),
+                                  foreground=self.theme.get("danger_fg", "#8b0000"))
             except Exception:
                 pass
         # 清单区的标签页（自绘圆角药丸）也要跟着换色
@@ -2275,6 +2351,13 @@ class MigrationGUI:
                 self._fade_log_line(start, end, level)
             except Exception:
                 pass
+            # 出错的行顺手去清单里把对应条目标红（并存进"失败列表"给定位按钮用）。
+            # 刻意不在这里再 log 一句 —— log 会被这个方法递归调回来。
+            if level == "ERROR":
+                try:
+                    self._mark_failed_from_log(message)
+                except Exception:
+                    pass
             self.root.update_idletasks()
             # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
             try:
@@ -2656,6 +2739,14 @@ class MigrationGUI:
         self._create_modlist_page(page_mod)
         self._create_config_page(page_cfg)
         self._create_extra_page(page_extra)
+        # 出错条目在清单里标红（迁移日志报错时自动打上；配置也放这儿，三个页共用）
+        for _框 in (self.mod_text, self.config_text, self.extra_text):
+            try:
+                _框.tag_configure("migrate_fail",
+                                  background=self.theme.get("danger_bg", "#ffc7c7"),
+                                  foreground=self.theme.get("danger_fg", "#8b0000"))
+            except Exception:
+                pass
         self._refresh_list_badges()
 
     def _create_modlist_page(self, parent):
@@ -3095,6 +3186,14 @@ class MigrationGUI:
             colors=("#607d8b", "#90a4ae"),
             width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
+        # 定位错误：一次点击就跳到下一个出错的清单条目（比在日志里找、双击都快）
+        self.btn_fail_locate = create_gradient_button(
+            log_toolbar, "📍 定位错误", self._goto_next_fail,
+            colors=("#e53935", "#ff7043"),
+            width=_grad_width("📍 定位错误") + 26, height=30,
+            font=("微软雅黑", 9, "bold"))
+        self.btn_fail_locate.pack(side="left", padx=(8, 0))
+        self._btn_widgets["log_fail"] = self.btn_fail_locate
         self._btn_widgets.update({
             "log_big": btn_big_log,
             "log_open": btn_open_log,
@@ -4399,6 +4498,7 @@ class MigrationGUI:
 
         # 置为"迁移中"，禁用相关按钮、并给主窗口上锁，防止重复触发/误操作
         self._migration_running = True
+        self._clear_fail_marks()          # 新一次迁移，先把上次的红标和失败列表清掉
         self._refresh_busy_state()
         self._lock_main_window("正在执行迁移任务" if not self.dry_run.get()
                               else "正在执行迁移任务（模拟运行）")
