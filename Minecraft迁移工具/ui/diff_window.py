@@ -75,12 +75,13 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     列名 = [c[0] for c in columns]
 
     def make_tag_styles(th):
-        """行底色：勾选(选中蓝) > 新增(绿) / 更新(橙) / 目标独有(灰)。"""
+        """行底色：勾选(选中蓝) > 新增(绿) / 更新(橙) / 降级(红) / 目标独有(灰)。"""
         return {
             "highlight": (th.get("card_sel_bg", "#d4e6f8"),
                           th.get("card_sel_fg", "#0d3d63")),
             "new": (th["success_bg"], th["success_fg"]),
             "update": (th["warn_bg"], th["warn_fg"]),
+            "downgrade": (th["danger_bg"], th["danger_fg"]),
             "target_only": (th["neutral_bg"], th["neutral_fg"]),
         }
 
@@ -111,7 +112,8 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
     def _status_color(status):
         return {"新增": theme.get("ok_fg", "#2e7d32"),
-                "更新": theme.get("log_warning_fg", "#e65100")}.get(
+                "更新": theme.get("log_warning_fg", "#e65100"),
+                "降级": theme.get("fail_fg", "#c62828")}.get(
                     status, theme.get("muted_fg", "#808080"))
 
     def _cell(row, key):
@@ -138,7 +140,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         return ""
 
     def _dot(row):
-        """状态列：彩色圆点 + 文字（新增=绿、更新=橙、目标独有=灰）。"""
+        """状态列：彩色圆点 + 文字（新增=绿、更新=橙、降级=红、目标独有=灰）。"""
         it = _row_item(row)
         st = str(it[1]) if it is not None else ""
         return _status_color(st), st
@@ -148,7 +150,8 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
         it = _row_item(row)
         if it is None:
             return ()
-        st = {"新增": "new", "更新": "update"}.get(it[1], "target_only")
+        st = {"新增": "new", "更新": "update", "降级": "downgrade"}.get(
+            it[1], "target_only")
         if selection_state.get(visible[row]):
             return ("highlight", st)
         return (st,)
@@ -204,6 +207,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     # 差异列表的状态没有 ✅/❌ 前缀，给卡片列表一套自己的 chip 配色
     _STATUS_CHIP = {"新增": ("#2e7d32", "#ffffff"),
                     "更新": ("#e65100", "#ffffff"),
+                    "降级": ("#c62828", "#ffffff"),
                     "目标独有": ("#546e7a", "#ffffff")}
 
     def card_rows():
@@ -365,9 +369,11 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
             head = f"总计 {len(all_data)} 项差异"
             if search_var.get().strip():
                 head += f"（已过滤，显示 {len(visible)} 项）"
+            降级 = sum(1 for item in all_data if item[1] == "降级")
+            尾巴 = f" | 降级 {降级}" if 降级 else ""
             stat_lbl.configure(
-                text=f"{head} | 新增 {new_count} | 更新 {update_count} | "
-                     f"目标独有 {target_only_count}")
+                text=f"{head} | 新增 {new_count} | 更新 {update_count}"
+                     f"{尾巴} | 目标独有 {target_only_count}")
         except Exception:
             pass
 
@@ -550,9 +556,12 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
     new_count = sum(1 for item in all_data if item[1] == "新增")
     update_count = sum(1 for item in all_data if item[1] == "更新")
     target_only_count = sum(1 for item in all_data if item[1] == "目标独有")
+    _降级数 = sum(1 for item in all_data if item[1] == "降级")
     stat_lbl = tk.Label(
         diff_win,
-        text=f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count} | 目标独有 {target_only_count}",
+        text=(f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count}"
+              + (f" | 降级 {_降级数}" if _降级数 else "")
+              + f" | 目标独有 {target_only_count}"),
         font=("微软雅黑", 9), bg=theme["bg"], fg=theme["fg"])
     stat_lbl.grid(row=4, column=0, columnspan=2, pady=5)
 

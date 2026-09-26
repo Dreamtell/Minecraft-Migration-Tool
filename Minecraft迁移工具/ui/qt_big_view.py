@@ -80,6 +80,7 @@ TAG_COLORS = {
     # 差异扫描窗口卡片上的状态 chip（和它的状态圆点同色系）
     "新增": ("#2e7d32", "#ffffff"),
     "更新": ("#e65100", "#ffffff"),
+    "降级": ("#c62828", "#ffffff"),
     "目标独有": ("#546e7a", "#ffffff"),
 }
 _TAG_FALLBACK = [("#7c6cf0", "#ffffff"), ("#0ea5a4", "#ffffff"), ("#c2410c", "#ffffff"),

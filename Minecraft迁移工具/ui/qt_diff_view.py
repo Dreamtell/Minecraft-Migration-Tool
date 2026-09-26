@@ -34,9 +34,12 @@ _COLS = (("check", "☑ 选择", 68),
          ("size", "💾 大小(KB)", 92),
          ("note", "📝 备注", 280))
 
-_STATUS_ORDER = {"新增": 0, "更新": 1, "目标独有": 2}
-_STATUS_KEY = {"新增": "ok_fg", "更新": "log_warning_fg", "目标独有": "muted_fg"}
-_STATUS_BG = {"新增": "success_bg", "更新": "warn_bg", "目标独有": "neutral_bg"}
+_STATUS_ORDER = {"新增": 0, "更新": 1, "降级": 2, "目标独有": 3}
+# 状态 → 主题色键 / 行底色键。降级用红：那一条复制过去是倒退，得显眼
+_STATUS_KEY = {"新增": "ok_fg", "更新": "log_warning_fg", "降级": "fail_fg",
+               "目标独有": "muted_fg"}
+_STATUS_BG = {"新增": "success_bg", "更新": "warn_bg", "降级": "danger_bg",
+              "目标独有": "neutral_bg"}
 _SORT_KEYS = ("name", "status", "type", "modid", "version", "size")
 
 
@@ -738,19 +741,21 @@ class QtDiffView(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ 杂项
     def _update_summary(self):
-        """摘要：总数 + 三种状态 + 已选（数字按语义上色）。"""
-        th = self.theme
+        """摘要：总数 + 各状态计数 + 已选。"""
         total = len(self.store.items)
-        n_new = sum(1 for it in self.store.items if it.status == "新增")
-        n_upd = sum(1 for it in self.store.items if it.status == "更新")
-        n_only = sum(1 for it in self.store.items if it.status == "目标独有")
+        计数 = []
+        for 名 in ("新增", "更新", "降级", "目标独有"):
+            n = sum(1 for it in self.store.items if it.status == 名)
+            if n or 名 != "降级":            # 没有降级就别占地方
+                计数.append((名, n))
         picked = sum(1 for it in self.store.items if it.checked)
         shown = len(self.store.order)
         parts = ["总计 %d 项差异" % total]
         if self.store.query.strip():
             parts.append("已过滤，显示 %d 项" % shown)
-        parts += ["新增 %d" % n_new, "更新 %d" % n_upd, "目标独有 %d" % n_only,
-                  "已选 %d" % picked]
+        for 名, n in 计数:
+            parts.append("%s %d" % (名, n))
+        parts.append("已选 %d" % picked)
         self.summary.setText(" ｜ ".join(parts))
         self.title_label.setText("🧩 模组差异扫描 · %d 项" % total)
 

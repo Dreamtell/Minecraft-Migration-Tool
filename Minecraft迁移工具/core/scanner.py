@@ -18,6 +18,66 @@ def normalize_mod_name(name):
     return name
 
 
+def _version_parts(v):
+    """把版本号切成可比较的段：数字段是 (0, 数值)，字母段是 (1, 小写串)。
+
+    支持 `1.20.1`、`0.14.21`、`2.0.0-beta.1`、`1.19.2-0.14.21`、`v1.2` 这类写法。
+    解析不出来（空串 / "?" / 全是符号）返回 None。
+    """
+    s = str(v or "").strip().lstrip("vV")
+    if not s or s == "?":
+        return None
+    out = []
+    for p in re.split(r"[.\-_+ ]+", s):
+        if not p:
+            continue
+        if p.isdigit():
+            out.append((0, int(p)))
+            continue
+        m = re.match(r"^(\d+)([a-zA-Z].*)$", p)      # 1a / 2b3 这种黏在一起的
+        if m:
+            out.append((0, int(m.group(1))))
+            out.append((1, m.group(2).lower()))
+        else:
+            out.append((1, p.lower()))
+    # 一个数字段都没有（"abc"、"beta" 这种）就当没法比，别硬给个大小结论
+    return out if any(p[0] == 0 for p in out) else None
+
+
+def compare_versions(a, b):
+    """比较两个版本号：a > b 返回 1，a < b 返回 -1，相等 0，**没法比返回 None**。
+
+    规则：逐段比，数字段按数值；数字段排在字母段前面（所以 1.0 > 1.0-beta）；
+    某一边少一段时，缺的当"正式版"看 —— 没有后缀比带 beta/rc 的大，补 0 则算相等
+    （`1.0` == `1.0.0`）。
+    """
+    pa, pb = _version_parts(a), _version_parts(b)
+    if pa is None or pb is None:
+        return None
+    for i in range(max(len(pa), len(pb))):
+        if i >= len(pa):                    # a 没有这一段了
+            y = pb[i]
+            if y[0] == 1:
+                return 1                    # b 是预发布后缀 → a 更大
+            if y[1] != 0:
+                return -1
+            continue
+        if i >= len(pb):
+            x = pa[i]
+            if x[0] == 1:
+                return -1
+            if x[1] != 0:
+                return 1
+            continue
+        x, y = pa[i], pb[i]
+        if x == y:
+            continue
+        if x[0] != y[0]:                    # 一个数字段一个字母段：数字段在前
+            return -1 if x[0] < y[0] else 1
+        return -1 if x[1] < y[1] else 1
+    return 0
+
+
 def split_cn_name(filename):
     """把 "[中文名] 英文名-版本.jar" 拆成 (中文名, 英文名)。
 
@@ -439,12 +499,21 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
                 update_reason.append("源更新")
 
             if update_reason:
+                # 光"版本不同"还不够：**目标版本比源高**时复制过去是降级，
+                # 不能叫"更新"（用户反馈）。比不出来（版本号缺失/格式古怪）就按原样算更新。
+                状态 = "更新"
+                备注 = ", ".join(update_reason)
+                比 = compare_versions(src_info.get("version"), tgt_info.get("version"))
+                if 比 is not None and 比 < 0:
+                    状态 = "降级"
+                    备注 = ("目标版本更高：%s → %s（复制过去会降级，建议保留目标的）"
+                            % (tgt_info["version"], src_info["version"]))
                 results.append((
                     src_name,
-                    "更新",
+                    状态,
                     src_name,
                     round(src_info["size"] / 1024, 1),
-                    ", ".join(update_reason),
+                    备注,
                     src_info["modid"] or "?",
                     src_info["version"] or "?",
                     src_info["mod_type"] or "未知",
