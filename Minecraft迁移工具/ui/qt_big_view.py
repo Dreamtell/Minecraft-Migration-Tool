@@ -1111,6 +1111,11 @@ class OverviewBar(QtWidgets.QWidget):
 
     jumped = QtCore.Signal(float)       # 0..1：视口中心要挪到整份列表的哪个位置
 
+    # 色块的浓度：0=看不见、255=原色。总览是"看分布"的，不是"看颜色"的 ——
+    # 原色铺满一条太抢眼（一屏绿色就等于一条绿柱子），半透明压淡后像 minimap，
+    # 状态差异照样分得出来。
+    _ALPHA = 165
+
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = dict(theme)
@@ -1159,6 +1164,7 @@ class OverviewBar(QtWidgets.QWidget):
                 画色 = QtGui.QColor(色)
                 if not 画色.isValid():
                     continue
+                画色.setAlpha(self._ALPHA)          # 压淡：总览条别抢列表的注意力
                 y = r.top() + i * 每行
                 p.setBrush(画色)
                 if 够高:
