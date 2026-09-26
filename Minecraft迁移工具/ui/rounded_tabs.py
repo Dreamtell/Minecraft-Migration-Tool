@@ -188,9 +188,16 @@ class RoundedTabs(tk.Frame):
                                    fill=self._data_color())
         return main_id, num_id
 
-    def _data_color(self):
-        """标签里那个"条数"的颜色（主题没定义就退回正文色）。"""
-        return self.theme.get("data_num_fg") or self.theme["fg"]
+    def _data_color(self, sel=False):
+        """页签上那个"条数"的颜色。
+
+        平时是绿色（`tab_num_fg`）；选中的药丸是深蓝底，绿字压上去会糊，
+        所以换一档更亮的绿（`tab_num_sel_fg`）—— 这样"选中高亮"时数字仍有颜色，
+        不会和名字一起变成同一个白。
+        """
+        key = "tab_num_sel_fg" if sel else "tab_num_fg"
+        return (self.theme.get(key) or self.theme.get("data_num_fg")
+                or self.theme["fg"])
 
     def _paint_label(self, t, main_color, num_color=None):
         c = self.bar
@@ -207,7 +214,8 @@ class RoundedTabs(tk.Frame):
         for i, t in enumerate(self._tabs):
             if i == self._cur:
                 c.itemconfigure(t["pill"], state="hidden")   # 让位给滑动的那张
-                self._paint_label(t, self._sel_fg())         # 选中时整块同色，看得清
+                # 名字用选中前景色，数字保留自己的绿（亮一档）
+                self._paint_label(t, self._sel_fg(), self._data_color(sel=True))
             else:
                 kind = "hover" if t["hover"] else "normal"
                 if self._use_images:
