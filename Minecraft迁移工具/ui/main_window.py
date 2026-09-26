@@ -968,7 +968,11 @@ class MigrationGUI:
                 pass
         self._big_view_windows = alive_big
 
-        # 同步 PySide6 试点窗口（自绘 Qt 控件，主题得显式喂过去）
+        # 同步 PySide6 窗口：它们现在跑在**独立子进程**里，只能发命令过去
+        # （以前这里是遍历进程内的 `_qt_views` 直接 set_theme —— Qt 搬进子进程之后
+        #   那个列表永远是空的，表现就是"切了主题，Qt 窗口纹丝不动"）
+        self._send_qt_host_command("theme", 附加={"theme": dict(self.theme)})
+        # 兜底：万一某个 Qt 窗口还开在本进程里（老路径/降级），照样喂主题
         alive_qt = []
         for qv in getattr(self, '_qt_views', []):
             try:
@@ -4609,17 +4613,26 @@ class MigrationGUI:
             self.log(f"⚠ 无法启动 Qt 子进程：{e}", level="ERROR", save=False)
             return False
 
-    def _send_qt_host_command(self, cmd, kind=None):
-        """给 Qt 子进程写一条命令（目前只有 raise = 把窗口叫到前面）。"""
+    def _send_qt_host_command(self, cmd, kind=None, 附加=None):
+        """给 Qt 子进程写一条命令。
+
+        - `raise`：把窗口叫到前面
+        - `theme`：换主题（`附加={"theme": {...}}`）—— Qt 窗口在独立子进程里，
+          主界面切主题只能这样告诉它
+        """
         try:
             主机们 = getattr(self, "_qt_hosts", None) or {}
             目标 = [kind] if kind else list(主机们)
+            行 = {"cmd": cmd}
+            if 附加:
+                行.update(附加)
+            数据 = json.dumps(行, ensure_ascii=False) + "\n"
             for k in 目标:
                 路径 = (主机们.get(k) or {}).get("cmd")
                 if 路径 is None:
                     continue
                 with open(路径, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"cmd": cmd}) + "\n")
+                    f.write(数据)
         except Exception:
             pass
 
@@ -4684,6 +4697,20 @@ class MigrationGUI:
                     self._qt_apply_entries(st, list(消息.get("entries") or []))
                 except Exception:
                     pass
+        elif 动作 == "theme_ok":
+            # 子进程确认换好了：记个内存标记（诊断/测试用），日志里不刷（切一次一行太吵）
+            if not hasattr(self, "_qt_theme_ok"):
+                self._qt_theme_ok = {}
+            self._qt_theme_ok[kind] = 消息.get("bg")
+            try:
+                from utils.helpers import trace_line
+                trace_line("Qt 窗口主题已切换 kind=%s bg=%s"
+                           % (kind, 消息.get("bg")))
+            except Exception:
+                pass
+        elif 动作 == "theme_fail":
+            self.log("⚠ Qt 窗口换主题失败：%s" % 消息.get("error"),
+                     level="ERROR", save=False)
 
     def stop_qt_host(self):
         """退出前把所有 Qt 子进程收掉。"""

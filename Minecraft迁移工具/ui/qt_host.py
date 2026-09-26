@@ -30,13 +30,15 @@ Tk 和 Qt 都要求"GUI 跑在主线程"，两者共享主线程就只能交替�
       "data": [[...], ...],           # diff 用（差异表的 9 元组）
       "theme": {...},
       "result": "结果文件路径",         # 子进程把用户操作写这里
-      "command": "命令文件路径"         # 主进程写这里（目前只有 "raise"）
+      "command": "命令文件路径"         # 主进程写这里（"raise" 叫到前面 / "theme" 换主题）
     }
 
 结果文件里是一条一条的 JSON 行（子进程写、主进程读走就删）：
 
     {"action": "apply", "files": ["a.jar", ...]}     差异/放大窗口"应用所选"
     {"action": "write_back", "entries": ["a.jar"]}   放大窗口改完清单写回
+    {"action": "theme_ok", "kind": "diff", "bg": "#2e2e2e"}   主题换好了
+    {"action": "theme_fail", "kind": "diff", "error": "..."}  换主题炸了（主进程记一条 ERROR）
     {"action": "close"}                              窗口关了
 """
 import json
@@ -181,7 +183,7 @@ def run_host(argv):
             "rows": (len(请求.get("data") or []) if kind == "diff"
                      else len(请求.get("entries") or []))})
 
-    # 主进程想"叫回"这个窗口时往命令文件里写一行；这里轮询执行
+    # 主进程想"叫回"窗口 / 换主题时往命令文件里写一行；这里轮询执行
     def 巡命令():
         try:
             if 命令路径.exists():
@@ -190,14 +192,25 @@ def run_host(argv):
                         命令 = json.loads(line)
                     except Exception:
                         continue
-                    if 命令.get("cmd") == "raise" and view is not None:
+                    if view is None:
+                        continue
+                    动作 = 命令.get("cmd")
+                    if 动作 == "raise":
                         try:
                             view.showNormal()
                             view.raise_()
                             view.activateWindow()
                         except Exception:
                             pass
-                        break
+                    elif 动作 == "theme":
+                        # 主界面切了浅色/深色：这里把整套配色重新铺一遍，并回报结果
+                        try:
+                            view.set_theme(dict(命令.get("theme") or {}))
+                            写结果({"action": "theme_ok", "kind": kind,
+                                    "bg": (命令.get("theme") or {}).get("bg")})
+                        except Exception as e:
+                            写结果({"action": "theme_fail", "kind": kind,
+                                    "error": repr(e)})
                 try:
                     命令路径.unlink()
                 except Exception:
