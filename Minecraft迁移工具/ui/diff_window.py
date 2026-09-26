@@ -132,8 +132,10 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
                         style="Diff.Vertical.TScrollbar")
     hsb = ttk.Scrollbar(diff_win, orient="horizontal", command=tree.xview,
                         style="Diff.Horizontal.TScrollbar")
-    # 平滑滚动：Treeview 只能整行滚，引擎负责把零头攒起来做动画
-    SmoothScroller.for_rows(tree, tree_row_px())
+    # 平滑滚动：Treeview 只能整行滚，引擎负责把零头攒起来做动画。
+    # ms_per_row 给每行之间留一口气 —— 不给的话一帧一行，3 行 40ms 就窜过去了，
+    # 差异列表这种要"一行一行对着看"的地方显得又快又硬。
+    SmoothScroller.for_rows(tree, tree_row_px(tree), ms_per_row=50)
     # 横向滚动条只在内容真的超出可视宽度时才出现：默认宽度下「备注」列会拉伸填满，
     # 常驻一条拖不动的滚动条只会让人困惑。
     hsb_state = {"shown": True}

@@ -180,19 +180,29 @@ class SmoothScroller:
                    or _text_notch_px(widget), bind_widgets=bind_widgets, **kw)
 
     @classmethod
-    def for_rows(cls, widget, row_px, on_render=None, bind_widgets=None, **kw):
+    def for_rows(cls, widget, row_px, on_render=None, bind_widgets=None,
+                 ms_per_row=None, **kw):
         """按行滚动的控件（Treeview / 自绘表格）：攒够一行走一行，其余交给动画。
 
         一帧最多走一行（实测 Treeview 一次行滚动只要 0.03ms，便宜得很），动画才
         "看得见"；只有剩余很多（猛滚十几格）时才允许一帧多走几行，否则一次滚 20 格
         要 60 帧、拖沓得没法用。
+
+        `ms_per_row`：**行与行之间的最小间隔（毫秒）**。Treeview 只能整行滚，帧率高的
+        时候会"一帧一行"连着窜（3 行 40ms 就过去了，看着又快又硬）；给了这个值就每行
+        之间留一口气，同样是整行走，观感柔和得多。None = 不限（旧行为）。
         """
         acc = {"v": 0.0}
+        last = {"t": 0.0}
 
         def mover(px):
             acc["v"] += px
             if row_px <= 0:
                 return 0, True
+            if ms_per_row:
+                now = time.perf_counter()
+                if (now - last["t"]) * 1000.0 < ms_per_row:
+                    return 0, False      # 还没到下一行的点儿：先攒着（不算"滚不动"）
             rows = int(acc["v"] // row_px)
             remain = abs(acc["v"]) / row_px
             cap = 1 if remain <= 8 else max(1, int(remain / 4))
@@ -213,6 +223,7 @@ class SmoothScroller:
             if abs(widget.yview()[0] - before) <= 1e-9:
                 acc["v"] = 0.0
                 return 0, True            # 到顶/底了
+            last["t"] = time.perf_counter()
             return rows * row_px, False
 
         return cls(widget, mover, px_per_notch=kw.pop("px_per_notch", None) or row_px * 3,
@@ -515,10 +526,23 @@ def _text_notch_px(widget):
 
 
 def tree_row_px(widget=None, default=20):
-    """取 Treeview 的行高（按行平滑滚动要用）。"""
+    """取 Treeview 的行高（按行平滑滚动要用）。
+
+    传了 widget 就按它自己的样式名查 —— 差异窗口用的是 `Diff.Treeview`（行高 24），
+    和默认的 `Treeview` 不是一回事，查错了攒零头会漂。
+    """
     try:
         import tkinter.ttk as ttk
-        return max(8, int(ttk.Style().lookup("Treeview", "rowheight") or default))
+        样式 = "Treeview"
+        if widget is not None:
+            try:
+                样式 = widget.cget("style") or "Treeview"
+            except Exception:
+                样式 = "Treeview"
+        v = ttk.Style().lookup(样式, "rowheight")
+        if not v and 样式 != "Treeview":
+            v = ttk.Style().lookup("Treeview", "rowheight")
+        return max(8, int(v or default))
     except Exception:
         return default
 

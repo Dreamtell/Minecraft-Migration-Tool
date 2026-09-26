@@ -3363,7 +3363,7 @@ class MigrationGUI:
         try:
             if rows:
                 sc = SmoothScroller.for_rows(
-                    widget, kw.pop("row_px", None) or tree_row_px(),
+                    widget, kw.pop("row_px", None) or tree_row_px(widget),
                     on_render=on_render, bind_widgets=bind_widgets, **kw)
             else:
                 sc = SmoothScroller.for_text(widget, bind_widgets=bind_widgets, **kw)
