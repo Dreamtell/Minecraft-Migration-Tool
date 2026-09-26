@@ -15,6 +15,7 @@ Qt 里是原生能力。
 
 from __future__ import annotations
 
+import ctypes
 import difflib
 import importlib.util
 import re
@@ -39,6 +40,7 @@ from PySide6 import QtCore, QtGui, QtWidgets   # noqa: E402
 
 from core.scanner import (get_full_mod_metadata, get_mod_icon,   # noqa: E402
                           guess_tags, split_cn_name)
+from core.migrator import _is_safe_path                          # noqa: E402
 from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E402
                              search_modrinth)
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
@@ -55,6 +57,28 @@ RADIUS = 9
 # 现在的值：两次单击绝不会被并成双击，只有"哒哒"很快的两下才算双击；
 # 慢一点的双击认不出来，那种情况走右键菜单「ℹ 详情」（表格/卡片视图都有）。
 DOUBLE_CLICK_MS = 175
+
+
+# ---- 传统拖入（WM_DROPFILES）：Qt 的 OLE 拖放和 Tk 同进程会崩，见 nativeEvent 的注释 ----
+_WM_DROPFILES = 0x0233
+
+
+class _MSG(ctypes.Structure):
+    """Win32 MSG —— nativeEvent 收到的那个裸指针。"""
+    _fields_ = [("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint),
+                ("wParam", ctypes.c_void_p), ("lParam", ctypes.c_void_p),
+                ("time", ctypes.c_uint), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long)]
+
+
+try:                                    # 指针参数必须声明类型，否则 64 位下会被截成 32 位
+    _shell32 = ctypes.windll.shell32
+    _shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                        ctypes.c_wchar_p, ctypes.c_uint]
+    _shell32.DragQueryFileW.restype = ctypes.c_uint
+    _shell32.DragFinish.argtypes = [ctypes.c_void_p]
+    _shell32.DragAcceptFiles.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+except Exception:                       # pragma: no cover - 非 Windows 平台
+    _shell32 = None
 
 # 加载器 / 环境标签配色（与 card_list.TAG_COLORS 保持同一套观感）
 TAG_COLORS = {
@@ -1504,10 +1528,12 @@ class QtBigView(QtWidgets.QWidget):
         self.resize(1060, 680)
         # 打开时用表格还是卡片：默认视图在设置里选（_BIG_VIEW_VIEWS），这里只管摆好初始状态
         self._start_cards = bool(cards)
-        # 用原生窗口框（不是无边框 + 半透明）：
+        # 原生窗口框（不是无边框 + 半透明）：
         # layered 窗口会被 DWM 跳过弹出/关闭/最小化动画，换成原生框后系统动画、原生
         # 阴影、四边拖拽缩放全都回来了；圆角和深色标题栏走 DWM 属性（见 showEvent）。
         self._build()
+        # 收资源管理器拖进来的文件（Tk 版一直有，Qt 版之前漏了）
+        self._enable_native_drop()
 
     # ---------------- UI ----------------
     def _build(self):
@@ -1989,6 +2015,91 @@ class QtBigView(QtWidgets.QWidget):
             cb(self.store.entry_texts())
         except Exception:
             pass
+
+    # ---------------- 拖入文件 ----------------
+    # 为什么不用 Qt 自带的拖放（setAcceptDrops + dropEvent）：
+    # 本窗口和 Tk 主窗口同进程同线程，Qt 的 OLE 拖放回调是 Windows 直接调进来的，
+    # **不经过 Tk 的 after 泵**。实测一拖就把解释器搞崩：
+    #   Fatal Python error: PyEval_RestoreThread ... the GIL is released
+    # 换成传统的 WM_DROPFILES：它是普通窗口消息，由 Qt 自己的消息处理派发，而那个
+    # 处理正是 Tk 的 after 泵驱动的 —— 和其它 Qt 回调同一个上下文，就安全了。
+    def _enable_native_drop(self):
+        try:
+            self.setAcceptDrops(False)
+            self._drop_hwnd = int(self.winId())
+            _shell32.DragAcceptFiles(self._drop_hwnd, True)
+        except Exception:
+            trace_exc("qt_big_view", "启用原生拖入")
+
+    def nativeEvent(self, eventType, message):
+        """拦 WM_DROPFILES，把拖进来的文件交给 _drop_paths。"""
+        try:
+            if eventType in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+                msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+                if msg.message == _WM_DROPFILES:
+                    hdrop = msg.wParam
+                    n = _shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+                    buf = ctypes.create_unicode_buffer(32768)
+                    paths = []
+                    for i in range(n):
+                        if _shell32.DragQueryFileW(hdrop, i, buf, 32768):
+                            paths.append(buf.value)
+                    _shell32.DragFinish(hdrop)
+                    if paths:
+                        self._drop_paths(paths)
+                    return True, 0
+        except Exception:
+            trace_exc("qt_big_view", "处理 WM_DROPFILES")
+        return False, 0
+
+    def _drop_paths(self, paths):
+        """把拖进来的路径变成清单条目。
+
+        和 Tk 版一个口径：
+          · 模组窗口只收 `.jar`，存**完整路径**；
+          · config 窗口收文件/文件夹，存**相对 config 目录**的路径（用 / 分隔，
+            文件夹结尾加 /），带 `_is_safe_path` 校验，越界/不在 config 下的丢掉。
+        """
+        收, 跳过 = [], 0
+        if self.store.is_mod:
+            for p in paths:
+                if Path(p).suffix.lower() == ".jar":
+                    收.append(p)
+                else:
+                    跳过 += 1
+        else:
+            base = self.store.config_dir
+            if base is None:
+                self._message("添加提示", "请先在主界面设置源整合包目录，再往这里拖。")
+                return
+            for p in paths:
+                tp = Path(p)
+                try:
+                    rel = tp.relative_to(base)
+                except ValueError:
+                    跳过 += 1
+                    continue
+                rel_s = str(rel).replace("\\", "/")
+                if not _is_safe_path(rel_s):
+                    跳过 += 1
+                    continue
+                if (base / rel_s).is_dir():
+                    rel_s = rel_s.rstrip("/") + "/"
+                收.append(rel_s)
+        if not 收:
+            self._message("添加提示",
+                          "只支持拖入 .jar 模组文件。" if self.store.is_mod
+                          else "拖入的文件不在源整合包的 config 目录下。")
+            return
+        n = self.store.add_entries(收)
+        if not n:
+            self._message("添加提示", "这些条目已经在清单里了。")
+            return
+        self._write_back()
+        提示 = ("已添加 %d 个模组。" % n) if self.store.is_mod else ("已添加 %d 个条目。" % n)
+        if 跳过:
+            提示 += "（另有 %d 项被跳过）" % 跳过
+        self._message("添加成功", 提示)
 
     def _on_remove(self):
         n = len(self.store.selected_items())
