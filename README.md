@@ -54,6 +54,7 @@
 - **实时刷新**：放大查看窗口会随主界面清单的外部变更自动更新
 - **实时存档检测**：输入存档名即实时显示“存档是否存在”，无需手动点按钮
 - **默认携带的目录**：设置 →「📦 默认携带的目录」勾选，每次迁移**自动带上**
+  （**默认全部不勾**，要带哪些自己点）
   `shaderpacks/`、`resourcepacks/`、`schematics/`、`XaeroWorldMap/`、`XaeroWaypoints/`、
   `xaero/`、`journeymap/`、`kubejs/`、`defaultconfigs/`、`local/`、`screenshots/`、
   `servers.dat`、`optionsof.txt`、`iris.properties` 里你要的那些；
@@ -310,6 +311,7 @@ Minecraft迁移工具/
   其它文件任务（扫描/检查/导入/回滚/大窗口检测）在跑时禁止启动迁移（含模拟运行），并说明是哪个任务占用
 - **默认携带的目录**：设置里勾选常见目录（shaderpacks / resourcepacks / schematics /
   Xaero / journeymap / kubejs …），迁移时自动带上，且**只并进这一次迁移、不改用户清单**
+  （默认全部不勾）
 - **选中汇总**：放大查看工具栏常显「已选 N / 总数」与「存在 X · 缺失 Y」，实时更新
 - **选中样式**：去掉勾选框；选中时高亮从左往右扫出、蓝色竖杠从上下延伸（缓出，约 190ms）
 

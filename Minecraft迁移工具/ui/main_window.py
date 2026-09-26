@@ -180,9 +180,9 @@ _EXTRA_PRESETS = (
     ("iris.properties", "iris.properties", "Iris 光影设置"),
 )
 
-# 第一次运行（配置里还没有 extra_defaults）时默认勾上的：最常被带走的那几个
-_EXTRA_DEFAULT_KEYS = ("shaderpacks", "resourcepacks", "schematics",
-                       "XaeroWorldMap", "XaeroWaypoints")
+# 配置里还没有 extra_defaults 时用这组默认：**一个都不勾**。
+# 要带哪些目录由用户自己点 —— 迁移这种改文件的活儿，不该有"偷偷多带几样"的默认值。
+_EXTRA_DEFAULT_KEYS = ()
 
 # 放大查看窗口的实现方式。PySide6 试点：圆角/阴影/逐帧动画是原生能力；
 # 缺库或想用回老窗口时切 tk。
@@ -1666,7 +1666,7 @@ class MigrationGUI:
         # ---------- 默认携带的目录 ----------
         box_extra = section("extras", page_mig)
         tk.Label(box_extra,
-                 text="勾上的目录会在每次迁移时自动带上：源实例里存在才算数，"
+                 text="勾上的目录会在每次迁移时自动带上（默认全部不勾）：源实例里存在才算数，"
                       "只并进这一次的迁移，不会改动你的「其它文件」清单"
                       "（清单里手动删掉的条目不会被塞回来）。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
