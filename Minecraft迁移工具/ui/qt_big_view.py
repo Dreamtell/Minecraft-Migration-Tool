@@ -884,17 +884,31 @@ class CardModel(QtCore.QAbstractListModel):
 class ScrollProgress(QtWidgets.QWidget):
     """列表上方那条细进度条：**从左往右填充**，填到哪儿就是看到哪儿（到底 100%）。
 
-    为什么不直接用 `QProgressBar`：那个自带百分比文字和厚边框（还有动画/忙碌态），
-    想要 6px 细条得拿 QSS 一点点抠掉；自绘反而更短，颜色也能直接跟着主题走。
-    百分比数字由旁边那个小 QLabel 显示（见 _build 里的 scroll_pct）。
+    填充段是"液态"的 —— 一道柔光会沿着它循环流过，观感和锁屏遮罩那条流动红边同源
+    （暗→亮→暗 + 每帧平移）：那边是手工拼渐变瓦片，这边直接用 `QLinearGradient` 画。
+    逐帧由 **Tk 的 after** 驱动（和窗口里别的动画一样在那个泵里跑，不用 QTimer）：
+    没有内容可滚、或者窗口不可见时自动停，不白烧 CPU。
+
+    百分比数字由旁边那个小 QLabel 显示（6px 的细条里塞不下文字，见 _build 里的 scroll_pct）。
     """
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = dict(theme)
         self._fill = 1.0                    # 0..1：已经滑过的比例
+        self._flow = 0.0                    # 0..1：高光走到哪儿了
+        self._job = None
+        self._after = None
+        self._cancel = None
         self.setFixedHeight(6)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+
+    # ---- 驱动 ----
+    def set_pump(self, after, cancel):
+        """把 Tk 的 after / after_cancel 交进来（拿不到就退化成不流动的静态条）。"""
+        self._after = after
+        self._cancel = cancel
+        self._sync_anim()
 
     def set_range(self, value, maximum, page):
         """按滚动条算进度：顶部 0%、滑到底 100%。返回填充比例。
@@ -905,13 +919,55 @@ class ScrollProgress(QtWidgets.QWidget):
             self._fill = 1.0
         else:
             self._fill = max(0.0, min(1.0, float(value) / float(maximum)))
+        self._sync_anim()
         self.update()
         return self._fill
+
+    def _sync_anim(self):
+        """只有"还有内容没滑完 + 窗口看得见"才让高光跑起来。"""
+        需要 = self._after is not None and self._fill < 0.999 and self.isVisible()
+        if 需要 and self._job is None:
+            self._step()
+        elif not 需要 and self._job is not None:
+            self.stop()
+
+    def _step(self):
+        try:
+            if not self.isVisible():        # 窗口关了/藏了就别再排（对象可能已经没了）
+                self._job = None
+                return
+        except RuntimeError:
+            self._job = None
+            return
+        self._flow = (self._flow + 0.018) % 1.0
+        self.update()
+        try:
+            self._job = self._after(33, self._step) if self._after is not None else None
+        except Exception:
+            self._job = None
+
+    def stop(self):
+        """停掉流动（窗口关掉、或者没有内容可滚时调）。"""
+        if self._job is not None and self._cancel is not None:
+            try:
+                self._cancel(self._job)
+            except Exception:
+                pass
+        self._job = None
 
     def set_theme(self, theme):
         self.theme = dict(theme)
         self.update()
 
+    def hideEvent(self, ev):
+        self.stop()
+        super().hideEvent(ev)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._sync_anim()
+
+    # ---- 画 ----
     def paintEvent(self, ev):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -922,10 +978,32 @@ class ScrollProgress(QtWidgets.QWidget):
         p.setPen(QtCore.Qt.NoPen)
         p.setBrush(QtGui.QColor(th.get("entry_bg", "#e8e8e8")))          # 轨道
         p.drawRoundedRect(r, 半径, 半径)
-        if self._fill > 0.0:
-            p.setBrush(QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))  # 已经滑过的部分
-            宽 = max(6.0, r.width() * self._fill)
-            p.drawRoundedRect(QtCore.QRectF(r.left(), r.top(), 宽, 高), 半径, 半径)
+        if self._fill <= 0.0:
+            return
+        宽 = max(6.0, r.width() * self._fill)
+        填充 = QtCore.QRectF(r.left(), r.top(), 宽, 高)
+        基色 = QtGui.QColor(th.get("card_sel_bar", "#2f7fd1"))
+        # 底色：暗→常规→亮，横向渐变，有点"液面"的层次
+        底 = QtGui.QLinearGradient(填充.left(), 0.0, 填充.right(), 0.0)
+        底.setColorAt(0.0, 基色.darker(118))
+        底.setColorAt(0.55, 基色)
+        底.setColorAt(1.0, 基色.lighter(115))
+        p.setBrush(QtGui.QBrush(底))
+        p.drawRoundedRect(填充, 半径, 半径)
+        # 液态高光：一道柔光沿填充段循环流过（和锁屏红边一个路子）
+        if self._job is not None and 宽 > 36.0:
+            p.save()
+            p.setClipRect(填充.toRect())
+            光宽 = max(48.0, 宽 * 0.38)
+            x = 填充.left() - 光宽 + (宽 + 光宽) * self._flow
+            光 = QtGui.QLinearGradient(x, 0.0, x + 光宽, 0.0)
+            透 = QtGui.QColor(255, 255, 255, 0)
+            光.setColorAt(0.0, 透)
+            光.setColorAt(0.5, QtGui.QColor(255, 255, 255, 110))
+            光.setColorAt(1.0, 透)
+            p.setBrush(QtGui.QBrush(光))
+            p.drawRect(QtCore.QRectF(x, r.top(), 光宽, 高))
+            p.restore()
 
 
 class TableDelegate(QtWidgets.QStyledItemDelegate):
@@ -1757,6 +1835,8 @@ class QtBigView(QtWidgets.QWidget):
         滚动行.addWidget(self.scroll_progress, 1)
         滚动行.addWidget(self.scroll_pct)
         lay.addLayout(滚动行)
+        # 液太高光由 Tk 的 after 驱动（和窗口里别的动画同一个泵）
+        self.scroll_progress.set_pump(self.hooks.get("after"), self.hooks.get("after_cancel"))
         lay.addWidget(self.stack, 1)
         for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
             sb.valueChanged.connect(self._update_scroll_progress)
@@ -2578,6 +2658,10 @@ class QtBigView(QtWidgets.QWidget):
 
     def closeEvent(self, ev):
         self._alive = False
+        try:
+            self.scroll_progress.stop()     # 别让液太高光在窗口没了以后还排 after
+        except Exception:
+            pass
         for d in list(getattr(self, "_dialogs", [])):
             try:
                 d.close()
