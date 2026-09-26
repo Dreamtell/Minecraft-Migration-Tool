@@ -1998,60 +1998,73 @@ def bind_text_scroll(text_widget, on_view):
 
 
 class SwitchRow(tk.Canvas):
-    """一行「开关 + 标题 + 说明」的现代卡片，整条都能点。
+    """一行「开关 + 标题 + 说明」的开关控件，整条都能点。
 
-    自绘（PIL 出图 + canvas 贴图）：圆角卡片底 + iOS 那种圆角开关 + 标题/说明文字。
+    两种形态：
+      · 整条卡片（默认）：圆角底 + 大开关 + 标题 + 副标题，适合独占一行的设置项；
+      · 紧凑（compact=True）：只有小开关 + 一行文字，宽度自适应文字，用来替复选框。
 
-    - 开关滑动约 130ms，**按真实时间插值**（Tk 的 after 精度只有 ~15ms，按帧数计时长会飘）；
-    - 所有静态图（卡片底、轨道、滑块）都缓存，动画每帧只做合成 + 贴图；
-    - 圆角与圆形一律走 4 倍超采样（滑块要是直接画圆，边上是锯齿的）；
-    - 可点性靠**手型光标**提示，不做悬停高亮（用户要的干净）；
-    - 开启时卡片和开关染成主题强调色，说明文字换成**鲜红**警示语。
+    自绘（PIL 出图 + canvas 贴图）。要点：
+    - 滑动约 130ms，**按真实时间插值**（Tk 的 after 说 10ms 实际常是 12~15ms，按帧数会飘）；
+    - 静态图（卡片底、轨道、滑块）全部缓存，动画每帧只做合成 + 贴图；
+    - 圆角与圆形一律 4 倍超采样（直接画圆的话边上是锯齿的）；
+    - 可点性靠手型光标提示，不做悬停高亮。
 
     用法：
         row = SwitchRow(parent, theme, "主界面编辑", "直接改动清单文字 · 谨慎使用",
                         command=on_toggle)
-        row.set(True)      # 设置状态（animate=True 会滑过去）
-        row.get()          # 当前状态
+        row.set(True)
     """
 
-    _SW, _SH = 44, 22           # 开关轨道
-    _KNOB = 16                  # 滑块直径
+    _SW, _SH = 44, 22           # 开关轨道（卡片形态）
+    _KNOB = 16
     _PAD_L = 12                 # 左边距
     _GAP = 12                   # 开关与文字之间
-    _TICK_MS = 10               # 帧间隔；实际进度按真实时间算，这个数只影响细腻度
+    _TICK_MS = 10               # 帧间隔；进度按真实时间算，这个数只影响细腻度
     _DURATION = 0.13            # 动画时长（秒）
     _WARN_LIGHT = "#e53935"     # 浅色主题下的警示红（比主题的 fail_fg 更艳）
-    _WARN_DARK = "#ff6b6b"      # 深色主题下用亮一点的红
+    _WARN_DARK = "#ff6b6b"
 
-    def __init__(self, parent, theme, title, desc="", command=None, height=46, **kw):
+    def __init__(self, parent, theme, title, desc="", command=None, height=None,
+                 compact=False, accent="edit_bg", warn_desc=None, **kw):
         try:
             bg = parent.cget("bg")
         except Exception:
             bg = theme.get("bg", "#f0f0f0")
-        super().__init__(parent, height=height, highlightthickness=0, bd=0, bg=bg, **kw)
+        self._compact = bool(compact)
+        if self._compact:                   # 紧凑形态：开关小一号、没有卡片底
+            self._SW, self._SH, self._KNOB = 36, 18, 14
+            self._PAD_L, self._GAP = 0, 8
+            self._h = int(height or 26)
+            self._font = ("微软雅黑", 10)
+        else:
+            self._h = int(height or 46)
+            self._font = ("微软雅黑", 10, "bold")
+        super().__init__(parent, height=self._h, highlightthickness=0, bd=0, bg=bg, **kw)
         self.theme = dict(theme)
         self._title = title
         self._desc = desc
+        self._warn_desc = warn_desc or "⚠ 已开启"
+        self._accent = accent
         self._command = command
-        self._h = int(height)
         self._on = False
-        self._t = 0.0               # 0=关，1=开（动画中间值）
+        self._t = 0.0
         self._job = None
         self._cw = 0
         self._photo = None
         self._img = self.create_image(0, 0, anchor="nw")
-        self._title_id = self.create_text(0, 0, anchor="w", tags="txt",
-                                          font=("微软雅黑", 10, "bold"))
+        self._title_id = self.create_text(0, 0, anchor="w", tags="txt", font=self._font)
         self._desc_id = self.create_text(0, 0, anchor="w", tags="txt",
                                          font=("微软雅黑", 9))
         self._cache_clear()
         try:
-            self.configure(cursor="hand2")      # 可点：手型提示，不再靠悬停高亮
+            self.configure(cursor="hand2")      # 可点：手型提示，不做悬停高亮
         except Exception:
             pass
         self.bind("<Configure>", lambda _e: self._on_resize())
         self.bind("<Button-1>", lambda _e: self.toggle())
+        if self._compact:
+            self._fit_width()
         self._layout_text()
 
     # ---------------------------------------------------------------- 对外
@@ -2088,6 +2101,15 @@ class SwitchRow(tk.Canvas):
         self._redraw()
         self._layout_text()
 
+    def set_text(self, title=None, desc=None):
+        if title is not None:
+            self._title = title
+        if desc is not None:
+            self._desc = desc
+        if self._compact:
+            self._fit_width()
+        self._layout_text()
+
     # ---------------------------------------------------------------- 内部
     def _cache_clear(self):
         """主题/宽度变了就把出好的图丢掉重来。"""
@@ -2100,6 +2122,19 @@ class SwitchRow(tk.Canvas):
         self._redraw()
         self._layout_text()
 
+    def _accent_rgb(self):
+        return self._rgb(self.theme.get(self._accent, "#2f7fd1"))
+
+    def _fit_width(self):
+        """紧凑形态：宽度 = 开关 + 间距 + 文字宽，多一点余量。"""
+        try:
+            宽 = (self._PAD_L + self._SW + self._GAP
+                  + tkfont.Font(font=self._font).measure(self._title) + 4)
+            self.configure(width=宽)
+            self._cache_clear()
+        except Exception:
+            pass
+
     def _warn_color(self):
         """警示语颜色：浅色主题用鲜红，深色主题用亮红 —— 都要够扎眼。"""
         try:
@@ -2110,7 +2145,7 @@ class SwitchRow(tk.Canvas):
         return self._WARN_LIGHT
 
     def _layout_text(self):
-        """标题跟在开关右边，说明跟在标题右边（用画布文字，字体渲染比 PIL 好）。"""
+        """文字用画布文字（字体渲染比 PIL 好）；紧凑形态只有标题。"""
         x = self._PAD_L + self._SW + self._GAP
         y = self._h / 2.0
         self.coords(self._title_id, x, y)
@@ -2120,8 +2155,10 @@ class SwitchRow(tk.Canvas):
         开 = self._t > 0.5
         self.itemconfig(
             self._desc_id,
-            text=self._desc if not 开 else "⚠ 已开启：改动会直接写入清单",
+            text=self._desc if not 开 else self._warn_desc,
             fill=self._warn_color() if 开 else self.theme.get("muted_fg", "#888"))
+        if self._compact:
+            self.itemconfig(self._desc_id, text="")
         self.tag_raise("txt")
 
     def _text_width(self):
@@ -2129,7 +2166,7 @@ class SwitchRow(tk.Canvas):
             b = self.bbox(self._title_id)
             return max(1, b[2] - b[0])
         except Exception:
-            return tkfont.Font(family="微软雅黑", size=10, weight="bold").measure(self._title)
+            return tkfont.Font(font=self._font).measure(self._title)
 
     def _animate(self):
         """按**真实时间**插值：Tk 的 after 说 10ms 实际可能 15ms，按帧数算时长会飘。"""
@@ -2167,8 +2204,7 @@ class SwitchRow(tk.Canvas):
             高 = max(8, self._h - 6)
             self._card_off = _圆角矩形((self._cw, 高), 10,
                                        self._rgb(self.theme.get("entry_bg", "#efefef")))
-            self._card_on = _圆角矩形((self._cw, 高), 10,
-                                      self._rgb(self.theme.get("edit_bg", "#ff9800")))
+            self._card_on = _圆角矩形((self._cw, 高), 10, self._accent_rgb())
         return self._card_off, self._card_on
 
     def _track_imgs(self):
@@ -2176,7 +2212,7 @@ class SwitchRow(tk.Canvas):
             self._track_off = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
                                         self._rgb(self.theme.get("muted_fg", "#9e9e9e")))
             self._track_on = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
-                                       self._rgb(self.theme.get("edit_bg", "#ff9800")))
+                                       self._accent_rgb())
         return self._track_off, self._track_on
 
     def _knob_img(self):
@@ -2187,12 +2223,13 @@ class SwitchRow(tk.Canvas):
         return self._knob
 
     def _redraw(self):
-        self._cw = max(60, int(self.winfo_width()))
+        self._cw = max(self._SW + 4, int(self.winfo_width()))
         高 = self._h
         帧 = _PILImage.new("RGBA", (self._cw, 高), (0, 0, 0, 0))
-        off, on = self._card_imgs()
-        卡片 = _PILImage.blend(off, on, max(0.0, min(1.0, 0.18 * self._t)))
-        帧.alpha_composite(卡片, (0, 3))
+        if not self._compact:                  # 只有卡片形态才铺底
+            off, on = self._card_imgs()
+            卡片 = _PILImage.blend(off, on, max(0.0, min(1.0, 0.18 * self._t)))
+            帧.alpha_composite(卡片, (0, 3))
         toff, ton = self._track_imgs()
         轨道 = _PILImage.blend(toff, ton, max(0.0, min(1.0, self._t)))
         ox, oy = self._PAD_L, int((高 - self._SH) / 2)

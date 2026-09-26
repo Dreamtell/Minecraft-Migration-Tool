@@ -831,6 +831,13 @@ class MigrationGUI:
         # 这些区域用的是专用配色，通用刷新会把它们刷成普通背景，这里逐个补回来
         if hasattr(self, 'opt_frame'):
             self.opt_frame.configure(bg=self.theme["bg"])
+        for _name in ("dry_run_sw", "overwrite_sw"):
+            _sw = getattr(self, _name, None)
+            if _sw is not None:
+                try:
+                    _sw.set_theme(self.theme)
+                except Exception:
+                    pass
         if hasattr(self, 'edit_switch'):
             try:
                 self.edit_switch.set_theme(self.theme)     # 开关卡片是自绘的，重出图
@@ -2886,23 +2893,32 @@ class MigrationGUI:
         except Exception:
             pass
 
+    def _on_dry_run_switch(self):
+        """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""
+        self.dry_run.set(self.dry_run_sw.get())
+        self.save_config()
+
+    def _on_overwrite_switch(self):
+        self.overwrite_mods.set(self.overwrite_sw.get())
+        self.save_config()
+
     def _create_bottom_widgets(self):
         self.opt_frame = tk.Frame(self.root, bg=self.theme["bg"])
         self.opt_frame.pack(fill="x", padx=10, pady=5)
-        # 勾选框要显式上色：默认的系统浅灰和深色主题摆一起非常违和
-        cb_style = dict(bg=self.theme["bg"], fg=self.theme["fg"],
-                        activebackground=self.theme["bg"],
-                        activeforeground=self.theme["fg"],
-                        selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
-                        highlightthickness=0, bd=0)
-        self.dry_run_cb = tk.Checkbutton(self.opt_frame, text="模拟运行（仅显示操作）",
-                                         variable=self.dry_run, command=self.save_config,
-                                         **cb_style)
-        self.dry_run_cb.pack(side="left")
-        self.overwrite_cb = tk.Checkbutton(self.opt_frame, text="覆盖已存在的模组",
-                                           variable=self.overwrite_mods,
-                                           command=self.save_config, **cb_style)
-        self.overwrite_cb.pack(side="left", padx=20)
+        # 这两个原来也是方框勾选框，跟上面的编辑开关统一成自绘开关（紧凑形态：只有
+        # 小开关 + 一行文字，不铺卡片底）。强调色用主题的选中蓝，别用橙 —— 它们不是危险操作。
+        self.dry_run_sw = SwitchRow(
+            self.opt_frame, self.theme, "模拟运行（仅显示操作）",
+            command=self._on_dry_run_switch, compact=True, accent="card_sel_bar")
+        self.dry_run_sw.pack(side="left")
+        self.overwrite_sw = SwitchRow(
+            self.opt_frame, self.theme, "覆盖已存在的模组",
+            command=self._on_overwrite_switch, compact=True, accent="card_sel_bar")
+        self.overwrite_sw.pack(side="left", padx=(20, 0))
+        self.dry_run_sw.set(self.dry_run.get())
+        self.overwrite_sw.set(self.overwrite_mods.get())
+        self.dry_run_cb = self.dry_run_sw        # 兼容旧引用
+        self.overwrite_cb = self.overwrite_sw
         self._stage()
 
         # 右侧按钮组
