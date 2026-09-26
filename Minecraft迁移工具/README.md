@@ -120,8 +120,12 @@
   释放统一丢回 Tk 的 after（`hooks["defer"]`）。顺带给详情窗做了**单实例**：同一个模组
   连点两下 ℹ 只把已有窗口抬到前面，不再堆窗口（用户实际就是连点两下崩的）
 - **两个 Qt 窗口都能切回 Tk**（设置 →「🗂 放大查看」）：`big_view_backend` 和
-  `diff_backend` 都是 `qt` / `tk` 二选一。遇到窗口相关的怪问题可以先把它们切到经典实现，
-  功能和数据完全一样，只是观感旧一点
+  `diff_backend` 都是 `qt` / `tk` 二选一；上面还有一个**总开关「启用 PySide6 窗口」**
+  （`qt_enabled`）—— 关掉之后**主进程完全不再加载 Qt**（连启动闪屏都不碰，
+  `_qt_available()` 直接返回 False，放大查看/差异窗口都走 Tk 版）。
+  验证脚本断言"`sys.modules` 里没有 PySide6 / shiboken6"。
+  遇到那个 GIL 致命错误时先关它：如果不再崩，问题就锁定在"Tk 与 Qt 同进程"；
+  如果还崩，就与 Qt 无关，得往 PIL / pywin32 / Tk 那边查
 - **崩溃现场会落文件**：`app.py` 启动时 `faulthandler.enable(..., all_threads=True)`
   写到 `~/.minecraft_migrate_fatal.log`（默认只打 stderr，GUI 启动经常看不到）；
   另外 `~/.minecraft_migrate_clicks.log` 记着关键操作（打开详情/开关 Qt 窗口等）的时间线，
@@ -509,6 +513,11 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **加了"纯 Tk 模式"总开关来切分问题域**（设置 →「🗂 放大查看」→「启用 PySide6 窗口」，
+  配置键 `qt_enabled`）。关掉后**主进程完全不加载 Qt**：`_qt_available()` 直接返回 False、
+  放大查看/差异窗口走 Tk 版、连启动闪屏都不去 `import splash_qt`（那一步会顺带把 PySide6
+  载进主进程）。这是为了确认那个 GIL 致命错误到底跟不跟 Qt 有关 —— 关掉还崩就不是它。
+  验证脚本 `_dctest/验证纯Tk模式.py` 断言 `sys.modules` 里没有 PySide6/shiboken6
 - **第四次崩溃：把"建窗/显示窗口"也挪出 Qt 事件栈**。这次先读了用户机器上的现场：
   `~/.minecraft_migrate_fatal.log` 是空的（**`faulthandler` 抓不到这类 GIL 致命错误**，
   它只覆盖段错误/abort），但 `~/.minecraft_migrate_clicks.log` 记着崩前刚

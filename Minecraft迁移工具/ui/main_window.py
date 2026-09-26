@@ -358,6 +358,8 @@ class MigrationGUI:
         self.diff_backend = str(self.config.get("diff_backend", "qt") or "qt")
         if self.diff_backend not in ("qt", "tk"):
             self.diff_backend = "qt"
+        # 总开关：关掉后主进程完全不加载/不使用 Qt（排查"Tk 与 Qt 同进程"用）
+        self.qt_enabled = bool(self.config.get("qt_enabled", True))
         # 放大查看窗口打开时用哪个视图：table=表格 / cards=卡片（设置里能选）
         self.big_view_view = str(self.config.get("big_view_view", "table") or "table")
         if self.big_view_view not in ("table", "cards"):
@@ -565,6 +567,7 @@ class MigrationGUI:
             "lock_mode": str(getattr(self, "lock_mode", "all")),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
+            "qt_enabled": bool(getattr(self, "qt_enabled", True)),
             "big_view_view": str(getattr(self, "big_view_view", "table")),
             # 实时读盘：不要用启动时的缓存值，否则外部改过的窗口会被这里覆盖回去
             "double_click_sec": float(_dc_now()[0]),
@@ -1612,6 +1615,13 @@ class MigrationGUI:
 
         # ---------- 放大查看窗口用什么实现 ----------
         box_view = section("view", page_view)
+        # 总开关：关掉之后主进程完全不加载 Qt（出问题时先把这条打开来定位）
+        self.settings_qt_sw = SwitchRow(
+            box_view, self.theme, "启用 PySide6 窗口",
+            desc="关掉 = 纯 Tk 模式：主进程不再加载 Qt（重启后生效）",
+            command=self._on_qt_switch, accent="card_sel_bar")
+        self.settings_qt_sw.pack(fill="x", pady=(0, 8))
+        self.settings_qt_sw.set(getattr(self, "qt_enabled", True))
         self.settings_view_var = tk.StringVar(value=getattr(self, "big_view_backend", "qt"))
         _qt_ok, _qt_why = self._qt_available()
         for value, text in _BIG_VIEW_BACKENDS:
@@ -1890,6 +1900,8 @@ class MigrationGUI:
     # ------------------------------------------------------------------ #
     def _qt_available(self):
         """PySide6 是否可用。返回 (bool, 给用户看的原因)。"""
+        if not getattr(self, "qt_enabled", True):
+            return (False, "已在设置里关掉 PySide6（纯 Tk 模式）：主进程不再加载 Qt。")
         cached = getattr(self, "_qt_ok_cache", None)
         if cached is not None:
             return cached
@@ -1904,6 +1916,25 @@ class MigrationGUI:
                            f"（{type(e).__name__}: {e}）")
         self._qt_ok_cache = cached
         return cached
+
+    def _set_qt_enabled(self, value):
+        """总开关：关掉之后主进程完全不碰 Qt（放大查看/差异窗口都走 Tk 版）。
+
+        排查用：如果关掉后那个 GIL 致命错误不再出现，问题就锁定在"Tk 与 Qt 同进程"。
+        """
+        self.qt_enabled = bool(value)
+        self._qt_ok_cache = None
+        self.save_config()
+        self.log("🅆 PySide6 %s" % ("已启用" if self.qt_enabled else
+                                    "已关闭（纯 Tk 模式，重启后生效）"),
+                 level="INFO", save=False)
+
+    def _on_qt_switch(self):
+        """设置页那个总开关：先同步变量再应用（自绘开关只翻自己的状态）。"""
+        try:
+            self._set_qt_enabled(self.settings_qt_sw.get())
+        except Exception:
+            return
 
     def _set_big_view_backend(self, value):
         """放大查看窗口换实现（下一次打开生效）。"""
@@ -2021,6 +2052,10 @@ class MigrationGUI:
 
     def _open_big_view_qt(self, source_text, title):
         """用 PySide6 打开"放大查看"。返回 True 表示已接管。"""
+        ok, why = self._qt_available()
+        if not ok:
+            self.log("ℹ " + why, level="INFO", save=False)
+            return False
         try:
             from ui import qt_big_view as Q
         except Exception as e:
@@ -4323,8 +4358,9 @@ class MigrationGUI:
         """
         self.diff_qt = None
         self.diff_window = None
-        if getattr(self, "diff_backend", "qt") != "qt":
-            # 设置里选了经典 Tk 版（或从 Qt 版遇到过问题时手动切过来）
+        _qt_ok = self._qt_available()[0]
+        if getattr(self, "diff_backend", "qt") != "qt" or not _qt_ok:
+            # 设置里选了经典 Tk 版，或总开关关了 PySide6，或 PySide6 不可用
             self.diff_window = show_diff_window(self.root, data, self.theme,
                                                 self.current_theme, apply_callback)
             return self.diff_window

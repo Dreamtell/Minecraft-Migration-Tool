@@ -124,11 +124,15 @@ def main():
     # 等主界面开始构建时闪屏正好已经画出来了。放在预热之后的话，用户会先愣一下
     # 才看到卡片。
     qt_splash = None
-    splash_on = bool(load_raw_config().get("splash", True))
+    _raw_cfg = load_raw_config()
+    splash_on = bool(_raw_cfg.get("splash", True))
+    # 设置里关掉 PySide6（纯 Tk 模式）时，连闪屏都别去碰 Qt：
+    # `from ui import splash_qt` 会顺带把 PySide6 载进主进程，那就不是"纯 Tk"了
+    qt_allowed = bool(_raw_cfg.get("qt_enabled", True))
     splash_t0 = time.perf_counter()
     splash_qt = None
     qt_handle = None
-    if splash_on and SPLASH_QT:
+    if splash_on and SPLASH_QT and qt_allowed:
         try:
             from ui import splash_qt as splash_qt_mod
             # 只把子进程拉起来、不等它就绪：它自己启动要 ~0.4s，正好和下面的
