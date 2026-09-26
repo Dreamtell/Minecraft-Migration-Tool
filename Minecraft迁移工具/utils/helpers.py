@@ -2001,11 +2001,11 @@ class SwitchRow(tk.Canvas):
     """一行「开关 + 标题 + 说明」的现代卡片，整条都能点。
 
     自绘（PIL 出图 + canvas 贴图）：圆角卡片底 + iOS 那种圆角开关 + 标题/说明文字。
-    比原生 Checkbutton 干净得多，和项目里别的自绘控件同一套路子。
 
-    - 开关滑动 120ms 动画（逐帧 interpolate，和窗口里别的动画一样用 after）；
-    - 整条悬停会微微提亮，开关上悬停时滑块更亮；
-    - 「开启」时卡片和开关染成主题的强调色，说明文字也跟着换成警示语气。
+    - 开关滑动约 130ms，**按真实时间插值**（Tk 的 after 精度只有 ~15ms，按帧数计时长会飘）；
+    - 所有静态图（卡片底、轨道、滑块）都缓存，动画每帧只做合成 + 贴图，帧间隔才稳得住；
+    - 圆角与圆形一律走 4 倍超采样（滑块原来直接 ellipse，圆边是有锯齿的）；
+    - 开启时卡片和开关染成主题强调色，说明文字换成警示语气；悬停整条微亮。
 
     用法：
         row = SwitchRow(parent, theme, "主界面编辑", "直接改动清单文字 · 谨慎使用",
@@ -2018,7 +2018,8 @@ class SwitchRow(tk.Canvas):
     _KNOB = 16                  # 滑块直径
     _PAD_L = 12                 # 左边距
     _GAP = 12                   # 开关与文字之间
-    _TICK_MS = 12
+    _TICK_MS = 10               # 帧间隔；实际进度按真实时间算，所以这个数只影响细腻度
+    _DURATION = 0.13            # 动画时长（秒）
 
     def __init__(self, parent, theme, title, desc="", command=None, height=46, **kw):
         try:
@@ -2043,7 +2044,8 @@ class SwitchRow(tk.Canvas):
                                           font=("微软雅黑", 10, "bold"))
         self._desc_id = self.create_text(0, 0, anchor="w", tags="txt",
                                          font=("微软雅黑", 9))
-        self.bind("<Configure>", lambda _e: self._redraw())
+        self._cache_clear()
+        self.bind("<Configure>", lambda _e: self._on_resize())
         self.bind("<Button-1>", lambda _e: self.toggle())
         self.bind("<Enter>", lambda _e: self._set_hover(True))
         self.bind("<Leave>", lambda _e: self._set_hover(False))
@@ -2056,7 +2058,7 @@ class SwitchRow(tk.Canvas):
 
     def set(self, on, animate=False):
         on = bool(on)
-        if on == self._on and (self._t in (0.0, 1.0)):
+        if on == self._on and self._t in (0.0, 1.0):
             return
         self._on = on
         if animate:
@@ -2080,10 +2082,22 @@ class SwitchRow(tk.Canvas):
             self.configure(bg=theme.get("bg", "#f0f0f0"))
         except Exception:
             pass
+        self._cache_clear()
         self._redraw()
         self._layout_text()
 
     # ---------------------------------------------------------------- 内部
+    def _cache_clear(self):
+        """主题/宽度变了就把出好的图丢掉重来。"""
+        self._card_off = self._card_on = None
+        self._track_off = self._track_on = None
+        self._knob = self._knob_shadow = None
+
+    def _on_resize(self):
+        self._cache_clear()
+        self._redraw()
+        self._layout_text()
+
     def _set_hover(self, on):
         if on != self._hover:
             self._hover = on
@@ -2096,11 +2110,12 @@ class SwitchRow(tk.Canvas):
             self._redraw()
 
     def _layout_text(self):
-        """标题跟在开关右边，说明跟在标题右边（都用画布文字，字体渲染比 PIL 好）。"""
+        """标题跟在开关右边，说明跟在标题右边（用画布文字，字体渲染比 PIL 好）。"""
         x = self._PAD_L + self._SW + self._GAP
         y = self._h / 2.0
         self.coords(self._title_id, x, y)
-        self.itemconfig(self._title_id, text=self._title, fill=self.theme.get("fg", "#222"))
+        self.itemconfig(self._title_id, text=self._title,
+                        fill=self.theme.get("fg", "#222"))
         self.coords(self._desc_id, x + self._text_width() + 14, y)
         开 = self._t > 0.5
         self.itemconfig(
@@ -2112,11 +2127,13 @@ class SwitchRow(tk.Canvas):
 
     def _text_width(self):
         try:
-            return max(1, self.bbox(self._title_id)[2] - self.bbox(self._title_id)[0])
+            b = self.bbox(self._title_id)
+            return max(1, b[2] - b[0])
         except Exception:
             return tkfont.Font(family="微软雅黑", size=10, weight="bold").measure(self._title)
 
     def _animate(self):
+        """按**真实时间**插值：Tk 的 after 说 10ms 实际可能 15ms，按帧数算时长会飘。"""
         if self._job is not None:
             try:
                 self.after_cancel(self._job)
@@ -2124,60 +2141,74 @@ class SwitchRow(tk.Canvas):
                 pass
         目标 = 1.0 if self._on else 0.0
         起点 = self._t
+        开始 = time.perf_counter()
 
-        def 帧(步=0):
+        def 帧():
             self._job = None
-            步 += 1
-            总数 = 10
-            k = min(1.0, 步 / float(总数))
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            k = min(1.0, (time.perf_counter() - 开始) / self._DURATION)
             缓动 = 1.0 - (1.0 - k) ** 3            # OutCubic
             self._t = 起点 + (目标 - 起点) * 缓动
             self._redraw()
             if k < 1.0:
-                self._job = self.after(self._TICK_MS, lambda: 帧(步))
+                self._job = self.after(self._TICK_MS, 帧)
             else:
                 self._t = 目标
                 self._redraw()
                 self._layout_text()
         帧()
 
+    # ---- 出图（缓存） ----
+    def _card_imgs(self):
+        if self._card_off is None:
+            高 = max(8, self._h - 6)
+            self._card_off = _圆角矩形((self._cw, 高), 10,
+                                       self._rgb(self.theme.get("entry_bg", "#efefef")))
+            self._card_on = _圆角矩形((self._cw, 高), 10,
+                                      self._rgb(self.theme.get("edit_bg", "#ff9800")))
+        return self._card_off, self._card_on
+
+    def _track_imgs(self):
+        if self._track_off is None:
+            self._track_off = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
+                                        self._rgb(self.theme.get("muted_fg", "#9e9e9e")))
+            self._track_on = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
+                                       self._rgb(self.theme.get("edit_bg", "#ff9800")))
+        return self._track_off, self._track_on
+
+    def _knob_imgs(self):
+        if self._knob is None:
+            # 圆形也走 _圆角矩形（半径=半边）—— 4 倍超采样，圆边才不会有锯齿
+            self._knob = _圆角矩形((self._KNOB, self._KNOB), self._KNOB / 2.0,
+                                   (255, 255, 255, 255))
+            尺寸 = self._KNOB + 4
+            self._knob_shadow = _圆角矩形((尺寸, 尺寸), 尺寸 / 2.0, (0, 0, 0, 42))
+        return self._knob, self._knob_shadow
+
     def _redraw(self):
-        宽 = max(60, int(self.winfo_width()))
-        self._cw = 宽
+        self._cw = max(60, int(self.winfo_width()))
         高 = self._h
-        卡高 = max(8, 高 - 6)
-        th = self.theme
-        卡片 = _圆角矩形((宽, 卡高), 10, self._rgb(th.get("entry_bg", "#efefef")))
-        if self._t > 0:                              # 开启：往强调色上靠
-            暖 = _圆角矩形((宽, 卡高), 10, self._rgb(th.get("edit_bg", "#ff9800")))
-            卡片 = _PILImage.blend(卡片, 暖, 0.16 * self._t)
-        if self._hover:                              # 悬停：整体提亮一点
-            白 = _PILImage.new("RGBA", 卡片.size, (255, 255, 255, 18))
-            卡片.alpha_composite(白)
-        帧 = _PILImage.new("RGBA", (宽, 高), (0, 0, 0, 0))
+        帧 = _PILImage.new("RGBA", (self._cw, 高), (0, 0, 0, 0))
+        off, on = self._card_imgs()
+        卡片 = _PILImage.blend(off, on, max(0.0, min(1.0, 0.18 * self._t)))
         帧.alpha_composite(卡片, (0, 3))
-        # 开关轨道
-        轨道色 = self._rgb(th.get("muted_fg", "#9e9e9e"))
-        轨道 = _圆角矩形((self._SW, self._SH), self._SH / 2.0, 轨道色)
-        if self._t > 0:
-            亮 = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
-                           self._rgb(th.get("edit_bg", "#ff9800")))
-            轨道 = _PILImage.blend(轨道, 亮, self._t)
+        if self._hover:                       # 悬停：整条微亮
+            白 = _PILImage.new("RGBA", (self._cw, 高 - 6), (255, 255, 255, 16))
+            帧.alpha_composite(白, (0, 3))
+        toff, ton = self._track_imgs()
+        轨道 = _PILImage.blend(toff, ton, max(0.0, min(1.0, self._t)))
         ox, oy = self._PAD_L, int((高 - self._SH) / 2)
         帧.alpha_composite(轨道, (ox, oy))
-        # 滑块
-        滑块色 = (255, 255, 255, 255) if not self._hover_knob else (255, 255, 255, 255)
-        滑块 = _PILImage.new("RGBA", (self._KNOB, self._KNOB), (0, 0, 0, 0))
-        _PILDraw.Draw(滑块).ellipse([0, 0, self._KNOB - 1, self._KNOB - 1],
-                                    fill=滑块色)
-        if self._hover_knob:
-            阴影 = _PILImage.new("RGBA", (self._KNOB, self._KNOB), (0, 0, 0, 0))
-            _PILDraw.Draw(阴影).ellipse([0, 0, self._KNOB - 1, self._KNOB - 1],
-                                        fill=(0, 0, 0, 40))
-            帧.alpha_composite(阴影, (ox + 3 + int((self._SW - 6 - self._KNOB) * self._t),
-                                      oy + (self._SH - self._KNOB) // 2 + 1))
+        knob, shadow = self._knob_imgs()
         行 = ox + 3 + int((self._SW - 6 - self._KNOB) * self._t)
-        帧.alpha_composite(滑块, (行, oy + (self._SH - self._KNOB) // 2))
+        ky = oy + (self._SH - self._KNOB) // 2
+        if self._hover_knob:
+            帧.alpha_composite(shadow, (行 - 2, ky - 2))
+        帧.alpha_composite(knob, (行, ky))
         try:
             self._photo = _PILImageTk.PhotoImage(帧)
             self.itemconfig(self._img, image=self._photo)
