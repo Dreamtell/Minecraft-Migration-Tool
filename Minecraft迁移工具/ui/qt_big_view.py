@@ -1310,15 +1310,30 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
 # 详情窗口（Qt 版）
 # --------------------------------------------------------------------------- #
 class DetailDialog(QtWidgets.QDialog):
+    """模组详情：两个标签页 —— 「📋 详情」和「🌐 联网搜索」。
+
+    联网搜索以前只在 Tk 版详情窗口里有（`ui/dialogs.show_mod_detail` 那块搜索区），
+    Qt 版一直缺，用户切过来之后问"我的联网搜索去哪了"。这里直接复用本模块现成的
+    联网搜索面板（`OnlineSearchDialog`）当第二个标签页，逻辑和工具栏那颗
+    「🌐 联网搜索」完全一样。
+    """
+
     def __init__(self, it: Entry, theme: dict, on_reveal, parent=None):
         super().__init__(parent)
         self.theme = theme
         self.setWindowTitle("模组详情")
-        self.setMinimumSize(560, 380)
+        self.setMinimumSize(620, 460)
         self.setStyleSheet("QDialog{background:%s;} QLabel{color:%s;}"
                            % (theme.get("bg"), theme.get("fg")))
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 14)
+        外层 = QtWidgets.QVBoxLayout(self)
+        外层.setContentsMargins(10, 8, 10, 10)
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
+        外层.addWidget(self.tabs)
+        页 = QtWidgets.QWidget()
+        self.tabs.addTab(页, "📋 详情")
+        lay = QtWidgets.QVBoxLayout(页)
+        lay.setContentsMargins(8, 10, 8, 6)
         lay.setSpacing(10)
         head = QtWidgets.QHBoxLayout()
         pm = QtGui.QPixmap(it.icon_path) if it.icon_path else QtGui.QPixmap()
@@ -1374,6 +1389,19 @@ class DetailDialog(QtWidgets.QDialog):
         btns.addWidget(reveal)
         btns.addWidget(close)
         lay.addLayout(btns)
+        # ---- 第二个标签页：联网搜索（和工具栏那颗按钮同一套面板） ----
+        try:
+            panel = OnlineSearchDialog(it.title, guess_query(it), str(it.version or ""),
+                                       str(it.modid or ""), theme, self)
+            try:
+                panel.btn_close.hide()          # 做成标签页就不需要里面那个"关闭"
+            except Exception:
+                pass
+            panel.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+            self.tabs.addTab(panel, "🌐 联网搜索")
+            self._search_panel = panel
+        except Exception as e:
+            trace_exc("DetailDialog/联网搜索标签", e)
 
     def showEvent(self, ev):
         """详情窗也上原生深色标题栏（和 Tk 版详情窗一致）。"""
