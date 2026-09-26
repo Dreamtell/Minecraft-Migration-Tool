@@ -881,6 +881,51 @@ class CardModel(QtCore.QAbstractListModel):
         return None
 
 
+class ScrollProgress(QtWidgets.QWidget):
+    """列表上方那条细进度条：整条 = 全部内容，亮的那一段 = 当前看到的一屏。
+
+    为什么不直接用 `QProgressBar`：那个自带百分比文字和厚边框，想要 6px 细条得拿 QSS
+    一点点抠掉；自绘反而更短，颜色也能直接跟着主题走。
+    """
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.theme = dict(theme)
+        self._pos = 0.0                     # 视口起点（0..1）
+        self._span = 1.0                    # 视口长度（占全部的比例）
+        self.setFixedHeight(6)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+
+    def set_range(self, value, maximum, page):
+        """按滚动条的值算位置与长度（内容不满一屏时整条都是亮的）。"""
+        总 = float(maximum) + float(page)
+        if 总 <= 0 or float(page) >= 总:
+            self._pos, self._span = 0.0, 1.0
+        else:
+            self._pos = max(0.0, min(1.0, float(value) / 总))
+            self._span = max(0.015, min(1.0, float(page) / 总))
+        self.update()
+
+    def set_theme(self, theme):
+        self.theme = dict(theme)
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        r = QtCore.QRectF(self.rect()).adjusted(0.0, 1.0, 0.0, -1.0)
+        高 = r.height()
+        半径 = 高 / 2.0
+        th = self.theme
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(th.get("entry_bg", "#e8e8e8")))          # 轨道
+        p.drawRoundedRect(r, 半径, 半径)
+        p.setBrush(QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))      # 当前这一屏
+        x = r.left() + r.width() * self._pos
+        宽 = max(8.0, r.width() * self._span)
+        p.drawRoundedRect(QtCore.QRectF(x, r.top(), 宽, 高), 半径, 半径)
+
+
 class TableDelegate(QtWidgets.QStyledItemDelegate):
     """表格视图的默认绘制 + 一点"进场/退场"效果。
 
@@ -1699,7 +1744,14 @@ class QtBigView(QtWidgets.QWidget):
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(self.table)
         self.stack.addWidget(self.cards)
+        # 列表上方的滚动进度条：整条 = 全部内容，亮段 = 当前看到的一屏
+        self.scroll_progress = ScrollProgress(th, self)
+        lay.addWidget(self.scroll_progress)
         lay.addWidget(self.stack, 1)
+        for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
+            sb.valueChanged.connect(self._update_scroll_progress)
+            sb.rangeChanged.connect(lambda *_a: self._update_scroll_progress())
+        self.stack.currentChanged.connect(lambda *_a: self._update_scroll_progress())
         if self._start_cards:                 # 设置里选了"打开就是卡片"
             self.stack.setCurrentIndex(1)
             self.btn_view.setText("📋 表格视图")
@@ -1752,6 +1804,9 @@ class QtBigView(QtWidgets.QWidget):
             self._update_summary()
         self.hint.setStyleSheet("color:%s;" % th.get("muted_fg"))
         self.hint_tag.setStyleSheet("color:%s;" % th.get("muted_fg"))
+        if getattr(self, "scroll_progress", None) is not None:
+            self.scroll_progress.set_theme(th)
+            self._update_scroll_progress()
         # 表格配色走调色板，**绝不能**给它设 QSS（见 _style_view_palette 的注释）
         _style_view_palette(self.table, th)
         self.table.horizontalHeader().setStyleSheet(_header_qss(th))
@@ -2340,6 +2395,14 @@ class QtBigView(QtWidgets.QWidget):
     def _active_view(self):
         """当前露在外面的是表格还是卡片（哪张看得见就按哪张算可见行）。"""
         return self.cards if self.stack.currentIndex() == 1 else self.table
+
+    def _update_scroll_progress(self):
+        """按当前视图的滚动条更新顶部那条进度条（内容不满一屏时它就是整条亮的）。"""
+        try:
+            sb = self._active_view().verticalScrollBar()
+            self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep())
+        except Exception:
+            trace_exc("qt_big_view", "更新滚动进度")
 
     def _on_sum_tick(self):
         """200ms 一次：先把攒下的扫描结果刷给"看得见的行"，再更新摘要。"""
