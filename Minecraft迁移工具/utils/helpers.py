@@ -1150,6 +1150,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     canvas.pack_propagate(False)
     canvas._icon_photo = None
     canvas._btn_disabled = False        # 只读标记：测试/排查时看按钮禁用状态
+    canvas._btn_colors = tuple(colors)  # 只读标记：按钮当前的主色（测试/排查用）
     bg_id = {"id": None}
 
     def _photos():

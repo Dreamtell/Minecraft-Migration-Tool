@@ -3220,7 +3220,7 @@ class MigrationGUI:
         self._stage()               # 这批有 6 个按钮，中间让一次
         self.clear_mods_btn = create_gradient_button(
             btn_frame, "🗑️ 清空清单", self.clear_mod_list,
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=gw("🗑️ 清空清单"), height=30, font=("微软雅黑", 9, "bold"))
         self.check_mods_btn = create_gradient_button(
             btn_frame, "🔎 检查清单模组是否存在（源目录）", self.check_modlist_existence,
@@ -3306,7 +3306,7 @@ class MigrationGUI:
         self.add_config_file_btn.pack(side="left", padx=5)
         self.clear_config_btn = create_gradient_button(
             btn_config_frame, "🗑️ 清空 config 清单", self.clear_config,
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=_grad_width("🗑️ 清空 config 清单"), height=30, font=("微软雅黑", 9, "bold"))
         self.clear_config_btn.pack(side="left", padx=5)
         self.config_check_btn = create_gradient_button(
@@ -3397,7 +3397,7 @@ class MigrationGUI:
         self.add_extra_file_btn.pack(side="left", padx=5)
         self.clear_extra_btn = create_gradient_button(
             btn_extra_frame, "🗑️ 清空其它文件清单", self.clear_extra_list,
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=_grad_width("🗑️ 清空其它文件清单"), height=30, font=("微软雅黑", 9, "bold"))
         self.clear_extra_btn.pack(side="left", padx=5)
         self.extra_check_btn = create_gradient_button(
@@ -3584,7 +3584,7 @@ class MigrationGUI:
         self.log_hint_label.pack(side="left", padx=(10, 0))
         btn_clear_log = create_gradient_button(
             log_toolbar, "🗑️ 清空日志", self.clear_log,
-            colors=("#757575", "#9e9e9e"),
+            colors=("#e53935", "#c62828"),
             width=_grad_width("🗑️ 清空日志"), height=30, font=("微软雅黑", 9, "bold"))
         btn_clear_log.pack(side="right", padx=5)
         btn_open_log = create_gradient_button(

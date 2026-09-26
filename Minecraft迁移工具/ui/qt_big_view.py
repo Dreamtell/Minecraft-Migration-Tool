@@ -1996,7 +1996,7 @@ class QtBigView(QtWidgets.QWidget):
         self.btn_inv = AnimButton("⇄ 反选", "#7c6cf0", "#5b4bd6", th)
         # 不要写"清空"：它清的是**勾选**（选中态），不是清空清单 —— 那有"移出清单"负责，
         # 两个都叫清空会让人以为清单被删了
-        self.btn_none = AnimButton("⬜ 清空勾选", "#6b7280", "#4b5563", th)
+        self.btn_none = AnimButton("⬜ 清空勾选", "#e53935", "#c62828", th)
         self.btn_all.setToolTip("勾选当前显示的所有条目（不会改清单内容）")
         self.btn_inv.setToolTip("把已勾选 / 未勾选反过来（只作用于当前显示）")
         self.btn_none.setToolTip("取消所有勾选（只清选中态，清单内容不动）")

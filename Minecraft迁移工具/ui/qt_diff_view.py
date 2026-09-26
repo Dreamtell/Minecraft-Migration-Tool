@@ -359,7 +359,8 @@ class QtDiffView(QtWidgets.QWidget):
         self.btn_only = AnimButton("📌 全选目标独有", "#6b7280", "#4b5563", th)
         self.btn_combo = AnimButton("▾ 组合选择", "#26a69a", "#00838f", th)
         self.btn_all = AnimButton("☑ 全选", "#7c6cf0", "#5b4bd6", th)
-        self.btn_none = AnimButton("⬜ 清空勾选", "#6b7280", "#4b5563", th)
+        # 清空勾选是"破坏性"操作（勾好了手一抖就全没了），用红色
+        self.btn_none = AnimButton("⬜ 清空勾选", "#e53935", "#c62828", th)
         self.btn_view = AnimButton("🗂 卡片视图", "#0ea5a4", "#0b7f7f", th)
         for b in (self.btn_new, self.btn_upd, self.btn_only, self.btn_combo,
                   self.btn_all, self.btn_none):
