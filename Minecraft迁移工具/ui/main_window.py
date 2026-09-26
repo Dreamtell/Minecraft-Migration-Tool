@@ -2087,6 +2087,11 @@ class MigrationGUI:
         if not self._qt_views[:-1]:
             self._pump_qt()          # 首个窗口才需要启动泵
         self.log(f"🗂 已打开 PySide6 试点窗口：{title}（{len(entries)} 项）", level="INFO", save=False)
+        try:
+            from utils.helpers import trace_line
+            trace_line("打开 Qt 放大查看 %s rows=%d" % (title, len(entries)))
+        except Exception:
+            pass
         return True
 
     def _toggle_online_tags(self):

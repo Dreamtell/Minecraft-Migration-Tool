@@ -292,12 +292,15 @@ class QtDiffView(QtWidgets.QWidget):
         self._dialogs = []
         self._sel_anims = {}          # id(Entry) -> Tk after job（卡片选中动画）
         self._build()
+        # 图标懒解析：**用 Tk 的 after 驱动，不用 QTimer**。
+        # 解析一个图标要解压 jar + PIL 解码（主线程上 ~9ms），放在 Qt 的定时器回调里
+        # 就是"在 Qt 的事件处理内部再回调进 Python"—— 那正是 shiboken 线程状态
+        # 保存/恢复最容易出错的地方。改到 Tk 的 after 里做，和别的 Tk 操作同一上下文；
+        # 间隔也放宽到 120ms（413 个约 50 秒铺完，反正图标是慢慢出现的）。
+        self._icon_job = None
         self._icon_queue = list(range(len(self.store.items)))
-        self._icon_timer = QtCore.QTimer(self)
-        self._icon_timer.setInterval(25)     # 图标懒解析：每 25ms 解一个，不卡界面
-        self._icon_timer.timeout.connect(self._icon_tick)
         if self._icon_queue:
-            self._icon_timer.start()
+            self._schedule_icon()
 
     # ------------------------------------------------------------------ UI
     def _build(self):
@@ -548,6 +551,7 @@ class QtDiffView(QtWidgets.QWidget):
         """
         if not self.store.take_want_top():
             return
+        self._t("排序/过滤后回顶部")
         for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
             try:
                 sb.setValue(0)
@@ -568,6 +572,7 @@ class QtDiffView(QtWidgets.QWidget):
             target = row * row_h
         self.stack.setCurrentIndex(1 if cards else 0)
         self.btn_view.setText("📋 表格视图" if cards else "🗂 卡片视图")
+        self._t("切到%s" % ("卡片" if cards else "表格"))
         view = self.cards if cards else self.table
         sb = view.verticalScrollBar()
         try:
@@ -709,6 +714,14 @@ class QtDiffView(QtWidgets.QWidget):
         self.store.set_checked(pred)
         self._update_summary()
 
+    def _t(self, msg):
+        """记一行操作时间线（排查崩溃用：`.minecraft_migrate_clicks.log`）。"""
+        try:
+            from utils.helpers import trace_line
+            trace_line("差异窗口 %s" % msg)
+        except Exception:
+            pass
+
     def _defer(self, fn):
         """把"建窗 / 弹菜单 / 弹框"这类重操作丢回 Tk 的 after，不在 Qt 事件栈上做。
 
@@ -813,6 +826,7 @@ class QtDiffView(QtWidgets.QWidget):
     # ------------------------------------------------------------------ 应用
     def _apply(self):
         files = self.store.checked_data()
+        self._t("应用所选 %d 个" % len(files))
         if not files:
             QtWidgets.QMessageBox.warning(self, "提示", "没有勾选任何模组")
             return
@@ -851,10 +865,27 @@ class QtDiffView(QtWidgets.QWidget):
         frac = self.scroll_progress.set_range(sb.value(), sb.maximum(), sb.pageStep())
         self.scroll_pct.setText("%d%%" % round(frac * 100))
 
+    def _schedule_icon(self):
+        """排下一张图标的解析（走 Tk 的 after；拿不到就退回 QTimer 单次触发）。"""
+        if not self._icon_queue or not self._alive:
+            return
+        after = self.hooks.get("after")
+        if after is not None:
+            try:
+                self._icon_job = after(120, self._icon_tick)
+                return
+            except Exception:
+                pass
+        try:
+            QtCore.QTimer.singleShot(120, self._icon_tick)
+            self._icon_job = None
+        except Exception:
+            self._icon_job = None
+
     def _icon_tick(self):
         """懒解析卡片图标：一次一个，解完通知那一行重画。"""
-        if not self._icon_queue:
-            self._icon_timer.stop()
+        self._icon_job = None
+        if not self._icon_queue or not self._alive:
             return
         row = self._icon_queue.pop(0)
         it = self.store.items[row] if 0 <= row < len(self.store.items) else None
@@ -871,6 +902,7 @@ class QtDiffView(QtWidgets.QWidget):
             r = self.store.row_of(it)
             if r >= 0:
                 self.store.row_data.emit(r)
+        self._schedule_icon()
 
     def keyPressEvent(self, ev):
         k = ev.key()
@@ -907,9 +939,20 @@ class QtDiffView(QtWidgets.QWidget):
 
     def closeEvent(self, ev):
         self._alive = False
+        self._t("关闭")
         try:
             self.scroll_progress.stop()
-            self._icon_timer.stop()
+        except Exception:
+            pass
+        job, self._icon_job = getattr(self, "_icon_job", None), None
+        cancel = self.hooks.get("after_cancel")
+        if job is not None and cancel is not None:
+            try:
+                cancel(job)
+            except Exception:
+                pass
+        try:
+            self._icon_queue = []
         except Exception:
             pass
         cancel = self.hooks.get("after_cancel")
