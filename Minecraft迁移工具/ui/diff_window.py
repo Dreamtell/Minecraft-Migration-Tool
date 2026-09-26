@@ -39,10 +39,17 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
 
     diff_win.bind("<Destroy>", on_diff_destroy)
 
-    # ---- 顶部提示 ----
-    tk.Label(diff_win, text="以下为扫描结果，勾选你希望复制到目标的模组（快速双击某行可打开模组详情）：",
-             font=("微软雅黑", 10), bg=theme["bg"], fg=theme["fg"]).grid(
-        row=0, column=0, columnspan=2, pady=5, sticky="w", padx=10)
+    # ---- 顶部：提示 + 视图切换（表格 / 卡片，和「放大查看」同一套） ----
+    head_bar = tk.Frame(diff_win, bg=theme["bg"])
+    head_bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
+    tk.Label(head_bar, text="以下为扫描结果，勾选你希望复制到目标的模组"
+                           "（单击切勾选，双击看详情）：",
+             font=("微软雅黑", 10), bg=theme["bg"], fg=theme["fg"]).pack(side="left")
+    btn_view = create_gradient_button(
+        head_bar, "🗂 卡片视图", lambda: toggle_view(),
+        colors=("#7e57c2", "#9575cd"),
+        width=118, height=28, font=("微软雅黑", 9, "bold"))
+    btn_view.pack(side="right")
 
     # 要让 ttk 的 Combobox（搜索范围/排序依据）跟着主题走，得先在 clam 主题下
     # 配置样式 —— 原来这里还配了 Diff.Treeview / TScrollbar，换成自绘表格后不需要了
@@ -191,6 +198,93 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
             else:
                 messagebox.showerror("错误", "找不到模组文件")
 
+    # ---- 卡片视图（和「放大查看」同一个控件） ----
+    view_state = {"cards": False}
+    card_state = {"list": None}
+    # 差异列表的状态没有 ✅/❌ 前缀，给卡片列表一套自己的 chip 配色
+    _STATUS_CHIP = {"新增": ("#2e7d32", "#ffffff"),
+                    "更新": ("#e65100", "#ffffff"),
+                    "目标独有": ("#546e7a", "#ffffff")}
+
+    def card_rows():
+        """按当前显示顺序生成卡片数据（和表格共用 visible / selection_state）。"""
+        rows_out = []
+        for idx in visible:
+            it = all_data[idx]
+            sub = " · ".join(x for x in (str(it[5]), str(it[7])) if x and x != "?")
+            rows_out.append({
+                "title": str(it[0]),
+                "subtitle": sub,
+                "version": str(it[6]),
+                "desc": str(it[4]) or "",
+                "icon_key": str(it[8]),
+                "status": str(it[1]),
+                "checked": bool(selection_state.get(idx)),
+                "dc_key": str(idx),
+            })
+        return rows_out
+
+    def _card_icon(row):
+        """卡片图标：从 jar 里取（解析有成本，卡片列表只在滚到时才要）。"""
+        path = row.get("icon_key") or ""
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            from core.scanner import get_mod_icon
+            from PIL import Image
+            icon_path = get_mod_icon(path)
+            return Image.open(icon_path).convert("RGBA") if icon_path else None
+        except Exception:
+            return None
+
+    def _card_check(i):
+        """卡片上的勾选：和表格视图共用同一份状态，只重画这一张卡。"""
+        if not (0 <= i < len(visible)):
+            return
+        idx = visible[i]
+        selection_state[idx] = not selection_state.get(idx, False)
+        if card_state["list"] is not None:
+            card_state["list"].update_row(i, card_rows()[i])
+
+    def _ensure_card():
+        if card_state["list"] is not None:
+            return card_state["list"]
+        from ui.card_list import ModCardList, default_fallback_icon
+        card = ModCardList(diff_win, theme, icon_provider=_card_icon,
+                           fallback_icon=default_fallback_icon(),
+                           status_colors=_STATUS_CHIP,
+                           on_check=_card_check,
+                           on_double_click=lambda i, e: open_mod_detail(
+                               visible[i] if 0 <= i < len(visible) else -1))
+        card.grid(row=1, column=0, sticky="nsew")
+        card.grid_remove()
+        card_state["list"] = card
+        diff_win._diff_card = card          # 主题切换/测试用得到
+        return card
+
+    def toggle_view():
+        """表格 ⇄ 卡片。两种视图共用 visible / selection_state，切过去数据一致。"""
+        try:
+            view_state["cards"] = not view_state["cards"]
+            if view_state["cards"]:
+                card = _ensure_card()
+                card.set_rows(card_rows())
+                table.grid_remove()
+                card.grid()
+                btn_view.set_text("📋 表格视图")
+            else:
+                if card_state["list"] is not None:
+                    card_state["list"].grid_remove()
+                table.grid()
+                btn_view.set_text("🗂 卡片视图")
+        except Exception as exc:
+            view_state["cards"] = False
+            try:
+                table.grid()
+            except Exception:
+                pass
+            messagebox.showwarning("提示", f"卡片视图不可用：{exc}")
+
     # ---- 排序功能 ----
     sort_field = tk.StringVar(value="文件名")
     sort_reverse = tk.BooleanVar(value=False)
@@ -263,6 +357,9 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback):
             visible.sort(key=lambda i: key_func(all_data[i]),
                          reverse=sort_reverse.get())
         table.refresh()
+        # 卡片视图开着的话，卡片也要跟着重算（两种视图共用 visible）
+        if view_state["cards"] and card_state["list"] is not None:
+            card_state["list"].set_rows(card_rows())
         # 底部统计：搜索过滤时提示「实际显示了几项」
         try:
             head = f"总计 {len(all_data)} 项差异"
@@ -480,10 +577,14 @@ def update_diff_theme(diff_win, theme, current_theme):
     diff_win._current_theme = theme
     diff_win._current_theme_name = current_theme
     diff_win.configure(bg=theme["bg"])
+    from ui.card_list import ModCardList       # 延迟导入（只在切主题时才需要）
 
     def update_widgets(widget):
         try:
-            if isinstance(widget, VirtualTable):
+            if isinstance(widget, ModCardList):
+                # 卡片列表也是自绘的（Frame 子类，必须排在 tk.Frame 前面）
+                widget.apply_theme(theme)
+            elif isinstance(widget, VirtualTable):
                 # 自绘表格：底色/表头/行都要显式喂新主题；行底色是按语义算的，
                 # 得用建窗时留下的那套（apply_theme 自带的默认 tag 不够用）。
                 # 注意必须排在最前 —— 它是 tk.Frame 的子类，会被 tk.Frame 分支吃掉。

@@ -109,10 +109,13 @@ class ModCardList(tk.Frame):
 
     def __init__(self, master, theme, icon_provider=None, on_click=None,
                  on_double_click=None, on_action=None, on_check=None,
-                 on_context=None, fallback_icon=None):
+                 on_context=None, fallback_icon=None, status_colors=None):
         super().__init__(master, bg=theme["bg"])
         self.theme = theme
         self.rows = []
+        # 状态 chip 的配色：默认按"存在性检测"那套（✅ 存在 / ❌ 缺失）；
+        # 差异窗口传自己的（新增 / 更新 / 目标独有）
+        self.status_colors = status_colors
         self.icon_provider = icon_provider          # 函数(row) -> PIL.Image 或 None
         self.on_click = on_click                    # 函数(index, event)
         self.on_double_click = on_double_click
@@ -715,9 +718,12 @@ class ModCardList(tk.Frame):
         reserve = self.ACTION_W * 3 + 8 if i == self._hover else 8
         # 状态 chip 永远排第一：这个窗口本来就是用来查存在性的
         status = str(row.get("status") or "…")
+        _status_palette = self.status_colors or {
+            "✅ 存在": ("#2e7d32", "#ffffff"),
+            "❌ 缺失": ("#c62828", "#ffffff"),
+        }
         chips = [(status.replace("✅", "").replace("❌", "").strip() or "检测中",
-                  {"✅ 存在": ("#2e7d32", "#ffffff"),
-                   "❌ 缺失": ("#c62828", "#ffffff")}.get(status, ("#546e7a", "#ffffff")))]
+                  _status_palette.get(status, ("#546e7a", "#ffffff")))]
         for tag in (row.get("tags") or []):
             chips.append((tag, TAG_COLORS.get(tag, ("#546e7a", "#ffffff"))))
         for text_c, (bg_c, fg_c) in chips[:4]:
