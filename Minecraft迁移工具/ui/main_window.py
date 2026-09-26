@@ -2679,6 +2679,8 @@ class MigrationGUI:
         self.source_path.trace_add("write", self.on_path_change)
         self.target_path.trace_add("write", self.on_path_change)
         self.world_name.trace_add("write", lambda *args: self.save_config())
+        # 点窗口空白处 = 退出主界面编辑模式（不用专门去够那个开关）
+        self.root.bind("<Button-1>", self._on_blank_click, add="+")
         # 底部声明
         self.bottom_frame = tk.Frame(self.root)
         self.bottom_frame.pack(fill="x", padx=10, pady=5)
@@ -6658,6 +6660,40 @@ class MigrationGUI:
         """
         self.edit_mode.set(self.edit_switch.get())
         self.toggle_edit_mode()
+
+    # 只有这几类控件才算"窗口空白"：Frame / LabelFrame / Label 是背景和说明文字，
+    # Tk、Toplevel 是窗口自身。按钮、输入框、滚动条、Canvas（含页签栏和渐变按钮）
+    # 都是"有意图的点击"，不当作空白。
+    _BLANK_CLASSES = ("Frame", "Labelframe", "Label", "Tk", "Toplevel")
+
+    def _on_blank_click(self, event):
+        """点击窗口空白处 = 退出主界面编辑模式。
+
+        编辑模式下改清单不用先去找那个开关，随手点一下背景就回到只读。
+        - 清单区（含里面的留白、编辑开关、工具条）不算空白，点它照旧编辑；
+        - 按钮 / 输入框 / 滚动条 / 页签栏也不算空白，免得手一滑就退出编辑。
+        """
+        try:
+            if not self.edit_mode.get():
+                return
+            w = event.widget
+            x = w
+            for _ in range(6):                      # 往上找几层，看是不是在清单区里
+                if x is None:
+                    break
+                if x is getattr(self, "list_area", None):
+                    return
+                x = getattr(x, "master", None)
+            if w.winfo_class() not in self._BLANK_CLASSES:
+                return
+        except Exception:
+            return
+        self.edit_mode.set(False)
+        self.toggle_edit_mode()
+        try:
+            self.root.focus_set()                   # 顺手把键盘焦点收回主窗口
+        except Exception:
+            pass
 
     def toggle_edit_mode(self):
         self._update_text_states()
