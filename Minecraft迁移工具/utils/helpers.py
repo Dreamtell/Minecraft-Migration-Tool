@@ -1995,3 +1995,198 @@ def bind_text_scroll(text_widget, on_view):
         text_widget.configure(yscrollcommand=包装)
     except Exception:
         trace_exc("helpers", "绑定文本框滚动")
+
+
+class SwitchRow(tk.Canvas):
+    """一行「开关 + 标题 + 说明」的现代卡片，整条都能点。
+
+    自绘（PIL 出图 + canvas 贴图）：圆角卡片底 + iOS 那种圆角开关 + 标题/说明文字。
+    比原生 Checkbutton 干净得多，和项目里别的自绘控件同一套路子。
+
+    - 开关滑动 120ms 动画（逐帧 interpolate，和窗口里别的动画一样用 after）；
+    - 整条悬停会微微提亮，开关上悬停时滑块更亮；
+    - 「开启」时卡片和开关染成主题的强调色，说明文字也跟着换成警示语气。
+
+    用法：
+        row = SwitchRow(parent, theme, "主界面编辑", "直接改动清单文字 · 谨慎使用",
+                        command=on_toggle)
+        row.set(True)      # 设置状态（animate=True 会滑过去）
+        row.get()          # 当前状态
+    """
+
+    _SW, _SH = 44, 22           # 开关轨道
+    _KNOB = 16                  # 滑块直径
+    _PAD_L = 12                 # 左边距
+    _GAP = 12                   # 开关与文字之间
+    _TICK_MS = 12
+
+    def __init__(self, parent, theme, title, desc="", command=None, height=46, **kw):
+        try:
+            bg = parent.cget("bg")
+        except Exception:
+            bg = theme.get("bg", "#f0f0f0")
+        super().__init__(parent, height=height, highlightthickness=0, bd=0, bg=bg, **kw)
+        self.theme = dict(theme)
+        self._title = title
+        self._desc = desc
+        self._command = command
+        self._h = int(height)
+        self._on = False
+        self._t = 0.0               # 0=关，1=开（动画中间值）
+        self._job = None
+        self._hover = False
+        self._hover_knob = False
+        self._cw = 0
+        self._photo = None
+        self._img = self.create_image(0, 0, anchor="nw")
+        self._title_id = self.create_text(0, 0, anchor="w", tags="txt",
+                                          font=("微软雅黑", 10, "bold"))
+        self._desc_id = self.create_text(0, 0, anchor="w", tags="txt",
+                                         font=("微软雅黑", 9))
+        self.bind("<Configure>", lambda _e: self._redraw())
+        self.bind("<Button-1>", lambda _e: self.toggle())
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<Motion>", self._on_motion)
+        self._layout_text()
+
+    # ---------------------------------------------------------------- 对外
+    def get(self):
+        return bool(self._on)
+
+    def set(self, on, animate=False):
+        on = bool(on)
+        if on == self._on and (self._t in (0.0, 1.0)):
+            return
+        self._on = on
+        if animate:
+            self._animate()
+        else:
+            self._t = 1.0 if on else 0.0
+            self._redraw()
+            self._layout_text()
+
+    def toggle(self):
+        self.set(not self._on, animate=True)
+        if self._command is not None:
+            try:
+                self._command()
+            except Exception:
+                trace_exc("helpers", "开关回调")
+
+    def set_theme(self, theme):
+        self.theme = dict(theme)
+        try:
+            self.configure(bg=theme.get("bg", "#f0f0f0"))
+        except Exception:
+            pass
+        self._redraw()
+        self._layout_text()
+
+    # ---------------------------------------------------------------- 内部
+    def _set_hover(self, on):
+        if on != self._hover:
+            self._hover = on
+            self._redraw()
+
+    def _on_motion(self, event):
+        在开关上 = self._PAD_L <= event.x <= self._PAD_L + self._SW
+        if 在开关上 != self._hover_knob:
+            self._hover_knob = 在开关上
+            self._redraw()
+
+    def _layout_text(self):
+        """标题跟在开关右边，说明跟在标题右边（都用画布文字，字体渲染比 PIL 好）。"""
+        x = self._PAD_L + self._SW + self._GAP
+        y = self._h / 2.0
+        self.coords(self._title_id, x, y)
+        self.itemconfig(self._title_id, text=self._title, fill=self.theme.get("fg", "#222"))
+        self.coords(self._desc_id, x + self._text_width() + 14, y)
+        开 = self._t > 0.5
+        self.itemconfig(
+            self._desc_id,
+            text=self._desc if not 开 else "⚠ 已开启：改动会直接写入清单",
+            fill=self.theme.get("fail_fg", "#c62828") if 开
+            else self.theme.get("muted_fg", "#888"))
+        self.tag_raise("txt")
+
+    def _text_width(self):
+        try:
+            return max(1, self.bbox(self._title_id)[2] - self.bbox(self._title_id)[0])
+        except Exception:
+            return tkfont.Font(family="微软雅黑", size=10, weight="bold").measure(self._title)
+
+    def _animate(self):
+        if self._job is not None:
+            try:
+                self.after_cancel(self._job)
+            except Exception:
+                pass
+        目标 = 1.0 if self._on else 0.0
+        起点 = self._t
+
+        def 帧(步=0):
+            self._job = None
+            步 += 1
+            总数 = 10
+            k = min(1.0, 步 / float(总数))
+            缓动 = 1.0 - (1.0 - k) ** 3            # OutCubic
+            self._t = 起点 + (目标 - 起点) * 缓动
+            self._redraw()
+            if k < 1.0:
+                self._job = self.after(self._TICK_MS, lambda: 帧(步))
+            else:
+                self._t = 目标
+                self._redraw()
+                self._layout_text()
+        帧()
+
+    def _redraw(self):
+        宽 = max(60, int(self.winfo_width()))
+        self._cw = 宽
+        高 = self._h
+        卡高 = max(8, 高 - 6)
+        th = self.theme
+        卡片 = _圆角矩形((宽, 卡高), 10, self._rgb(th.get("entry_bg", "#efefef")))
+        if self._t > 0:                              # 开启：往强调色上靠
+            暖 = _圆角矩形((宽, 卡高), 10, self._rgb(th.get("edit_bg", "#ff9800")))
+            卡片 = _PILImage.blend(卡片, 暖, 0.16 * self._t)
+        if self._hover:                              # 悬停：整体提亮一点
+            白 = _PILImage.new("RGBA", 卡片.size, (255, 255, 255, 18))
+            卡片.alpha_composite(白)
+        帧 = _PILImage.new("RGBA", (宽, 高), (0, 0, 0, 0))
+        帧.alpha_composite(卡片, (0, 3))
+        # 开关轨道
+        轨道色 = self._rgb(th.get("muted_fg", "#9e9e9e"))
+        轨道 = _圆角矩形((self._SW, self._SH), self._SH / 2.0, 轨道色)
+        if self._t > 0:
+            亮 = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
+                           self._rgb(th.get("edit_bg", "#ff9800")))
+            轨道 = _PILImage.blend(轨道, 亮, self._t)
+        ox, oy = self._PAD_L, int((高 - self._SH) / 2)
+        帧.alpha_composite(轨道, (ox, oy))
+        # 滑块
+        滑块色 = (255, 255, 255, 255) if not self._hover_knob else (255, 255, 255, 255)
+        滑块 = _PILImage.new("RGBA", (self._KNOB, self._KNOB), (0, 0, 0, 0))
+        _PILDraw.Draw(滑块).ellipse([0, 0, self._KNOB - 1, self._KNOB - 1],
+                                    fill=滑块色)
+        if self._hover_knob:
+            阴影 = _PILImage.new("RGBA", (self._KNOB, self._KNOB), (0, 0, 0, 0))
+            _PILDraw.Draw(阴影).ellipse([0, 0, self._KNOB - 1, self._KNOB - 1],
+                                        fill=(0, 0, 0, 40))
+            帧.alpha_composite(阴影, (ox + 3 + int((self._SW - 6 - self._KNOB) * self._t),
+                                      oy + (self._SH - self._KNOB) // 2 + 1))
+        行 = ox + 3 + int((self._SW - 6 - self._KNOB) * self._t)
+        帧.alpha_composite(滑块, (行, oy + (self._SH - self._KNOB) // 2))
+        try:
+            self._photo = _PILImageTk.PhotoImage(帧)
+            self.itemconfig(self._img, image=self._photo)
+        except Exception:
+            pass
+        self.tag_raise("txt")
+
+    def _rgb(self, 色, 缺省="#888888"):
+        try:
+            return tuple(int(str(色)[i:i + 2], 16) for i in (1, 3, 5))
+        except Exception:
+            return tuple(int(缺省[i:i + 2], 16) for i in (1, 3, 5))

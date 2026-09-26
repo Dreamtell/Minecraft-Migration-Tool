@@ -32,7 +32,7 @@ def _dc_now():
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
                            RoundedEntry, RoundedTextArea, circular_reveal, focus_window,
                            lighten_color, begin_bulk_scan, end_bulk_scan, LiquidProgress,
-                           bind_text_scroll,
+                           bind_text_scroll, SwitchRow,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
@@ -831,16 +831,9 @@ class MigrationGUI:
         # 这些区域用的是专用配色，通用刷新会把它们刷成普通背景，这里逐个补回来
         if hasattr(self, 'opt_frame'):
             self.opt_frame.configure(bg=self.theme["bg"])
-        if hasattr(self, 'edit_toolbar'):
+        if hasattr(self, 'edit_switch'):
             try:
-                self.edit_toolbar.configure(bg=self.theme["bg"])
-                self.edit_mode_cb.configure(
-                    bg=self.theme["edit_bg"], fg=self.theme["fg"],
-                    activebackground=self.theme["edit_bg"],
-                    activeforeground=self.theme["fg"],
-                    selectcolor=self.theme["edit_bg"])
-                self.edit_warn_label.configure(bg=self.theme["bg"],
-                                               fg=self.theme["fail_fg"])
+                self.edit_switch.set_theme(self.theme)     # 开关卡片是自绘的，重出图
             except Exception:
                 pass
         self._check_overflow()
@@ -2543,25 +2536,16 @@ class MigrationGUI:
         area.pack(fill="both", expand=True, padx=10, pady=5)
         self.list_area = area
 
-        # 编辑模式对三个清单都生效，所以工具条放在页外面（公共一行）
-        # 橙色（edit_bg）只用在勾选框那一小块，整栏和后面的警告文字都用普通背景——
-        # 这样既能突出"编辑模式"，又不会整条都在喊。
-        self.edit_toolbar = tk.Frame(area, bg=self.theme["bg"], relief=tk.RAISED, bd=2)
-        self.edit_toolbar.pack(fill="x", padx=5, pady=(0, 2))
-        self.edit_mode_cb = tk.Checkbutton(
-            self.edit_toolbar, text="🔓 启用主界面编辑（直接修改清单）",
-            variable=self.edit_mode, command=self.toggle_edit_mode,
-            bg=self.theme["edit_bg"], fg=self.theme["fg"],
-            activebackground=self.theme["edit_bg"],
-            activeforeground=self.theme["fg"],
-            selectcolor=self.theme["edit_bg"],
-            highlightthickness=0, font=("微软雅黑", 10, "bold"))
-        self.edit_mode_cb.pack(side="left", padx=5)
-        self._stage()
-        self.edit_warn_label = tk.Label(
-            self.edit_toolbar, text="⚠️ 编辑模式可能造成数据损坏，请谨慎操作！",
-            fg=self.theme["fail_fg"], bg=self.theme["bg"], font=("微软雅黑", 9))
-        self.edit_warn_label.pack(side="left", padx=10)
+        # 编辑模式对三个清单都生效，所以这一行放在页外面（公共一行）。
+        # 做成"开关卡片"（自绘：圆角底 + iOS 那种开关）：开启时整条染成强调色、
+        # 说明文字换成警示语气，比原来那个橙色方块勾选框干净。
+        self.edit_switch = SwitchRow(
+            area, self.theme, title="主界面编辑",
+            desc="直接改动清单文字 · 谨慎使用",
+            command=self.on_edit_switch)
+        self.edit_switch.pack(fill="x", padx=5, pady=(2, 4))
+        self.edit_switch.set(self.edit_mode.get())
+        self.edit_toolbar = self.edit_switch      # 兼容旧引用（主题同步等）
         self._stage()
 
         self.list_tabs = RoundedTabs(area, self.theme)
@@ -6380,8 +6364,23 @@ class MigrationGUI:
         self.extra_text.configure(state=state)
         self._check_overflow()
 
+    def on_edit_switch(self):
+        """开关被点：它只翻了自己的状态，这里把业务变量同步过去再应用。
+
+        （原来那个 Checkbutton 是"先翻 variable 再调 command"，换成自绘开关后
+        这一步得自己做，否则 toggle_edit_mode 读到的还是旧值。）
+        """
+        self.edit_mode.set(self.edit_switch.get())
+        self.toggle_edit_mode()
+
     def toggle_edit_mode(self):
         self._update_text_states()
+        # 开关卡片跟着状态走（从别处改 edit_mode 时也同步；值一致就别重启动画）
+        try:
+            if self.edit_switch.get() != self.edit_mode.get():
+                self.edit_switch.set(self.edit_mode.get(), animate=True)
+        except Exception:
+            pass
         if self.edit_mode.get():
             self.log("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="WARNING")
         else:
