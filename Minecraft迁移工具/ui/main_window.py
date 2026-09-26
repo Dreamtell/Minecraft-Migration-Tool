@@ -4504,7 +4504,12 @@ class MigrationGUI:
     def _handle_qt_host(self, kind, 信息, 消息):
         """子进程报上来的动作 —— 这里已经在 Tk 的 after 上下文里，改 Tk 是安全的。"""
         动作 = 消息.get("action")
-        if 动作 == "apply":
+        if 动作 == "ready":
+            # 子进程窗口建好了（缓动泵也起来了）
+            if not hasattr(self, "_qt_host_ready"):
+                self._qt_host_ready = {}
+            self._qt_host_ready[kind] = 消息
+        elif 动作 == "apply":
             cb = 信息.get("apply_cb")
             if cb is not None:
                 try:

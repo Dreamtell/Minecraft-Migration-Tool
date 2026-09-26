@@ -52,6 +52,8 @@ class DiffStore(QtCore.QObject):
 
     reset = QtCore.Signal()
     row_data = QtCore.Signal(int)
+    # 卡片上给哪些悬停操作图标（差异窗口没有"移出清单"，只给详情/打开位置）
+    card_actions = ("info", "reveal")
 
     def __init__(self, data, theme, parent=None):
         super().__init__(parent)
@@ -289,6 +291,7 @@ class QtDiffView(QtWidgets.QWidget):
         self.setMinimumSize(1120, 520)
         self.resize(1280, 640)
         self._dc_row = None
+        self._card_hit = (-1, None)   # 卡片上悬停图标的命中结果（点击时复用）
         self._dialogs = []
         self._sel_anims = {}          # id(Entry) -> Tk after job（卡片选中动画）
         self._build()
@@ -638,11 +641,32 @@ class QtDiffView(QtWidgets.QWidget):
         self._update_summary()
         self._show_detail(row)
 
+    def _card_action(self, row, action):
+        """点了卡片上的悬停图标：ℹ 开详情、📂 打开文件所在位置。"""
+        if not (0 <= row < len(self.store.order)):
+            return
+        it = self.store.at(row)
+        if action == "info":
+            self._show_detail(row)
+        elif action == "reveal":
+            jar = self.store.jar_of(it) or it.path
+            try:
+                QtCore.QProcess.startDetached("explorer", ["/select,", str(jar)])
+            except Exception:
+                pass
+
     def _on_card_click(self, index):
+        row, act = getattr(self, "_card_hit", (-1, None))
+        if act and row == index.row():
+            self._card_action(row, act)     # 点的是图标：只执行图标动作，不改勾选
+            return
         self._animate_sel(self.store.toggle(index.row()))
         self._update_summary()
 
     def _on_card_double(self, index):
+        row, act = getattr(self, "_card_hit", (-1, None))
+        if act and row == index.row():
+            return                          # 连点悬停图标不算"双击开详情"
         self._animate_sel(self.store.toggle(index.row()))   # 撤回第一下
         self._update_summary()
         self._show_detail(index.row())
@@ -659,15 +683,35 @@ class QtDiffView(QtWidgets.QWidget):
             self.table.viewport().update()
 
     def _card_mouse_move(self, ev):
-        idx = self.cards.indexAt(ev.position().toPoint())
+        """卡片上的悬停操作图标（ℹ 详情 / 📂 打开位置）也要能点中。
+
+        命中在鼠标移动时算好存进 `_card_hit`，点击时直接复用 —— 和放大窗口同一套。
+        """
+        pos = ev.position().toPoint()
+        idx = self.cards.indexAt(pos)
         row = idx.row() if idx.isValid() else -1
-        if row != self.card_delegate.hover_row:
+        action = None
+        if row >= 0:
+            rect = self.cards.visualRect(idx)
+            for i, (name, _g) in enumerate(self.card_delegate.actions):
+                if self.card_delegate.action_rect(rect, i).contains(pos):
+                    action = name
+                    break
+        if (row, action) != (self.card_delegate.hover_row,
+                             self.card_delegate.hover_action):
             self.card_delegate.hover_row = row
+            self.card_delegate.hover_action = action
             self.cards.viewport().update()
+        self._card_hit = (row, action)
+        self.cards.setCursor(QtCore.Qt.PointingHandCursor if action
+                             else QtCore.Qt.ArrowCursor)
+        QtWidgets.QListView.mouseMoveEvent(self.cards, ev)
 
     def _card_leave(self, ev):
         if self.card_delegate.hover_row != -1:
             self.card_delegate.hover_row = -1
+            self.card_delegate.hover_action = None
+            self._card_hit = (-1, None)
             self.cards.viewport().update()
 
     def _on_header_click(self, col):

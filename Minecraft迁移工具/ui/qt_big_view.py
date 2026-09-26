@@ -1066,9 +1066,14 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         super().__init__(parent)
         self.store = store
         self.theme = theme
-        # 操作图标：config 清单不是模组，没有"模组详情"这回事，所以那个图标不出现
-        self.actions = (CardDelegate.ACTIONS if store.is_mod
-                        else tuple(a for a in CardDelegate.ACTIONS if a[0] != "info"))
+        # 操作图标：config 清单不是模组，没有"模组详情"这回事，所以那个图标不出现。
+        # store 还可以声明 `card_actions` 来自定义（差异窗口只给 info/reveal，没有"移除"）。
+        支持 = getattr(store, "card_actions", None)
+        if 支持 is not None:
+            self.actions = tuple(a for a in CardDelegate.ACTIONS if a[0] in 支持)
+        else:
+            self.actions = (CardDelegate.ACTIONS if store.is_mod
+                            else tuple(a for a in CardDelegate.ACTIONS if a[0] != "info"))
         self.hover_row = -1
         self.hover_action = None
         self._pix = {}
