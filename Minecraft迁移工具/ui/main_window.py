@@ -996,15 +996,19 @@ class MigrationGUI:
                 w.pack_forget()
             except Exception:
                 pass
-        jobs = getattr(self, "_btn_anim_jobs", None)
-        if jobs is None:
-            jobs = self._btn_anim_jobs = []
-        for j in list(jobs):
+        # 动画待办**按排**存：以前是一个全局列表，每摆一排就把别排还没跑完的帧全取消掉，
+        # 于是"最后摆的那排"正常、前面的排停在半路（表现就是按钮重叠/被裁）。
+        # _apply_button_layout 是按组顺序摆的，排在后面的组会把前面组的动画掐死。
+        anim_jobs = getattr(self, "_btn_anim_jobs", None)
+        if not isinstance(anim_jobs, dict):
+            anim_jobs = self._btn_anim_jobs = {}
+        row_key = str(row)
+        for j in anim_jobs.pop(row_key, []):
             try:
                 self.root.after_cancel(j)
             except Exception:
                 pass
-        jobs.clear()
+        jobs = anim_jobs[row_key] = []
 
         def place_at(w, x):
             y = max(0, (h - w.winfo_reqheight()) // 2)
@@ -1055,6 +1059,8 @@ class MigrationGUI:
                     jobs.append(self.root.after(self._ANIM_MS, lambda: step(n + 1)))
                 except Exception:
                     pass
+            elif done:
+                anim_jobs.pop(row_key, None)      # 这一排跑完了，登记表里不留空的
         step(0)
 
     def _apply_button_layout(self, animate=True):
