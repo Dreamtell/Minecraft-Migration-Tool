@@ -72,6 +72,10 @@
   {
    "optionDest": "hiddenimports",
    "value": "tkinterdnd2"
+  },
+  {
+   "optionDest": "excludes",
+   "value": "numpy\ncv2"
   }
  ],
  "nonPyinstallerOptions": {

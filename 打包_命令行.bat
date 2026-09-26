@@ -31,6 +31,8 @@ py -3.12 -m PyInstaller --noconfirm --onedir --windowed --uac-admin ^
   --add-data "%PROJ%\1.ico;." ^
   --additional-hooks-dir "%PROJ%" ^
   --hidden-import tkinterdnd2 ^
+  --exclude-module numpy ^
+  --exclude-module cv2 ^
   --paths "%ROOT%_qt" ^
   --distpath "%ROOT%dist" ^
   --workpath "%ROOT%build" ^
