@@ -39,6 +39,10 @@ TAG_COLORS = {
     "Quilt":    ("#8b5cf6", "#ffffff"),
     "NeoForge": ("#f16436", "#ffffff"),
     "Forge":    ("#5b6e7f", "#ffffff"),
+    # 差异窗口卡片上的状态 chip（和状态圆点同色系）
+    "新增":     ("#2e7d32", "#ffffff"),
+    "更新":     ("#e65100", "#ffffff"),
+    "目标独有": ("#546e7a", "#ffffff"),
 }
 
 

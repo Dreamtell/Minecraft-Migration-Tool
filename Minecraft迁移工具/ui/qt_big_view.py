@@ -77,6 +77,10 @@ TAG_COLORS = {
     "客户端": ("#2f7fd1", "#ffffff"),
     "服务端": ("#2e7d32", "#ffffff"),
     "通用": ("#6b7280", "#ffffff"),
+    # 差异扫描窗口卡片上的状态 chip（和它的状态圆点同色系）
+    "新增": ("#2e7d32", "#ffffff"),
+    "更新": ("#e65100", "#ffffff"),
+    "目标独有": ("#546e7a", "#ffffff"),
 }
 _TAG_FALLBACK = [("#7c6cf0", "#ffffff"), ("#0ea5a4", "#ffffff"), ("#c2410c", "#ffffff"),
                  ("#4d7c0f", "#ffffff"), ("#a21caf", "#ffffff"), ("#0369a1", "#ffffff")]
@@ -1098,6 +1102,24 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         self._pix[key] = pm
         return pm
 
+    def _status_color(self, it):
+        """状态圆点色：调用方可以给 store 挂一个 `status_color(it)` 钩子。
+
+        放大窗口的状态是"✅ 存在 / ❌ 缺失"，差异窗口是"新增 / 更新 / 目标独有" ——
+        后者通过钩子给色，没挂钩子就走原来的默认判据。
+        """
+        fn = getattr(self.store, "status_color", None)
+        if fn is not None:
+            try:
+                c = fn(it)
+                if c:
+                    return c
+            except Exception:
+                pass
+        return {"✅ 存在": self.theme.get("ok_fg", "#2e7d32"),
+                "❌ 缺失": _fail_red(self.theme)}.get(
+                    it.status, self.theme.get("muted_fg", "#999999"))
+
     def _fallback_icon(self):
         """没图标时画的兜底方块：模组是 M，config 清单是 C。
 
@@ -1172,9 +1194,9 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         muted = QtGui.QColor(th.get("card_sel_fg" if sel > 0.5 else "muted_fg", "#777777"))
 
         # ---- 状态圆点 + 图标 ----
-        dot_c = {"✅ 存在": th.get("ok_fg", "#2e7d32"),
-                 "❌ 缺失": _fail_red(th)}.get(it.status,
-                                               th.get("muted_fg", "#999999"))
+        # 放大窗口认的是 ✅ 存在 / ❌ 缺失；差异窗口的状态是"新增/更新/目标独有"，
+        # 所以让它通过 store.status_color(it) 自己给色（没有这个钩子就走默认那套）
+        dot_c = self._status_color(it)
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QColor(dot_c))
         painter.drawEllipse(QtCore.QPointF(rect.left() + 11, rect.top() + 11), 3.5, 3.5)

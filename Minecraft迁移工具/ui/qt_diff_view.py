@@ -50,9 +50,10 @@ class DiffStore(QtCore.QObject):
     reset = QtCore.Signal()
     row_data = QtCore.Signal(int)
 
-    def __init__(self, data, parent=None):
+    def __init__(self, data, theme, parent=None):
         super().__init__(parent)
         self.is_mod = True                  # 卡片兜底图标画 "M"、操作图标给全
+        self.theme = dict(theme or {})
         self.data = list(data or [])
         self.source_path = ""
         self.items = []
@@ -70,6 +71,7 @@ class DiffStore(QtCore.QObject):
             it.checked = (it.status == "新增")   # 「新增」默认勾上（和 Tk 版一致）
             # sel_t 是卡片委托画"选中蓝底 + 左侧高亮条"用的进度，默认勾上的要有
             it.sel_t = 1.0 if it.checked else 0.0
+            it.tags = [it.status]                # 卡片上的状态 chip（新增/更新/目标独有）
             it.scanned = True
             it.icon_path = None
             self._jar_of[id(it)] = str(d[8]) if len(d) > 8 else ""
@@ -89,6 +91,11 @@ class DiffStore(QtCore.QObject):
 
     def jar_of(self, item):
         return self._jar_of.get(id(item), "")
+
+    def status_color(self, item):
+        """状态圆点色（CardDelegate 的状态色钩子）：新增=绿、更新=橙、目标独有=灰。"""
+        return self.theme.get(_STATUS_KEY.get(getattr(item, "status", ""), "muted_fg"),
+                              "#808080")
 
     def checked_data(self):
         """所有勾选条目的"显示名"（应用时给主界面写清单用）。"""
@@ -266,7 +273,7 @@ class QtDiffView(QtWidgets.QWidget):
         self.hooks = hooks or {}
         self.apply_callback = apply_callback
         self._alive = True
-        self.store = DiffStore(data, parent=self)
+        self.store = DiffStore(data, theme, parent=self)
         self.setWindowTitle("智能模组差异扫描（元数据级）")
         self.setMinimumSize(1120, 520)
         self.resize(1280, 640)
@@ -503,6 +510,7 @@ class QtDiffView(QtWidgets.QWidget):
         self.table_model.theme = self.theme
         self.table_model._bg_cache.clear()
         self.table_model._dot_cache.clear()
+        self.store.theme = self.theme          # 卡片状态色/表格圆点都从这儿取
         self.card_delegate.theme = self.theme
         self.card_delegate._pix.clear()
         self.scroll_progress.theme = self.theme
