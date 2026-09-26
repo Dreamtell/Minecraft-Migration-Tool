@@ -9,7 +9,8 @@ import threading
 import queue
 import webbrowser
 from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
-                           center_window, lighten_color, SmoothScroller, RoundedEntry)
+                           center_window, lighten_color, SmoothScroller, RoundedEntry,
+                           LiquidProgress)
 from core.scanner import (get_full_mod_metadata, split_cn_name, guess_tags,
                           get_mod_icon)
 from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
@@ -54,23 +55,9 @@ class ProgressWindow:
         else:
             theme = LIGHT_THEME
 
-        # 配置进度条样式
-        style = ttk.Style()
-        style.configure(
-            "Custom.Horizontal.TProgressbar",
-            background=theme.get("ttk_progress_bg", "#4fc3f7"),
-            troughcolor=theme.get("ttk_trough_bg", "#e0e0e0"),
-            bordercolor=theme.get("bg", "#f0f0f0"),
-            lightcolor=theme.get("ttk_progress_bg", "#4fc3f7"),
-            darkcolor=theme.get("ttk_progress_bg", "#4fc3f7")
-        )
-        self.progress = ttk.Progressbar(
-            self.win,
-            length=460,
-            mode='determinate',
-            style="Custom.Horizontal.TProgressbar"
-        )
-        self.progress.pack(padx=10, pady=5)
+        # 进度条：和主界面/放大窗口同一套"液态"自绘控件（原来是 ttk 的实心蓝条）
+        self.progress = LiquidProgress(self.win, theme, height=8)
+        self.progress.pack(fill="x", padx=10, pady=6)
 
         self.stats_label = tk.Label(self.win, text="0 / 0 个文件  |  0.0 MB / 0.0 MB",
                                     anchor="w")
@@ -128,7 +115,7 @@ class ProgressWindow:
         self.file_label.config(text=f"正在复制: {file_name}")
         if self.total_size > 0:
             percent = min(100, (copied_bytes / self.total_size) * 100)
-            self.progress['value'] = percent
+            self.progress.set_fraction(percent / 100.0)
         copied_mb = copied_bytes / (1024 * 1024)
         total_mb = self.total_size / (1024 * 1024)
         self.stats_label.config(
@@ -165,21 +152,9 @@ class ScanProgressWindow:
                                    bg=self.theme["bg"], fg=self.theme["fg"])
         self.file_label.pack(fill="x", padx=10, pady=5)
 
-        style = ttk.Style()
-        style.configure(
-            "FixedBlue.Horizontal.TProgressbar",
-            background=theme.get("ttk_progress_bg", "#4fc3f7"),
-            troughcolor=theme.get("ttk_trough_bg", "#e0e0e0"),
-            borderwidth=0,
-            relief='flat'
-        )
-        self.progress = ttk.Progressbar(
-            self.win,
-            length=380,
-            mode='determinate',
-            style="FixedBlue.Horizontal.TProgressbar"
-        )
-        self.progress.pack(padx=10, pady=5)
+        # 进度条：同上的液态自绘控件
+        self.progress = LiquidProgress(self.win, theme, height=8)
+        self.progress.pack(fill="x", padx=10, pady=6)
 
         self.stats_label = tk.Label(self.win, text="0 / 0 个文件", anchor="w",
                                     bg=self.theme["bg"], fg=self.theme["fg"])
@@ -194,7 +169,7 @@ class ScanProgressWindow:
         self.file_label.config(text=f"正在解析: {filename}")
         if self.total_files > 0:
             percent = (current / self.total_files) * 100
-            self.progress['value'] = percent
+            self.progress.set_fraction(percent / 100.0)
         self.stats_label.config(text=f"{current} / {self.total_files} 个文件")
         self.win.update_idletasks()
 
