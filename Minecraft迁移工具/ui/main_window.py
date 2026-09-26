@@ -32,7 +32,7 @@ def _dc_now():
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
                            RoundedEntry, RoundedTextArea, circular_reveal, focus_window,
                            lighten_color, begin_bulk_scan, end_bulk_scan, LiquidProgress,
-                           bind_text_scroll, SwitchRow,
+                           bind_text_scroll, SwitchRow, DataText, data_label,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
@@ -1539,9 +1539,11 @@ class MigrationGUI:
                       "结果缓存到本地；断网或匹配不到时自动沿用推测结果。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w", pady=(4, 0))
-        self.settings_tag_cache_lbl = tk.Label(
-            box_t, text="", bg=self.theme["bg"],
-            fg=self.theme.get("muted_fg", self.theme["fg"]), font=("微软雅黑", 8))
+        self.settings_tag_cache_lbl = DataText(
+            box_t, self.theme, [("本地分类缓存：", "muted_fg"),
+                                ("0", "data_num_fg"),
+                                (" 条", "muted_fg")],
+            font=("微软雅黑", 8))
         self.settings_tag_cache_lbl.pack(anchor="w", pady=(2, 0))
         self._update_tag_cache_label()
 
@@ -1946,8 +1948,12 @@ class MigrationGUI:
             return
         try:
             from core.mod_search import tag_cache_size, TAG_CACHE_FILE
-            lbl.config(text=f"本地分类缓存：{tag_cache_size()} 条"
-                            f"（{TAG_CACHE_FILE}，删掉它会重新联网查）")
+            # 数据段单独着色：条数是数字（紫），路径是路径（蓝），说明文字压灰
+            lbl.set_all([("本地分类缓存：", "muted_fg"),
+                         (f"{tag_cache_size()}", "data_num_fg"),
+                         (" 条（", "muted_fg"),
+                         (f"{TAG_CACHE_FILE}", "data_fg"),
+                         ("，删掉它会重新联网查）", "muted_fg")])
         except Exception:
             pass
 
@@ -2687,7 +2693,8 @@ class MigrationGUI:
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
         frame_source.pack(fill="x", padx=10, pady=5)
         self.source_entry = RoundedEntry(frame_source, self.theme,
-                                         textvariable=self.source_path, chars=58)
+                                         textvariable=self.source_path, chars=58,
+                                         fg_key="data_fg")
         self.source_entry.pack(side="left", padx=5)
         btn_source_browse = create_gradient_button(
             frame_source, "📂 浏览...", self.select_source,
@@ -2716,7 +2723,8 @@ class MigrationGUI:
                                      padx=5, pady=5)
         frame_target.pack(fill="x", padx=10, pady=5)
         self.target_entry = RoundedEntry(frame_target, self.theme,
-                                         textvariable=self.target_path, chars=66)
+                                         textvariable=self.target_path, chars=66,
+                                         fg_key="data_fg")
         self.target_entry.pack(side="left", padx=5)
         btn_target_browse = create_gradient_button(
             frame_target, "📂 浏览...", self.select_target,
@@ -2732,7 +2740,8 @@ class MigrationGUI:
         frame_world = tk.LabelFrame(self.root, text="存档文件夹名称", padx=5, pady=5)
         frame_world.pack(fill="x", padx=10, pady=5)
         self.world_entry = RoundedEntry(frame_world, self.theme,
-                                        textvariable=self.world_name, chars=30)
+                                        textvariable=self.world_name, chars=30,
+                                        fg_key="data_id_fg")
         self.world_entry.pack(side="left", padx=5)
         tk.Label(frame_world, text="（例如：新的世界）").pack(side="left")
         self.world_status = tk.Label(frame_world, text="", fg=self.theme["muted_fg"])
@@ -3678,7 +3687,8 @@ class MigrationGUI:
             tree.set(iid, "chk", "☑" if iid in checked else "☐")
 
         def update_count():
-            self._roll_counter(count_lbl, f"已勾选 {len(checked)} 个文件夹")
+            # 只让"数字"那一段滚起来，前后说明文字是灰的
+            self._roll_counter(count_lbl.part(1), str(len(checked)))
 
         def populate(parent_iid, parent_abs):
             for c in tree.get_children(parent_iid):
@@ -3732,7 +3742,9 @@ class MigrationGUI:
         tree.bind("<Button-1>", on_click)
         tree.bind("<<TreeviewOpen>>", on_open)
 
-        count_lbl = tk.Label(dlg, bg=theme["bg"], fg=theme["fg"], text="")
+        count_lbl = DataText(dlg, theme, [("已勾选 ", "muted_fg"),
+                                          ("0", "data_num_fg"),
+                                          (" 个文件夹", "muted_fg")])
         count_lbl.pack(fill="x", padx=10, pady=(0, 4))
 
         def mk_button(parent, text, cmd, colors=("#546e7a", "#78909c"), guard_ms=300):
@@ -3851,8 +3863,10 @@ class MigrationGUI:
         hist_win.geometry("900x500")
         hist_win.transient(self.root)
         set_window_icon(hist_win)
-        tk.Label(hist_win, text=f"目标实例：{target_path}", font=("微软雅黑", 9,
-                                                                 "bold")).pack(pady=5)
+        DataText(hist_win, self.theme,
+                 [("目标实例：", "muted_fg"),
+                  (str(target_path), "data_fg")],
+                 font=("微软雅黑", 9, "bold")).pack(pady=5)
 
         columns = ("时间", "来源", "模组数", "Config数", "状态")
         # 配置 Treeview 样式（使用当前主题）
@@ -6270,8 +6284,11 @@ class MigrationGUI:
         _BTN_W = max(_grad_width("🔍 检测存在性"),
                      _grad_width("🗑️ 删除选中"),
                      _grad_width("➕ 添加模组"))
-        count_lbl = tk.Label(row_search, text=f"共 {len(entries)} 项", bg=self.theme["bg"],
-                             fg=self.theme["fg"])
+        # "共 N 项"里那个 N 是数据，单独上数字色
+        count_lbl = DataText(row_search, self.theme,
+                             [("共 ", "muted_fg"),
+                              (str(len(entries)), "data_num_fg"),
+                              (" 项", "muted_fg")])
         count_lbl.pack(side="left", padx=(0, _PAD * 2))
         # 选中/存在性汇总：这两个数字是"我现在到底选了多少、有多少缺失"，
         # 表格和卡片视图共用（改勾选的地方都会调 update_summary）。

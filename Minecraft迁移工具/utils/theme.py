@@ -52,7 +52,12 @@ LIGHT_THEME = {
     # 日志分类色（执行日志/日志放大查看，跟随主题）
     "log_info_fg": "#808080", "log_warning_fg": "#e65100",
     "log_error_fg": "#c62828", "log_success_fg": "#2e7d32",
-    "log_simulate_fg": "#1565c0"
+    "log_simulate_fg": "#1565c0",
+    # "数据"文本配色：界面上一眼分得清"哪个是数据、哪个是说明"
+    #   data_fg     路径、文件名、存档名这类主体数据
+    #   data_num_fg 数量、条数、大小这类数字
+    #   data_id_fg  Mod ID、版本、哈希这类标识符
+    "data_fg": "#1565c0", "data_num_fg": "#6a1b9a", "data_id_fg": "#00695c"
 }
 
 DARK_THEME = {
@@ -105,8 +110,26 @@ DARK_THEME = {
     # 日志分类色（执行日志/日志放大查看，跟随主题，深色用更亮的前景色）
     "log_info_fg": "#9e9e9e", "log_warning_fg": "#ffb74d",
     "log_error_fg": "#ff6b6b", "log_success_fg": "#7ee787",
-    "log_simulate_fg": "#64b5f6"
+    "log_simulate_fg": "#64b5f6",
+    # "数据"文本配色（深色主题用亮一档的同类色）
+    "data_fg": "#79b8ff", "data_num_fg": "#d2a8ff", "data_id_fg": "#56d4c4"
 }
+
+
+def _inside_rounded_entry(widget):
+    """这个控件是不是圆角输入框内部那个 tk.Entry？
+
+    RoundedEntry 的前景色由它自己按 `fg_key` 决定（数据色），所以这里不能再
+    一律刷成 entry_fg —— 否则界面上刚设好的"数据色"会被主题遍历抹掉。
+    """
+    p = getattr(widget, "master", None)
+    for _ in range(3):
+        if p is None:
+            return False
+        if getattr(p, "_is_rounded_entry", False):
+            return True
+        p = getattr(p, "master", None)
+    return False
 
 
 def apply_theme_to_widget_tree(widget, theme):
@@ -130,7 +153,13 @@ def apply_theme_to_widget_tree(widget, theme):
             # 切主题时会先闪过一瞬"绿字变黑/白"、再被状态刷新改回绿色。
             # 所以它们只跟主题刷底色，前景色留给状态刷新逻辑。
             # _keep_colors 更彻底：底色前景都自己管（模组详情窗口的徽章就是这种）。
-            if getattr(widget, "_keep_colors", False):
+            # _data_key = 显示"数据"的标签（路径/数字/标识符），颜色由那个键决定，
+            # 跟着主题走 —— 它不归状态逻辑管，所以这里直接刷。
+            data_key = getattr(widget, "_data_key", None)
+            if data_key:
+                widget.configure(bg=theme["label_bg"],
+                                 fg=theme.get(data_key) or theme["label_fg"])
+            elif getattr(widget, "_keep_colors", False):
                 pass
             elif getattr(widget, "_keep_fg", False):
                 widget.configure(bg=theme["label_bg"])
@@ -140,8 +169,9 @@ def apply_theme_to_widget_tree(widget, theme):
             widget.configure(bg=theme["button_bg"], fg=theme["button_fg"],
                              activebackground=theme["button_bg"])
         elif isinstance(widget, tk.Entry):
-            widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"],
-                             insertbackground=theme["fg"])
+            if not _inside_rounded_entry(widget):
+                widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"],
+                                 insertbackground=theme["fg"])
         elif isinstance(widget, scrolledtext.ScrolledText):
             widget.configure(bg=theme["text_bg"], fg=theme["text_fg"])
             widget.vbar.configure(bg=theme["button_bg"], troughcolor=theme["bg"])

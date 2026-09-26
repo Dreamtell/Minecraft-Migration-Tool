@@ -557,10 +557,11 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
     if info["name"] and info["name"] != title and info["name"] not in sub_txt:
         sub_txt = f"{info['name']}  ·  {sub_txt}"
     sub_lbl = tk.Label(box, text=sub_txt, font=("微软雅黑", 9), anchor="w",
-                       justify="left", fg=muted)
-    sub_lbl._keep_fg = True
+                       justify="left", fg=theme.get("data_fg") or muted)
+    # 副标题是"文件名"这种数据，用数据色；它自带 _data_key，切主题会自动重刷，
+    # 所以不能放进 _detail_muted（那里统一刷成灰的）
+    sub_lbl._data_key = "data_fg"
     sub_lbl.pack(fill="x", pady=(3, 6))
-    win._detail_muted.append(sub_lbl)
     _wrap_label(sub_lbl, box, pad=24)
 
     # 徽章行：版本 / 类型 / 运行环境 / 分类（分类是关键词猜的，必须写明）
@@ -603,6 +604,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
         win._detail_muted.append(note)
 
     # ---- 字段区：标签右对齐、值左对齐（比"冒号拼一行"好扫读） ----
+    # 值是"数据"，各按类型上色：作者/Mod ID/依赖都是标识符，用 data_id_fg；
+    # 空值显示"无"时压成灰，免得看着像有内容。
     grid = tk.Frame(win)
     grid.pack(fill="x", padx=22, pady=(10, 4))
     grid.columnconfigure(1, weight=1)
@@ -612,8 +615,11 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
         kl = tk.Label(grid, text=k, font=("微软雅黑", 9), anchor="ne", fg=muted)
         kl._keep_fg = True
         kl.grid(row=r, column=0, sticky="ne", padx=(0, 12), pady=2)
+        has_val = bool(str(v or "").strip()) and str(v).strip() not in ("无", "未知")
         vl = tk.Label(grid, text=(v or "无"), font=("微软雅黑", 9), anchor="w",
-                      justify="left")
+                      justify="left",
+                      fg=(theme.get("data_id_fg") if has_val else muted))
+        vl._data_key = "data_id_fg" if has_val else "muted_fg"
         vl.grid(row=r, column=1, sticky="w", pady=2)
         win._detail_muted.append(kl)
         _wrap_label(vl, grid, pad=110)

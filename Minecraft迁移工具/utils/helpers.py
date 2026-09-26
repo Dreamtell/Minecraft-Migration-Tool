@@ -584,7 +584,8 @@ class RoundedEntry(tk.Frame):
     """
 
     def __init__(self, master, theme, textvariable=None, chars=20, height=30,
-                 radius=8, pad_x=9, font=("微软雅黑", 10), width=None, **kw):
+                 radius=8, pad_x=9, font=("微软雅黑", 10), width=None,
+                 fg_key="entry_fg", **kw):
         base_bg = "#f0f0f0"
         try:
             base_bg = master.cget("bg")
@@ -595,6 +596,8 @@ class RoundedEntry(tk.Frame):
         super().__init__(master, bg=base_bg, height=height)
         self._is_rounded_entry = True
         self.theme = dict(theme or {})
+        # 框里装的是"数据"（路径、存档名）时让它用数据色，别和说明文字一个颜色
+        self._fg_key = fg_key
         self._radius = radius
         self._pad_x = pad_x
         self._h = height
@@ -616,7 +619,7 @@ class RoundedEntry(tk.Frame):
         self.entry = tk.Entry(self.canvas, textvariable=textvariable, bd=0,
                               highlightthickness=0, relief="flat",
                               bg=self.theme.get("entry_bg", "#ffffff"),
-                              fg=self.theme.get("entry_fg", "#000000"),
+                              fg=self._entry_fg(),
                               insertbackground=self.theme.get("fg", "#000000"),
                               font=font, **kw)
         self._img_id = self.canvas.create_image(0, 0, anchor="nw")
@@ -715,12 +718,20 @@ class RoundedEntry(tk.Frame):
         self._focus = bool(focused)
         self._redraw()
 
+    def _entry_fg(self):
+        """输入框文字色：优先 fg_key 指定的数据色，取不到再退回 entry_fg。"""
+        try:
+            return (self.theme.get(self._fg_key)
+                    or self.theme.get("entry_fg", "#000000"))
+        except Exception:
+            return "#000000"
+
     def set_theme(self, theme):
         """主题切换：更新填充/描边/文字色并重画。"""
         self.theme = dict(theme or {})
         try:
             self.entry.configure(bg=self.theme.get("entry_bg", "#ffffff"),
-                                 fg=self.theme.get("entry_fg", "#000000"),
+                                 fg=self._entry_fg(),
                                  insertbackground=self.theme.get("fg", "#000000"))
         except Exception:
             pass
@@ -1995,6 +2006,96 @@ def bind_text_scroll(text_widget, on_view):
         text_widget.configure(yscrollcommand=包装)
     except Exception:
         trace_exc("helpers", "绑定文本框滚动")
+
+
+def _parent_bg(widget, theme):
+    """取父容器的真实底色（拿不到就用主题底色）—— 数据文字要坐在正确的底上。"""
+    try:
+        bg = widget.master.cget("bg")
+        if bg and not str(bg).startswith("System"):
+            return bg
+    except Exception:
+        pass
+    return (theme or {}).get("bg", "#f0f0f0")
+
+
+def data_color(theme, key="data_fg"):
+    """数据文本的颜色：主题里没定义就退回正文色。"""
+    theme = theme or {}
+    return theme.get(key) or theme.get("fg", "#000000")
+
+
+def data_label(parent, theme, text="", key="data_fg", font=None, **kw):
+    """显示"数据"的标签（路径 / 数字 / 标识符）。
+
+    颜色由 key 决定、跟着主题走（`apply_theme_to_widget_tree` 认 `_data_key`），
+    所以不需要在窗口的 apply_theme 里单独刷一遍。
+    """
+    lb = tk.Label(parent, text=text, bg=_parent_bg(parent, theme),
+                  fg=data_color(theme, key), font=font, **kw)
+    lb._data_key = key
+    return lb
+
+
+class DataText(tk.Frame):
+    """一行文本，按「说明 / 数据」分段着色：说明用弱色，数据用数据色。
+
+    用法（片段 = (文字, 主题色键)）：
+
+        d = DataText(parent, theme, [("本地分类缓存：", "muted_fg"),
+                                     ("12", "data_num_fg"),
+                                     (" 条", "muted_fg")])
+        d.pack(anchor="w")
+        d.set(1, "37")          # 数字变了只改这一段
+
+    主题切换不用管：每个片段标签带 `_data_key`，切主题时会被统一刷新。
+    """
+
+    def __init__(self, parent, theme, parts=(), font=None, **kw):
+        bg = kw.pop("bg", None) or _parent_bg(parent, theme)
+        super().__init__(parent, bg=bg, **kw)
+        self._theme = dict(theme or {})
+        self._font = font
+        self._labels = []
+        for text, key in parts:
+            lb = data_label(self, self._theme, text, key, font=font)
+            lb.pack(side="left")
+            self._labels.append(lb)
+
+    def set(self, index, text):
+        """改第 index 段文字（越界/控件已销毁都安静忽略）。"""
+        try:
+            self._labels[index].config(text=text)
+        except Exception:
+            pass
+
+    def part(self, index):
+        """拿到某一段的 Label（需要交给 `_roll_counter` 这类只改单个 Label 的逻辑时）。"""
+        try:
+            return self._labels[index]
+        except Exception:
+            return None
+
+    def set_all(self, parts):
+        """整行重写：parts 长度可以和原来不同。"""
+        try:
+            while len(self._labels) < len(parts):
+                text, key = parts[len(self._labels)]
+                lb = data_label(self, self._theme, text, key, font=self._font)
+                lb.pack(side="left")
+                self._labels.append(lb)
+            for i, (text, key) in enumerate(parts):
+                self._labels[i]._data_key = key
+                self._labels[i].config(text=text,
+                                       fg=data_color(self._theme, key))
+            for lb in self._labels[len(parts):]:
+                lb.destroy()
+            del self._labels[len(parts):]
+        except Exception:
+            pass
+
+    def text(self):
+        return "".join(lb.cget("text") for lb in self._labels)
 
 
 class SwitchRow(tk.Canvas):

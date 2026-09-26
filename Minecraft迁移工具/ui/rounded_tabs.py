@@ -12,6 +12,7 @@
 
 对外就三个方法：`page(label)` 建一页、`select(i)` 切页、`labels()` 看标签文字。
 """
+import re
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -27,6 +28,10 @@ RADIUS = 12         # 圆角半径
 SLIDE_MS = 170      # 选中块滑动时长
 PAGE_MS = 150       # 页面滑入时长
 FRAME_MS = 12       # 动画帧间隔（和主界面泵同量级）
+
+# 标签末尾挂的"条数"（🧩 模组清单 376）：数字单独用一种颜色画，
+# 一眼能看出这是数据而不是标签名字的一部分
+_TAIL_NUM = re.compile(r"^(.*?)(\d+)$", re.S)
 
 
 class RoundedTabs(tk.Frame):
@@ -78,7 +83,8 @@ class RoundedTabs(tk.Frame):
         """建一页并返回它的容器（往里塞内容即可）。"""
         page = tk.Frame(self.body, bg=self.theme["bg"])
         self._tabs.append({"label": label, "page": page, "x": 0, "w": 0,
-                           "pill": None, "text": None, "hover": False})
+                           "pill": None, "text_main": None, "text_num": None,
+                           "hover": False})
         self._layout_bar()
         if self._cur < 0:
             self.select(0, animate=False)
@@ -141,16 +147,16 @@ class RoundedTabs(tk.Frame):
             else:
                 t["pill"] = c.create_rectangle(x, PILL_Y, x + tw, PILL_Y + PILL_H,
                                                width=0)
-            t["text"] = c.create_text(x + tw // 2, PILL_Y + PILL_H // 2,
-                                      text=t["label"], font=self._font,
-                                      fill=self.theme["fg"])
+            t["text_main"], t["text_num"] = self._draw_label(t, x, tw)
             x += tw + GAP
         c.configure(width=x + 6)
         # 选中块：压在普通药丸上面、所有文字下面
         self._sel_item = c.create_image(0, PILL_Y, anchor="nw")
         c.tag_raise(self._sel_item)
         for t in self._tabs:
-            c.tag_raise(t["text"])
+            for item in (t.get("text_main"), t.get("text_num")):
+                if item:
+                    c.tag_raise(item)
         self._refresh_pills()
         # 重排（新加了一页 / 换了主题）之后，选中块要重新贴回当前页 ——
         # 否则它会停在 canvas 左上角（新 item 默认在 0,0）
@@ -160,12 +166,48 @@ class RoundedTabs(tk.Frame):
                             image=self._photo(t["w"], "sel"))
             c.coords(self._sel_item, t["x"], PILL_Y)
 
+    def _draw_label(self, t, x, tw):
+        """把标签画成"名字 + 尾随数字"两段（数字用数据色），返回两个 item id。
+
+        整串居中，数字紧跟名字后面，所以尾数变宽时标签整体还是居中的。
+        """
+        c = self.bar
+        m = _TAIL_NUM.match(t["label"])
+        main, num = (m.group(1), m.group(2)) if m else (t["label"], "")
+        # 分段测量之和与整串测量会差几个像素（字距），取大的那个当总宽，免得偏左
+        total = max(self._font.measure(main) + (self._font.measure(num) if num else 0),
+                    self._font.measure(t["label"]))
+        x0 = t["x"] + max(0, (tw - total) // 2)
+        cy = PILL_Y + PILL_H // 2
+        main_id = c.create_text(x0, cy, text=main, font=self._font, anchor="w",
+                                fill=self.theme["fg"])
+        num_id = None
+        if num:
+            num_id = c.create_text(x0 + self._font.measure(main), cy, text=num,
+                                   font=self._font, anchor="w",
+                                   fill=self._data_color())
+        return main_id, num_id
+
+    def _data_color(self):
+        """标签里那个"条数"的颜色（主题没定义就退回正文色）。"""
+        return self.theme.get("data_num_fg") or self.theme["fg"]
+
+    def _paint_label(self, t, main_color, num_color=None):
+        c = self.bar
+        for key, color in (("text_main", main_color), ("text_num", num_color or main_color)):
+            item = t.get(key)
+            if item:
+                try:
+                    c.itemconfigure(item, fill=color)
+                except Exception:
+                    pass
+
     def _refresh_pills(self):
         c = self.bar
         for i, t in enumerate(self._tabs):
             if i == self._cur:
                 c.itemconfigure(t["pill"], state="hidden")   # 让位给滑动的那张
-                c.itemconfigure(t["text"], fill=self._sel_fg())
+                self._paint_label(t, self._sel_fg())         # 选中时整块同色，看得清
             else:
                 kind = "hover" if t["hover"] else "normal"
                 if self._use_images:
@@ -174,7 +216,7 @@ class RoundedTabs(tk.Frame):
                 else:
                     c.itemconfigure(t["pill"], state="normal",
                                     fill=self._color(kind))
-                c.itemconfigure(t["text"], fill=self.theme["fg"])
+                self._paint_label(t, self.theme["fg"], self._data_color())
 
     def _color(self, kind):
         th = self.theme
