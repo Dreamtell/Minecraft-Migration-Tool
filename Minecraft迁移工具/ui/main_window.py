@@ -143,6 +143,7 @@ _SECTION_STYLE = {
     "migrate": ("迁移行为", "#7e57c2", "🏷️"),
     "tags":    ("模组分类标签", "#00897b", "🌐"),
     "lock":    ("任务与锁定", "#e53935", "🔒"),
+    "extras":  ("默认携带的目录", "#3949ab", "📦"),
     "view":    ("放大查看窗口", "#00838f", "🗂"),
     "buttons": ("界面按钮（勾选显示 / 上下调整顺序）", "#00acc1", "🧩"),
     "close":   ("关闭与后台", "#fb8c00", "🚪"),
@@ -158,6 +159,30 @@ _LOCK_MODES = (
 
 # 迁移标记可选的符号：都是微软雅黑里有字形、且文件名安全的（不含 \ / : * ? " < > |）
 _RENAME_MARKERS = ("★", "☆", "▶", "◆", "●", "✦", "✚", "【新】", "NEW_")
+
+# 「默认携带的目录」候选：(配置键, 条目（相对整合包根目录）, 中文说明)
+# 勾上之后每次迁移都自动带上 —— 只并进这一次的迁移清单，**不改用户的「其它文件」清单**，
+# 免得上一次删掉的条目下一次又被塞回来。源实例里不存在的会被跳过（不报错）。
+_EXTRA_PRESETS = (
+    ("shaderpacks",    "shaderpacks/",    "光影包（Iris / OptiFine）"),
+    ("resourcepacks",  "resourcepacks/",  "资源包（材质包）"),
+    ("schematics",     "schematics/",     "投影 / 蓝图（Litematica、WorldEdit）"),
+    ("XaeroWorldMap",  "XaeroWorldMap/",  "Xaero 世界地图数据"),
+    ("XaeroWaypoints", "XaeroWaypoints/", "Xaero 路径点"),
+    ("xaero",          "xaero/",          "Xaero 小地图（旧版目录）"),
+    ("journeymap",     "journeymap/",     "JourneyMap 地图数据"),
+    ("kubejs",         "kubejs/",         "KubeJS 脚本"),
+    ("defaultconfigs", "defaultconfigs/", "整合包默认配置（Forge / NeoForge）"),
+    ("local",          "local/",          "本地数据（部分模组自建）"),
+    ("screenshots",    "screenshots/",    "截图"),
+    ("servers.dat",    "servers.dat",     "服务器列表"),
+    ("optionsof.txt",  "optionsof.txt",   "OptiFine 视频设置"),
+    ("iris.properties", "iris.properties", "Iris 光影设置"),
+)
+
+# 第一次运行（配置里还没有 extra_defaults）时默认勾上的：最常被带走的那几个
+_EXTRA_DEFAULT_KEYS = ("shaderpacks", "resourcepacks", "schematics",
+                       "XaeroWorldMap", "XaeroWaypoints")
 
 # 放大查看窗口的实现方式。PySide6 试点：圆角/阴影/逐帧动画是原生能力；
 # 缺库或想用回老窗口时切 tk。
@@ -352,6 +377,12 @@ class MigrationGUI:
             self.lock_mode = "all"
         # 迁移跑完的完成态怎么收：True=按任意键关闭 / False=2 秒后自动关
         self.lock_wait_key = bool(self.config.get("lock_wait_key", True))
+        # 每次迁移默认带上的目录（键取自 _EXTRA_PRESETS；只影响迁移那一刻，不动清单）
+        存的默认 = self.config.get("extra_defaults", None)
+        if 存的默认 is None:
+            存的默认 = list(_EXTRA_DEFAULT_KEYS)
+        合法键 = {k for k, _, _ in _EXTRA_PRESETS}
+        self.extra_defaults = [k for k in (存的默认 or []) if k in 合法键]
         # 放大查看窗口用哪个实现：qt=PySide6 试点（缺库时自动回落）/ tk=经典 Tk
         self.big_view_backend = str(self.config.get("big_view_backend", "qt") or "qt")
         if self.big_view_backend not in ("qt", "tk"):
@@ -570,6 +601,7 @@ class MigrationGUI:
             "online_tags": bool(getattr(self, "online_tags", False)),
             "lock_mode": str(getattr(self, "lock_mode", "all")),
             "lock_wait_key": bool(getattr(self, "lock_wait_key", True)),
+            "extra_defaults": list(getattr(self, "extra_defaults", []) or []),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
             "qt_enabled": bool(getattr(self, "qt_enabled", True)),
@@ -1631,6 +1663,36 @@ class MigrationGUI:
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(4, 0))
 
+        # ---------- 默认携带的目录 ----------
+        box_extra = section("extras", page_mig)
+        tk.Label(box_extra,
+                 text="勾上的目录会在每次迁移时自动带上：源实例里存在才算数，"
+                      "只并进这一次的迁移，不会改动你的「其它文件」清单"
+                      "（清单里手动删掉的条目不会被塞回来）。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w")
+        网格 = tk.Frame(box_extra, bg=self.theme["bg"])
+        网格.pack(fill="x", pady=(6, 0))
+        网格.columnconfigure(0, weight=1)
+        网格.columnconfigure(1, weight=1)
+        self.settings_extra_vars = {}
+        for 序, (键, 条目, 说明) in enumerate(_EXTRA_PRESETS):
+            格 = tk.Frame(网格, bg=self.theme["bg"])
+            格.grid(row=序 // 2, column=序 % 2, sticky="w", padx=(0, 12), pady=1)
+            变量 = tk.BooleanVar(value=键 in getattr(self, "extra_defaults", []))
+            self.settings_extra_vars[键] = 变量
+            check(格, 条目, 变量,
+                  (lambda k=键, v=变量: self._toggle_extra_default(k, v))).pack(side="left")
+            tk.Label(格, text=说明, bg=self.theme["bg"],
+                     fg=self.theme.get("muted_fg", self.theme["fg"]),
+                     font=("微软雅黑", 8)).pack(side="left", padx=(2, 0))
+        self.settings_extra_lbl = tk.Label(
+            box_extra, text="", bg=self.theme["bg"],
+            fg=self.theme.get("muted_fg", self.theme["fg"]),
+            font=("微软雅黑", 8), justify="left", wraplength=580)
+        self.settings_extra_lbl.pack(anchor="w", pady=(6, 0))
+        self._update_extra_defaults_label()
+
         # ---------- 放大查看窗口用什么实现 ----------
         box_view = section("view", page_view)
         # 总开关：关掉之后主进程完全不加载 Qt（出问题时先把这条打开来定位）
@@ -1923,6 +1985,78 @@ class MigrationGUI:
         self.log("⌨️ 迁移完成后的收尾方式已改为：%s"
                  % ("按任意键关闭" if self.lock_wait_key else "2 秒后自动关闭"),
                  level="INFO", save=False)
+
+    # ---- 「默认携带的目录」（设置里勾选，迁移时自动并进清单） ----
+
+    def _toggle_extra_default(self, key, var=None):
+        """勾/取消一个默认携带的目录。"""
+        try:
+            开 = bool(var.get()) if var is not None else True
+        except Exception:
+            开 = True
+        选中 = set(getattr(self, "extra_defaults", []) or [])
+        if 开:
+            选中.add(key)
+        else:
+            选中.discard(key)
+        # 按 _EXTRA_PRESETS 的声明顺序存，配置文件里读起来整齐
+        self.extra_defaults = [k for k, _, _ in _EXTRA_PRESETS if k in 选中]
+        self.save_config()
+        self._update_extra_defaults_label()
+        条目 = next((rel for k, rel, _ in _EXTRA_PRESETS if k == key), key)
+        self.log("📦 默认携带的目录%s：%s" % ("已勾选" if 开 else "已取消", 条目),
+                 level="INFO", save=False)
+
+    def _extra_default_status(self, src=None):
+        """算出勾选项里哪些在源实例中确实存在。返回 (存在的条目, 找不到的条目)。"""
+        选中 = set(getattr(self, "extra_defaults", []) or [])
+        源 = src if src is not None else self.source_path.get().strip()
+        有, 缺 = [], []
+        if not 源:
+            return 有, 缺
+        base = Path(源)
+        for 键, 条目, _ in _EXTRA_PRESETS:
+            if 键 not in 选中:
+                continue
+            try:
+                在 = (base / 条目.rstrip("/")).exists()
+            except Exception:
+                在 = False
+            (有 if 在 else 缺).append(条目)
+        return 有, 缺
+
+    def _update_extra_defaults_label(self):
+        """设置页那行状态：勾了哪些、源目录里能找到几项。"""
+        lbl = getattr(self, "settings_extra_lbl", None)
+        if lbl is None:
+            return
+        选中 = getattr(self, "extra_defaults", []) or []
+        if not 选中:
+            文本 = "当前没有勾选：迁移时不会自动带任何目录。"
+        elif not self.source_path.get().strip():
+            文本 = ("已勾选 %d 项；选择源整合包目录后才能显示哪些实际存在。" % len(选中))
+        else:
+            有, 缺 = self._extra_default_status()
+            文本 = "已勾选 %d 项，源目录里能找到 %d 项" % (len(选中), len(有))
+            if 缺:
+                文本 += "（这次带不了：%s%s）" % (
+                    "、".join(x.rstrip("/") for x in 缺[:6]),
+                    " 等" if len(缺) > 6 else "")
+            else:
+                文本 += "，全部都会带上 ✅"
+        try:
+            lbl.configure(text=文本)
+        except Exception:
+            pass
+
+    def _auto_extra_entries(self, src_path):
+        """按设置挑出"默认携带"的条目（只留源实例里真实存在的）。
+
+        返回 (存在列表, 缺失列表)。刻意不写进用户的「其它文件」清单：那份清单是
+        用户自己的东西，工具不该偷偷改它 —— 这里只是迁移那一刻临时并进去。
+        """
+        有, 缺 = self._extra_default_status(str(src_path) if src_path else "")
+        return 有, 缺
 
     # ------------------------------------------------------------------ #
     # 放大查看：PySide6 试点窗口（Tk 主窗口 + root.after 驱动 Qt 事件循环）
@@ -5088,6 +5222,24 @@ class MigrationGUI:
         if not modlist and not configlist and not extralist:
             messagebox.showwarning("提示", "三个清单都是空的，没有可迁移的内容。")
             return
+
+        # 按设置自动带上「默认携带的目录」（shaderpacks / resourcepacks / xaero …）：
+        # 只并进这一次迁移用的 extralist，**不写回用户的「其它文件」清单** ——
+        # 清单是用户自己的东西，工具不能偷偷往里塞（否则删了下次又回来）。
+        try:
+            自动有, 自动缺 = self._auto_extra_entries(src_path)
+            已有 = {e.replace("\\", "/").rstrip("/").lower() for e in extralist}
+            要加 = [e for e in 自动有 if e.rstrip("/").lower() not in 已有]
+            if 要加:
+                extralist.extend(要加)
+                self.log("📦 按设置自动带上 %d 项：%s"
+                         % (len(要加), "、".join(e.rstrip("/") for e in 要加)), level="INFO")
+            if 自动缺 and getattr(self, "extra_defaults", None):
+                self.log("ℹ️ 默认携带的目录里有 %d 项在源实例中不存在，已跳过：%s"
+                         % (len(自动缺),
+                            "、".join(x.rstrip("/") for x in 自动缺[:6])), level="INFO")
+        except Exception:
+            trace_exc("main_window", "默认携带目录")
 
         # 计算要复制的文件数与总大小
         total_files, total_size = self._calculate_migration_stats(
