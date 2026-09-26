@@ -31,7 +31,8 @@ def _dc_now():
 
 from utils.helpers import (create_gradient_button, set_window_icon, center_window,
                            RoundedEntry, RoundedTextArea, circular_reveal, focus_window,
-                           lighten_color, begin_bulk_scan, end_bulk_scan,
+                           lighten_color, begin_bulk_scan, end_bulk_scan, LiquidProgress,
+                           bind_text_scroll,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme)
 from core.migrator import (
@@ -786,6 +787,14 @@ class MigrationGUI:
             if _box is not None:
                 try:
                     _box.refresh()
+                except Exception:
+                    pass
+        # 清单下面那条液态进度条也要跟着换色
+        for _name in ("mod_progress", "config_progress", "extra_progress"):
+            _bar = getattr(self, _name, None)
+            if _bar is not None:
+                try:
+                    _bar.set_theme(self.theme)
                 except Exception:
                     pass
         # 清单区的标签页（自绘圆角药丸）也要跟着换色
@@ -2578,6 +2587,10 @@ class MigrationGUI:
         self.mod_text_box.pack(fill="both", expand=True, padx=5, pady=5)
         self.mod_text = self.mod_text_box.text
         self._smooth(self.mod_text)
+        # 文本框下面一条液态进度条：滑到哪儿了一眼能看到（跟着这个框的滚动走）
+        self.mod_progress = LiquidProgress(parent, self.theme)
+        self.mod_progress.pack(fill="x", padx=5, pady=(0, 4))
+        bind_text_scroll(self.mod_text, self.mod_progress.set_view)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
         # 本会话新添加的模组（文件名小写），主清单用黄色高亮提示
@@ -2674,6 +2687,9 @@ class MigrationGUI:
         self.config_text_box.pack(fill="both", expand=True, padx=5, pady=5)
         self.config_text = self.config_text_box.text
         self._smooth(self.config_text)
+        self.config_progress = LiquidProgress(parent, self.theme)
+        self.config_progress.pack(fill="x", padx=5, pady=(0, 4))
+        bind_text_scroll(self.config_text, self.config_progress.set_view)
         self.config_text.bind("<Control-z>",
                               lambda e: self._safe_undo(self.config_text))
         self.config_text.bind("<Control-y>",
@@ -2769,6 +2785,9 @@ class MigrationGUI:
         self.extra_text_box.pack(fill="both", expand=True, padx=5, pady=5)
         self.extra_text = self.extra_text_box.text
         self._smooth(self.extra_text)
+        self.extra_progress = LiquidProgress(parent, self.theme)
+        self.extra_progress.pack(fill="x", padx=5, pady=(0, 4))
+        bind_text_scroll(self.extra_text, self.extra_progress.set_view)
         self.extra_text.bind("<Control-z>", lambda e: self._safe_undo(self.extra_text))
         self.extra_text.bind("<Control-y>", lambda e: self._safe_redo(self.extra_text))
         # 存在性检查的临时高亮（存在=绿 / 缺失=红 / 重复=黄），1 秒后自动恢复

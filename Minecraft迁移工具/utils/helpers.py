@@ -1762,3 +1762,207 @@ def set_window_icon(window):
             window.iconbitmap(icon_path)
         except:
             pass
+
+
+class LiquidProgress(tk.Canvas):
+    """一条"液态"进度条：从左往右填充，填充段上有一道柔光循环流过。
+
+    和锁屏遮罩那条流动红边是同一个做法（PIL 出图 + canvas 贴图 + 每帧平移），只是这里
+    还要按比例裁长度。内容不满一屏时整条填满、并且不再流动。
+    """
+
+    _TICK_MS = 33          # ≈30fps：这么细的条够顺了，也不至于白烧 CPU
+
+    def __init__(self, parent, theme, height=6, **kw):
+        try:
+            bg = parent.cget("bg")
+        except Exception:
+            bg = theme.get("bg", "#f0f0f0")
+        super().__init__(parent, height=height, highlightthickness=0, bd=0, bg=bg, **kw)
+        self.theme = dict(theme)
+        self._h = int(height)
+        self._cw = 0
+        self._fraction = 1.0
+        self._flow = 0.0
+        self._job = None
+        self._photo = None
+        self._track = None          # 底图（轨道）
+        self._fill = None           # 填充段（渐变 + 圆角），按宽度缓存
+        self._fill_w = 0
+        self._light = None          # 柔光带
+        # 先塞一张 1x1 的透明占位图：Tk 的 create_image 不带 image= 会报错
+        self._photo = _PILImageTk.PhotoImage(_PILImage.new("RGBA", (1, 1), (0, 0, 0, 0)))
+        self._img = self.create_image(0, 0, anchor="nw", image=self._photo)
+        self.bind("<Configure>", lambda _e: self._rebuild())
+
+    # ---------------------------------------------------------------- 对外
+    def set_view(self, first, last):
+        """按 Text.yview() 那两个数算进度：顶部 0%、滑到底 100%。"""
+        区间 = float(last) - float(first)
+        if 区间 >= 0.999:               # 内容不满一屏：屏幕上摆的就是全部
+            self.set_fraction(1.0)
+        else:
+            self.set_fraction(float(first) / max(1e-6, 1.0 - 区间))
+
+    def set_fraction(self, 比例):
+        比例 = max(0.0, min(1.0, float(比例)))
+        if abs(比例 - self._fraction) < 0.002:
+            return
+        self._fraction = 比例
+        self._fill = None
+        self._render()
+        if 比例 < 0.999:
+            self._ensure_tick()
+        else:
+            self.stop()
+
+    def set_theme(self, theme):
+        self.theme = dict(theme)
+        try:
+            self.configure(bg=theme.get("bg", "#f0f0f0"))
+        except Exception:
+            pass
+        self._track = None
+        self._fill = None
+        self._light = None
+        self._render()
+
+    def stop(self):
+        if self._job is not None:
+            try:
+                self.after_cancel(self._job)
+            except Exception:
+                pass
+        self._job = None
+
+    # ---------------------------------------------------------------- 内部
+    def _rgb(self, key, fallback):
+        色 = self.theme.get(key, fallback)
+        try:
+            return tuple(int(色[i:i + 2], 16) for i in (1, 3, 5))
+        except Exception:
+            return (120, 120, 120)
+
+    def _rebuild(self):
+        宽 = max(2, int(self.winfo_width()))
+        if 宽 == self._cw and self._track is not None:
+            return
+        self._cw = 宽
+        self._track = None
+        self._fill = None
+        self._light = None
+        self._render()
+
+    def _track_img(self):
+        if self._track is not None:
+            return self._track
+        图 = _PILImage.new("RGBA", (self._cw, self._h), (0, 0, 0, 0))
+        _PILDraw.Draw(图).rounded_rectangle(
+            [0, 0, self._cw - 1, self._h - 1], radius=self._h / 2.0,
+            fill=self._rgb("entry_bg", "#e8e8e8"))
+        self._track = 图
+        return 图
+
+    def _fill_img(self, 宽):
+        if self._fill is not None and self._fill_w == 宽:
+            return self._fill
+        高 = self._h
+        基色 = self.theme.get("card_sel_bar", "#2f7fd1")
+        左色 = _shade(基色, -22)
+        右色 = _shade(基色, 16)
+        c0 = tuple(int(左色[i:i + 2], 16) for i in (1, 3, 5))
+        c1 = tuple(int(右色[i:i + 2], 16) for i in (1, 3, 5))
+        渐变 = _PILImage.new("RGB", (宽, 1))
+        px = 渐变.load()
+        for x in range(宽):             # 先做 1px 的横向渐变再拉高，比逐像素铺满快得多
+            t = x / max(1, 宽 - 1)
+            px[x, 0] = tuple(int(a + (b - a) * t) for a, b in zip(c0, c1))
+        图 = 渐变.resize((宽, 高)).convert("RGBA")
+        遮罩 = _PILImage.new("L", (宽, 高), 0)
+        _PILDraw.Draw(遮罩).rounded_rectangle([0, 0, 宽 - 1, 高 - 1],
+                                              radius=高 / 2.0, fill=255)
+        图.putalpha(遮罩)
+        self._fill = 图
+        self._fill_w = 宽
+        return 图
+
+    def _light_img(self):
+        if self._light is not None:
+            return self._light
+        高 = self._h
+        光宽 = max(40, int(self._cw * 0.38))
+        图 = _PILImage.new("RGBA", (光宽, 高), (255, 255, 255, 0))
+        px = 图.load()
+        for x in range(光宽):
+            透明度 = int(115 * (1.0 - abs(x / max(1, 光宽 - 1) * 2.0 - 1.0)))
+            for y in range(高):
+                px[x, y] = (255, 255, 255, 透明度)
+        self._light = 图
+        return 图
+
+    def _render(self):
+        if self._cw <= 2 or self._h <= 0:
+            return
+        帧 = self._track_img().copy()
+        if self._fraction > 0.002:
+            宽 = max(self._h, int(self._cw * self._fraction))
+            帧.alpha_composite(self._fill_img(宽), (0, 0))
+            光 = self._light_img()
+            光宽 = 光.width
+            x = int(-光宽 + (宽 + 光宽) * self._flow)
+            左, 右 = max(0, x), min(宽, x + 光宽)
+            if 右 > 左:                 # 柔光只贴在填充段里，不溢到空轨道上
+                帧.alpha_composite(光.crop((左 - x, 0, 右 - x, self._h)), (左, 0))
+        try:
+            self._photo = _PILImageTk.PhotoImage(帧)
+            self.itemconfig(self._img, image=self._photo)
+        except Exception:
+            pass
+
+    def _ensure_tick(self):
+        if self._job is not None:
+            return
+        try:
+            self._job = self.after(self._TICK_MS, self._tick)
+        except Exception:
+            self._job = None
+
+    def _tick(self):
+        self._job = None
+        try:
+            if not self.winfo_exists() or not self.winfo_ismapped():
+                return                  # 窗口没了/这一页没显示：停下，别空转
+        except Exception:
+            return
+        self._flow = (self._flow + 0.018) % 1.0
+        self._render()
+        if self._fraction < 0.999:
+            self._ensure_tick()
+
+
+def bind_text_scroll(text_widget, on_view):
+    """让文本框的滚动也通知外面。
+
+    Tk 的 `yscrollcommand` 只能挂一个，而 ScrolledText 自己已经占上了（要同步滚动条），
+    所以包一层：先照旧调原来那个，再把 first/last 转给 on_view。
+    """
+    try:
+        原 = text_widget.cget("yscrollcommand")
+    except Exception:
+        原 = ""
+
+    def 包装(first, last):
+        if 原:
+            try:
+                text_widget.tk.call(原, first, last)
+            except Exception:
+                pass
+        try:
+            on_view(first, last)
+        except Exception:
+            pass
+
+    try:
+        text_widget.configure(yscrollcommand=包装)
+    except Exception:
+        trace_exc("helpers", "绑定文本框滚动")
