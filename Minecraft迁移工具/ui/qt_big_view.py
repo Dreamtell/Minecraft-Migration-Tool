@@ -2594,12 +2594,28 @@ class QtBigView(QtWidgets.QWidget):
     def _open_detail(self, row):
         """打开详情窗（非模态）：主界面和放大查看窗口都能继续用。
 
-        「模组详情」只对模组清单成立 —— config 清单里那行是配置文件，这里直接挡掉，
-        免得以后哪条路又把它放出来（菜单/双击/悬停图标都各自拦了一道）。
-        **同一个模组只开一个窗**：连点两下 ℹ 不该堆出两个窗口来（也是之前崩的诱因之一）。
+        **窗口的创建/显示要回到 Tk 的 after 里做**（`hooks["defer"]`）：点 ℹ 这个动作
+        本身就跑在 `processEvents` 的回调里，而在 Qt 的事件处理栈上 `show()` 一个新窗口
+        会让 shiboken 重入它的线程状态保存/恢复 —— 表现就是致命的
+        `PyEval_RestoreThread ... the GIL is released`（用户实测反复开关详情时崩）。
+
+        「模组详情」只对模组清单成立 —— config 清单里那行是配置文件，这里直接挡掉；
+        同一个模组只开一个窗（连点两下 ℹ 不该堆窗口）。
         """
         if not self.store.is_mod:
             return None
+        defer = self.hooks.get("defer")
+        if defer is None:
+            return self._open_detail_now(row)
+        结果 = {"v": None}
+        try:
+            defer(lambda: 结果.__setitem__("v", self._open_detail_now(row)))
+        except Exception as e:
+            trace_exc("_open_detail(defer)", e)
+        return 结果["v"]          # 真实 after 是异步的，这里通常是 None（调用方不依赖）
+
+    def _open_detail_now(self, row):
+        """真正建窗并显示 —— 必须在 Tk 的 after 上下文里调。"""
         try:
             it = self.store.at(row)
             key = it.key
@@ -2624,7 +2640,7 @@ class QtBigView(QtWidgets.QWidget):
                           dlg.x(), dlg.y(), dlg.width(), dlg.height()))
             return dlg
         except Exception as e:                    # 别让它静默变成"点了没反应"
-            trace_exc("_open_detail", e)
+            trace_exc("_open_detail_now", e)
             return None
 
     def _on_online_search(self):
@@ -2639,32 +2655,57 @@ class QtBigView(QtWidgets.QWidget):
             sel = [i for i, it in enumerate(self.store.items) if it.checked]
             row = self.store.row_of(self.store.items[sel[0]]) if sel else 0
         it = self.store.at(max(0, row))
-        dlg = OnlineSearchDialog(it.title, guess_query(it), str(it.version or ""),
-                                 str(it.modid or ""), self.theme, self)
-        self._track(dlg)
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
-        return dlg
+
+        def _show():
+            dlg = OnlineSearchDialog(it.title, guess_query(it), str(it.version or ""),
+                                     str(it.modid or ""), self.theme, self)
+            self._track(dlg)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return dlg
+        self._defer(_show)
+        return None
+
+    def _defer(self, fn):
+        """把"建窗 / 显示窗口"这类重操作丢回 Tk 的 after，不在 Qt 的事件栈上做。
+
+        实测：在 `processEvents` 回调栈里 `show()` 一个新窗口会让 shiboken 重入它的
+        线程状态保存/恢复，出致命的 `PyEval_RestoreThread ... the GIL is released`
+        （用户反复开关模组详情窗口时崩过）。
+        """
+        defer = self.hooks.get("defer")
+        if defer is None:
+            fn()
+            return
+        try:
+            defer(fn)
+        except Exception:
+            fn()
 
     def _message(self, title, text):
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle(title)
-        box.setText(text)
-        box.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        self._track(box)
-        box.open()
+        def _show():
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle(title)
+            box.setText(text)
+            box.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+            self._track(box)
+            box.open()
+        self._defer(_show)
 
     def _confirm(self, title, text, on_yes):
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle(title)
-        box.setText(text)
-        box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        box.setDefaultButton(QtWidgets.QMessageBox.Yes)
-        box.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        box.finished.connect(lambda r: on_yes() if r == QtWidgets.QMessageBox.Yes else None)
-        self._track(box)
-        box.open()
+        def _show():
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle(title)
+            box.setText(text)
+            box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            box.setDefaultButton(QtWidgets.QMessageBox.Yes)
+            box.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+            box.finished.connect(lambda r: on_yes()
+                                 if r == QtWidgets.QMessageBox.Yes else None)
+            self._track(box)
+            box.open()
+        self._defer(_show)
 
     # ---------------- 状态 ----------------
     def _on_reset_view(self):

@@ -365,12 +365,13 @@ class QtDiffView(QtWidgets.QWidget):
         combo_menu.addAction("更新 + 目标独有",
                              lambda: self._by_status("更新", "目标独有"))
         self._combo_menu = combo_menu
-        # 用 popup 而不是 exec：exec 会开一层**嵌套事件循环**，而这段代码是跑在
-        # Tk 的 after → processEvents 回调里的，嵌套事件循环是这类"两套循环共存"
-        # 崩溃的高发区。popup 不阻塞，菜单的交互交给同一个 processEvents 泵。
+        # 用 popup 而不是 exec，而且丢回 Tk 的 after 里弹：exec 会开一层**嵌套事件循环**，
+        # 而这段代码跑在 Tk 的 after → processEvents 回调里，嵌套事件循环 + 在 Qt 栈上
+        # 显示窗口是这类"两套循环共存"崩溃的高发区。
         self.btn_combo.clicked.connect(
-            lambda: combo_menu.popup(self.btn_combo.mapToGlobal(
-                QtCore.QPoint(0, self.btn_combo.height()))))
+            lambda: self._defer(lambda: combo_menu.popup(
+                self.btn_combo.mapToGlobal(
+                    QtCore.QPoint(0, self.btn_combo.height())))))
         self._search_timer = QtCore.QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)          # 输入即过滤，250ms 防抖
@@ -708,6 +709,21 @@ class QtDiffView(QtWidgets.QWidget):
         self.store.set_checked(pred)
         self._update_summary()
 
+    def _defer(self, fn):
+        """把"建窗 / 弹菜单 / 弹框"这类重操作丢回 Tk 的 after，不在 Qt 事件栈上做。
+
+        实测：在 `processEvents` 回调栈里显示新窗口会让 shiboken 重入它的线程状态
+        保存/恢复，出致命的 `PyEval_RestoreThread ... the GIL is released`。
+        """
+        defer = self.hooks.get("defer")
+        if defer is None:
+            fn()
+            return
+        try:
+            defer(fn)
+        except Exception:
+            fn()
+
     def _prune_dialogs(self):
         """清掉已经关掉的详情窗。
 
@@ -743,11 +759,27 @@ class QtDiffView(QtWidgets.QWidget):
         _drop()
 
     def _show_detail(self, row):
+        """打开模组详情。
+
+        **建窗/显示这一步要回到 Tk 的 after 里做**：双击/点 ℹ 都跑在 Qt 的
+        `processEvents` 回调栈上，在事件处理中途 `show()` 一个新窗口会让 shiboken
+        重入线程状态的保存/恢复 —— 那就是致命的 `PyEval_RestoreThread`（用户实测崩过）。
+        """
+        defer = self.hooks.get("defer")
+        if defer is None:
+            return self._show_detail_now(row)
+        结果 = {"v": None}
+        try:
+            defer(lambda: 结果.__setitem__("v", self._show_detail_now(row)))
+        except Exception:
+            pass
+        return 结果["v"]          # 真实 after 是异步的，这里通常是 None
+
+    def _show_detail_now(self, row):
         if not (0 <= row < len(self.store.order)):
             return None
         self._prune_dialogs()
         it = self.store.at(row)
-        jar = self.store.jar_of(it)
         # 同一个模组只开一个窗：连点 ℹ 不该堆窗口
         for d in self._dialogs:
             try:

@@ -107,6 +107,12 @@
     released`）；逐帧推的收尾落在 Tk 的 `after` 里，和其它 Tk 操作同一个上下文
   - **关掉的 Qt 窗口在主线程销毁**（`_pump_qt` + `deleteLater`）：Qt 的 C++ 对象不能在
   别的线程里析构。
+- **建窗/显示窗口必须回到 Tk 的 after**（`_defer` / `hooks["defer"]`）：点 ℹ、双击、弹框、
+  弹菜单这些动作都跑在 Qt 的 `processEvents` 回调栈上，在事件处理中途 `show()` 一个新窗口
+  会让 shiboken 重入它的线程状态保存/恢复 —— 又是那个 `PyEval_RestoreThread` 致命错误
+  （用户第四次崩：日志显示崩前刚"打开 Qt 差异窗口 → 两次打开详情"）。
+  现在 `_open_detail` / `_message` / `_confirm` / `_open_online_search` / 组合菜单 popup
+  全部经 `_defer` 丢回 Tk 的 after 再执行，Qt 的事件栈上只做"改数据 + 标脏"
 - **关掉的对话框不能在 Qt 回调栈里释放**（`_track` / `_drop_dialogs` / `_prune_dialogs`）：
   点卡片上的 ℹ 打开模组详情时，代码正跑在 `processEvents` 的回调里；这时候如果让
   Python wrapper 的引用归零（shiboken 随即析构 C++ 对象），就会踩到它的 tstate 保存/恢复，
@@ -503,6 +509,14 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **第四次崩溃：把"建窗/显示窗口"也挪出 Qt 事件栈**。这次先读了用户机器上的现场：
+  `~/.minecraft_migrate_fatal.log` 是空的（**`faulthandler` 抓不到这类 GIL 致命错误**，
+  它只覆盖段错误/abort），但 `~/.minecraft_migrate_clicks.log` 记着崩前刚
+  「打开 Qt 差异窗口 rows=413 → 两次打开详情」。于是把点 ℹ / 弹框 / 弹菜单这些
+  **显示窗口**的动作也经 `_defer`（`root.after`）挪到 Qt 的事件栈之外 ——
+  在 `processEvents` 回调里 `show()` 新窗口会让 shiboken 重入线程状态保存/恢复。
+  验证脚本 `_dctest/压测详情真实hooks.py` 用**真实 hooks**（`root.after`，异步）
+  连点 25 轮 + 组合菜单 8 次 + 空转 10 秒
 - **按操作日志定位到的第三个崩溃点：详情窗在 Qt 回调栈里被释放**。用户第三次崩（这次栈里
   已经没有托盘线程了），他说"点 ℹ 打开模组详情"时崩；翻 `~/.minecraft_migrate_clicks.log`
   发现他**2 秒内对同一行连点了两次 ℹ** —— 于是每次都新建详情窗，清理旧窗口时又是在
