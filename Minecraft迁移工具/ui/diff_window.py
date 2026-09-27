@@ -8,11 +8,13 @@ from ui.dialogs import show_mod_detail, update_mod_detail_theme
 from ui.virtual_table import VirtualTable
 
 
-def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=False, env=None):
+def show_diff_window(parent, data: list, theme, current_theme, apply_callback, cards=False,
+                     env=None):
     """
     显示差异列表窗口
     parent: 父窗口
-    data: 差异数据列表
+    data: 差异数据列表，每条是 9 元组
+          (显示名, 状态, 真名, 大小KB, 备注, modid, 版本, 类型, 文件路径)
     theme: 主题字典（用于 ttk 样式）
     current_theme: 字符串 "light" 或 "dark"（用于行标签颜色）
     apply_callback: 应用所选的回调函数 (selected_files)
@@ -59,7 +61,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=F
     if style.theme_use() != 'clam':
         try:
             style.theme_use('clam')
-        except:
+        except Exception:
             pass
 
     # ---- 创建自绘表格（和「放大查看」「迁移历史」同一套） ----
@@ -102,9 +104,12 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=F
     diff_win.grid_columnconfigure(0, weight=1)
 
     # ---- 数据加载 ----
-    all_data = data[:]
-    selection_state = {}          # all_data 的下标 -> 是否勾选（与搜索过滤无关）
-    visible = []                  # 表格当前显示的行 -> all_data 下标
+    # 这三行都标了类型：`data` 没标注时 PyCharm 只能推出 `Any | list`，
+    # 于是下面 `selection_state.get(visible[row])` 全被报成"不可哈希的类型用作字典键"
+    # （21 条红波浪线，实际键一直是 int 下标，跑起来没问题）。标清楚就不吵了。
+    all_data: list = data[:]
+    selection_state: dict = {}    # all_data 的下标 -> 是否勾选（与搜索过滤无关）
+    visible: list = []            # 表格当前显示的行 -> all_data 下标
 
     for idx, item in enumerate(all_data):
         selection_state[idx] = (item[1] == "新增")     # 「新增」默认勾上
@@ -310,7 +315,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=F
             def key_func(item):
                 try:
                     return float(item[idx])
-                except:
+                except (TypeError, ValueError, IndexError):
                     return 0.0
 
             return key_func
@@ -651,7 +656,7 @@ def update_diff_theme(diff_win, theme, current_theme):
                                 darkcolor=theme["button_bg"],
                                 relief="flat",
                                 borderwidth=0)
-        except:
+        except Exception:
             pass
         for child in widget.winfo_children():
             update_widgets(child)

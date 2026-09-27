@@ -45,7 +45,8 @@ from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E
                              normalize_online_version, search_modrinth,
                              categories_cn)
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
-                           get_icon_path, style_window_hwnd, trace_exc, trace_line)
+                           get_icon_path, style_window_hwnd, text_delta,
+                           trace_exc, trace_line)
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
 CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
@@ -326,6 +327,9 @@ class Store(QtCore.QObject):
     """清单数据 + 当前显示顺序 + 选中集合。"""
     reset = QtCore.Signal()             # 顺序/搜索/排序变化：整表重载
     row_data = QtCore.Signal(int)       # 显示行号，某行数据变了
+    # 末尾增删走增量时用（别整份 reset）：范围为**显示顺序**里的行号
+    rows_inserted = QtCore.Signal(int, int)
+    rows_removed = QtCore.Signal(int, int)
 
     def __init__(self, entries, is_mod, source_path, online_tags, parent=None):
         super().__init__(parent)
@@ -540,6 +544,88 @@ class Store(QtCore.QObject):
     def entries_changed(self):
         self.rebuild()
 
+    def set_entries(self, entries):
+        """主界面清单变了：换成新内容（实时重载）。返回 (行数, 有没有变化)。
+
+        还存在的条目**复用原来的对象** —— 勾选态、扫描出来的元数据、图标都留着；
+        只有新来的条目才重新起扫描。这样"主界面加了两行"不会让已经扫好的上千条重扫。
+
+        两个省时间的点：
+        · 内容跟现在一模一样就直接返回。子进程每次收到的都是完整清单（包括它自己刚
+          写回的那一趟），不早退的话每次都要白白重排重画一遍。
+        · 改动集中在**一整段**（末尾加一行、中间删一行、改一行、粘一段）且当前没有
+          搜索词和排序时走增量插入/删除 —— 整份 reset 会让视图把可见区域整个重排重画
+          （1000 条实测：reset 19.6ms + 重画，增量是 0.4ms）。
+        """
+        新 = [str(e) for e in (entries or []) if str(e).strip()]
+        当前 = [it.entry for it in self.items]
+        if 新 == 当前:
+            return len(self.items), False
+        if not (self.query or "").strip() and self.sort_col is None and self.order == list(range(len(当前))):
+            # 公共前/后缀：夹在中间那一段才是真正变了的部分
+            前 = 0
+            while 前 < len(当前) and 前 < len(新) and 当前[前] == 新[前]:
+                前 += 1
+            后 = 0
+            while (后 < len(当前) - 前 and 后 < len(新) - 前
+                   and 当前[len(当前) - 1 - 后] == 新[len(新) - 1 - 后]):
+                后 += 1
+            删数 = len(当前) - 前 - 后
+            增数 = len(新) - 前 - 后
+            if 增数 or 删数:
+                # 被换掉的那一段里，文本还留着的条目**复用原对象** —— 勾选态、
+                # 扫描结果、图标都别丢（换顺序、改一行都是这种）
+                池 = {}
+                for it in self.items[前:前 + 删数]:
+                    池.setdefault(it.entry, []).append(it)
+                del self.items[前:前 + 删数]
+                插入, 待扫 = [], []
+                for e in 新[前:前 + 增数]:
+                    复用 = 池.get(e)
+                    if 复用:
+                        插入.append(复用.pop(0))
+                    else:
+                        it = Entry(e)
+                        插入.append(it)
+                        待扫.append(it)
+                self.items[前:前] = 插入
+                self.order = list(range(len(self.items)))
+                self._pos = {id(it): r for r, it in enumerate(self.items)}
+                if 增数 == 删数:
+                    # 行数没变（改内容/换顺序）：只告诉视图"这几行数据变了"，
+                    # 连布局和滚动条都不用动
+                    for r in range(前, 前 + 增数):
+                        self.row_data.emit(r)
+                else:
+                    if 删数:
+                        self.rows_removed.emit(前, 前 + 删数 - 1)
+                    if 增数:
+                        self.rows_inserted.emit(前, 前 + 增数 - 1)
+                for it in 待扫:
+                    self._start_scan(it)
+                return len(self.items), True
+        # 其余情况（中间改/重排/有过滤）：整份重建
+        旧 = {}
+        for it in self.items:
+            旧.setdefault(it.entry, it)
+        items, 待扫 = [], []
+        用过 = set()
+        for e in 新:
+            it = 旧.get(e)
+            if it is None or id(it) in 用过:
+                # 没有过的条目，或同一条重复出现：另造一个（_pos 是按 id 索引的，
+                # 同一个对象不能在一份清单里出现两次）
+                it = Entry(e)
+                待扫.append(it)
+            else:
+                用过.add(id(it))
+            items.append(it)
+        self.items = items
+        self.entries_changed()
+        for it in 待扫:
+            self._start_scan(it)
+        return len(items), True
+
     def entry_texts(self) -> list:
         return [it.entry for it in self.items]
 
@@ -720,10 +806,25 @@ class TableModel(QtCore.QAbstractTableModel):
         self._fg_cache = {}
         store.reset.connect(self._on_reset)
         store.row_data.connect(self._on_row)
+        # 增量信号只有 Store 有（差异窗口那个 DiffStore 没实现，拿 getattr 兜一下）
+        for _名, _槽 in (("rows_inserted", self._on_rows_inserted),
+                       ("rows_removed", self._on_rows_removed)):
+            _信号 = getattr(store, _名, None)
+            if _信号 is not None:
+                _信号.connect(_槽)
 
     def _on_reset(self):
         self.beginResetModel()
         self.endResetModel()
+
+    def _on_rows_inserted(self, first, last):
+        """末尾加了条目：只告诉视图"这里多了几行"，别整份 reset（重排重画整屏）。"""
+        self.beginInsertRows(QtCore.QModelIndex(), first, last)
+        self.endInsertRows()
+
+    def _on_rows_removed(self, first, last):
+        self.beginRemoveRows(QtCore.QModelIndex(), first, last)
+        self.endRemoveRows()
 
     def _on_row(self, row):
         if 0 <= row < len(self.store.order):
@@ -957,10 +1058,24 @@ class CardModel(QtCore.QAbstractListModel):
         self.store = store
         store.reset.connect(self._on_reset)
         store.row_data.connect(self._on_row)
+        # 增量信号只有 Store 有（差异窗口那个 DiffStore 没实现，拿 getattr 兜一下）
+        for _名, _槽 in (("rows_inserted", self._on_rows_inserted),
+                       ("rows_removed", self._on_rows_removed)):
+            _信号 = getattr(store, _名, None)
+            if _信号 is not None:
+                _信号.connect(_槽)
 
     def _on_reset(self):
         self.beginResetModel()
         self.endResetModel()
+
+    def _on_rows_inserted(self, first, last):
+        self.beginInsertRows(QtCore.QModelIndex(), first, last)
+        self.endInsertRows()
+
+    def _on_rows_removed(self, first, last):
+        self.beginRemoveRows(QtCore.QModelIndex(), first, last)
+        self.endRemoveRows()
 
     def _on_row(self, row):
         if 0 <= row < len(self.store.order):
@@ -1160,6 +1275,21 @@ class OverviewBar(QtWidgets.QWidget):
         self.update()
 
     # ---- 画 ----
+    @staticmethod
+    def _color_of(项):
+        """颜色项 → QColor：`"#rrggbb"` = 原色，`(色, alpha)` = 半透明。无效返回 None。"""
+        if not 项:
+            return None
+        if isinstance(项, (tuple, list)):
+            色, 透明 = 项[0], int(项[1])
+        else:
+            色, 透明 = 项, 255              # 纯色 = 原色（异常状态要醒目）
+        画色 = QtGui.QColor(色)
+        if not 画色.isValid():
+            return None
+        画色.setAlpha(max(0, min(255, 透明)))
+        return 画色
+
     def paintEvent(self, _ev):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -1172,33 +1302,45 @@ class OverviewBar(QtWidgets.QWidget):
         n = len(self._colors)
         if n and 高 > 2.0:
             每行 = 高 / n
-            够高 = 每行 >= 1.2
-            p.setRenderHint(QtGui.QPainter.Antialiasing, 够高)
-            for i in range(n):
-                项 = self._colors[i]
-                if not 项:
-                    continue
-                if isinstance(项, (tuple, list)):
-                    色, 透明 = 项[0], int(项[1])
-                else:
-                    色, 透明 = 项, 255          # 纯色 = 原色（异常状态要醒目）
-                画色 = QtGui.QColor(色)
-                if not 画色.isValid():
-                    continue
-                画色.setAlpha(max(0, min(255, 透明)))
-                y = r.top() + i * 每行
-                p.setBrush(画色)
-                if 够高:
-                    # 行高够：一行一个小方块，上下留 1px 缝（左右也各留 1px，
-                    # 免得色块顶到圆角背景的边上被啃掉一截）
+            p.setBrush(QtCore.Qt.NoBrush)
+            if 每行 >= 4.0:
+                # 行高够：一行一个小方块（圆角），上下留 1px 缝；左右也各留 1px，
+                # 免得色块顶到圆角背景的边上被啃掉一截
+                p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                块高 = 每行 - 1.0
+                for i in range(n):
+                    画色 = self._color_of(self._colors[i])
+                    if 画色 is None:
+                        continue
+                    p.setBrush(画色)
                     p.drawRoundedRect(
-                        QtCore.QRectF(r.left() + 1.0, y, r.width() - 2.0,
-                                      max(1.0, 每行 - 1.0)), 1.0, 1.0)
-                else:
-                    # 太密：整宽铺一条极窄色带，缩略后就是一片"内容纹理"
-                    p.drawRect(QtCore.QRectF(r.left() + 0.5, y, r.width() - 1.0,
-                                             max(0.8, 每行)))
+                        QtCore.QRectF(r.left() + 1.0, r.top() + i * 每行,
+                                      r.width() - 2.0, 块高), 1.0, 1.0)
+            else:
+                # 行高不够：**一个像素行一个色，每个像素行只画一次**。
+                # 两个坑都在这一步里避掉：
+                #  · 别画"细带子 + 圆角"：圆角半径 1px 在 1~3px 高的块上会退化成
+                #    一条细透镜，抗锯齿一平均颜色就被冲淡 —— 实测 300 条时勾选蓝
+                #    只剩 50%，看着就跟"正常"那种**刻意**淡下去的颜色一样。
+                #  · 也别让细带子互相叠：半透明的颜色叠一层就深一层，实测 1200 条时
+                #    该淡下去的绿会叠到 0.76，整条反而比稀疏时更艳。
+                # 一个像素行取一次色：颜色保持原样、也不会露白缝。
+                p.setRenderHint(QtGui.QPainter.Antialiasing, False)
+                画色表 = [self._color_of(x) for x in self._colors]
+                上 = max(0, int(r.top()))
+                下 = min(self.height(), int(r.top() + 高) + 1)
+                for y in range(上, 下):
+                    i = int((y + 0.5 - r.top()) / 每行)
+                    if not (0 <= i < n):
+                        continue
+                    画色 = 画色表[i]
+                    if 画色 is None:
+                        continue
+                    p.setBrush(画色)
+                    p.drawRect(QtCore.QRectF(r.left() + 1.0, float(y),
+                                             r.width() - 2.0, 1.0))
         # ---- 视口框：现在看得见的那一段 ----
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)      # 上面可能为了平口关掉了
         基色 = QtGui.QColor(th.get("card_sel_bar", "#2f7fd1"))
         y0 = r.top() + 高 * self._v0
         y1 = r.top() + 高 * self._v1
@@ -2356,6 +2498,8 @@ class QtBigView(QtWidgets.QWidget):
         self.title_text = title
         self._alive = True
         self.store = Store(entries, is_mod, source_path, online_tags, parent=self)
+        # 打开那一刻的清单快照：写回时拿它算"这边改了什么"（见 _write_back）
+        self._snapshot = [str(x) for x in (entries or [])]
         # 这个实例是哪个 MC 版本 + 哪个加载器：联网搜索拿去过滤候选池。
         # 只探一次（建窗口时），拿不准就是空串 = 不过滤。
         self.env = detect_instance_env(source_path) if source_path else \
@@ -2993,8 +3137,37 @@ class QtBigView(QtWidgets.QWidget):
     def _on_search(self, text):
         self.store.set_query(text)
 
+    def set_entries(self, entries):
+        """主界面清单变了（实时重载）：换成新内容，勾选态与滚动位置尽量保留。
+
+        收到这个之后 `_snapshot` 必须跟着更新 —— 它表示"上次跟主界面同步过的内容"，
+        不更新的话下一次写回算出来的增删就是错的（会把主界面刚加/刚删的再翻一遍）。
+
+        这里**不写回**：内容就是从主界面来的，再回去只会白跑一趟。
+        """
+        try:
+            视图 = self._active_view()
+            旧位置 = 视图.verticalScrollBar().value()
+        except Exception:
+            视图, 旧位置 = None, None
+        n, 变了 = self.store.set_entries(entries)
+        self._snapshot = [str(x) for x in self.store.entry_texts()]
+        if not 变了:
+            return n, False             # 一模一样：连摘要/总览条都不用重算
+        if 视图 is not None and 旧位置 is not None:
+            try:
+                视图.verticalScrollBar().setValue(旧位置)
+            except Exception:
+                pass
+        self._update_summary()
+        self._refresh_overview()
+        return n, True
+
     def _write_back(self):
-        """把清单写回主界面（增删后立刻同步，和 Tk 版行为一致；关窗时再补一次）。
+        """把清单的**变化**写回主界面（增删后立刻同步，和 Tk 版行为一致；关窗时再补一次）。
+
+        只发"相对上次写回的增删"，不发整份清单：本窗口里的条目是**打开那一刻的快照**，
+        用户在主界面编辑的内容这边根本不知道，整份覆盖会把那些编辑盖回去（用户报过）。
 
         **必须交给 Tk 的 after 去写**：这里有时是从 Qt 的事件回调里进来的
         （比如退场动画结束后那条 QTimer），而那时主线程正卡在 `processEvents()` 里。
@@ -3005,11 +3178,20 @@ class QtBigView(QtWidgets.QWidget):
         cb = self.hooks.get("write_back")
         if cb is None:
             return
+        当前 = [str(x) for x in self.store.entry_texts()]
+        新增, 删除 = text_delta(self._snapshot, 当前)
+        self._snapshot = list(当前)      # 立刻记账：重复写回不会把同一条加两遍
         defer = self.hooks.get("defer")
 
         def 执行():
             try:
-                cb(self.store.entry_texts())
+                cb(当前, 新增, 删除)
+            except TypeError:
+                # 老调用方只吃一个参数（整份覆盖）
+                try:
+                    cb(当前)
+                except Exception:
+                    pass
             except Exception:
                 pass
 

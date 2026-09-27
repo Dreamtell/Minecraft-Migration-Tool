@@ -16,6 +16,37 @@ def live_scrollers():
     return [s for s in _LIVE_SCROLLERS]
 
 
+def text_delta(旧, 新):
+    """两串清单条目之间的"新增 / 删除"（多重集口径，重复条目也算得对）。
+
+    用途：放大查看把清单改动写回主界面时**只写变化** —— 主界面在放大查看开着的时候
+    被编辑过，整份覆盖会把那些编辑盖回去（用户报过）。只发增删、由主界面应用到
+    当前文本上，用户另外敲的行就不受影响。
+
+    返回 (新增, 删除)，两个列表都保持各自原来的顺序。
+    """
+    try:
+        from collections import Counter
+    except Exception:                                   # pragma: no cover
+        return list(新), list(旧)
+    旧计, 新计 = Counter(旧), Counter(新)
+    新增 = []
+    剩余 = dict(旧计)
+    for x in 新:
+        if 剩余.get(x, 0) > 0:
+            剩余[x] -= 1
+        else:
+            新增.append(x)
+    删除 = []
+    剩余 = dict(新计)
+    for x in 旧:
+        if 剩余.get(x, 0) > 0:
+            剩余[x] -= 1
+        else:
+            删除.append(x)
+    return 新增, 删除
+
+
 # ---- 批量扫描（存在性/元数据）期间，把 GIL 让出来一点 ----
 _scan_gil = {"depth": 0, "old": 0.005}
 _scan_gil_lock = threading.Lock()

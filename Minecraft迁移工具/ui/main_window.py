@@ -34,7 +34,8 @@ from utils.helpers import (create_gradient_button, set_window_icon, center_windo
                            lighten_color, begin_bulk_scan, end_bulk_scan, LiquidProgress,
                            bind_text_scroll, SwitchRow, DataText, data_label,
                            make_theme_icon, clear_layered_style, SmoothScroller,
-                           tree_row_px, style_window, is_dark_theme, trace_exc)
+                           tree_row_px, style_window, is_dark_theme, trace_exc,
+                           text_delta)
 from core.migrator import (
     run_migration,
     do_backup,
@@ -2172,9 +2173,12 @@ class MigrationGUI:
                  % ("卡片视图" if self.diff_view == "cards" else "列表视图"),
                  level="INFO", save=False)
 
-    def _qt_apply_entries(self, text_widget, entries):
-        """Qt 窗口关闭时把清单写回主界面（等价于 Tk 版的 write_back）。"""
-        content = "\n".join(entries)
+    def _write_text_keep_scroll(self, text_widget, 行):
+        """整份重写清单文本，但保持滚动位置（放大查看那条线共用）。
+
+        不记住滚动位置的话，关掉放大查看会发现主界面清单自己跳回顶部。
+        """
+        content = "\n".join(str(x) for x in 行)
         try:
             first = text_widget.yview()[0]
         except Exception:
@@ -2190,6 +2194,45 @@ class MigrationGUI:
             pass
         self._update_text_states()
         self.save_config()
+
+    def _apply_entries_delta(self, text_widget, added, removed):
+        """把清单的"增删"应用到**当前**文本上，返回结果行列表。
+
+        放大查看写回清单时只发变化，由这里落到文本上 —— 用户在编辑模式里另外敲的
+        内容原样保留。以前是整份覆盖，而放大查看手里是"打开那一刻的快照"，
+        于是它一关窗/一增删就把主界面的编辑盖回去了（用户报过）。
+        """
+        try:
+            结果 = [ln.strip() for ln in text_widget.get("1.0", tk.END).splitlines()
+                    if ln.strip()]
+        except Exception:
+            结果 = []
+        if not added and not removed:
+            # 一样都没变：**一个字符都别动**。这正是"只是开关了一下放大查看"那种情况，
+            # 以前会拿快照整份覆盖 —— 顺手也就把用户在编辑模式里敲的内容、还没提交的
+            # 编辑状态、滚动位置全搅了一遍。
+            return 结果
+        for 项 in (removed or []):
+            项 = str(项)
+            if 项 in 结果:
+                结果.remove(项)          # 多重集口径：同名条目一次删一条
+        for 项 in (added or []):
+            项 = str(项)
+            if 项 and 项 not in 结果:
+                结果.append(项)
+        self._write_text_keep_scroll(text_widget, 结果)
+        return 结果
+
+    def _qt_apply_entries(self, text_widget, entries, added=None, removed=None):
+        """把 Qt 放大查看窗口的清单改动写回主界面。
+
+        给了 added/removed 就走**增量**（只动变化的那几条，见 _apply_entries_delta）；
+        没给（老调用方/老子进程）才退回整份覆盖 —— 保持向后兼容。
+        """
+        if added is None and removed is None:
+            self._write_text_keep_scroll(text_widget, [str(x) for x in entries])
+        else:
+            self._apply_entries_delta(text_widget, added, removed)
 
     def _pump_qt(self):
         """Tk 的 after 循环里驱动 Qt 事件，并回收已经关掉的 Qt 窗口。
@@ -3244,6 +3287,9 @@ class MigrationGUI:
         bind_text_scroll(self.mod_text, self.mod_progress.set_fraction)
         self.mod_text.bind("<Control-z>", lambda e: self._safe_undo(self.mod_text))
         self.mod_text.bind("<Control-y>", lambda e: self._safe_redo(self.mod_text))
+        # 内容一变就（防抖后）推给开着的 Qt 放大查看 —— 手打也能实时同步过去
+        self.mod_text.bind("<<Modified>>",
+                           lambda e: self._on_text_modified(self.mod_text), add="+")
         # 本会话新添加的模组（文件名小写），主清单用黄色高亮提示
         self._new_mod_keys = set()
         self.mod_text.tag_configure(
@@ -3345,6 +3391,8 @@ class MigrationGUI:
                               lambda e: self._safe_undo(self.config_text))
         self.config_text.bind("<Control-y>",
                               lambda e: self._safe_redo(self.config_text))
+        self.config_text.bind("<<Modified>>",
+                              lambda e: self._on_text_modified(self.config_text), add="+")
         # config 条目存在性检查的状态标签（正常=绿 / 缺失=红 / 重复=黄）
         self.config_text.tag_configure(
             "cfg_ok", background=self.theme.get("success_bg", "#d4edda"),
@@ -4729,6 +4777,8 @@ class MigrationGUI:
         - `raise`：把窗口叫到前面
         - `theme`：换主题（`附加={"theme": {...}}`）—— Qt 窗口在独立子进程里，
           主界面切主题只能这样告诉它
+        - `entries`：主界面清单变了（`附加={"entries": [...]}`）—— 子进程重建列表，
+          勾选态保留（实时重载，见 _push_big_view_entries）
         """
         try:
             主机们 = getattr(self, "_qt_hosts", None) or {}
@@ -4804,9 +4854,16 @@ class MigrationGUI:
             st = 信息.get("source_text")
             if st is not None:
                 try:
-                    self._qt_apply_entries(st, list(消息.get("entries") or []))
+                    self._qt_apply_entries(st, list(消息.get("entries") or []),
+                                           消息.get("added"), 消息.get("removed"))
                 except Exception:
                     pass
+        elif 动作 == "entries_ok":
+            # 子进程确认换好了清单（实时重载）；只留最新的，用于诊断/测试
+            self._qt_entries_ok = {"kind": 消息.get("kind"), "rows": 消息.get("rows")}
+        elif 动作 == "entries_fail":
+            self.log("⚠ Qt 窗口更新清单失败：%s" % 消息.get("error"),
+                     level="ERROR", save=False)
         elif 动作 == "theme_ok":
             # 子进程确认换好了：记个内存标记（诊断/测试用），日志里不刷（切一次一行太吵）
             if not hasattr(self, "_qt_theme_ok"):
@@ -6222,6 +6279,7 @@ class MigrationGUI:
             self.mod_text.event_generate("<<ModlistChanged>>")
         except Exception:
             pass
+        self._push_big_view_entries(self.mod_text)
 
     def _notify_config_change(self):
         """通知已打开的"放大查看"刷新 config 清单。"""
@@ -6229,6 +6287,65 @@ class MigrationGUI:
             self.config_text.event_generate("<<ConfigChanged>>")
         except Exception:
             pass
+        self._push_big_view_entries(self.config_text)
+
+    def _on_text_modified(self, text_widget):
+        """文本框内容变了 —— 防抖之后把清单推给 Qt 放大查看。
+
+        `<<Modified>>` 是唯一能同时覆盖"手打"和"程序改"的信号（Tk 的虚拟事件
+        `<<ModlistChanged>>` 只在 import/应用/清空那几条流程里手动发）。
+        它只会报一次，处理完必须 edit_modified(False) 才能再收到下一次。
+        """
+        try:
+            text_widget.edit_modified(False)
+        except Exception:
+            return
+        if not self._qt_host_alive("bigview"):
+            return
+        任务 = getattr(self, "_entries_push_jobs", None)
+        if 任务 is None:
+            self._entries_push_jobs = 任务 = {}
+        旧 = 任务.get(id(text_widget))
+        if 旧:
+            try:
+                self.root.after_cancel(旧)
+            except Exception:
+                pass
+        try:
+            任务[id(text_widget)] = self.root.after(
+                300, lambda w=text_widget: self._push_big_view_entries(w))
+        except Exception:
+            pass
+
+    def _push_big_view_entries(self, text_widget):
+        """把清单的当前内容推给已经开着的 Qt 放大查看（实时重载）。
+
+        Qt 版放大查看跑在独立子进程里，手里是"打开那一刻的快照"，主界面改了它不知道
+        —— 于是它显示的清单会越看越旧。Tk 版是靠 <<ModlistChanged>>/<<ConfigChanged>>
+        自己重载的，这里给 Qt 版补上同一条路子（子进程收到后重建，勾选态保留）。
+
+        同一份内容只推一次：放大查看自己写回清单时也会触发 <<Modified>>，
+        不挡一下就会把刚同步过去的内容再推回去（白跑一趟重排）。
+        """
+        if getattr(self, "_suppress_entries_push", False):
+            return
+        信息 = (getattr(self, "_qt_hosts", None) or {}).get("bigview") or {}
+        if 信息.get("proc") is None or 信息["proc"].poll() is not None:
+            return
+        if 信息.get("source_text") is not text_widget:
+            return                          # 那个窗口看的是另一张清单
+        try:
+            entries = [ln.strip() for ln in text_widget.get("1.0", tk.END).splitlines()
+                       if ln.strip()]
+        except Exception:
+            return
+        已推 = getattr(self, "_entries_pushed", None)
+        if 已推 is None:
+            self._entries_pushed = 已推 = {}
+        if 已推.get(id(text_widget)) == entries:
+            return
+        已推[id(text_widget)] = entries
+        self._send_qt_host_command("entries", kind="bigview", 附加={"entries": entries})
 
     def _create_check_legend(self, parent):
         """在检查按钮旁显示"存在/缺失/重复"三种颜色的图例（紧凑版，随按钮一行）。"""
@@ -6579,6 +6696,8 @@ class MigrationGUI:
         order: list = list(range(len(entries)))  # 当前显示顺序（entries 索引），含排序+过滤
         order_index = {idx: pos for pos, idx in enumerate(order)}  # idx->当前位置，供 poll 快速定位(O(1))
         sort_state = {"col": None, "rev": False}
+        # 上次写回时的清单内容：写回只发"相对它的增删"（用户在编辑模式里敲的内容不受影响）
+        基线 = [list(entries)]
 
         mods_dir = None
         config_dir = None
@@ -6816,32 +6935,26 @@ class MigrationGUI:
             update_summary()
 
         def write_back(fade_out_lines=None, fade_in_lines=None):
-            """把 entries 写回主界面清单。
+            """把 entries 的**变化**写回主界面清单。
 
             fade_out_lines / fade_in_lines：要淡出（删除前的位置）或淡入（重写后的位置）
             的 1-based 行号。行数多（>20）就不做动画，直接重写 —— 批量操作时动画只会拖慢。
+
+            只应用"相对上次写回的增删"，不整份覆盖：放大查看开着的时候用户在编辑模式里
+            敲的内容，`entries`（打开时的快照）里是没有的，整份覆盖会把它们盖回去。
             """
+            # 用户在放大查看开着的时候动过主界面吗（动过就不做行号动画了，行号对不上）
+            主界面此时 = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines()
+                          if ln.strip()]
+            与基线一致 = (主界面此时 == 基线[0])
+
             def _rewrite():
-                content = "\n".join(entries)
-                # 主清单是整体重写的：先记住滚动位置，写完再恢复，
-                # 否则关闭放大查看后会发现主界面清单自己跳回了顶部。
-                try:
-                    first = source_text.yview()[0]
-                except Exception:
-                    first = 0.0
-                source_text.configure(state=tk.NORMAL)
-                source_text.edit_separator()
-                source_text.delete("1.0", tk.END)
-                source_text.insert("1.0", content + ("\n" if content else ""))
-                source_text.edit_separator()
-                try:
-                    source_text.yview_moveto(first)
-                except Exception:
-                    pass
-                self._update_text_states()
-                self.save_config()
-                # 新加的行淡入（重写后行号才对得上）
-                if fade_in_lines and len(fade_in_lines) <= 20:
+                新增, 删除 = text_delta(基线[0], entries)
+                基线[0] = list(entries)
+                # 只应用增删（不动用户在编辑模式里敲的内容），整套文本重写交给公共方法
+                self._apply_entries_delta(source_text, 新增, 删除)
+                # 新加的行淡入（重写后行号才对得上）；主界面被编辑过就不做（行号对不上）
+                if 与基线一致 and fade_in_lines and len(fade_in_lines) <= 20:
                     try:
                         self._fade_text_lines(
                             source_text, fade_in_lines,
@@ -6856,7 +6969,7 @@ class MigrationGUI:
                 else:
                     self._clear_config_status()
 
-            if fade_out_lines and 0 < len(fade_out_lines) <= 20:
+            if 与基线一致 and fade_out_lines and 0 < len(fade_out_lines) <= 20:
                 # 先让要被删掉的行"淡出 + 往右滑走"，淡完了再真正重写
                 try:
                     self._fade_text_lines(source_text, fade_out_lines,
@@ -7484,6 +7597,7 @@ class MigrationGUI:
                 return
             entries[:] = [ln.strip() for ln in source_text.get(
                 "1.0", tk.END).splitlines() if ln.strip()]
+            基线[0] = list(entries)        # 刚跟主界面同步过，写回基线跟着走
             meta.clear()
             rebuild(rescan=True)
 

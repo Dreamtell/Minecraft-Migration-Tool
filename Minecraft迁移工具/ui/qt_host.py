@@ -143,8 +143,12 @@ def run_host(argv):
         if kind == "bigview":
             from ui.qt_big_view import QtBigView
 
-            def 写回(entries):
-                写结果({"action": "write_back", "entries": list(entries)})
+            def 写回(entries, added=None, removed=None):
+                # added/removed 是相对上次写回的增删：主进程只把变化应用到当前文本上，
+                # 免得把用户在主界面敲的内容盖回去（整份覆盖那个坑）
+                写结果({"action": "write_back", "entries": list(entries),
+                        "added": [str(x) for x in (added or [])],
+                        "removed": [str(x) for x in (removed or [])]})
 
             主机 = dict(hooks)
             主机["write_back"] = 写回
@@ -205,6 +209,14 @@ def run_host(argv):
                             view.activateWindow()
                         except Exception:
                             pass
+                    elif 动作 == "entries":
+                        # 主界面清单改了：换成新内容（勾选态保留，见 QtBigView.set_entries）
+                        try:
+                            n, _变了 = view.set_entries(命令.get("entries") or [])
+                            写结果({"action": "entries_ok", "kind": kind, "rows": n})
+                        except Exception as e:
+                            写结果({"action": "entries_fail", "kind": kind,
+                                    "error": repr(e)})
                     elif 动作 == "theme":
                         # 主界面切了浅色/深色：这里把整套配色重新铺一遍，并回报结果
                         try:
