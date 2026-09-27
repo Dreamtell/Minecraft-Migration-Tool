@@ -1,5 +1,6 @@
 # core/scanner.py
 import io
+import itertools
 import zipfile
 import json
 import re
@@ -553,3 +554,240 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
     if progress_queue:
         progress_queue.put(None)
     return results
+
+
+# --------------------------------------------------------------------------- #
+# 实例环境探测（MC 版本 + 加载器）
+# --------------------------------------------------------------------------- #
+# 用途：联网搜索按"你这个实例能用的版本/加载器"过滤候选池。
+# 关键是**宁可不猜也不要猜错** —— 猜错会把本该搜得到的模组过滤掉，
+# 那比多显示几条不兼容的结果糟糕得多。所以每一层拿不准就返回空串、放弃过滤。
+_MOD_LOADERS = ("neoforge", "fabric", "quilt", "forge")     # 判定顺序：先长后短
+# MC 版本号的形状。**必须收紧**：整合包自己的版本号也长成 5.11.9 / 2.0.0 这样，
+# 松一点点（"数字.数字"就算）就会把整合包版本当成 MC 版本，再拿去过滤 → 一条都搜不到。
+#   1.20.1 / 1.21   经典 1.x
+#   26.3            年份式新版本号（两位数年份起）
+#   24w14a          快照
+_MC_VERSION_RE = re.compile(
+    r"^(?:1\.\d{1,2}(?:\.\d{1,2})?|[2-9]\d\.\d+(?:\.\d+)?|\d{2}w\d{2}[a-z]?)$")
+# 模组**文件名**里只认经典 1.x 和快照：文件名里 23.9.7 这种更像是模组自己的版本号
+# （Xaero's Minimap 就是这命名），年份式的留给 version.json / 目录名那两层去认。
+_MC_FILENAME_RE = re.compile(r"^(?:1\.\d{1,2}(?:\.\d{1,2})?|\d{2}w\d{2}[a-z]?)$")
+
+_ENV_CACHE = {}
+_ENV_CACHE_LOCK = threading.Lock()
+_JAR_SAMPLE = 8          # 抽查几个 jar 判加载器就够，别为几百个模组挨个开压缩包
+_NAME_SAMPLE = 40        # 文件名只看名字、不用解压，多抽几个让"投票"更准
+
+
+def _loader_of(text):
+    """从一段文字里认加载器（文件名 / 库名 / 目录名都适用）。
+
+    必须先查 neoforge 再查 forge："neoforge" 里含 "forge"，
+    顺序反了会把 NeoForge 认成 Forge。
+    """
+    s = str(text or "").lower()
+    for name in _MOD_LOADERS:
+        if name in s:
+            return name
+    return ""
+
+
+def _mc_of(text):
+    """从一段文字里挑出像 MC 版本号的那一段（1.20.1 / 1.21 / 26.3 / 24w14a）。"""
+    for piece in re.split(r"[^0-9A-Za-z.]+", str(text or "")):
+        if _MC_VERSION_RE.match(piece):
+            return piece
+    return ""
+
+
+def _mc_exact(value):
+    """只认"整个字段就是这个版本"。`>=1.20.1`、`~1.20.1`、`*` 这类范围一律不认。"""
+    s = str(value or "").strip()
+    return s if _MC_VERSION_RE.match(s) else ""
+
+
+def _env_from_version_json(root):
+    """第 1 层：versions/*/version.json（最权威，里面直接写着版本和库）。"""
+    候选 = []
+    vdir = root / "versions"
+    if vdir.is_dir():
+        try:
+            for d in sorted(vdir.iterdir()):
+                j = d / "version.json"
+                if d.is_dir() and j.is_file():
+                    候选.append((d.name, j))
+        except Exception:
+            pass
+    # 有的整合包根目录本身就是个版本目录（<根目录名>.json 跟它同名）
+    自己 = root / (root.name + ".json")
+    if 自己.is_file():
+        候选.append((root.name, 自己))
+
+    for 名, j in 候选:
+        try:
+            data = json.loads(j.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        mc = _mc_of(data.get("inheritsFrom")) or _mc_of(data.get("id")) or _mc_of(名)
+        loader = ""
+        for lib in (data.get("libraries") or []):
+            lib_name = lib.get("name") if isinstance(lib, dict) else lib
+            loader = _loader_of(lib_name)
+            if loader:
+                break
+        if not loader:
+            loader = _loader_of(名)
+        if mc or loader:
+            return mc, loader, "version.json（%s）" % 名
+    return "", "", ""
+
+
+def _env_from_jars(root):
+    """第 3 层：抽查 mods 里的 jar，看它带的是哪家的元数据。
+
+    只能判加载器；MC 版本顺带看 fabric.mod.json 的 depends.minecraft，
+    但那通常是 ">=1.20.1" 这种范围，认不出就不认。
+    """
+    mods = root / "mods"
+    if not mods.is_dir():
+        return "", "", ""
+    try:
+        # 不排序：模组多的实例排几千个路径纯属浪费，抽查哪几个都行
+        jars = list(itertools.islice(mods.glob("*.jar"), _JAR_SAMPLE))
+    except Exception:
+        return "", "", ""
+    if not jars:
+        return "", "", ""
+
+    票 = {}
+    mc = ""
+    for jar in jars:
+        try:
+            with zipfile.ZipFile(jar, "r") as zf:      # 只开一次：先看名单，再读需要的那份
+                名单 = set(zf.namelist())
+                if "fabric.mod.json" in 名单:
+                    票["fabric"] = 票.get("fabric", 0) + 1
+                    if not mc:
+                        try:
+                            meta = json.loads(zf.read("fabric.mod.json")
+                                              .decode("utf-8", errors="ignore"))
+                            # 只认写死的版本；">=1.20.1" 这种范围不能当成实例的版本
+                            mc = _mc_exact((meta.get("depends") or {}).get("minecraft"))
+                        except Exception:
+                            pass
+                    continue
+                if "META-INF/neoforge.mods.toml" in 名单:
+                    票["neoforge"] = 票.get("neoforge", 0) + 1
+                elif "META-INF/mods.toml" in 名单:
+                    # Forge 和 NeoForge 都有 mods.toml，只能看里面提没提 neoforge
+                    try:
+                        文本 = zf.read("META-INF/mods.toml").decode("utf-8", errors="ignore")
+                        键 = "neoforge" if "neoforge" in 文本.lower() else "forge"
+                    except Exception:
+                        键 = "forge"
+                    票[键] = 票.get(键, 0) + 1
+        except Exception:
+            continue
+    if not 票:
+        return "", "", ""
+    loader = max(票.items(), key=lambda kv: kv[1])[0]
+    return mc, loader, "mods 里的模组元数据（抽查 %d 个）" % len(jars)
+
+
+def _env_from_filenames(root):
+    """第 3 层：从模组**文件名**里认 MC 版本（不用解压，最便宜的一层）。
+
+    很多整合包的 jar 名里就写着 MC 版本：`sodium-fabric-0.5.8+mc1.20.1.jar`、
+    `AppleSkin-mc1.20.1-forge-2.5.1.jar`、`Xaeros_Minimap_23.9.7_Fabric_1.20.jar`。
+    取"出现次数最多的那个"：模组自己的版本号各不相同，MC 版本会反复出现，投票能把它顶上来。
+    只有一个候选、它又只出现一次、旁边还有别的候选 —— 那就不猜。
+    """
+    mods = root / "mods"
+    if not mods.is_dir():
+        return "", ""
+    try:
+        names = [p.name for p in itertools.islice(mods.glob("*.jar"), _NAME_SAMPLE)]
+    except Exception:
+        return "", ""
+    票 = {}
+    for 名 in names:
+        干净 = 名[:-4] if 名.lower().endswith(".jar") else 名
+        干净 = re.sub(r"[^0-9A-Za-z.]+", " ", 干净)      # 分隔符统一成空格
+        干净 = re.sub(r"\bmc(?=\d)", " ", 干净, flags=re.I)   # "mc1.20.1" → "1.20.1"
+        for tok in 干净.split():
+            if _MC_FILENAME_RE.match(tok):
+                票[tok] = 票.get(tok, 0) + 1
+    if not 票:
+        return "", ""
+    最多 = max(票.values())
+    if 最多 < 2 and len(票) > 1:
+        return "", ""
+    for tok, 次 in 票.items():
+        if 次 == 最多:
+            return tok, "模组文件名（%d 个文件里出现 %d 次）" % (len(names), 次)
+    return "", ""
+
+
+def detect_instance_env(root):
+    """尽力识别一个整合包实例的 MC 版本与加载器。
+
+    返回 {"mc": "1.20.1", "loader": "fabric", "src": "…说明从哪认出来的"}；
+    认不出来的字段是空串（调用方就不要拿它过滤）。
+
+    依次尝试（可靠度从高到低）：
+      1. versions/*/version.json —— 里面直接写着 inheritsFrom 和 libraries
+      2. 实例目录名 —— "1.20.1-fabric" 这种，几乎都带版本号
+      3. mods 里的**文件名** —— `sodium-fabric-0.5.8+mc1.20.1.jar` 这种（投票）
+      4. mods 里抽查几个 jar 的元数据 —— 只能判加载器（顺带碰运气认版本）
+
+    **整合包自己的版本号（5.11.9 这种）不能被当成 MC 版本** —— 目录名里很常见，
+    认错了拿去过滤就是"一条都搜不到"。所以版本号的形状卡得很死（见 _MC_VERSION_RE）。
+    """
+    if not root:
+        return {"mc": "", "loader": "", "src": ""}
+    try:
+        键 = str(Path(root).resolve())
+    except Exception:
+        键 = str(root)
+    with _ENV_CACHE_LOCK:
+        hit = _ENV_CACHE.get(键)
+    if hit is not None:
+        return dict(hit)
+
+    p = Path(root)
+    mc, loader = "", ""
+    mc_src, loader_src = "", ""      # 版本和加载器可能来自不同的层，分别记来源
+    if p.is_dir():
+        版_mc, 版_loader, 版_src = _env_from_version_json(p)
+        if 版_mc:
+            mc, mc_src = 版_mc, 版_src
+        if 版_loader:
+            loader, loader_src = 版_loader, 版_src
+        名_mc, 名_loader = _mc_of(p.name), _loader_of(p.name)
+        if not mc and 名_mc:
+            mc, mc_src = 名_mc, "实例目录名"
+        if not loader and 名_loader:
+            loader, loader_src = 名_loader, "实例目录名"
+        if not mc:
+            文件_mc, 文件_src = _env_from_filenames(p)
+            if 文件_mc:
+                mc, mc_src = 文件_mc, 文件_src
+        if not loader:
+            罐_mc, 罐_loader, 罐_src = _env_from_jars(p)
+            if not mc and 罐_mc:
+                mc, mc_src = 罐_mc, 罐_src
+            if not loader and 罐_loader:
+                loader, loader_src = 罐_loader, 罐_src
+
+    来源 = []
+    if mc:
+        来源.append("版本来自%s" % (mc_src or "未知来源"))
+    if loader:
+        来源.append("加载器来自%s" % (loader_src or "未知来源"))
+    结果 = {"mc": mc, "loader": loader, "src": "；".join(来源)}
+    with _ENV_CACHE_LOCK:
+        _ENV_CACHE[键] = dict(结果)
+    return 结果

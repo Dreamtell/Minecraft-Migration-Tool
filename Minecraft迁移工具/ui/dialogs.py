@@ -12,8 +12,9 @@ from utils.helpers import (set_window_icon, create_gradient_button, focus_window
                            center_window, lighten_color, SmoothScroller, RoundedEntry,
                            LiquidProgress)
 from core.scanner import (get_full_mod_metadata, split_cn_name, guess_tags,
-                          get_mod_icon)
-from core.mod_search import search_modrinth, fetch_project_latest, format_downloads
+                          compare_versions, get_mod_icon)
+from core.mod_search import (search_modrinth, fetch_project_latest, format_downloads,
+                             normalize_online_version)
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
 
 
@@ -387,6 +388,21 @@ def _configure_mod_detail_styles(theme):
         lightcolor=theme["button_bg"], darkcolor=theme["button_bg"],
         relief="flat", borderwidth=0
     )
+    # 联网搜索那一行的"版本 / 加载器"下拉框（ttk 控件不在 apply_theme_to_widget_tree
+    # 的覆盖范围里，得单独配色，否则深色主题下是一块白）
+    style.configure(
+        "Detail.TCombobox",
+        fieldbackground=theme["entry_bg"], background=theme["button_bg"],
+        foreground=theme["fg"], arrowcolor=theme["fg"],
+        bordercolor=theme["muted_fg"], lightcolor=theme["entry_bg"],
+        darkcolor=theme["entry_bg"], selectbackground=theme.get("card_sel_bg", "#d4e6f8"),
+        selectforeground=theme.get("card_sel_fg", "#0d3d63"), padding=2
+    )
+    style.map(
+        "Detail.TCombobox",
+        fieldbackground=[("readonly", theme["entry_bg"])],
+        foreground=[("readonly", theme["fg"])]
+    )
 
 
 def _detail_icon_photo(jar_path, px=56):
@@ -504,12 +520,15 @@ def update_mod_detail_theme(win, theme):
         pass
 
 
-def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
+def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, env=None):
     """显示模组详细信息窗口（独立函数），带联网搜索模组/download链接功能。
 
     tags_hint / tags_online：放大查看窗口把扫描时拿到的分类传进来
     （tags_online=True 表示是 Modrinth 的真实分类，不是关键词推测）。
+    env：源实例的环境探测结果（{"mc","loader","src"}，见 core.scanner），
+    联网搜索拿它过滤候选池；没有就不过滤。
     """
+    env = dict(env or {})
     info = get_full_mod_metadata(jar_path)
     # 单实例：同一模组的详情窗口已打开则聚焦，避免双击连点重复弹窗
     win_title = f"模组详情 - {os.path.basename(jar_path)}"
@@ -729,6 +748,32 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
     status_lbl.pack(fill="x", pady=(0, 2))
     win._search_status = status_lbl
 
+    # ---- 只看：版本 / 加载器（默认填探测到的，可改可清空） ----
+    filt = tk.Frame(search_frame)
+    filt.pack(fill="x", pady=(0, 3))
+    tk.Label(filt, text="只看:").pack(side="left")
+    mc_var = tk.StringVar(value=str(env.get("mc") or ""))
+    loader_var = tk.StringVar(value=str(env.get("loader") or ""))
+    mc_box = ttk.Combobox(filt, textvariable=mc_var, width=11, style="Detail.TCombobox",
+                          values=("", "1.21.4", "1.21.1", "1.20.6", "1.20.1",
+                                  "1.19.2", "1.18.2", "1.16.5"))
+    mc_box.pack(side="left", padx=(3, 6))
+    loader_box = ttk.Combobox(filt, textvariable=loader_var, width=10, state="readonly",
+                              style="Detail.TCombobox",
+                              values=("", "fabric", "forge", "neoforge", "quilt"))
+    loader_box.pack(side="left", padx=(0, 6))
+    if env.get("mc") or env.get("loader"):
+        _env_hint = "自动识别自 %s" % (env.get("src") or "实例")
+    else:
+        _env_hint = "没认出你的实例版本，可手动选"
+    tk.Label(filt, text=_env_hint, fg=muted).pack(side="left")
+    win._search_filter_widgets = (mc_box, loader_box)
+
+    def _filters():
+        """当前过滤条件 (MC 版本, 加载器)；空串 = 不过滤。"""
+        mc = mc_var.get().strip()
+        return ("" if mc in ("", "不限") else mc), loader_var.get().strip()
+
     columns = ("name", "author", "downloads", "version", "slug")
     # 结果表格放进独立子框并撑满，避免下方"操作行"被横向挤掉
     tree_frame = tk.Frame(search_frame)
@@ -750,6 +795,9 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
                        foreground=theme.get("neutral_fg", "#000000"))
     tree.tag_configure("sel", background=theme.get("sel_bg", "#a5d6a7"),
                        foreground=theme.get("sel_fg", "#000000"))
+    # 鼠标划过的行：给个浅底，让人知道"这行是能点的"
+    tree.tag_configure("hover", background=theme.get("hover_bg", "#e9eef5"),
+                       foreground=theme.get("hover_fg", "#000000"))
     vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview,
                         style="Detail.Vertical.TScrollbar")
     tree.configure(yscrollcommand=vsb.set)
@@ -777,6 +825,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
 
     tree.bind("<Double-1>", on_double_click)
     tree.bind("<ButtonRelease-1>", lambda e: on_row_click(e))
+    tree.bind("<Motion>", lambda e: on_row_motion(e))
+    tree.bind("<Leave>", lambda e: on_row_leave(e))
     win._search_tree = tree
 
     act = tk.Frame(search_frame)
@@ -811,6 +861,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
     # ---- 状态与线程安全更新（队列 + 轮询） ----
     msg_queue = queue.Queue()
     search_state = {"running": False}
+    widen_state = {"tried": False, "note": ""}   # 自动放宽过滤：一次搜索只放宽一次
     result_items = {}
     base_tag = {}  # iid -> 基础标签（match/update/odd/''），供取消选中时恢复
 
@@ -851,6 +902,38 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
             pass
 
     current_sel = [None]
+    hover_iid = [None]
+
+    def _row_base(iid):
+        """这一行"本来的"标签：选中态优先，否则是它的基础标签（最相似/可更新/斑马纹）。"""
+        if current_sel[0] == iid:
+            return "sel"
+        return base_tag.get(iid, "")
+
+    def _restore_row(iid):
+        bt = _row_base(iid)
+        tree.item(iid, tags=(bt,) if bt else ())
+
+    def on_row_motion(event):
+        """鼠标划过哪一行就亮哪一行（选中行保持绿色选中，不被悬停色盖掉）。"""
+        try:
+            iid = tree.identify_row(event.y)
+        except Exception:
+            return
+        if iid == hover_iid[0]:
+            return
+        old = hover_iid[0]
+        hover_iid[0] = iid
+        if old and tree.exists(old):
+            _restore_row(old)
+        if iid and current_sel[0] != iid:
+            tree.item(iid, tags=("hover",))
+
+    def on_row_leave(_event):
+        old = hover_iid[0]
+        hover_iid[0] = None
+        if old and tree.exists(old):
+            _restore_row(old)
 
     def _norm(s):
         """归一化：小写、去括号内容、非字母数字合并为空格，便于相似度比较。"""
@@ -886,11 +969,24 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
     def show_results(results):
         search_state["running"] = False
         _set_search_btn(False)
+        mc_now, _loader_now = _filters()
+        # 带着版本过滤一条都没搜到：自动放宽版本再搜一次（和 Qt 版同一套行为）。
+        # 探测出来的版本偶尔会错 —— 整合包自己的版本号就可能长得像 MC 版本。
+        if not results and mc_now and not widen_state["tried"]:
+            widen_state["tried"] = True
+            widen_state["note"] = ("按 %s 没搜到东西 —— 可能是版本认错了，"
+                                   "已自动放宽版本再搜一次。" % mc_now)
+            mc_var.set("")
+            do_search()
+            return
+        备注 = widen_state["note"]
+        widen_state["note"] = ""
         for iid in tree.get_children():
             tree.delete(iid)
         result_items.clear()
         if not results:
-            set_status("没有找到相关模组，换个关键词试试。", fail)
+            set_status(("%s " % 备注 if 备注 else "")
+                       + "没有找到相关模组，换个关键词试试。", fail)
             return
         # 按相似度打分排序，分数最高者置顶并标绿（"最相似"）
         scored = [(match_score(r), i, r) for i, r in enumerate(results)]
@@ -913,7 +1009,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
             threading.Thread(target=lambda pid=pid, i=pos: _fetch_version_for(pid, i),
                              daemon=True).start()
         extra = "★为最相似项，已置顶。" if best >= MIN else "未找到相似度足够的候选。"
-        set_status(f"找到 {len(results)} 个结果。{extra} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）", ok)
+        set_status(("%s " % 备注 if 备注 else "")
+                   + f"找到 {len(results)} 个结果。{extra} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）", ok)
         # 后台并发拉取各候选的最新版本，逐行填充
         for i, r in enumerate(results):
             pid = r.get("project_id")
@@ -921,22 +1018,40 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
                              daemon=True).start()
 
     def _fetch_version_for(pid, i):
+        mc, loader = _filters()
         try:
-            d = fetch_project_latest(pid)
+            d = fetch_project_latest(pid, mc_version=mc, loader=loader)
         except Exception:
-            d = {"latest_version": "", "download_url": ""}
-        msg_queue.put(("version", (i, d["latest_version"], d["download_url"])))
+            d = {"latest_version": "", "download_url": "", "status": "error"}
+        msg_queue.put(("version", (i, d["latest_version"], d["download_url"],
+                                   d.get("status", "ok"))))
 
-    def _apply_version(i, vnum, url):
+    def _apply_version(i, vnum, url, status="ok"):
         iid = str(i)
         if iid not in result_items:
             return
         result_items[iid]["latest_version"] = vnum
         result_items[iid]["download_url"] = url
-        is_match = "match" in tree.item(iid, "tags")
+        # 从 base_tag 反推是不是"最相似"，**不能看当前标签**：鼠标正停在这一行时
+        # 它的标签是 "hover"，照当前标签判断会把 ★ 最相似那行的蓝底判丢。
+        is_match = base_tag.get(iid, "") == "match"
         local_ver = str(info.get("version") or "")
-        updatable = bool(vnum) and bool(local_ver) and vnum != local_ver
-        disp = (vnum + " ⬆") if updatable else (vnum or "未知")
+        if status == "no_match":
+            mc, loader = _filters()
+            只看 = " · ".join(x for x in (mc, loader) if x)
+            disp = ("无 %s 的版本" % 只看) if 只看 else "没有可用版本"
+            updatable = False
+        elif status == "error":
+            disp, updatable = "获取失败", False
+        else:
+            # 线上版本号带 MC 前缀/加载器后缀，先归一化再比大小
+            # （直接比字符串的话永远不相等，每行都会标"可更新"）
+            a = normalize_online_version(vnum)
+            b = normalize_online_version(local_ver)
+            cmp = compare_versions(a, b) if (a and b) else None
+            updatable = (cmp == 1) if cmp is not None else (
+                bool(vnum) and bool(local_ver) and a != b)
+            disp = (vnum + " ⬆") if updatable else (vnum or "未知")
         tree.set(iid, "version", disp)
         # 若该行正被选中，保持绿色选中标签；否则按 最相似/可更新/斑马纹 恢复
         if current_sel[0] == iid:
@@ -966,8 +1081,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
                 elif kind == "error":
                     show_error(payload)
                 elif kind == "version":
-                    i, vnum, url = payload
-                    _apply_version(i, vnum, url)
+                    i, vnum, url, status = payload
+                    _apply_version(i, vnum, url, status)
         except queue.Empty:
             pass
         except Exception:
@@ -982,11 +1097,13 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
         if search_state["running"]:
             return
         search_state["running"] = True
+        widen_state["tried"] = False        # 这次搜索允许自动放宽一次
         _set_search_btn(True)
 
         def worker():
+            mc, loader = _filters()
             try:
-                results = search_modrinth(q, limit=8)
+                results = search_modrinth(q, limit=8, mc_version=mc, loader=loader)
             except Exception as e:
                 msg_queue.put(("error", str(e)))
                 return
@@ -995,6 +1112,15 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False):
         threading.Thread(target=worker, daemon=True).start()
 
     search_btn.set_command(do_search)
+
+    def _on_filter_changed(_event=None):
+        """改了只看条件就重搜（候选池不一样了）。"""
+        if search_var.get().strip():
+            do_search()
+
+    mc_box.bind("<<ComboboxSelected>>", _on_filter_changed)
+    mc_box.bind("<Return>", _on_filter_changed)
+    loader_box.bind("<<ComboboxSelected>>", _on_filter_changed)
 
     def open_download():
         r = selected()

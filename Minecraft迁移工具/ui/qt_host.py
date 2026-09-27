@@ -166,7 +166,8 @@ def run_host(argv):
 
             view = QtDiffView(请求.get("data") or [], 主题,
                               hooks=hooks, apply_callback=应用,
-                              cards=bool(请求.get("cards", False)))
+                              cards=bool(请求.get("cards", False)),
+                              source_path=str(请求.get("source_path") or ""))
         view.show_centered()
     except Exception as e:
         import traceback

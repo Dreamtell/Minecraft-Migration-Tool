@@ -21,6 +21,7 @@ from ui.qt_big_view import (AnimButton, CardDelegate, CardModel, DetailDialog,
                             Entry, OverviewBar, ScrollProgress, SmoothCards,
                             SmoothTable, TableDelegate, _header_qss, _mix,
                             _style_view_palette, ensure_app)
+from core.scanner import detect_instance_env
 
 ROLE_ITEM = Q.ROLE_ITEM
 
@@ -296,12 +297,15 @@ class QtDiffView(QtWidgets.QWidget):
     """差异扫描窗口（由 Tk 侧 after 泵驱动）。"""
 
     def __init__(self, data, theme, hooks=None, apply_callback=None, parent=None,
-                 cards=False):
+                 cards=False, source_path=""):
         super().__init__(parent)
         self.theme = dict(theme)
         self.hooks = hooks or {}
         self.apply_callback = apply_callback
         self._alive = True
+        # 源实例的环境（MC 版本 + 加载器）：详情窗里的联网搜索拿它过滤候选池
+        self.env = detect_instance_env(source_path) if source_path else \
+            {"mc": "", "loader": "", "src": ""}
         # 打开时用表格还是卡片：默认视图在设置里选（_DIFF_VIEWS），这里只管摆好初始状态
         self._start_cards = bool(cards)
         self.store = DiffStore(data, theme, parent=self)
@@ -478,8 +482,10 @@ class QtDiffView(QtWidgets.QWidget):
         self.table.setItemDelegate(TableDelegate(self.table))
         self.table.clicked.connect(self._on_table_click)
         self.table.doubleClicked.connect(self._on_table_double)
-        self.table.mouseMoveEvent = self._table_mouse_move
-        self.table.leaveEvent = self._table_leave
+        # 悬停高亮靠 viewport 事件过滤器，不能替换视图的 mouseMoveEvent/leaveEvent
+        # （Qt 不会把 Leave 转给视图的 leaveEvent —— 详见 qt_big_view.QtBigView.eventFilter）
+        self.table.viewport().setMouseTracking(True)
+        self.table.viewport().installEventFilter(self)
 
         # ---- 卡片 ----
         self.card_model = CardModel(self.store, self)
@@ -494,8 +500,8 @@ class QtDiffView(QtWidgets.QWidget):
         self.cards.setItemDelegate(self.card_delegate)
         self.cards.clicked.connect(self._on_card_click)
         self.cards.doubleClicked.connect(self._on_card_double)
-        self.cards.mouseMoveEvent = self._card_mouse_move
-        self.cards.leaveEvent = self._card_leave
+        self.cards.viewport().setMouseTracking(True)
+        self.cards.viewport().installEventFilter(self)
 
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(self.table)
@@ -705,13 +711,34 @@ class QtDiffView(QtWidgets.QWidget):
         self._update_summary()
         self._show_detail(index.row())
 
+    def eventFilter(self, obj, ev):
+        """表头滚轮转发 + 表格/卡片的悬停（都盯 viewport，原因见 qt_big_view 里的说明）。"""
+        t = ev.type()
+        if t == QtCore.QEvent.Wheel and obj is self.table.horizontalHeader():
+            self.table.wheelEvent(ev)
+            return True
+        if obj is self.table.viewport():
+            if t == QtCore.QEvent.MouseMove:
+                self._table_mouse_move(ev)
+            elif t == QtCore.QEvent.Leave:
+                self._table_leave(ev)
+        else:
+            # getattr：表格的过滤器装得比卡片早，建窗口期间就可能进来事件
+            cards = getattr(self, "cards", None)
+            if cards is not None and obj is cards.viewport():
+                if t == QtCore.QEvent.MouseMove:
+                    self._card_mouse_move(ev)
+                elif t == QtCore.QEvent.Leave:
+                    self._card_leave(ev)
+        return super().eventFilter(obj, ev)
+
     def _table_mouse_move(self, ev):
         row = self.table.indexAt(ev.position().toPoint()).row()
         if row != self.table_model.hover_row:
             self.table_model.hover_row = row
             self.table.viewport().update()
 
-    def _table_leave(self, ev):
+    def _table_leave(self, ev=None):
         if self.table_model.hover_row != -1:
             self.table_model.hover_row = -1
             self.table.viewport().update()
@@ -739,9 +766,8 @@ class QtDiffView(QtWidgets.QWidget):
         self._card_hit = (row, action)
         self.cards.setCursor(QtCore.Qt.PointingHandCursor if action
                              else QtCore.Qt.ArrowCursor)
-        QtWidgets.QListView.mouseMoveEvent(self.cards, ev)
 
-    def _card_leave(self, ev):
+    def _card_leave(self, ev=None):
         if self.card_delegate.hover_row != -1:
             self.card_delegate.hover_row = -1
             self.card_delegate.hover_action = None
@@ -888,7 +914,7 @@ class QtDiffView(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        dlg = DetailDialog(it, self.theme, _reveal, self)
+        dlg = DetailDialog(it, self.theme, _reveal, self, env=getattr(self, "env", None))
         dlg._detail_key = it.key
         self._dialogs.append(dlg)
         dlg.show()

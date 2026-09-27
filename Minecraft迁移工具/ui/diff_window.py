@@ -8,7 +8,7 @@ from ui.dialogs import show_mod_detail, update_mod_detail_theme
 from ui.virtual_table import VirtualTable
 
 
-def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=False):
+def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=False, env=None):
     """
     显示差异列表窗口
     parent: 父窗口
@@ -16,6 +16,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=F
     theme: 主题字典（用于 ttk 样式）
     current_theme: 字符串 "light" 或 "dark"（用于行标签颜色）
     apply_callback: 应用所选的回调函数 (selected_files)
+    env: 源实例环境探测结果（{"mc","loader","src"}），模组详情里的联网搜索拿去过滤
     """
     diff_win = tk.Toplevel(parent)
     diff_win.withdraw()
@@ -32,6 +33,7 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=F
     # 记录当前主题，供主题切换后打开模组详情时使用正确的主题
     diff_win._current_theme = theme
     diff_win._current_theme_name = current_theme
+    diff_win._instance_env = dict(env or {})
 
     def on_diff_destroy(event):
         if hasattr(parent, 'diff_window'):
@@ -197,7 +199,8 @@ def show_diff_window(parent, data, theme, current_theme, apply_callback, cards=F
             if file_path and os.path.exists(file_path):
                 # 使用当前主题（切换主题后仍正确）
                 show_mod_detail(diff_win, file_path,
-                                getattr(diff_win, '_current_theme', theme))
+                                getattr(diff_win, '_current_theme', theme),
+                                env=getattr(diff_win, '_instance_env', None))
             else:
                 messagebox.showerror("错误", "找不到模组文件")
 

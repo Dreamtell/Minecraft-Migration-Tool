@@ -6,6 +6,7 @@ API Key，接入时只需扩展一个同结构的 *_curseforge 函数即可。
 """
 import json
 import os
+import re
 import threading
 import urllib.request
 import urllib.parse
@@ -27,24 +28,63 @@ def _json_get(url, timeout=15):
         return json.load(resp)
 
 
-def _fetch_latest_version(project_id, timeout=12):
-    """取单个项目的最新版本号与下载链接，失败返回 ("", "")。"""
+def _search_url(query, limit, mc_version="", loader=""):
+    """拼搜索 URL；给了 MC 版本 / 加载器就加 facets（两组之间是 AND）。
+
+    实测 `sodium` 不加过滤有 354 个候选，限成 1.20.1 + fabric 只剩 38 个 ——
+    候选池干净了，前 8 条才可能是"你装得上"的那些。
+    """
+    url = MODRINTH_SEARCH.format(query=urllib.parse.quote(str(query).strip()),
+                                 limit=int(limit))
+    facets = []
+    if mc_version:
+        facets.append(["versions:%s" % mc_version])
+    if loader:
+        facets.append(["categories:%s" % loader])
+    if facets:
+        url += "&facets=" + urllib.parse.quote(json.dumps(facets))
+    return url
+
+
+def _versions_url(project_id, mc_version="", loader=""):
+    """拼"最新版本"URL。带上版本/加载器参数，否则会拿到别的版本/别的加载器的构建。"""
+    url = MODRINTH_VERSIONS.format(project_id=project_id)
+    params = {}
+    if mc_version:
+        params["game_versions"] = json.dumps([mc_version])
+    if loader:
+        params["loaders"] = json.dumps([loader])
+    if params:
+        url += "&" + urllib.parse.urlencode(params)
+    return url
+
+
+def _fetch_latest_version(project_id, timeout=12, mc_version="", loader=""):
+    """取单个项目的最新版本号与下载链接。返回 (版本号, 下载链接, 状态)。
+
+    状态：
+      ok       拿到了
+      no_match 项目存在，但没有"这个版本 + 这个加载器"的构建（过滤后为空）
+      error    接口/网络失败
+    以前只返回 ("", "")，界面上分不清"没有匹配版本"和"请求失败"，会一直显示"获取中…"。
+    """
     try:
-        versions = _json_get(MODRINTH_VERSIONS.format(project_id=project_id),
+        versions = _json_get(_versions_url(project_id, mc_version, loader),
                              timeout=timeout)
-        if versions:
-            v0 = versions[0]
-            files = v0.get("files") or []
-            url = files[0].get("url", "") if files else ""
-            return (v0.get("version_number", ""), url)
     except Exception:
-        pass
-    return ("", "")
+        return "", "", "error"
+    if not versions:
+        return "", "", "no_match"
+    v0 = versions[0]
+    files = v0.get("files") or []
+    url = files[0].get("url", "") if files else ""
+    return (v0.get("version_number", ""), url, "ok")
 
 
-def search_modrinth(query, limit=8):
+def search_modrinth(query, limit=8, mc_version="", loader=""):
     """快速搜索 Modrinth，按下载量排序，只返回搜索元数据（不含版本细节），速度快。
 
+    mc_version / loader 可选：给了就只搜"这个版本 + 这个加载器"的项目。
     返回每个项目：title/slug/project_id/author/description/downloads/project_url，
     以及空的 latest_version/download_url（需用 fetch_project_latest 再取）。
     """
@@ -52,8 +92,7 @@ def search_modrinth(query, limit=8):
         return []
 
     try:
-        data = _json_get(MODRINTH_SEARCH.format(
-            query=urllib.parse.quote(query.strip()), limit=int(limit)))
+        data = _json_get(_search_url(query, limit, mc_version, loader))
     except Exception as e:
         raise RuntimeError(f"搜索请求失败: {e}")
 
@@ -69,6 +108,8 @@ def search_modrinth(query, limit=8):
             "description": (hit.get("description") or "")[:120],
             "downloads": hit.get("downloads", 0),
             "project_url": "https://modrinth.com/mod/%s" % slug,
+            # 卡片视图要拿它做标签 chip（列表视图不用，但顺手带上不额外花请求）
+            "categories": list(hit.get("categories") or []),
             "latest_version": "",
             "download_url": "",
         })
@@ -76,10 +117,46 @@ def search_modrinth(query, limit=8):
     return results
 
 
-def fetch_project_latest(project_id, timeout=12):
-    """取单个项目的最新版本号与下载链接（供点击/复制时按需获取）。"""
-    vnum, url = _fetch_latest_version(project_id, timeout=timeout)
-    return {"latest_version": vnum, "download_url": url}
+def categories_cn(slugs):
+    """Modrinth 的分类 slug → 中文标签（认不出来的丢掉，别在界面上摆英文）。"""
+    out = []
+    for s in (slugs or []):
+        cn = _CATEGORY_CN.get(str(s).lower())
+        if cn and cn not in out:
+            out.append(cn)
+    return out
+
+
+def fetch_project_latest(project_id, timeout=12, mc_version="", loader=""):
+    """取单个项目的最新版本号与下载链接（供点击/复制时按需获取）。
+
+    给了 mc_version / loader 就只取适配这一组的最新构建 —— 否则会拿到
+    "别的 MC 版本、别的加载器"的构建（实测 Sodium 会给出 mc26.3 的 neoforge alpha）。
+    """
+    vnum, url, status = _fetch_latest_version(project_id, timeout=timeout,
+                                              mc_version=mc_version, loader=loader)
+    return {"latest_version": vnum, "download_url": url, "status": status}
+
+
+_MC_PREFIX_RE = re.compile(r"^mc[-\s]?\d+(?:\.\d+){0,2}[-_+ ]?", re.I)
+_LOADER_TAIL_RE = re.compile(r"[-_+ ](?:fabric|forge|neoforge|quilt)\b.*$", re.I)
+
+
+def normalize_online_version(v):
+    """把 Modrinth 的版本号压成"能和本地版本比大小"的形式。
+
+    Modrinth 的 version_number 常带 MC 版本和加载器，本地 jar 里只有裸版本号：
+      "mc1.20.1-0.5.13-fabric" → "0.5.13"
+      "1.7.6+1.20.1"           → "1.7.6"
+      "0.5.8"                  → "0.5.8"
+    不归一化的话，"本地 0.5.13 / 线上 mc1.20.1-0.5.13-fabric" 字符串永远不相等，
+    每一行都会被标成"可更新"（等于这个标记没用了）。
+    """
+    s = str(v or "").strip()
+    s = _MC_PREFIX_RE.sub("", s)          # 去掉开头的 mc1.20.1-
+    s = s.split("+", 1)[0]                # 去掉 +1.20.1 这种 MC 标记
+    s = _LOADER_TAIL_RE.sub("", s)        # 去掉结尾的 -fabric / -neoforge
+    return s.strip() or str(v or "").strip()
 
 
 def format_downloads(n):

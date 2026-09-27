@@ -38,10 +38,12 @@ if not _HAS_PYSIDE:                          # pragma: no cover
 from PySide6 import QtCore, QtGui, QtWidgets   # noqa: E402
 
 from core.scanner import (get_full_mod_metadata, get_mod_icon,   # noqa: E402
-                          guess_tags, split_cn_name)
+                          guess_tags, split_cn_name,
+                          compare_versions, detect_instance_env)
 from core.migrator import _is_safe_path                          # noqa: E402
 from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E402
-                             search_modrinth)
+                             normalize_online_version, search_modrinth,
+                             categories_cn)
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
                            get_icon_path, style_window_hwnd, trace_exc, trace_line)
 
@@ -145,6 +147,16 @@ def _tag_color(tag: str) -> tuple:
     if tag in TAG_COLORS:
         return TAG_COLORS[tag]
     return _TAG_FALLBACK[sum(map(ord, str(tag))) % len(_TAG_FALLBACK)]
+
+
+_LOADER_LABELS = {"fabric": "Fabric", "forge": "Forge",
+                  "neoforge": "NeoForge", "quilt": "Quilt"}
+
+
+def _loader_label(slug) -> str:
+    """加载器 slug → 界面上的写法（fabric → Fabric）。认不出来就原样返回。"""
+    s = str(slug or "").strip()
+    return _LOADER_LABELS.get(s.lower(), s)
 
 
 # --------------------------------------------------------------------------- #
@@ -1485,9 +1497,10 @@ class DetailDialog(QtWidgets.QDialog):
     「🌐 联网搜索」完全一样。
     """
 
-    def __init__(self, it: Entry, theme: dict, on_reveal, parent=None):
+    def __init__(self, it: Entry, theme: dict, on_reveal, parent=None, env=None):
         super().__init__(parent)
         self.theme = theme
+        self.env = dict(env or {})
         self.setWindowTitle("模组详情")
         self.setMinimumSize(620, 460)
         self.setStyleSheet("QDialog{background:%s;} QLabel{color:%s;}"
@@ -1562,7 +1575,7 @@ class DetailDialog(QtWidgets.QDialog):
         # ---- 第二个标签页：联网搜索（和工具栏那颗按钮同一套面板） ----
         try:
             panel = OnlineSearchDialog(it.title, guess_query(it), str(it.version or ""),
-                                       str(it.modid or ""), theme, self)
+                                       str(it.modid or ""), theme, self, env=self.env)
             try:
                 panel.btn_close.hide()          # 做成标签页就不需要里面那个"关闭"
             except Exception:
@@ -1622,26 +1635,33 @@ def guess_query(it: Entry) -> str:
             return cand
     stem = Path(it.name).stem
     base = re.sub(r"[-_ ]?v?\d[\w.\-+]*$", "", stem).strip("-_ ")   # 粗略剥掉版本尾巴
+    # 剥完常剩一个残尾：iris-mc1.20.1-1.6.5 → "iris-mc"、AppleSkin-mc… → "AppleSkin-mc"。
+    # 顺手也把结尾的加载器去掉（sodium-fabric → sodium）：它只会缩小命中面。
+    base = re.sub(r"[-_ .]+(?:mc|fabric|forge|neoforge|quilt|beta|alpha|release)$",
+                  "", base, flags=re.I)
     return base or stem
 
 
 class _SearchSignals(QtCore.QObject):
     results = QtCore.Signal(object, str, str)      # 结果列表, modid, 名称（用于打分）
     error = QtCore.Signal(str)
-    version = QtCore.Signal(int, str, str)         # 行号, 最新版本, 下载链接
+    version = QtCore.Signal(int, str, str, str)    # 行号, 最新版本, 下载链接, 状态
 
 
 class _SearchTask(QtCore.QRunnable):
-    def __init__(self, query: str, limit: int, signals: _SearchSignals, modid="", name=""):
+    def __init__(self, query: str, limit: int, signals: _SearchSignals, modid="", name="",
+                 mc_version="", loader=""):
         super().__init__()
         self.query, self.limit = query, limit
         self.signals = signals
         self.modid, self.name = modid, name
+        self.mc_version, self.loader = mc_version, loader
         self.setAutoDelete(True)
 
     def run(self):                                  # 工作线程：只做网络，不碰界面
         try:
-            res = search_modrinth(self.query, limit=self.limit)
+            res = search_modrinth(self.query, limit=self.limit,
+                                  mc_version=self.mc_version, loader=self.loader)
         except Exception as e:
             self.signals.error.emit(str(e))
             return
@@ -1652,19 +1672,23 @@ class _SearchTask(QtCore.QRunnable):
 
 
 class _VersionTask(QtCore.QRunnable):
-    def __init__(self, row: int, project_id: str, signals: _SearchSignals):
+    def __init__(self, row: int, project_id: str, signals: _SearchSignals,
+                 mc_version="", loader=""):
         super().__init__()
         self.row, self.pid, self.signals = row, project_id, signals
+        self.mc_version, self.loader = mc_version, loader
         self.setAutoDelete(True)
 
     def run(self):
         try:
-            d = fetch_project_latest(self.pid)
+            d = fetch_project_latest(self.pid, mc_version=self.mc_version,
+                                     loader=self.loader)
         except Exception:
-            d = {"latest_version": "", "download_url": ""}
+            d = {"latest_version": "", "download_url": "", "status": "error"}
         try:
             self.signals.version.emit(self.row, d.get("latest_version", ""),
-                                      d.get("download_url", ""))
+                                      d.get("download_url", ""),
+                                      d.get("status", "ok"))
         except RuntimeError:
             pass
 
@@ -1672,7 +1696,7 @@ class _VersionTask(QtCore.QRunnable):
 class SearchModel(QtCore.QAbstractTableModel):
     """搜索结果表：0 列是名称，最相似项置顶并标绿；本地版本不一致的标黄（可更新）。"""
     COLS = (("name", "📄 名称", 240), ("author", "👤 作者", 110),
-            ("downloads", "⬇️ 下载量", 90), ("version", "🔖 最新版本", 160),
+            ("downloads", "⬇️ 下载量", 90), ("version", "🔖 最新版本", 220),
             ("slug", "🆔 项目ID", 120))
 
     def __init__(self, theme: dict, local_version: str = "", parent=None):
@@ -1680,9 +1704,12 @@ class SearchModel(QtCore.QAbstractTableModel):
         self.theme = theme
         self.local_version = local_version
         self.rows = []          # dict：原始结果 + score/is_match/updatable/latest_version
+        self.hover_row = -1     # 鼠标划过的那一行（由视图那边驱动，和放大查看同一套）
+        self.filters = ("", "")  # 本次搜索用的 (MC 版本, 加载器)，只用于文案
 
     def set_results(self, results, modid: str, name: str):
         self.beginResetModel()
+        self.hover_row = -1          # 上一次搜的悬停行号对新结果没意义，留着可能越界
         scored = [(match_score(r, modid, name), i, r) for i, r in enumerate(results)]
         scored.sort(key=lambda t: (-t[0], t[1]))
         self.rows = []
@@ -1694,15 +1721,35 @@ class SearchModel(QtCore.QAbstractTableModel):
             self.rows.append(r)
         self.endResetModel()
 
-    def apply_version(self, row: int, vnum: str, url: str):
+    def apply_version(self, row: int, vnum: str, url: str, status: str = "ok"):
         if not (0 <= row < len(self.rows)):
             return
         r = self.rows[row]
         r["latest_version"], r["download_url"] = vnum, url
-        r["updatable"] = bool(vnum) and bool(self.local_version) and \
-            vnum != self.local_version
+        r["ver_status"] = status
+        r["updatable"] = self._is_updatable(vnum)
         idx = self.index(row, 0)
         self.dataChanged.emit(idx, self.index(row, self.columnCount() - 1))
+
+    def _is_updatable(self, vnum: str) -> bool:
+        """线上版本是不是比本地新（不是"字符串不一样"）。
+
+        Modrinth 的 version_number 带 MC 版本和加载器（`mc1.20.1-0.5.13-fabric`），
+        本地 jar 里只有 `0.5.13`。直接比字符串永远不相等 —— 过滤一开，每行都会标
+        "⬆ 可更新"，这个标记就等于废了。所以先归一化再按版本号比大小；
+        比不出大小时退回"字符串不等"，宁可多说一句也不漏掉真的更新。
+        """
+        local = str(self.local_version or "").strip()
+        if not vnum or not local:
+            return False
+        a, b = normalize_online_version(vnum), normalize_online_version(local)
+        c = compare_versions(a, b)
+        return (c == 1) if c is not None else (a != b)
+
+    def filter_text(self) -> str:
+        """当前过滤条件的人类可读写法（"1.20.1 · Fabric"），没过滤返回空串。"""
+        mc, loader = self.filters
+        return " · ".join(x for x in (str(mc or ""), _loader_label(loader)) if x)
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
@@ -1731,14 +1778,35 @@ class SearchModel(QtCore.QAbstractTableModel):
             if key == "downloads":
                 return format_downloads(r.get("downloads", 0))
             if key == "version":
+                st = r.get("ver_status")
+                if st == "no_match":
+                    过滤 = self.filter_text()
+                    return ("无 %s 的版本" % 过滤) if 过滤 else "没有可用版本"
+                if st == "error":
+                    return "获取失败"
                 v = r.get("latest_version", "")
                 return (v + " ⬆ 可更新") if r.get("updatable") else (v or "获取中…")
             return r.get("slug", "")
         if role == QtCore.Qt.ToolTipRole:
-            return "%s\n%s\n%s" % (r.get("title", ""), r.get("description", ""),
-                                   r.get("project_url", ""))
+            行 = [r.get("title", ""), r.get("description", "")]
+            st = r.get("ver_status")
+            if st == "no_match":
+                过滤 = self.filter_text()
+                行.append("这个项目没有「%s」的构建" % 过滤 if 过滤
+                          else "这个项目没有可用的版本文件")
+            elif st == "error":
+                行.append("版本信息没取到（网络或接口失败），可在外面手动打开项目页看")
+            行.append(r.get("project_url", ""))
+            return "\n".join(x for x in 行 if x)
         if role == QtCore.Qt.BackgroundRole:
             th = self.theme
+            row = index.row()
+            # 悬停**压过**"最相似（蓝）/可更新（黄）"的底色：鼠标停在哪一行，哪一行就得亮，
+            # 不然这一片的蓝/黄底把悬停色盖掉，鼠标划过去毫无反应 —— 看着就是"选不了"。
+            # 行本身是★还是有⬆，列里都写着，不会因为换了底色认不出来。
+            # （点中的那一行不用模型操心：Qt 自己画的选中高亮压得住这里的底色，实测过）
+            if row == self.hover_row:
+                return QtGui.QColor(th.get("hover_bg", "#eef3f8"))
             if r.get("is_match"):
                 return QtGui.QColor(th.get("highlight_bg", "#cce5ff"))
             if r.get("updatable"):
@@ -1746,11 +1814,106 @@ class SearchModel(QtCore.QAbstractTableModel):
             return None
         if role == QtCore.Qt.ForegroundRole:
             th = self.theme
+            # 文字色得跟着底走：悬停底是深灰（深色主题）时，蓝/黄行原来的那支字色会糊掉
+            row = index.row()
+            if row == self.hover_row:
+                return QtGui.QColor(th.get("hover_fg") or th.get("fg", "#000000"))
             if r.get("is_match"):
                 return QtGui.QColor(th.get("highlight_fg", "#000000"))
             if r.get("updatable"):
                 return QtGui.QColor(th.get("warn_fg", "#000000"))
         return None
+
+
+class SearchCardItem:
+    """把一行搜索结果包装成 CardDelegate 认得的形状（委托读的是属性，不是字典）。
+
+    卡片委托要的字段：title / subtitle / name / version / desc / tags / status /
+    icon_path / checked / failed / sel_t / pop_t。搜索结果没有本地图标，
+    icon_path 留空就行（委托会画那个"M"兜底方块）。
+    """
+
+    def __init__(self, r: dict, theme: dict):
+        self.sel_t = 0.0            # 选中进度（卡片委托用它画选中蓝底 + 左侧竖条）
+        self.pop_t = 1.0            # 进场动画进度；搜索结果不需要，直接到位
+        self.checked = False        # 搜索列表没有勾选语义
+        self.failed = False
+        self.icon_path = None
+        self.sync(r, theme)
+
+    def sync(self, r: dict, theme: dict):
+        self._r = r
+        self.title = str(r.get("title") or "")
+        self.name = str(r.get("slug") or "")
+        self.desc = str(r.get("description") or "")
+        self.subtitle = "%s · ⬇%s" % (r.get("author") or "?",
+                                      format_downloads(r.get("downloads") or 0))
+        v = str(r.get("latest_version") or "")
+        self.version = normalize_online_version(v) if v else ""
+        self.status = ("最相似" if r.get("is_match")
+                       else ("可更新" if r.get("updatable") else ""))
+        # Modrinth 的 categories 里混着加载器和分类：加载器单独拿出来（Fabric/NeoForge…），
+        # 其余走中文分类映射。卡片上"这个项目支持哪些加载器"是最该一眼看到的信息。
+        slugs = list(r.get("categories") or [])
+        标签 = ([self.status] if self.status else [])
+        标签 += [_loader_label(s) for s in slugs if str(s).lower() in _LOADER_LABELS]
+        标签 += categories_cn(slugs)
+        self.tags = list(dict.fromkeys(t for t in 标签 if t))[:5]
+        self.theme = theme
+        return self
+
+    def dot_color(self, theme: dict) -> str:
+        """左边那个状态圆点的颜色。"""
+        if self.status == "最相似":
+            return theme.get("card_sel_bar", "#2f7fd1")
+        if self.status == "可更新":
+            return theme.get("warn_fg", "#e65100")
+        return theme.get("muted_fg", "#999999")
+
+    def status_color(self, item=None):
+        return self.dot_color(self.theme)
+
+
+class SearchCardStore(QtCore.QObject):
+    """把搜索结果喂给 CardModel / CardDelegate。
+
+    和差异窗口的 `DiffStore` 一样，只实现那两个控件用到的那点接口
+    （order / at / is_mod / reset / row_data）。数据源仍然是 `SearchModel.rows`，
+    所以表格和卡片永远是同一批数据、不会各存一份。
+    """
+
+    reset = QtCore.Signal()
+    row_data = QtCore.Signal(int)
+    card_actions = ()          # 搜索结果没有"打开所在位置/移出清单"这类动作
+    is_mod = True
+
+    def __init__(self, theme: dict, model, parent=None):
+        super().__init__(parent)
+        self.theme = dict(theme or {})
+        self.model = model
+        self.items = []
+        self.order = []
+
+    def rebuild(self):
+        """搜索结果换了一批：整份重建。"""
+        self.items = [SearchCardItem(r, self.theme) for r in self.model.rows]
+        self.order = list(range(len(self.items)))
+        self.reset.emit()
+
+    def at(self, row):
+        if 0 <= row < len(self.order):
+            return self.items[self.order[row]]
+        return None
+
+    def status_color(self, item):
+        """状态圆点色（CardDelegate 的钩子）：最相似=蓝、可更新=橙、其余灰。"""
+        return item.dot_color(self.theme)
+
+    def touch(self, row):
+        """某一行的数据变了（版本回来了）：同步内容并只重画那一张卡。"""
+        if 0 <= row < len(self.items):
+            self.items[row].sync(self.model.rows[row], self.theme)
+            self.row_data.emit(row)
 
 
 class OnlineSearchDialog(QtWidgets.QDialog):
@@ -1761,10 +1924,15 @@ class OnlineSearchDialog(QtWidgets.QDialog):
     """
 
     def __init__(self, title: str, query: str, local_version: str, modid: str,
-                 theme: dict, parent=None):
+                 theme: dict, parent=None, env=None):
         super().__init__(parent)
         self.theme = dict(theme)
         self.modid = modid
+        # env = {"mc": "1.20.1", "loader": "fabric", "src": "…"}，来自实例环境探测；
+        # 没有就不过滤（认不出来宁可不猜，猜错会把本该搜到的模组挡掉）
+        self.env = dict(env or {})
+        self._widen_note = ""       # "自动放宽过滤"的说明，下一次结果里带出来
+        self._widen_tried = False   # 同一次搜索只自动放宽一次，别来回弹
         self.setWindowTitle("联网搜索 - %s" % title)
         self.resize(880, 520)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -1803,6 +1971,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         row.addWidget(self.btn)
         lay.addLayout(row)
 
+        self._build_filter_row(lay, th)
+
         self.status = QtWidgets.QLabel("回车或点「联网搜索」开始；最相似的会置顶并标 ★。"
                                        "双击一行打开项目主页。")
         self.status.setStyleSheet("color:%s;" % th.get("muted_fg"))
@@ -1814,13 +1984,32 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.table.setShowGrid(False)
         self.table.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.table.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        # 以前这里是 NoSelection（照抄放大查看的表格）：点一行**一点反馈都没有**，
+        # 用户以为"这个列表根本选不了"，也就不知道右边那几个按钮拿哪一行开刀。
+        # 现在可选中，整行高亮；下面那几个按钮作用的就是选中的这一行。
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        # 不按键也要收到 mouseMoveEvent，行悬停才有反应
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+        # 用事件过滤器盯住 viewport，而不是替换视图的 mouseMoveEvent：过滤器是 Qt 原生
+        # 机制，滚动区内部的转交也拦得到，行为确定
+        self.table.viewport().installEventFilter(self)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(26)
         self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
         _style_view_palette(self.table, th)
+        # 这张表 NoFocus，选中态吃的是调色板的 Inactive 组：不补这一组，点中的行会退回
+        # 系统灰，跟主题里那支选中蓝对不上（看起来像"没选中"）
+        pal = self.table.palette()
+        for _grp in (QtGui.QPalette.Active, QtGui.QPalette.Inactive):
+            pal.setColor(_grp, QtGui.QPalette.Highlight,
+                         QtGui.QColor(th.get("card_sel_bg", "#d4e6f8")))
+            pal.setColor(_grp, QtGui.QPalette.HighlightedText,
+                         QtGui.QColor(th.get("card_sel_fg", "#0d3d63")))
+        self.table.setPalette(pal)
         hh = self.table.horizontalHeader()
         hh.setStyleSheet(_header_qss(th))
         hh.setFixedHeight(30)
@@ -1830,7 +2019,30 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             hh.setSectionResizeMode(i, QtWidgets.QHeaderView.Interactive)
         hh.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.table.doubleClicked.connect(self._open_project_page)
-        lay.addWidget(self.table, 1)
+
+        # ---- 卡片视图：和放大查看/差异窗口同一套自绘卡片 ----
+        # 数据源是同一个 SearchModel.rows，所以两个视图永远一致（不会各存一份）
+        self.card_store = SearchCardStore(th, self.model, self)
+        self.card_model = CardModel(self.card_store, self)
+        self.cards = SmoothCards()
+        self.cards.setModel(self.card_model)
+        self.cards.setUniformItemSizes(True)
+        self.cards.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        self.cards.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.cards.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.cards.setMouseTracking(True)
+        self.card_delegate = CardDelegate(self.card_store, th, self.cards)
+        self.cards.setItemDelegate(self.card_delegate)
+        self.cards.clicked.connect(self._on_card_click)
+        self.cards.doubleClicked.connect(lambda *_a: self._open_project_page())
+        self.cards.viewport().setMouseTracking(True)
+        self.cards.viewport().installEventFilter(self)
+        self._sel_row = -1                  # 卡片视图里选中的那一行（表格用 Qt 自己的选中）
+
+        self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self.table)
+        self.stack.addWidget(self.cards)
+        lay.addWidget(self.stack, 1)
 
         act = QtWidgets.QHBoxLayout()
         act.setSpacing(6)
@@ -1845,10 +2057,172 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
         self.btn.clicked.connect(self.search)
         self.entry.returnPressed.connect(self.search)
+        self.btn_view.clicked.connect(self._toggle_view)
         self.btn_page.clicked.connect(self._open_project_page)
         self.btn_dl.clicked.connect(self._open_download_page)
         self.btn_copy.clicked.connect(self._copy_download)
         self.btn_close.clicked.connect(self.close)
+
+    # ---------------- 版本 / 加载器过滤 ----------------
+    def _build_filter_row(self, lay, th):
+        """一行「只看：版本 ▾ 加载器 ▾」。
+
+        默认填的是从实例里探测到的值（见 core.scanner.detect_instance_env），
+        探测不准时可以自己敲/清空。过滤是**服务端**做的（Modrinth facets），
+        所以候选池本身就不含不兼容的项目，而不是搜完再筛。
+        """
+        行 = QtWidgets.QHBoxLayout()
+        行.setSpacing(6)
+        提示 = QtWidgets.QLabel("只看：")
+        提示.setStyleSheet("color:%s;" % th.get("muted_fg"))
+        行.addWidget(提示)
+
+        self.cb_mc = QtWidgets.QComboBox()
+        self.cb_mc.setEditable(True)            # 探测不到 / 探测错了，自己敲一个
+        self.cb_mc.setFixedHeight(26)
+        self.cb_mc.setMinimumWidth(120)
+        self.cb_mc.setToolTip("只搜支持这个 MC 版本的项目；清空或选「不限版本」就是不过滤")
+        self.cb_mc.addItem("不限版本", "")
+        for v in ("1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.2", "1.18.2", "1.16.5"):
+            self.cb_mc.addItem(v, v)
+        探测_mc = str(self.env.get("mc") or "").strip()
+        if 探测_mc:
+            if self.cb_mc.findData(探测_mc) < 0:
+                self.cb_mc.insertItem(1, 探测_mc, 探测_mc)
+            self.cb_mc.setCurrentIndex(self.cb_mc.findData(探测_mc))
+        else:
+            self.cb_mc.setCurrentIndex(0)
+        行.addWidget(self.cb_mc)
+
+        self.cb_loader = QtWidgets.QComboBox()
+        self.cb_loader.setFixedHeight(26)
+        self.cb_loader.setToolTip("只搜这个加载器的项目")
+        for 显示, 值 in (("不限加载器", ""), ("Fabric", "fabric"), ("Forge", "forge"),
+                        ("NeoForge", "neoforge"), ("Quilt", "quilt")):
+            self.cb_loader.addItem(显示, 值)
+        探测_loader = str(self.env.get("loader") or "").strip()
+        self.cb_loader.setCurrentIndex(max(0, self.cb_loader.findData(探测_loader)))
+        行.addWidget(self.cb_loader)
+        行.addStretch(1)
+
+        self.lbl_filter = QtWidgets.QLabel()
+        self.lbl_filter.setStyleSheet("color:%s;" % th.get("muted_fg"))
+        if 探测_mc or 探测_loader:
+            self.lbl_filter.setText("自动识别自 %s" % (self.env.get("src") or "实例"))
+        else:
+            self.lbl_filter.setText("没认出你的实例版本，可手动选")
+        行.addWidget(self.lbl_filter)
+        # 表格 / 卡片切换放这一行最右（和"放大查看""差异窗口"那颗按钮同一套语义）
+        self.btn_view = AnimButton("🗂 卡片视图", "#607d8b", "#90a4ae", th)
+        self.btn_view.setFixedWidth(120)
+        行.addWidget(self.btn_view)
+        lay.addLayout(行)
+
+        # 连接放在最后：上面 setCurrentIndex 会触发 currentIndexChanged，
+        # 那时表格和按钮还没建好
+        self.cb_mc.currentIndexChanged.connect(self._on_filter_changed)
+        self.cb_loader.currentIndexChanged.connect(self._on_filter_changed)
+        try:
+            self.cb_mc.lineEdit().editingFinished.connect(self._on_filter_changed)
+        except Exception:
+            pass
+
+    def _filters(self):
+        """当前过滤条件 (MC 版本, 加载器)；空串表示不过滤。"""
+        mc = ""
+        try:
+            t = self.cb_mc.currentText().strip()
+            mc = "" if t in ("", "不限", "不限版本") else t
+        except Exception:
+            pass
+        loader = ""
+        try:
+            loader = str(self.cb_loader.currentData() or "")
+        except Exception:
+            pass
+        return mc, loader
+
+    def _on_filter_changed(self, *_a):
+        """改了过滤条件就重搜 —— 候选池都不一样了，留着旧结果会误导。"""
+        if not getattr(self, "model", None) or not getattr(self, "btn", None):
+            return                          # 还在建窗口
+        mc, loader = self._filters()
+        self.model.filters = (mc, loader)
+        self.search()
+
+    # ---------------- 行悬停（表格 / 卡片） ----------------
+    def eventFilter(self, obj, ev):
+        """鼠标在 viewport 上移动 → 亮起所在行；离开 → 复位。不消耗事件。"""
+        try:
+            t = ev.type()
+            if obj is self.table.viewport():
+                if t == QtCore.QEvent.MouseMove:
+                    idx = self.table.indexAt(ev.pos())
+                    self._set_hover(idx.row() if idx.isValid() else -1)
+                elif t == QtCore.QEvent.Leave:
+                    self._set_hover(-1)
+            elif obj is self.cards.viewport():
+                if t == QtCore.QEvent.MouseMove:
+                    idx = self.cards.indexAt(ev.pos())
+                    self._card_hover(idx.row() if idx.isValid() else -1)
+                elif t == QtCore.QEvent.Leave:
+                    self._card_hover(-1)
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
+
+    def _card_hover(self, row):
+        if row == self.card_delegate.hover_row:
+            return
+        self.card_delegate.hover_row = row
+        self.cards.viewport().update()
+
+    # ---------------- 表格 / 卡片切换 ----------------
+    def _toggle_view(self):
+        """表格 ↔ 卡片（和放大查看/差异窗口同一套按钮语义）。"""
+        to_cards = self.stack.currentIndex() == 0
+        self.stack.setCurrentIndex(1 if to_cards else 0)
+        self.btn_view.setText("📋 表格视图" if to_cards else "🗂 卡片视图")
+        if to_cards:
+            # 把表格当前的选中行带过去（卡片没有 Qt 选中态，用 sel_t 自己画）
+            idx = self.table.currentIndex()
+            self._select_card(idx.row() if idx.isValid() else -1)
+        elif self._sel_row >= 0:
+            self.table.selectRow(self._sel_row)
+
+    def _select_card(self, row):
+        """卡片视图里"选中哪一行" —— 底部那几个按钮作用在它上面。"""
+        if row == self._sel_row:
+            return
+        old, self._sel_row = self._sel_row, row
+        for r in (old, row):
+            if 0 <= r < len(self.card_store.items):
+                self.card_store.items[r].sel_t = 1.0 if r == row else 0.0
+        if hasattr(self, "cards"):
+            self.cards.viewport().update()
+
+    def _on_card_click(self, index):
+        if index.isValid():
+            self._select_card(index.row())
+
+    def _set_hover(self, row):
+        """只重绘换过的那两行（划出去的和划进来的），整表刷一帧太亏。"""
+        old = self.model.hover_row
+        if old == row:
+            return
+        self.model.hover_row = row
+        # 划在某一行上就给手型光标：这一行能点（仓库里"可点"的统一提示，别处用 hand2）
+        try:
+            self.table.viewport().setCursor(
+                QtCore.Qt.PointingHandCursor if row >= 0 else QtCore.Qt.ArrowCursor)
+        except Exception:
+            pass
+        self._repaint(old, row)
+
+    def _repaint(self, *rows):
+        for r in filter(lambda x: x >= 0, rows):
+            self.model.dataChanged.emit(self.model.index(r, 0),
+                                        self.model.index(r, self.model.columnCount() - 1))
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -1865,42 +2239,80 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         if not q:
             self.status.setText("请输入搜索词。")
             return
-        self.status.setText("搜索中…（首次联网可能要几秒）")
+        mc, loader = self._filters()
+        self.model.filters = (mc, loader)
+        self._widen_tried = False       # 这次搜索允许自动放宽一次
+        过滤 = self.model.filter_text()
+        self.status.setText("搜索中…（%s首次联网可能要几秒）"
+                            % ("只看 %s；" % 过滤 if 过滤 else ""))
         self.btn.setEnabled(False)
         QtCore.QThreadPool.globalInstance().start(
-            _SearchTask(q, 8, self._signals, self.modid, q))
+            _SearchTask(q, 8, self._signals, self.modid, q, mc, loader))
 
     def _on_results(self, results, modid, name):
         self.btn.setEnabled(True)
+        mc, loader = self.model.filters
+        # 带着**版本**过滤一条都没搜到：先自动放宽版本再搜一次。
+        # 探测出来的版本偶尔会错（整合包自己的版本号就可能长得像 MC 版本），
+        # 与其让人对着空列表发愣，不如自己退一步并说明原因。
+        # 加载器不认识就放宽的收益不大（那层是读 jar 元数据认的，比较准），所以只放宽版本。
+        if not results and mc and not self._widen_tried:
+            self._widen_tried = True
+            self._widen_note = "按 %s 没搜到东西 —— 可能是版本认错了，已自动放宽版本再搜一次。" % mc
+            self.cb_mc.setCurrentIndex(0)          # 触发 _on_filter_changed → 重搜
+            return
+        备注 = self._widen_note
+        self._widen_note = ""
         self.model.set_results(results, modid, name)
+        self.card_store.rebuild()          # 卡片视图看的是同一批 rows
+        self._sel_row = -1
         n = len(self.model.rows)
         if not n:
-            self.status.setText("没有找到相关模组，换个关键词试试。")
+            过滤 = self.model.filter_text()
+            self.status.setText(备注 + " " if 备注 else "" +
+                                "没有找到相关模组%s，换个关键词试试。"
+                                % ("（当前只看 %s）" % 过滤 if 过滤 else ""))
             return
         best = self.model.rows[0].get("score", 0)
         extra = "★为最相似项，已置顶。" if best >= 20 else "未找到相似度足够的候选。"
-        self.status.setText("找到 %d 个结果。%s 版本/下载链接加载中…" % (n, extra))
+        过滤 = self.model.filter_text()
+        前缀 = "（已按 %s 过滤）" % 过滤 if 过滤 else ""
+        self.status.setText(("%s " % 备注 if 备注 else "")
+                            + "找到 %d 个结果。%s%s 版本/下载链接加载中…" % (n, extra, 前缀))
         pool = QtCore.QThreadPool.globalInstance()
         for i, r in enumerate(self.model.rows):
             if r.get("project_id"):
-                pool.start(_VersionTask(i, r["project_id"], self._signals))
+                pool.start(_VersionTask(i, r["project_id"], self._signals, mc, loader))
 
     def _on_error(self, msg):
         self.btn.setEnabled(True)
         self.status.setText("❌ %s" % msg)
 
-    def _on_version(self, row, vnum, url):
-        self.model.apply_version(row, vnum, url)
+    def _on_version(self, row, vnum, url, status="ok"):
+        self.model.apply_version(row, vnum, url, status)
+        self.card_store.touch(row)         # 卡片上的版本/标签跟着刷新
         self._versions_done = getattr(self, "_versions_done", 0) + 1
         total = sum(1 for r in self.model.rows if r.get("project_id"))
         if total and self._versions_done >= total:
-            self.status.setText("找到 %d 个结果。版本/下载链接已全部就绪（⬆ = 比本地新）。"
-                                % len(self.model.rows))
+            过滤 = self.model.filter_text()
+            self.status.setText("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。"
+                                % (len(self.model.rows),
+                                   "，按 %s 过滤" % 过滤 if 过滤 else ""))
 
     # ---------------- 动作 ----------------
+    def _card_mode(self) -> bool:
+        """现在显示的是卡片视图吗。"""
+        try:
+            return self.stack.currentIndex() == 1
+        except Exception:
+            return False
+
     def _current(self) -> dict:
+        """当前选中的那一行（表格看 Qt 选中，卡片看 _sel_row）—— 底部按钮作用在它上面。"""
         idx = self.table.currentIndex()
         row = idx.row() if idx.isValid() else 0
+        if self._card_mode() and self._sel_row >= 0:
+            row = self._sel_row
         if not self.model.rows:
             return {}
         return self.model.item(max(0, min(row, len(self.model.rows) - 1)))
@@ -1944,6 +2356,10 @@ class QtBigView(QtWidgets.QWidget):
         self.title_text = title
         self._alive = True
         self.store = Store(entries, is_mod, source_path, online_tags, parent=self)
+        # 这个实例是哪个 MC 版本 + 哪个加载器：联网搜索拿去过滤候选池。
+        # 只探一次（建窗口时），拿不准就是空串 = 不过滤。
+        self.env = detect_instance_env(source_path) if source_path else \
+            {"mc": "", "loader": "", "src": ""}
         self.setWindowTitle("放大查看 - %s" % title)
         self.setMinimumSize(880, 560)
         self.resize(1060, 680)
@@ -2086,8 +2502,10 @@ class QtBigView(QtWidgets.QWidget):
         self.table.doubleClicked.connect(self._on_table_double)
         self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_table_menu)
-        self.table.mouseMoveEvent = self._table_mouse_move
-        self.table.leaveEvent = self._table_leave
+        # 悬停高亮靠 viewport 上的事件过滤器。**不能**替换视图的 mouseMoveEvent/leaveEvent，
+        # 原因见 eventFilter 里的说明（Qt 不会把 Leave 转给视图的 leaveEvent）
+        self.table.viewport().setMouseTracking(True)
+        self.table.viewport().installEventFilter(self)
         self.table.setItemDelegate(TableDelegate(self.table))
 
         self.card_model = CardModel(self.store, self)
@@ -2104,8 +2522,8 @@ class QtBigView(QtWidgets.QWidget):
         self.cards.doubleClicked.connect(self._on_card_double)
         self.cards.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.cards.customContextMenuRequested.connect(self._on_card_menu)
-        self.cards.mouseMoveEvent = self._card_mouse_move
-        self.cards.leaveEvent = self._card_leave
+        self.cards.viewport().setMouseTracking(True)
+        self.cards.viewport().installEventFilter(self)
 
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(self.table)
@@ -2224,23 +2642,43 @@ class QtBigView(QtWidgets.QWidget):
         self.table_model.layoutChanged.emit()
         self.card_model.layoutChanged.emit()
 
-    # ---------------- 交互：表格 ----------------
+    # ---------------- 交互：表格 / 卡片 ----------------
     def eventFilter(self, obj, ev):
-        """表头上的滚轮转发给表格本体（否则鼠标划到表头就滚不动了）。"""
-        if ev.type() == QtCore.QEvent.Wheel and obj is self.table.horizontalHeader():
+        """表头滚轮转发给表格本体；表格/卡片的 viewport 负责悬停高亮。
+
+        悬停**必须**盯 viewport，不能替换视图的 mouseMoveEvent / leaveEvent：
+        `QAbstractScrollArea::viewportEvent()` 对 Leave 落到 default 分支直接
+        `return false`（源码注释：let the viewport widget handle the event），
+        `QAbstractItemView::viewportEvent()` 只清它自己内部的 hover 索引、也不调用
+        视图的 leaveEvent()。也就是说那个替换版永远不会被执行 —— 鼠标移出列表以后，
+        最后划过的那一行/那张卡片会一直亮着。过滤器则一定看得到 Leave。
+        """
+        t = ev.type()
+        if t == QtCore.QEvent.Wheel and obj is self.table.horizontalHeader():
             self.table.wheelEvent(ev)
             return True
+        if obj is self.table.viewport():
+            if t == QtCore.QEvent.MouseMove:
+                self._table_mouse_move(ev)
+            elif t == QtCore.QEvent.Leave:
+                self._table_leave(ev)
+        else:
+            # getattr：表格的过滤器装得比卡片早，建窗口期间就可能进来事件
+            cards = getattr(self, "cards", None)
+            if cards is not None and obj is cards.viewport():
+                if t == QtCore.QEvent.MouseMove:
+                    self._card_mouse_move(ev)
+                elif t == QtCore.QEvent.Leave:
+                    self._card_leave(ev)
         return super().eventFilter(obj, ev)
 
     def _table_mouse_move(self, ev):
         idx = self.table.indexAt(ev.pos())
         row = idx.row() if idx.isValid() else -1
         self._set_hover(row)
-        QtWidgets.QTableView.mouseMoveEvent(self.table, ev)
 
-    def _table_leave(self, ev):
+    def _table_leave(self, ev=None):
         self._set_hover(-1)
-        QtWidgets.QTableView.leaveEvent(self.table, ev)
 
     def _set_hover(self, row):
         old = self.table_model.hover_row
@@ -2321,14 +2759,12 @@ class QtBigView(QtWidgets.QWidget):
             self.cards.viewport().update()
         self._card_hit = (row, action)      # 点击时直接复用这里算出的命中结果
         self.cards.setCursor(QtCore.Qt.PointingHandCursor if action else QtCore.Qt.ArrowCursor)
-        QtWidgets.QListView.mouseMoveEvent(self.cards, ev)
 
-    def _card_leave(self, ev):
+    def _card_leave(self, ev=None):
         self.card_delegate.hover_row = -1
         self.card_delegate.hover_action = None
         self._card_hit = (-1, None)
         self.cards.viewport().update()
-        QtWidgets.QListView.leaveEvent(self.cards, ev)
 
     def _on_card_click(self, index):
         if not index.isValid():
@@ -2871,7 +3307,7 @@ class QtBigView(QtWidgets.QWidget):
                         return d
                 except RuntimeError:
                     continue
-            dlg = DetailDialog(it, self.theme, self._reveal, self)
+            dlg = DetailDialog(it, self.theme, self._reveal, self, env=self.env)
             dlg._detail_key = key
             dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
             self._track(dlg)
@@ -2901,7 +3337,7 @@ class QtBigView(QtWidgets.QWidget):
 
         def _show():
             dlg = OnlineSearchDialog(it.title, guess_query(it), str(it.version or ""),
-                                     str(it.modid or ""), self.theme, self)
+                                     str(it.modid or ""), self.theme, self, env=self.env)
             self._track(dlg)
             dlg.show()
             dlg.raise_()

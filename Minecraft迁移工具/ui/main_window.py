@@ -34,7 +34,7 @@ from utils.helpers import (create_gradient_button, set_window_icon, center_windo
                            lighten_color, begin_bulk_scan, end_bulk_scan, LiquidProgress,
                            bind_text_scroll, SwitchRow, DataText, data_label,
                            make_theme_icon, clear_layered_style, SmoothScroller,
-                           tree_row_px, style_window, is_dark_theme)
+                           tree_row_px, style_window, is_dark_theme, trace_exc)
 from core.migrator import (
     run_migration,
     do_backup,
@@ -46,7 +46,8 @@ from core.migrator import (
     match_mod
 )
 from core.scanner import (scan_mod_differences, get_full_mod_metadata,
-                          split_cn_name, get_mod_icon, guess_tags)
+                          split_cn_name, get_mod_icon, guess_tags,
+                          detect_instance_env)
 from ui.dialogs import (ProgressWindow, ScanProgressWindow, show_mod_detail,
                         update_mod_detail_theme, ask_migrate_confirm)
 from ui.diff_window import show_diff_window
@@ -2329,24 +2330,67 @@ class MigrationGUI:
             messagebox.showerror("打开失败", f"无法打开链接：{e}", parent=self.settings_win)
 
     def create_tooltip(self, widget, text):
+        """给控件挂悬停提示。
+
+        text 既可以是固定字符串，也可以是"每次悬停现取"的函数 —— 状态标签的内容
+        是会变的（✅ / ⚠️ / ❌），用函数取才不会一直停在绑定时的那一句上。
+        """
         def enter(event):
+            try:
+                msg = text() if callable(text) else text
+            except Exception:
+                msg = ""
+            tip = getattr(widget, "_tooltip", None)
+            if not msg:
+                self._hide_tooltip(widget)
+                return
+            # 同一个控件重复 Enter（Tk 偶尔会补发）：只刷内容和位置，别把窗口拆了重建，
+            # 否则提示会闪一下
+            if tip is not None and tip.winfo_exists():
+                try:
+                    kids = tip.winfo_children()
+                    if kids:
+                        kids[0].config(text=msg)
+                    tip.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
+                    return
+                except Exception:
+                    pass
+            self._hide_tooltip()        # 从别的控件直接滑过来时先收掉上一个，别叠窗
             self.tooltip = tk.Toplevel(widget)
             self.tooltip.wm_overrideredirect(True)
-            self.tooltip.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
-            label = tk.Label(self.tooltip, text=text,
+            # 落在指针右下：贴太近会把被解释的那个图标（就十几个像素大）盖住
+            self.tooltip.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
+            label = tk.Label(self.tooltip, text=msg,
                              background=self.theme["tooltip_bg"], fg=self.theme["label_fg"], relief="solid",
-                             borderwidth=1, font=("微软雅黑", 9))
+                             borderwidth=1, font=("微软雅黑", 9),
+                             justify="left", wraplength=420)
             label.pack()
+            widget._tooltip = self.tooltip
+            self._tip_owners = [widget]
 
         def leave(event):
-            if hasattr(self, 'tooltip'):
-                self.tooltip.destroy()
+            self._hide_tooltip(widget)
 
         # 必须 add="+"：tkinter 的 bind 默认是覆盖，直接绑会把按钮自己那套
         # 悬停高亮顶掉——之前"从变更日志导入""← 使用新版路径填充"这两个带提示的
         # 按钮鼠标放上去毫无反应，就是被这里吃掉的。
         widget.bind("<Enter>", enter, add="+")
         widget.bind("<Leave>", leave, add="+")
+
+    def _hide_tooltip(self, widget=None):
+        """收起悬停提示；不给 widget 就收掉当前挂着的那一个。"""
+        owners = [widget] if widget is not None else list(getattr(self, "_tip_owners", ()))
+        for w in owners:
+            tip = getattr(w, "_tooltip", None)
+            if tip is not None:
+                try:
+                    tip.destroy()
+                except Exception:
+                    pass
+                w._tooltip = None
+        left = [w for w in getattr(self, "_tip_owners", ()) if w not in owners]
+        self._tip_owners = left
+        self.tooltip = getattr(left[-1], "_tooltip", None) if left else None
 
     def _is_valid_instance(self, path_str):
         """
@@ -2446,17 +2490,23 @@ class MigrationGUI:
         return True, "✅ 有效实例目录", details
 
     # 状态标签的语义色：颜色由"状态"决定，但主题一变就得立刻换成新主题里的那支色。
-    _SEMANTIC_FG = {"ok": "ok_fg", "fail": "fail_fg", "muted": "muted_fg"}
+    _SEMANTIC_FG = {"ok": "ok_fg", "fail": "fail_fg", "muted": "muted_fg",
+                    "warn": "warn_fg"}
 
-    def _set_status_semantic(self, label, kind, text=None):
+    def _set_status_semantic(self, label, kind, text=None, tip=None):
         """给状态标签上语义色，并记住是哪一种。
 
         为什么要记：切主题时应用新颜色**不能等重新校验**——validate_path 要扫
         实例目录（模组多的实例要好几百毫秒），那期间标签会一直挂着旧主题的颜色，
         看起来就是"有颜色的文字闪一下"。记住状态后，apply_theme 里可以直接换色。
+
+        tip：这一状态的悬停说明。不传 = 沿用上一次的 —— 切主题时会不带 text/tip
+        再调一次，那是纯换色，不能顺手把说明抹掉。
         """
         try:
             label._semantic = kind
+            if tip is not None:
+                label._tip_text = tip
             color = self.theme.get(self._SEMANTIC_FG.get(kind, "muted_fg"),
                                    self.theme["fg"])
             if text is None:
@@ -2474,52 +2524,73 @@ class MigrationGUI:
                 continue
             self._set_status_semantic(label, getattr(label, "_semantic", "muted"))
 
-    def validate_path(self, path_str, status_label, label_text):
+    def _instance_env(self):
+        """源实例的 MC 版本 / 加载器（联网搜索拿去过滤候选池）。
+
+        `detect_instance_env` 自己带缓存，所以这里可以随手调；探测不出来就返回 None，
+        调用方按"不过滤"处理 —— 猜错会把本该搜得到的模组挡掉，比不过滤糟得多。
         """
-        验证路径是否为有效的 Minecraft 整合包实例（增强版）
+        try:
+            path = self.source_path.get().strip()
+        except Exception:
+            return None
+        if not path:
+            return None
+        try:
+            return detect_instance_env(path)
+        except Exception:
+            return None
+
+    def validate_path(self, path_str, status_label, label_text):
+        """校验路径是不是有效的 Minecraft 整合包实例。
+
+        界面上**只留一个语义色图标**（✅ / ⚠️ / ❌），详细结论全写进悬停提示。
+        以前把"有效（有存档，72个模组，Fabric, Forge）"整句铺在路径行上，
+        路径框本来就被浏览按钮挤，这行字再占一百多像素就太长了。
         """
         if not path_str:
-            self._set_status_semantic(status_label, "muted", "（未选择）")
+            self._set_status_semantic(status_label, "muted", "（未选择）",
+                                      tip=f"尚未选择「{label_text}」整合包路径")
             return
 
         is_valid, reason, details = self._is_valid_instance(path_str)
 
-        # 构建详细状态信息
-        status_text = reason
+        # 悬停提示：路径本身 + 这次校验到底看出了什么
+        tip_lines = [f"📁 {path_str}", ""]
         if is_valid:
-            # 显示更多细节
-            details_text = []
-            if details.get("has_saves"):
-                details_text.append("有存档")
-            if details.get("mod_count", 0) > 0:
-                details_text.append(f"{details['mod_count']}个模组")
+            tip_lines.append("✅ 有效的 Minecraft 整合包实例")
+            tip_lines.append("· 有 saves/ 存档目录" if details.get("has_saves")
+                             else "· 无 saves/ 存档目录")
+            tip_lines.append(f"· 模组 {details.get('mod_count', 0)} 个")
             if details.get("valid_versions"):
-                details_text.append(f"版本: {', '.join(details['valid_versions'][:3])}")
-            if details.get("has_launcher_profiles"):
-                details_text.append("✅ 官方启动器")
-            if details.get("has_pcl_ini"):
-                details_text.append("✅ PCL2")
+                tip_lines.append(f"· 版本：{', '.join(details['valid_versions'][:3])}")
+            loaders = []
             if details.get("fabric_mods"):
-                details_text.append("Fabric")
+                loaders.append("Fabric")
             if details.get("forge_mods"):
-                details_text.append("Forge")
+                loaders.append("Forge")
+            if loaders:
+                tip_lines.append("· 加载器：" + ", ".join(loaders))
+            launchers = []
+            if details.get("has_launcher_profiles"):
+                launchers.append("官方启动器")
+            if details.get("has_pcl_ini"):
+                launchers.append("PCL2")
+            if launchers:
+                tip_lines.append("· 启动器：" + ", ".join(launchers))
 
-            # 如果有警告信息（如中文路径），在状态标签中显示
             if details.get("has_chinese"):
-                status_text = "✅ 有效（⚠️ 路径含中文，建议改为纯英文）"
-            elif details_text:
-                status_text = f"✅ 有效 ({', '.join(details_text[:4])})"
+                tip_lines += ["", "⚠️ 路径含中文，建议改成纯英文（个别模组/存档读取会出问题）"]
+                self._set_status_semantic(status_label, "warn", "⚠️",
+                                          tip="\n".join(tip_lines))
             else:
-                status_text = "✅ 有效实例目录"
-
-            status_label.config(text=status_text, fg=self.theme["ok_fg"])
-            status_label._semantic = "ok"
-
-            # 记录详细验证信息到日志（可选）
-            # self.log(f"路径验证通过: {path_str}", level="INFO")
-            # self.log(f"  详细信息: {details}", level="INFO")
+                self._set_status_semantic(status_label, "ok", "✅",
+                                          tip="\n".join(tip_lines))
         else:
-            self._set_status_semantic(status_label, "fail", f"❌ {reason}")
+            tip_lines.append("❌ 不是有效的整合包实例")
+            tip_lines.append("· 原因：" + reason)
+            self._set_status_semantic(status_label, "fail", "❌",
+                                      tip="\n".join(tip_lines))
 
     def on_path_change(self, *args):
         src = self.source_path.get().strip()
@@ -3067,9 +3138,13 @@ class MigrationGUI:
         btn_copy.pack(side="left", padx=5)
         self._btn_widgets["copy_target"] = btn_copy
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
-        self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"])
+        # 只显示一个状态图标，细节问悬停（validate_path 每次校验都会刷新 _tip_text）
+        self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"],
+                                      font=("微软雅黑", 11))
         self.source_status._keep_fg = True      # 颜色由状态决定，别被主题统一刷掉
         self.source_status.pack(side="left", padx=10)
+        self.create_tooltip(self.source_status,
+                            lambda: getattr(self.source_status, "_tip_text", ""))
         self._stage()
 
         # 目标目录
@@ -3089,9 +3164,12 @@ class MigrationGUI:
             width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
         btn_target_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_target"] = btn_target_browse
-        self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"])
+        self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"],
+                                      font=("微软雅黑", 11))
         self.target_status._keep_fg = True      # 同上
         self.target_status.pack(side="left", padx=10)
+        self.create_tooltip(self.target_status,
+                            lambda: getattr(self.target_status, "_tip_text", ""))
 
         # 存档名称
         frame_world = tk.LabelFrame(self.root, text="存档文件夹名称", padx=5, pady=5)
@@ -4566,10 +4644,11 @@ class MigrationGUI:
             # 设置里选了经典 Tk 版，或总开关关了 PySide6，或 PySide6 不可用
             self.diff_window = show_diff_window(self.root, data, self.theme,
                                                 self.current_theme, apply_callback,
-                                                cards=_想卡片)
+                                                cards=_想卡片, env=self._instance_env())
             return self.diff_window
         if self._start_qt_host("diff",
-                               {"data": data, "cards": _想卡片},
+                               {"data": data, "cards": _想卡片,
+                                "source_path": self.source_path.get().strip()},
                                apply_callback):
             try:
                 from utils.helpers import trace_line
@@ -4582,7 +4661,7 @@ class MigrationGUI:
         self.log("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口", level="WARNING", save=False)
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback,
-                                            cards=_想卡片)
+                                            cards=_想卡片, env=self._instance_env())
         return self.diff_window
 
     # ---------- Qt 窗口的独立子进程宿主 ----------
@@ -6947,7 +7026,8 @@ class MigrationGUI:
                     # 把扫描时拿到的分类一起带过去，详情窗口就不用再猜一遍
                     show_mod_detail(win, path, self.theme,
                                     tags_hint=m.get("tags"),
-                                    tags_online=bool(m.get("tags_online")))
+                                    tags_online=bool(m.get("tags_online")),
+                                    env=self._instance_env())
                 else:
                     messagebox.showinfo("提示", "该行没有可查看的模组文件。", parent=win)
             except Exception:

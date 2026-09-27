@@ -40,7 +40,9 @@ LIGHT_THEME = {
     "lightgray_bg": "#d3d3d3",
     "danger_bg": "#ffc7c7", "danger_fg": "#8b0000",
     "edit_bg": "#ff9800", "edit_fg": "#000000",
+    # warn_fg：路径"能用但建议改"那种警告（如含中文）的图标色，比 ok 重、比 fail 轻
     "ok_fg": "#2e7d32", "fail_fg": "#c62828", "muted_fg": "#808080",
+    "warn_fg": "#e65100",
     "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
     "sel_bg": "#66bb6a", "sel_fg": "#ffffff",
     "hover_bg": "#e9eef5", "hover_fg": "#000000",
@@ -105,6 +107,7 @@ DARK_THEME = {
     "danger_bg": "#5a2d2d", "danger_fg": "#ffb3b3",
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     "ok_fg": "#7ee787", "fail_fg": "#ff6b6b", "muted_fg": "#aaaaaa",
+    "warn_fg": "#ffb74d",
     "badge_rollback_bg": "#5a2d2d", "badge_normal_bg": "#3a3a3a",
     "sel_bg": "#2e7d32", "sel_fg": "#ffffff",
     "hover_bg": "#3a3e44", "hover_fg": "#ffffff",
