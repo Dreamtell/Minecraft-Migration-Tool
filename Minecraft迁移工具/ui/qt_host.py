@@ -98,6 +98,19 @@ def _ensure_qt_on_path():
             pass
 
 
+def _脱敏(值):
+    """把要写进结果文件的内容过一遍脱敏（拿不到 utils.secrets 就原样返回）。
+
+    这个子进程是"另一个进程"，但**不是外面的世界**：它和主进程同机同用户，
+    要用 key 自己读那个密钥文件就行，不需要经过这里。
+    """
+    try:
+        from utils import secrets
+        return secrets.scrub_obj(值)
+    except Exception:
+        return 值
+
+
 def run_host(argv):
     """子进程入口（app.py 里用 `--qt-host <请求文件>` 调进来）。"""
     _ensure_qt_on_path()
@@ -117,7 +130,9 @@ def run_host(argv):
     def 写结果(消息):
         try:
             with open(结果路径, "a", encoding="utf-8") as f:
-                f.write(json.dumps(消息, ensure_ascii=False) + "\n")
+                # 结果文件也是落盘的明文；子进程只是"另一个进程"，不是"外面的世界"，
+                # 一样按不可信处理：任何要写出去的东西先脱敏（见 utils/secrets.py）。
+                f.write(json.dumps(_脱敏(消息), ensure_ascii=False) + "\n")
                 f.flush()
         except Exception:
             pass
@@ -132,7 +147,7 @@ def run_host(argv):
     except Exception as e:
         try:
             Path(str(结果路径) + ".err").write_text(
-                "加载 PySide6 失败：%r" % (e,), encoding="utf-8")
+                _脱敏("加载 PySide6 失败：%r" % (e,)), encoding="utf-8")
         except Exception:
             pass
         return 4
@@ -177,7 +192,7 @@ def run_host(argv):
         import traceback
         try:
             Path(str(结果路径) + ".err").write_text(
-                "建窗失败：\n" + traceback.format_exc(), encoding="utf-8")
+                _脱敏("建窗失败：\n" + traceback.format_exc()), encoding="utf-8")
         except Exception:
             pass
         return 5

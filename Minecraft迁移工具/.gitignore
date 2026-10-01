@@ -28,3 +28,11 @@ output/
 .migration_history.json
 mods_meta_cache.json
 .mine*
+
+# ⚠ 打包时生成的内置 CurseForge Key（内容是 key 的混淆形态，绝不能进仓库）
+#   由仓库根的 生成内置Key.py 从环境变量 MCTOOL_CF_KEY 生成，见 utils/secrets.py
+utils/_build_seed.py
+_build_seed.py
+# 早期版本用过的名字，留着防止旧文件被漏进来
+utils/_builtin_key.py
+_builtin_key.py

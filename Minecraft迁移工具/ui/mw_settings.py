@@ -4,6 +4,7 @@
 拆自 ui/main_window.py（2026-10 拆分），方法原样搬移、未改逻辑；
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -13,9 +14,10 @@ from ui.mw_common import (
     _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS, _LOCK_MODES,
     _RENAME_MARKERS, _SECTION_STYLE, _mix,
 )
+from utils import secrets
 from utils.helpers import (
-    DataText, OptionCards, SegmentedControl, SmoothScroller, SwitchRow, center_window,
-    create_gradient_button, focus_window, set_window_icon,
+    DataText, OptionCards, RoundedEntry, SegmentedControl, SmoothScroller, SwitchRow,
+    center_window, create_gradient_button, focus_window, set_window_icon,
 )
 
 
@@ -292,6 +294,42 @@ class SettingsMixin:
             font=("微软雅黑", 8))
         self.settings_tag_cache_lbl.pack(anchor="w", pady=(2, 0))
         self._update_tag_cache_label()
+
+        # ---------- CurseForge API Key（可选；key 由用户自己填，程序不携带）----------
+        # 说明写这么多是有意的：用户得知道 ① 不填也能用 ② key 存在哪儿
+        # ③ 程序不会把它写进日志 / 报错 / 配置文件 —— 这三点决定了他敢不敢填。
+        tk.Label(box_t, text="CurseForge API Key（可选）",
+                 bg=self.theme["bg"], fg=self.theme.get("accent", self.theme["fg"]),
+                 font=("微软雅黑", 9, "bold")).pack(anchor="w", pady=(14, 0))
+        cf_row = tk.Frame(box_t, bg=self.theme["bg"])
+        cf_row.pack(fill="x", pady=(4, 0))
+        self.settings_cf_key_var = tk.StringVar(value="")
+        # 留个引用：验证脚本要确认它是 `show="•"`（截屏时也只会看到点，看不到 key）
+        self.settings_cf_entry = RoundedEntry(cf_row, self.theme, chars=34, height=30,
+                                              textvariable=self.settings_cf_key_var,
+                                              show="•")
+        self.settings_cf_entry.pack(side="left")
+        create_gradient_button(cf_row, "保存", self._save_cf_key,
+                               colors=("#00897b", "#26a69a"), width=64, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 0))
+        create_gradient_button(cf_row, "测试", self._test_cf_key,
+                               colors=("#42a5f5", "#64b5f6"), width=64, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+        create_gradient_button(cf_row, "清除", self._clear_cf_key,
+                               colors=("#e53935", "#c62828"), width=64, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+        self.settings_cf_lbl = DataText(box_t, self.theme, [("", "muted_fg")],
+                                        font=("微软雅黑", 8))
+        self.settings_cf_lbl.pack(anchor="w", pady=(4, 0))
+        tk.Label(box_t,
+                 text="不填也能用：程序内置了一把共享 Key 时直接用它；填了就用你自己的配额"
+                      "（更稳，共享那把被限流时你还能用）。\n"
+                      "你填的 Key 只存在这里：" + secrets.where_text() + "，和主配置分开。\n"
+                      "它不会进日志、报错或临时文件；输入框粘过就清空，保存后只显示末 4 位。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
+                                                                          pady=(2, 0))
+        self._update_cf_key_label()
 
         # ---------- 任务与锁定 ----------
         box_lock = section("lock", page_mig)
@@ -823,6 +861,84 @@ class SettingsMixin:
                          ("，删掉它会重新联网查）", "muted_fg")])
         except Exception:
             pass
+
+    # ---------- CurseForge API Key（可选）----------
+    # 存 / 取 / 脱敏全在 utils/secrets.py；这里只负责界面，不碰明文之外的东西。
+    def _update_cf_key_label(self):
+        """刷新那一行 Key 状态：只显示"末 4 位 + 指纹"，不显示 key 本身。"""
+        lbl = getattr(self, "settings_cf_lbl", None)
+        if lbl is None:
+            return
+        try:
+            文本 = secrets.status_text()
+            色 = "ok_fg" if secrets.has_key() else "muted_fg"
+        except Exception:
+            文本, 色 = "读取失败", "fail_fg"
+        try:
+            lbl.set_all([("CurseForge：", "muted_fg"), (文本, 色)])
+        except Exception:
+            pass
+
+    def _save_cf_key(self):
+        """把输入框里的 key 存进密钥文件（不进主配置、不进日志、不进仓库）。"""
+        框 = getattr(self, "settings_cf_key_var", None)
+        原始 = 框.get() if 框 is not None else ""
+        if not secrets.clean(原始):
+            self.log("ℹ️ 输入框是空的：没有保存任何东西（要删掉已保存的 Key 请点「清除」）。",
+                     level="INFO", save=False)
+            return
+        if secrets.set_key(原始):
+            # 存完立刻清空输入框：明文没必要一直摆在界面上，也没必要留在内存里
+            框.set("")
+            self.log("🔑 CurseForge API Key 已保存：%s（指纹 %s）"
+                     % (secrets.mask(), secrets.fingerprint()), level="INFO")
+            self._update_cf_key_label()
+        else:
+            self.log("❌ CurseForge API Key 保存失败：写不了 %s" % secrets.where_text(),
+                     level="ERROR")
+
+    def _clear_cf_key(self):
+        """删掉本机保存的 key。"""
+        框 = getattr(self, "settings_cf_key_var", None)
+        if 框 is not None:
+            框.set("")
+        if secrets.clear_key():
+            self.log("🗑 已删除本机保存的 CurseForge API Key（联网搜索仍走 Modrinth）。",
+                     level="INFO")
+        self._update_cf_key_label()
+
+    def _test_cf_key(self):
+        """测一下 Key 能不能用：后台线程发一次最小请求，别卡住设置窗口。"""
+        框 = getattr(self, "settings_cf_key_var", None)
+        待测 = secrets.clean(框.get()) if 框 is not None else ""
+        if not 待测 and not secrets.has_key():
+            self.log("ℹ️ 先在输入框里粘一个 Key，或者先「保存」一个再测。",
+                     level="INFO", save=False)
+            return
+        self.log("🌐 正在测试 CurseForge API Key…（首次联网可能要几秒）",
+                 level="INFO", save=False)
+
+        def 跑():
+            try:
+                from core.mod_search import test_curseforge_key
+                ok, 说明 = test_curseforge_key(待测 or None)
+            except Exception as e:
+                ok, 说明 = False, secrets.redact_exc(e)
+
+            def 收尾():
+                self.log(("✅ CurseForge Key 可用：" if ok else "❌ CurseForge Key 不可用：")
+                         + 说明, level="INFO" if ok else "ERROR")
+                self._update_cf_key_label()
+
+            try:
+                self._ui_post(收尾)        # 回主线程再碰界面
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(target=跑, daemon=True).start()
+        except Exception as e:
+            self.log("❌ 起不了测试线程：%s" % secrets.redact_exc(e), level="ERROR")
 
     def _toggle_silent(self):
         """后台静默执行开关。"""

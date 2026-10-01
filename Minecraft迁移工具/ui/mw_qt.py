@@ -10,6 +10,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from ui.diff_window import show_diff_window
+from utils import secrets
 
 
 class QtMixin:
@@ -279,7 +280,11 @@ class QtMixin:
             请求 = dict(payload)
             请求.update({"kind": kind, "theme": self.theme,
                          "result": str(res), "command": str(cmd)})
-            req.write_text(json.dumps(请求, ensure_ascii=False), encoding="utf-8")
+            # 请求是**落在临时目录里的明文 JSON**：API Key 绝不能从这里过去。
+            # 子进程要用 key 就自己 import utils.secrets 读那个密钥文件（同一台机器、
+            # 同一个用户，不需要"传递"）。scrub_obj 是兜底，防的是以后有人顺手往载荷里塞。
+            req.write_text(json.dumps(secrets.scrub_obj(请求), ensure_ascii=False),
+                           encoding="utf-8")
             if getattr(sys, "frozen", False):        # 打包成 exe 后没有 app.py 可传
                 命令 = [sys.executable, "--qt-host", str(req)]
             else:
@@ -317,7 +322,8 @@ class QtMixin:
             行 = {"cmd": cmd}
             if 附加:
                 行.update(附加)
-            数据 = json.dumps(行, ensure_ascii=False) + "\n"
+            # 命令文件同样是落盘的明文（临时目录），一样过一遍脱敏
+            数据 = json.dumps(secrets.scrub_obj(行), ensure_ascii=False) + "\n"
             for k in 目标:
                 路径 = (主机们.get(k) or {}).get("cmd")
                 if 路径 is None:

@@ -333,6 +333,16 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **CurseForge API Key 的安全处理（`utils/secrets.py`）**：优先级是
+  **用户自己填的 > 环境变量 > 发布版内置的**。**仓库里永远没有 Key** —— 内置那把由
+  仓库根的 `生成内置Key.py` 在构建时从本机环境变量 `MCTOOL_CF_KEY` 注入到
+  `utils/_build_seed.py`（已被 .gitignore 挡住），存的是 **XOR + base64 的 BLOB** 而非
+  明文（`strings 你的exe` 搜不到 key；这**不是加密**，只挡"搜一下就完事"那一档）：
+  发布版开箱可用，而审核人点开的 Git URL 是干净的。
+  同时把日志、点击轨迹、报错文字、Qt 子进程那份落在临时目录的明文请求 JSON、命令行参数
+  全部脱敏，请求走 `x-api-key` 请求头而不放 URL；界面掩码显示、粘完即清空。
+  另有 `core/mod_search.py` 的 CurseForge 客户端（只用官网页面链接、不落盘缓存）。
+  验证：`_dctest/验证Key不泄露.py` 65/65
 - **主窗口拆细：`ui/main_window.py` 8134 行 → 348 行**（拆出 13 个模块）。
   `MigrationGUI` 现在由 **12 个 mixin** 组装而成，另有 `mw_common.py` 装常量、模块级
   辅助函数和第三方导入（日志 / 主题 / 按钮布局 / 设置 / Qt 宿主 / 路径 / 界面搭建 /

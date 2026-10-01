@@ -1,13 +1,18 @@
 # core/mod_search.py
 """联网搜索模组信息（参考 PCL2 的 扫描本地->提取身份->联网匹配 思路）。
 
-当前实现以 Modrinth 公开 API 为主（免费、无需密钥）。CurseForge 需要申请
-API Key，接入时只需扩展一个同结构的 *_curseforge 函数即可。
+两个来源：
+
+  · **Modrinth**（默认）：公开 API，免费、无需密钥，一直在用；
+  · **CurseForge**（可选）：需要用户自己申请并填入 API Key，见文件末尾那段。
+    key 的存放与脱敏全部交给 utils/secrets.py —— 程序不携带 key，也不让它进
+    日志 / 报错 / 子进程参数 / 仓库。
 """
 import json
 import os
 import re
 import threading
+import urllib.error
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -288,3 +293,157 @@ def tag_cache_size():
     """缓存条数（设置窗口里显示用）。"""
     with _TAG_CACHE_LOCK:
         return len(_tag_cache())
+
+
+# ------------------------------------------------------------------ CurseForge
+# 需要 API Key（申请见 https://support.curseforge.com/en/support/solutions/
+# articles/9000208346-about-the-curseforge-api-and-how-to-apply-for-a-key ）。
+# key 由**用户自己填**，存在用户主目录的独立文件里（见 utils/secrets.py）：
+# 程序不携带、仓库里没有、日志里不出现。
+#
+# 三条刻意的设计，正好对着 Overwolf 审核关心的三件事（作者收入 / 服务器压力 / 作者同意）：
+#   1. key 只走 `x-api-key` 请求头，**不进 URL**（URL 会进代理日志、浏览器历史、异常信息）；
+#   2. **不用 API 返回的 downloadUrl**（那是 CDN 直链，会绕开作者的下载页和广告分成），
+#      只给官网页面链接，下载由用户在 CurseForge 上自己完成；
+#   3. **不落盘缓存**：ToS 3.1 明确禁止 save or cache API 数据，所以这里一次请求一次结果。
+#      （Modrinth 那套本地分类缓存保持原样，那是另一家的公开接口，不受这条约束。）
+# 另外：所有请求都是"用户点了搜索/详情"才发，没有后台轮询、没有批量爬。
+CURSEFORGE_API = "https://api.curseforge.com/v1"
+CURSEFORGE_GAME_ID = 432          # 432 = Minecraft
+CURSEFORGE_MOD_CLASS = 6          # classId 6 = Mods
+_CURSEFORGE_SITE = "https://www.curseforge.com/minecraft/mc-mods/%s"
+_CF_LOADER_ID = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
+_CF_SORT_DOWNLOADS = 2            # sortField 2 = 总下载量
+
+
+class CurseForgeNoKey(RuntimeError):
+    """没配 key —— 调用方应当安静地退回 Modrinth，而不是弹红框。"""
+
+
+def curseforge_available():
+    """配了 key 没有（界面据此决定显不显示 CurseForge 那一栏）。"""
+    from utils import secrets
+    return secrets.has_key()
+
+
+def _cf_get(路径, 参数=None, timeout=15, key=None):
+    """发一次 CurseForge 请求，返回解析后的 JSON。
+
+    key **只出现在请求头里**。异常也一律脱敏后再往上抛：HTTPError 的原文可能回显
+    请求信息，不能直接扔给界面或日志。
+    """
+    from utils import secrets
+    k = secrets.clean(key) if key is not None else secrets.get_key()
+    if not k:
+        raise CurseForgeNoKey("未设置 CurseForge API Key")
+    url = CURSEFORGE_API + 路径
+    if 参数:
+        url += "?" + urllib.parse.urlencode(参数)
+    req = urllib.request.Request(url, headers={
+        "x-api-key": k,                      # ← 全项目唯一一处把 key 交出去的地方
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise RuntimeError("CurseForge 拒绝了这个 API Key（HTTP %d）" % e.code)
+        if e.code == 404:
+            raise RuntimeError("CurseForge 上没有这个项目（HTTP 404）")
+        raise RuntimeError("CurseForge 请求失败（HTTP %d）" % e.code)
+    except Exception as e:
+        raise RuntimeError(secrets.redact_exc(e))
+
+
+def test_curseforge_key(key=None, timeout=12):
+    """试一下这个 key 能不能用（设置页的「测试」按钮）。返回 (ok, 说明文字)。
+
+    只发一次最小请求（搜索 limit=1），**不写入磁盘**；说明里也不含 key 本身。
+    传了 key 就测传进来的那一份（测"还没保存"的输入框内容），不传就测当前生效的。
+    """
+    from utils import secrets
+    k = secrets.clean(key) if key is not None else secrets.get_key()
+    if not k:
+        return False, "还没填 Key"
+    try:
+        _cf_get("/mods/search",
+                {"gameId": CURSEFORGE_GAME_ID, "classId": CURSEFORGE_MOD_CLASS,
+                 "searchFilter": "jei", "pageSize": 1},
+                timeout=timeout, key=k)
+    except CurseForgeNoKey:
+        return False, "还没填 Key"
+    except Exception as e:
+        return False, secrets.redact_exc(e)
+    return True, "Key 可用（指纹 %s）" % secrets.fingerprint(k)
+
+
+def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
+    """搜 CurseForge 模组（只读元数据）。
+
+    返回结构和 search_modrinth 一致（title / slug / project_id / author /
+    description / downloads / project_url / categories / latest_version /
+    download_url），界面那套渲染逻辑两边共用，不用再写一份。
+    """
+    q = str(query or "").strip()
+    if not q:
+        return []
+    参数 = {"gameId": CURSEFORGE_GAME_ID, "classId": CURSEFORGE_MOD_CLASS,
+            "searchFilter": q, "pageSize": max(1, min(int(limit), 50)),
+            "sortField": _CF_SORT_DOWNLOADS, "sortOrder": "desc"}
+    if mc_version:
+        参数["gameVersion"] = str(mc_version)
+    lid = _CF_LOADER_ID.get(str(loader or "").lower())
+    if lid:
+        参数["modLoaderType"] = lid
+    data = _cf_get("/mods/search", 参数, timeout=timeout)
+    结果 = []
+    for m in (data.get("data") or []):
+        slug = str((m.get("links") or {}).get("slug") or "").strip()
+        作者 = (m.get("authors") or [{}])[0].get("name", "")
+        结果.append({
+            "title": m.get("name", ""),
+            "slug": slug or str(m.get("id", "")),
+            "project_id": m.get("id"),
+            "author": 作者,
+            "description": (m.get("summary") or "")[:120],
+            "downloads": m.get("downloadCount", 0),
+            "project_url": _CURSEFORGE_SITE % (slug or m.get("id")),
+            "categories": [c.get("name", "") for c in (m.get("categories") or [])],
+            "latest_version": "",
+            "download_url": "",
+        })
+    return 结果
+
+
+def fetch_project_latest_curseforge(project_id, timeout=12, mc_version="", loader="",
+                                    slug=""):
+    """取 CurseForge 项目的最新文件，返回和 fetch_project_latest 同一个形状
+    （latest_version / download_url / status，状态同样叫 ok / no_match / error）。
+
+    走 /mods/{id}/files 而不是搜索接口里的 latestFiles —— 搜索返回的那个经常是空的。
+    `download_url` **刻意指向官网文件页**（不是 API 给的 CDN 直链）：直链绕开作者的
+    下载页和广告分成，而那正是 CurseForge 审核最关心的一条。
+    """
+    if not project_id:
+        return {"latest_version": "", "download_url": "", "status": "error"}
+    参数 = {"pageSize": 50}
+    if mc_version:
+        参数["gameVersion"] = str(mc_version)
+    lid = _CF_LOADER_ID.get(str(loader or "").lower())
+    if lid:
+        参数["modLoaderType"] = lid
+    try:
+        data = _cf_get("/mods/%s/files" % project_id, 参数, timeout=timeout)
+    except Exception:
+        return {"latest_version": "", "download_url": "", "status": "error"}
+    files = data.get("data") or []
+    if not files:
+        return {"latest_version": "", "download_url": "", "status": "no_match"}
+    f0 = files[0]
+    地址 = ""
+    if slug:
+        地址 = "%s/files/%s" % (_CURSEFORGE_SITE % slug, f0.get("id"))
+    return {"latest_version": f0.get("displayName") or f0.get("fileName") or "",
+            "download_url": 地址, "status": "ok"}

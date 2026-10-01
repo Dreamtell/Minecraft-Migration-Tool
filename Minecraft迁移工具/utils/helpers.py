@@ -529,6 +529,13 @@ def trace_line(msg):
     if p is None:
         return
     try:
+        # 轨迹日志（~/.minecraft_migrate_clicks.log）同样是用户报障时会发过来的东西，
+        # 而且异常栈经常把请求细节一起带出来 —— 先脱敏再落盘。
+        from utils import secrets
+        msg = secrets.redact(msg)
+    except Exception:
+        pass
+    try:
         with open(p, "a", encoding="utf-8") as f:
             f.write("%s | %s\n" % (time.strftime("%H:%M:%S"), msg))
     except Exception:

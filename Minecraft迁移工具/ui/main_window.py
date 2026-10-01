@@ -305,6 +305,9 @@ class MigrationGUI(
         return {}
 
     def save_config(self):
+        # ⚠ 这里**故意没有** CurseForge API Key：key 存在 ~/.minecraft_migrate_secret.json
+        # （见 utils/secrets.py），和这份配置分开存 —— 用户为了报障会把这份配置贴进 issue，
+        # 里面已经有模组清单和路径了，不能再多一个 key。新加的设置项照常加在下面。
         config = {
             "source": self.source_path.get(),
             "target": self.target_path.get(),

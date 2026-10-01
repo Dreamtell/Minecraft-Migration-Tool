@@ -13,6 +13,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
+from utils import secrets
 from utils.helpers import SmoothScroller, tree_row_px
 
 
@@ -390,6 +391,12 @@ class LogMixin:
                         on_done=lambda: setattr(self, "_log_fading", False))
 
     def log(self, message, level="INFO", save=True):
+        # 所有日志的唯一入口：先脱敏再往下走。日志会同时进主界面、锁屏日志和第二视图，
+        # 最后按批写进 ~/.minecraft_migrate_last_log.txt ——（用户报障时会把那个文件发过来）
+        # 所以 API Key 之类的敏感串必须在这一行就抹掉，不能指望调用方自觉。
+        # 见 utils/secrets.py：没配 key 时这一步只多一次 in 判断，可以忽略。
+        message = secrets.redact(message)
+
         def _log():
             self.log_text.configure(state="normal")
             start = self.log_text.index("end-1c")
