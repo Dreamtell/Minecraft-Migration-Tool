@@ -145,13 +145,22 @@ not let you kill a migration by accident.
 
 ---
 
-## 🖥️ Views
+## 🖥️ Screenshots
 
-Table view and card view share the same data, selection state and search:
+**Main window** — source/target instances, save name with a live existence check, the three lists,
+the options row and the live log:
 
-![Card view](<Minecraft迁移工具/卡片视图demo.png>)
+![Main window](docs/main-window.png)
 
-![Table view](<Minecraft迁移工具/表格对比demo.png>)
+**Mod diff scan** — every jar classified as *new / updated / downgrade / target-only*, with
+per-row selection, notes, and the distribution bar on the right:
+
+![Mod diff scan](docs/mod-diff.png)
+
+**Card view** — the big view and diff windows switch between table and card layouts; both share
+the same data, selection state and search:
+
+![Card view](docs/card-view.png)
 
 ---
 
