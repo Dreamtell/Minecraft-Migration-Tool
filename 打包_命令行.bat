@@ -37,6 +37,11 @@ rem        set MCTOOL_CF_KEY=your-key-here
 rem        打包_命令行.bat
 rem    Not set -> the build has no built-in key; users can still paste
 rem    their own key in Settings -> Migration & Categories.
+rem    ! RELEASES SHIP WITHOUT A KEY. The built-in path exists only so the
+rem    maintainer can make a private build for their own machine - a key is
+rem    issued to a person, so baking one into a distributed .exe hands the same
+rem    credential to every downloader (shared quota, no attribution, and it gets
+rem    throttled or revoked). Do not distribute a build made with MCTOOL_CF_KEY set.
 rem ============================================================
 set "ROOT=%~dp0"
 set "PROJ=%ROOT%Minecraft迁移工具"

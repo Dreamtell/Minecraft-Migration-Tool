@@ -98,15 +98,26 @@ Two sources, both **read-only**:
 
 ### API key handling
 
-The key resolution order is: **your own key → environment variable → key built into the release**.
+**Released builds ship without any API key.** Online lookup works out of the box because it falls
+back to Modrinth's public API, which needs no key; the CurseForge endpoint is only used when *you*
+paste your own key (Settings → *Migration & Categories*).
 
-- **The repository never contains a key.** The key shipped with a release is injected at build
-  time from the `MCTOOL_CF_KEY` environment variable into a git-ignored module, and it is stored
-  obfuscated (XOR + base64), so `strings` on the built exe will not reveal it.
+That is deliberate, for the API operator's sake as much as ours:
+
+- A key belongs to **the person it was issued to**. Baking one into a distributed `.exe` would hand
+  the same credential to every downloader — the quota gets shared with anonymous users, abuse
+  cannot be attributed to anyone, and the key would eventually be throttled or revoked.
+- So the resolution order is: **your own key → environment variable → (developer-only built-in key)**.
+  The third step exists purely so the maintainer can build a private copy for their own machine.
+  `打包_命令行.bat` injects it **only when you explicitly set `MCTOOL_CF_KEY`**; without that, the
+  build has no built-in key at all.
+- **The repository never contains a key.** If one is injected, it lands in a git-ignored module,
+  stored obfuscated (XOR + base64) so `strings` on the built exe will not reveal it.
   To be explicit: **that is not encryption** — the algorithm and salt are in
   [`utils/secrets.py`](Minecraft迁移工具/utils/secrets.py) and the repository is public. It only
   defeats a casual string search. A key baked into any desktop application can always be
-  extracted; that is true of every launcher in this ecosystem.
+  extracted; that is true of every launcher in this ecosystem — which is exactly why we don't ship
+  one.
 - **You can always use your own key** (Settings → *Migration & Categories*). It is stored in
   `~/.minecraft_migrate_secret.json` — **separate from the config file**, because users paste that
   config into bug reports.
@@ -189,9 +200,10 @@ the same data, selection state and search:
 The build script is `打包_命令行.bat` (repository root):
 
 ```bat
-打包_命令行.bat                 :: build (pause at the end)
+打包_命令行.bat                 :: build (pause at the end) — no built-in key
 打包_命令行.bat nopause         :: build, no pause (for scripts)
-打包_命令行.bat keyonly         :: only refresh the built-in API key module
+set MCTOOL_CF_KEY=... && 打包_命令行.bat   :: developer-only: also bake in *your* key
+打包_命令行.bat keyonly         :: only refresh the built-in key module
 ```
 
 It runs PyInstaller with `--onedir` and `--paths ..\_qt`:
