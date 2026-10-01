@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 from utils.helpers import (set_window_icon, create_gradient_button, lighten_color,
-                           RoundedEntry)
+                           RoundedEntry, focus_window)
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
 from ui.virtual_table import VirtualTable
 
@@ -592,7 +592,7 @@ def show_diff_window(parent, data: list, theme, current_theme, apply_callback, c
             pass
 
     diff_win.deiconify()
-    diff_win.focus_force()
+    focus_window(diff_win)          # 提到最前（不只是 focus_force：前台锁下会被忽略）
     table.body.focus_set()
     return diff_win
 

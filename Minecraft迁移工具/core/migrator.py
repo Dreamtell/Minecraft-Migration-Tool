@@ -143,11 +143,17 @@ def mark_rollback(target_path):
 # ---------- 备份与恢复 ----------
 # 备份范围必须和"迁移会动的东西"一一对应：少了 → 回滚不干净；多了 → 会把用户迁移后
 # 自己改过的文件一起回退掉。所以这里只列迁移真正会写的东西。
-# 迁移现在会写：mods/ config/ saves/ 三个目录 + 目标根的 options.txt。
+# 迁移会写：mods/ config/ saves/ 三个目录 + 「其它文件」清单里的每一条
+# （清单是唯一依据，条目由用户自己加：options.txt、servers.dat、shaderpacks/…）。
+# 「其它文件」清单是**动态**的，所以备份时不靠常量，而是把这次迁移的清单传进来 ——
+# 不然"覆盖（先备份）"对 options.txt 之外的东西就是空话，回滚也还原不了。
+# 注意：**不再自动复制 options.txt**了（用户要求"一切都要自己选"）—— 想带就加进清单；
+# 万一清单里也有它，它同样会被 _extras 那份备份覆盖到（_BACKUP_ROOT_FILES 兜底）。
 # （以后 run_migration 新增写目标根的文件，必须同步加进 _BACKUP_ROOT_FILES）
 _BACKUP_DIRS = ("mods", "config", "saves")
 _BACKUP_ROOT_FILES = ("options.txt",)
 _BACKUP_FILES_SUBDIR = "_files"
+_BACKUP_EXTRAS_SUBDIR = "_extras"      # 「其它文件」清单里各条目的备份（保持相对结构）
 _BACKUP_MANIFEST = "manifest.json"
 
 
@@ -155,13 +161,26 @@ def get_backup_path(target_path):
     return Path(target_path) / ".migrate_backup"
 
 
-def _write_manifest(backup_root, exists_dirs, exists_files):
-    """记录"迁移前哪些目录/文件存在"，回滚时才知道哪些是迁移新建的、该删掉。"""
+def _norm_rel(rel):
+    """清单条目 → 备份用的规范相对路径（正斜杠、无前导/结尾斜杠）。不合规返回 ""。"""
+    条目 = str(rel or "").replace("\\", "/").strip().strip("/")
+    if not 条目 or not _is_safe_path(条目):
+        return ""
+    return 条目
+
+
+def _write_manifest(backup_root, exists_dirs, exists_files, exists_extras=None):
+    """记录"迁移前哪些目录/文件存在"，回滚时才知道哪些是迁移新建的、该删掉。
+
+    `extras` 记的是这次迁移清单里每一条在迁移前存不存在（键=相对路径）。
+    旧备份没有这个键，回滚时按"没有清单"处理（只恢复固定三目录+options.txt）。
+    """
     data = {
-        "version": 2,
+        "version": 3,
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dirs": {name: bool(exists_dirs.get(name)) for name in _BACKUP_DIRS},
         "files": {name: bool(exists_files.get(name)) for name in _BACKUP_ROOT_FILES},
+        "extras": {k: bool(v) for k, v in (exists_extras or {}).items()},
     }
     try:
         with open(backup_root / _BACKUP_MANIFEST, "w", encoding="utf-8") as f:
@@ -180,9 +199,13 @@ def read_manifest(backup_root):
         return None
 
 
-def do_backup(target_path, log_func=None):
+def do_backup(target_path, log_func=None, extra_entries=None):
     """
-    备份目标实例里"迁移可能改动的部分"，若失败则抛出异常
+    备份目标实例里"迁移可能改动的部分"，若失败则抛出异常。
+
+    `extra_entries`：这次迁移的「其它文件」清单（相对整合包根目录，文件或目录都行）。
+    必须传进来 —— 迁移会覆盖/新建它们，备份漏了的话，"覆盖（先备份）"这句承诺对
+    options.txt 之外的东西就是空话，回滚也还原不了。
     """
     target_path = Path(target_path)
     backup_root = get_backup_path(target_path)
@@ -226,10 +249,40 @@ def do_backup(target_path, log_func=None):
             shutil.copy2(src, dst)
             backed_files.append(name)
 
-    _write_manifest(backup_root, exists_dirs, exists_files)
+    # 「其它文件」清单里的每一条（用户自己选的）：迁移会覆盖/新建它们，
+    # 所以也要"存在性 + 内容"一起记下来，回滚才能既还原旧内容、又删掉迁移新建的。
+    extras_root = backup_root / _BACKUP_EXTRAS_SUBDIR
+    exists_extras = {}
+    backed_extras = []
+    for raw in (extra_entries or []):
+        rel = _norm_rel(raw)
+        if not rel or rel in exists_extras:
+            continue
+        src = target_path / rel
+        exists_extras[rel] = src.exists()
+        if not src.exists():
+            if log_func:
+                log_func(f"ℹ️ {rel} 目标里不存在，跳过备份"
+                         f"（回滚时会删掉迁移新建的同名条目）", "INFO")
+            continue
+        dst = extras_root / rel
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            backed_extras.append(rel)
+            if log_func:
+                log_func(f"📂 备份清单条目 {rel} → {dst}", "INFO")
+        except Exception as e:
+            # 备份不到就不能装作没事：宁可整个备份失败（调用方会拦下迁移）
+            raise RuntimeError(f"备份「其它文件」条目 {rel} 失败：{e}")
+
+    _write_manifest(backup_root, exists_dirs, exists_files, exists_extras)
 
     if log_func:
-        done = ", ".join(backed + backed_files)
+        done = ", ".join(backed + backed_files + backed_extras)
         log_func(f"✅ 备份完成，已备份：{done if done else '无'}", "SUCCESS")
 
 
@@ -242,6 +295,10 @@ def do_restore(target_path, log_func=None):
     1. 目标根的 options.txt 这类文件也在恢复范围内（以前漏了，回滚后它还是源实例的版本）；
     2. 迁移前不存在的目录/文件，回滚时会被清掉，否则全新实例回滚完仍是迁移产物的堆；
     3. 任何一项出错都返回 False，不再"什么都没恢复却报成功"。
+
+    现在再加上：「其它文件」清单里的条目（用户自己加的那些）也一并还原/清理 ——
+    迁移会覆盖它们，只恢复固定三目录的话，用户清单里的东西被盖了就回不来。
+    旧备份（没有 extras 清单）照样能恢复，只是按老范围来。
     """
     target_path = Path(target_path)
     backup_root = get_backup_path(target_path)
@@ -307,6 +364,45 @@ def do_restore(target_path, log_func=None):
             failed.append(f"{name}: {e}")
             if log_func:
                 log_func(f"❌ 恢复 {name} 失败: {e}", "ERROR")
+
+    # 「其它文件」清单里的条目（用户自己选的）：迁移前存在的要还原，迁移前没有的要删掉
+    # —— 只恢复固定三目录+options.txt 的话，用户清单里的东西被覆盖了就回不来。
+    extras_root = backup_root / _BACKUP_EXTRAS_SUBDIR
+    for rel, 原来有 in sorted((manifest or {}).get("extras", {}).items()):
+        rel = _norm_rel(rel)
+        if not rel:
+            continue
+        target_item = target_path / rel
+        backup_item = extras_root / rel
+        try:
+            if 原来有 and backup_item.exists():
+                if target_item.is_dir():
+                    shutil.rmtree(target_item)
+                elif target_item.exists():
+                    target_item.unlink()
+                target_item.parent.mkdir(parents=True, exist_ok=True)
+                if backup_item.is_dir():
+                    shutil.copytree(backup_item, target_item, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(backup_item, target_item)
+                restored.append(rel)
+                if log_func:
+                    log_func(f"📂 恢复清单条目：{rel} → {target_item}", "INFO")
+            elif not 原来有:
+                if target_item.is_dir():
+                    if log_func:
+                        log_func(f"🗑️ 迁移新建的清单条目 {rel}/，按回滚要求删除", "INFO")
+                    shutil.rmtree(target_item)
+                    cleaned.append(rel + "/")
+                elif target_item.exists():
+                    if log_func:
+                        log_func(f"🗑️ 迁移新建的清单条目 {rel}，按回滚要求删除", "INFO")
+                    target_item.unlink()
+                    cleaned.append(rel)
+        except Exception as e:
+            failed.append(f"{rel}: {e}")
+            if log_func:
+                log_func(f"❌ 恢复清单条目 {rel} 失败: {e}", "ERROR")
 
     if failed:
         if log_func:
@@ -579,29 +675,8 @@ def run_migration(
                 log(f"🧹 已移除 {removed_old} 个同 modid 的旧版本（移入 "
                     f".migrate_backup/removed_mods，回滚时会自动恢复）", "SUCCESS")
 
-        # -------- 步骤2: 复制 options.txt --------
-        log("\n【步骤2】复制 options.txt...", "INFO")
-        if check_cancel and check_cancel():
-            log("⚠️ 用户取消了迁移", "WARNING")
-            return False
-
-        src_opts = src_path / "options.txt"
-        dst_opts = tgt_path / "options.txt"
-        if src_opts.exists():
-            ok, msg = safe_copy(src_opts, dst_opts, dry_run, overwrite=True, is_file=True)
-            if ok:
-                file_index += 1
-                copied_bytes += src_opts.stat().st_size
-                log(f"{'[模拟]' if dry_run else '✅'} 已复制 options.txt",
-                    "SUCCESS" if not dry_run else "SIMULATE")
-                progress(file_index, "options.txt", copied_bytes, "复制 options.txt")
-            else:
-                log(f"❌ 复制 options.txt 失败: {msg}", "ERROR")
-        else:
-            log("⚠️ 源 options.txt 不存在，跳过", "WARNING")
-
-        # -------- 步骤3: 复制存档 --------
-        log("\n【步骤3】复制存档...", "INFO")
+        # -------- 步骤2: 复制存档 --------
+        log("\n【步骤2】复制存档...", "INFO")
         if check_cancel and check_cancel():
             log("⚠️ 用户取消了迁移", "WARNING")
             return False
@@ -631,8 +706,8 @@ def run_migration(
                     log(f"❌ 复制存档文件 {rel} 失败: {msg}", "ERROR")
             log(f"✅ 存档 {world_name} 已{'模拟' if dry_run else ''}复制完成，共 {total_world_files} 个文件", "SUCCESS")
 
-        # -------- 步骤4: 复制 config --------
-        log("\n【步骤4】复制 config 内容...", "INFO")
+        # -------- 步骤3: 复制 config --------
+        log("\n【步骤3】复制 config 内容...", "INFO")
         if check_cancel and check_cancel():
             log("⚠️ 用户取消了迁移", "WARNING")
             return False

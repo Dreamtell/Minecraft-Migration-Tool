@@ -30,7 +30,7 @@ from tendo import singleton
 from ui.main_window import MigrationGUI
 from ui.dialogs import ask_close_action
 from utils.helpers import (get_icon_path, warm_up_emoji_font, clear_layered_style,
-                           focus_window)
+                           focus_window, force_foreground)
 from utils.config import load_raw_config
 from winotify import Notification, audio
 
@@ -94,15 +94,19 @@ def main():
     except singleton.SingleInstanceException:
         # 已经在跑了：优先请那个实例把主界面叫出来（窗口可能正挂在托盘里，
         # 这种状态下靠标题 FindWindow + ShowWindow 是叫不动的）
+        try:
+            # 前台锁：别的进程替我们调 SetForegroundWindow 默认会被忽略，
+            # 这里先"授权"给那个实例，它才有资格把窗口抢到前台
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)     # ASFW_ANY
+        except Exception:
+            pass
         from ui import tray as _tray_mod
         if not _tray_mod.request_show_existing():
             try:
                 hwnd = ctypes.windll.user32.FindWindowW(
                     None, "Minecraft 整合包迁移工具 - 增强版 v4")
                 if hwnd:
-                    if ctypes.windll.user32.IsIconic(hwnd):
-                        ctypes.windll.user32.ShowWindow(hwnd, 9)
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    force_foreground(hwnd)      # 提到最前（不只是 SetForegroundWindow）
             except Exception:
                 pass
         sys.exit(0)

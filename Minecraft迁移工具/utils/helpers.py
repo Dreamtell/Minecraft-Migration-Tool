@@ -293,6 +293,13 @@ class SmoothScroller:
     def scrolling(self):
         return self._job is not None or abs(self._left) >= 1.0
 
+    def wheel(self, event):
+        """喂一个滚轮事件进来（设置窗把滚轮统一路由到"当前那一页"时用它）。
+
+        和平常在控件上绑 `<MouseWheel>` 的效果完全一样：同一个 `_on_wheel`。
+        """
+        return self._on_wheel(event)
+
     def scroll_px(self, px):
         """按像素滚动（键盘/程序触发），走的是和滚轮同一套动画，手感一致。"""
         try:
@@ -1832,6 +1839,78 @@ def clear_layered_style(win):
         return False
 
 
+def _hwnd_of(win):
+    """从 Tk 窗口 / Qt 窗口 / 纯 HWND 里取出**最外层** HWND。取不到返回 0。
+
+    坑：Tk 的 `wm frame` 拿到的还是 Tk 自己包的一层窗口，`SetForegroundWindow`
+    给它会"调用成功但前台窗口不变"（实测）。必须再往上取 `GetAncestor(GA_ROOT)`；
+    Qt 的 `winId()` 本身就是顶层，多这一步也无害。
+    """
+    if not win:
+        return 0
+    hwnd = 0
+    if isinstance(win, int):
+        hwnd = win
+    else:
+        win_id = getattr(win, "winId", None)      # Qt：QWidget.winId() 就是顶层 HWND
+        if callable(win_id):
+            try:
+                hwnd = int(win_id())
+            except Exception:
+                hwnd = 0
+        if not hwnd:
+            try:
+                # 注意：`wm frame` 返回的是十六进制字符串（0x2020922），int() 要带 base
+                hwnd = int(str(win.tk.call("wm", "frame", win._w)), 0)
+            except Exception:
+                hwnd = 0
+        if not hwnd:
+            try:
+                hwnd = int(win.winfo_id())
+            except Exception:
+                return 0
+    try:
+        import ctypes
+        顶 = int(ctypes.windll.user32.GetAncestor(int(hwnd), 2) or 0)   # GA_ROOT
+        return 顶 or hwnd
+    except Exception:
+        return hwnd
+
+
+def force_foreground(win_or_hwnd):
+    """把窗口**真正**提到最前（Win32 级），不只是 Tk/Qt 那一层。
+
+    为什么需要它：Windows 有"前台锁" —— 不是当前前台进程的窗口，系统会**忽略**
+    `SetForegroundWindow`。Tk 的 `lift()+focus_force()`、Qt 的 `raise_()+activateWindow()`
+    在这时候的表现就是"任务栏图标闪一下、窗口还压在别的窗口后面"（用户：重复打开窗口
+    要能直接置顶；从托盘/第二个实例把主界面叫回来也是同一个问题）。
+
+    三板斧（社区通行做法）：
+      1) 最小化了先 `SW_RESTORE`（对最小化窗口 SetForegroundWindow 是无效的）；
+      2) `SetForegroundWindow`；
+      3) 临时 `HWND_TOPMOST` 再摘掉 —— 这一步能绕开前台锁。
+
+    参数可以是 Tk 窗口、Qt 窗口，或者直接给 HWND。
+    """
+    try:
+        import ctypes
+        hwnd = _hwnd_of(win_or_hwnd)
+        if not hwnd:
+            return False
+        u32 = ctypes.windll.user32
+        SW_RESTORE, SW_SHOW = 9, 5
+        HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+        SWP_NOSIZE, SWP_NOMOVE, SWP_SHOWWINDOW = 0x0001, 0x0002, 0x0040
+        u32.ShowWindow(hwnd, SW_RESTORE if u32.IsIconic(hwnd) else SW_SHOW)
+        u32.SetForegroundWindow(hwnd)
+        u32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW)
+        u32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
+        return True
+    except Exception:
+        return False
+
+
 def focus_window(win):
     """把焦点交给刚弹出的窗口，并把它提到最前。
 
@@ -1845,6 +1924,7 @@ def focus_window(win):
         win.focus_force()
     except Exception:
         pass
+    force_foreground(win)      # 上面两下在 Windows 前台锁下经常不够，见 force_foreground
 
 
 def get_icon_path():
@@ -2309,6 +2389,7 @@ class SwitchRow(tk.Canvas):
         self._accent = accent or ("switch_on" if self._compact else "edit_bg")
         self._command = command
         self._on = False
+        self._enabled = True        # 禁用 = 灰掉 + 点不动（"现在不让改"）
         self._t = 0.0
         self._job = None
         self._cw = 0
@@ -2345,12 +2426,35 @@ class SwitchRow(tk.Canvas):
             self._layout_text()
 
     def toggle(self):
+        if not self._enabled:
+            return                      # 禁用期间点不动（比如"清单窗口开着时不让编辑"）
         self.set(not self._on, animate=True)
         if self._command is not None:
             try:
                 self._command()
             except Exception:
                 trace_exc("helpers", "开关回调")
+
+    def get_enabled(self):
+        return bool(self._enabled)
+
+    def set_enabled(self, on):
+        """可用 / 禁用。禁用时整条灰掉、鼠标不再是手型、点了没反应。
+
+        用来表达"这项现在不让改"（主界面编辑在放大查看/模组差异开着时就是这样），
+        说明文字由调用方通过 `set_text(desc=...)` 写清楚原因。
+        """
+        on = bool(on)
+        if on == self._enabled:
+            return
+        self._enabled = on
+        self._cache_clear()             # 灰底/灰轨道要重新出图
+        try:
+            self.configure(cursor="hand2" if on else "")
+        except Exception:
+            pass
+        self._redraw()
+        self._layout_text()
 
     def set_theme(self, theme):
         self.theme = dict(theme)
@@ -2407,17 +2511,19 @@ class SwitchRow(tk.Canvas):
 
     def _layout_text(self):
         """文字用画布文字（字体渲染比 PIL 好）；紧凑形态只有标题。"""
+        灰 = self.theme.get("muted_fg", "#888")
         x = self._PAD_L + self._SW + self._GAP
         y = self._h / 2.0
         self.coords(self._title_id, x, y)
         self.itemconfig(self._title_id, text=self._title,
-                        fill=self.theme.get("fg", "#222"))
+                        fill=self.theme.get("fg", "#222") if self._enabled else 灰)
         self.coords(self._desc_id, x + self._text_width() + 14, y)
-        开 = self._t > 0.5
+        开 = self._t > 0.5 and self._enabled
         self.itemconfig(
             self._desc_id,
             text=self._desc if not 开 else self._warn_desc,
-            fill=self._warn_color() if 开 else self.theme.get("muted_fg", "#888"))
+            fill=(self._warn_color() if 开
+                  else self.theme.get("muted_fg", "#888")))
         if self._compact:
             self.itemconfig(self._desc_id, text="")
         self.tag_raise("txt")
@@ -2463,17 +2569,21 @@ class SwitchRow(tk.Canvas):
     def _card_imgs(self):
         if self._card_off is None:
             高 = max(8, self._h - 6)
-            self._card_off = _圆角矩形((self._cw, 高), 10,
-                                       self._rgb(self.theme.get("entry_bg", "#efefef")))
-            self._card_on = _圆角矩形((self._cw, 高), 10, self._accent_rgb())
+            底 = self._rgb(self.theme.get("entry_bg", "#efefef"))
+            if not self._enabled:
+                # 禁用：底色往中性灰压一点，也不再染强调色（"现在不让你改"）
+                底 = tuple(int(c * 0.94 + 128 * 0.06) for c in 底)
+            self._card_off = _圆角矩形((self._cw, 高), 10, 底)
+            self._card_on = _圆角矩形((self._cw, 高), 10,
+                                      self._accent_rgb() if self._enabled else 底)
         return self._card_off, self._card_on
 
     def _track_imgs(self):
         if self._track_off is None:
-            self._track_off = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
-                                        self._rgb(self.theme.get("muted_fg", "#9e9e9e")))
+            灰 = self._rgb(self.theme.get("muted_fg", "#9e9e9e"))
+            self._track_off = _圆角矩形((self._SW, self._SH), self._SH / 2.0, 灰)
             self._track_on = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
-                                       self._accent_rgb())
+                                       self._accent_rgb() if self._enabled else 灰)
         return self._track_off, self._track_on
 
     def _knob_img(self):
@@ -2511,3 +2621,517 @@ class SwitchRow(tk.Canvas):
             return tuple(int(str(色)[i:i + 2], 16) for i in (1, 3, 5))
         except Exception:
             return tuple(int(缺省[i:i + 2], 16) for i in (1, 3, 5))
+
+
+class SegmentedControl(tk.Canvas):
+    """分段选择：几个互斥选项排成一条，选中的那段用**滑动的高亮块**浮起来。
+
+    用来替 `tk.Radiobutton`：那种小圆点 + 系统默认渲染（灰底、老式字重）跟这套 UI
+    明显不是一路（用户看到"覆盖 / 跳过"那对单选，说"换个更现代化的"）。
+
+    做法和 `SwitchRow` 完全一套：
+    - PIL 出图（4 倍超采样，圆角是抗锯齿的）+ 静态图全缓存，动画每帧只挪位置；
+    - 滑动按**真实时间**插值（130ms，OutCubic），Tk 的 after 说 10ms 实际常 12~15ms；
+    - 文字用画布文字（字体渲染比 PIL 好），选中的那段换对比色；
+    - 整条可点：鼠标落在哪段就选哪段；未选中的段悬停时给一层淡底，提示"这里能点"。
+
+    用法：
+        seg = SegmentedControl(parent, theme,
+                               [("overwrite", "覆盖（先备份）"),
+                                ("skip", "跳过（目标保持不动）")],
+                               command=lambda v: ...)
+        seg.set("skip")      # 不带动画地摆到某段
+        seg.get()            # -> "skip"
+    """
+
+    _TICK_MS = 10               # 帧间隔；进度按真实时间算，这个只影响细腻度
+    _DURATION = 0.13            # 滑动时长（秒）
+    PAD_X = 15                  # 每段左右内边距
+    INSET = 2                   # 高亮块离轨道边的距离
+
+    def __init__(self, parent, theme, options, command=None, value=None,
+                 font=("微软雅黑", 9), height=28, **kw):
+        self._is_segmented = True           # 给"点空白"这类兜底逻辑认（同 SwitchRow）
+        try:
+            bg = parent.cget("bg")
+        except Exception:
+            bg = theme.get("bg", "#f0f0f0")
+        super().__init__(parent, highlightthickness=0, bd=0, bg=bg,
+                         height=int(height), **kw)
+        self.theme = dict(theme)
+        self._opts = [(str(v), str(t)) for v, t in (options or [])]
+        self._command = command
+        self._font = tkfont.Font(family=font[0], size=font[1],
+                                 weight=(font[2] if len(font) > 2 else "normal"))
+        self._h = int(height)
+        self._enabled = True
+        self._hover = -1
+        self._job = None
+        self._value = self._opts[0][0] if self._opts else None
+        if value is not None and value in [v for v, _ in self._opts]:
+            self._value = value
+        self._t = float(self._index())      # 高亮块的"段位置"（滑动时是小数）
+        # 每段等宽：取最长的那条文字 + 左右内边距（等宽比分宽看着整齐）
+        段宽 = (max(self._font.measure(t) for _, t in self._opts) if self._opts
+               else self._font.measure("选项"))
+        self._seg_w = int(段宽 + self.PAD_X * 2)
+        self._total_w = self._seg_w * len(self._opts) + self.INSET * 2
+        try:
+            self.configure(width=self._total_w)
+        except Exception:
+            pass
+        self._cache_clear()
+        self._img = self.create_image(0, 0, anchor="nw")            # 轨道
+        self._hover_id = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._pill_id = self.create_image(0, 0, anchor="nw")        # 选中高亮
+        self._texts = [
+            self.create_text(0, 0, text=文本, font=self._font, anchor="center")
+            for _, 文本 in self._opts]
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Motion>", self._on_motion)
+        self.bind("<Leave>", self._on_leave)
+        try:
+            self.configure(cursor="hand2")
+        except Exception:
+            pass
+        self._redraw()
+
+    # ---------------------------------------------------------------- 对外
+    def get(self):
+        return self._value
+
+    def values(self):
+        return [v for v, _ in self._opts]
+
+    def labels(self):
+        return [t for _, t in self._opts]
+
+    def set(self, value, animate=True):
+        """选中某一段（animate=False 直接摆过去，用于初始化/换主题）。"""
+        if value not in [v for v, _ in self._opts]:
+            return
+        if value == self._value and abs(self._t - self._index()) < 0.001:
+            return                      # 已经是它、而且已经停稳了
+        self._value = value
+        if animate and self.winfo_ismapped():
+            self._animate()
+        else:
+            self._cancel()
+            self._t = float(self._index())
+            self._redraw()
+
+    def get_enabled(self):
+        return bool(self._enabled)
+
+    def set_enabled(self, on):
+        on = bool(on)
+        if on == self._enabled:
+            return
+        self._enabled = on
+        self._cache_clear()
+        try:
+            self.configure(cursor="hand2" if on else "")
+        except Exception:
+            pass
+        self._redraw()
+
+    def set_theme(self, theme):
+        self.theme = dict(theme)
+        try:
+            self.configure(bg=theme.get("bg", "#f0f0f0"))
+        except Exception:
+            pass
+        self._cache_clear()
+        self._redraw()
+
+    # ---------------------------------------------------------------- 绘制
+    @staticmethod
+    def _rgb(色, 缺省="#888888"):
+        try:
+            return tuple(int(str(色)[i:i + 2], 16) for i in (1, 3, 5))
+        except Exception:
+            return tuple(int(缺省[i:i + 2], 16) for i in (1, 3, 5))
+
+    def _accent(self):
+        th = self.theme
+        return (th.get("card_sel_bar") or th.get("switch_on") or th.get("accent_bg")
+                or "#2f7fd1")
+
+    def _accent_fg(self):
+        """选中段的文字色：底色亮就用深色字，暗就用白字（和药丸标签一个规则）。"""
+        r, g, b = self._rgb(self._accent())
+        return "#202020" if (0.299 * r + 0.587 * g + 0.114 * b) > 170 else "#ffffff"
+
+    def _cache_clear(self):
+        self._track_img = None
+        self._pill_img = None
+        self._hover_img = None
+
+    def _geoms(self):
+        """(轨道图, 高亮块图, 悬停底图)：都是圆角图，缓存住。"""
+        高 = self._h
+        if self._track_img is None:
+            边 = _mix_color(self.theme.get("entry_bg", "#ffffff"),
+                            self.theme.get("muted_fg", "#9e9e9e"), 0.45)
+            self._track_img = _PILImageTk.PhotoImage(
+                _圆角矩形((self._total_w, 高), 高 / 2.0, self._rgb(边)))
+        if self._pill_img is None:
+            块宽 = max(8, self._seg_w - self.INSET * 2)
+            块高 = max(8, 高 - self.INSET * 2)
+            填 = (self._rgb(self._accent()) if self._enabled
+                  else self._rgb(self.theme.get("muted_fg", "#9e9e9e")))
+            self._pill_img = _PILImageTk.PhotoImage(
+                _圆角矩形((块宽, 块高), 块高 / 2.0, 填))
+        if self._hover_img is None:
+            块宽 = max(8, self._seg_w - self.INSET * 2)
+            块高 = max(8, 高 - self.INSET * 2)
+            底 = _mix_color(self.theme.get("entry_bg", "#ffffff"), self._accent(), 0.16)
+            self._hover_img = _PILImageTk.PhotoImage(
+                _圆角矩形((块宽, 块高), 块高 / 2.0, self._rgb(底)))
+        return self._track_img, self._pill_img, self._hover_img
+
+    def _seg_x(self, 位置):
+        """第 `位置` 段（可以是小数）的高亮块左上角 x。"""
+        return self.INSET + 位置 * self._seg_w + self.INSET
+
+    def _redraw(self):
+        if not self._opts:
+            return
+        轨道, 高亮, 悬停 = self._geoms()
+        try:
+            self.itemconfig(self._img, image=轨道)
+        except Exception:
+            return
+        高亮y = (self._h - max(8, self._h - self.INSET * 2)) / 2.0
+        self.coords(self._pill_id, int(round(self._seg_x(self._t))), 高亮y)
+        self.itemconfig(self._pill_id, image=高亮)
+        # 悬停层：只在"悬停的不是当前选中那段"时露出来
+        if self._enabled and 0 <= self._hover < len(self._opts) \
+                and self._hover != round(self._t):
+            self.coords(self._hover_id, int(round(self._seg_x(self._hover))), 高亮y)
+            self.itemconfig(self._hover_id, image=悬停, state="normal")
+        else:
+            self.itemconfig(self._hover_id, state="hidden")
+        选中 = self._index()
+        for i, item in enumerate(self._texts):
+            cx = self._seg_x(i) + max(8, self._seg_w - self.INSET * 2) / 2.0
+            self.coords(item, int(round(cx)), self._h // 2)
+            if not self._enabled:
+                色 = self.theme.get("muted_fg", "#888888")
+            elif i == 选中:
+                色 = self._accent_fg()
+            else:
+                色 = self.theme.get("fg", "#222222")
+            self.itemconfig(item, fill=色)
+        # 高亮块压在底图上面、文字最上面
+        self.tag_raise(self._hover_id)
+        self.tag_raise(self._pill_id)
+        for item in self._texts:
+            self.tag_raise(item)
+
+    # ---------------------------------------------------------------- 内部
+    def _index(self):
+        for i, (v, _) in enumerate(self._opts):
+            if v == self._value:
+                return i
+        return 0
+
+    def _cancel(self):
+        if self._job is not None:
+            try:
+                self.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+
+    def _animate(self):
+        """按真实时间插值：起点是当前位置（连续点几段也不会跳）。"""
+        self._cancel()
+        目标 = float(self._index())
+        起点 = float(self._t)
+        if abs(目标 - 起点) < 0.001:
+            self._redraw()
+            return
+        开始 = time.perf_counter()
+
+        def 帧():
+            self._job = None
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            k = min(1.0, (time.perf_counter() - 开始) / self._DURATION)
+            缓动 = 1.0 - (1.0 - k) ** 3            # OutCubic：快起慢收
+            self._t = 起点 + (目标 - 起点) * 缓动
+            self._redraw()
+            if k < 1.0:
+                self._job = self.after(self._TICK_MS, 帧)
+            else:
+                self._t = 目标
+                self._redraw()
+        帧()
+
+    def _hit(self, x):
+        i = int((x - self.INSET) // max(1, self._seg_w))
+        return i if 0 <= i < len(self._opts) else -1
+
+    def _on_click(self, event):
+        if not self._enabled:
+            return
+        i = self._hit(event.x)
+        if i < 0:
+            return
+        新 = self._opts[i][0]
+        if 新 == self._value:
+            return
+        self.set(新, animate=True)
+        if self._command is not None:
+            try:
+                self._command(新)
+            except Exception:
+                trace_exc("helpers", "分段选择回调")
+
+    def _on_motion(self, event):
+        if not self._enabled:
+            return
+        i = self._hit(event.x)
+        if i != self._hover:
+            self._hover = i
+            self._redraw()
+
+    def _on_leave(self, _event):
+        if self._hover != -1:
+            self._hover = -1
+            self._redraw()
+
+
+class OptionCards(tk.Canvas):
+    """一列「选择卡片」：一句话那么长的互斥选项用它（分段条塞不下整句话）。
+
+    形态：一行一张卡，左边一个圆点 + 标题（可选副标题）。
+    选中的那张：主色描边 + 实心主色圆点 + 主色标题；没选中的悬停给一层淡底。
+    整卡可点。和 `SegmentedControl` / `SwitchRow` 是一套自绘语言（PIL 4 倍
+    超采样 + 主题色 + 静态图缓存）。
+
+    用法：
+        cards = OptionCards(parent, theme, [("all", "迁移时锁定界面", "盖一层遮罩"),
+                                           ("off", "不锁屏", "只禁用按钮")],
+                            command=on_pick, value="all")
+        cards.pack(fill="x")
+    """
+
+    PAD = 6                 # 卡片之间的竖直间距
+    INSET = 2               # 圆点离卡片左边的距离
+    DOT = 10                # 圆点直径（选中时里面填实心）
+    GAP = 12                # 圆点与文字之间
+
+    def __init__(self, parent, theme, options, command=None, value=None,
+                 font=("微软雅黑", 9), note_font=("微软雅黑", 8), height=None,
+                 **kw):
+        self.theme = dict(theme)
+        self._opts = []                     # [(值, 标题, 副标题)]
+        for o in options:
+            if len(o) >= 3:
+                self._opts.append((o[0], str(o[1]), str(o[2] or "")))
+            else:
+                self._opts.append((o[0], str(o[1]), ""))
+        self._command = command
+        self._value = value if value is not None else (self._opts[0][0] if self._opts else None)
+        self._font = font
+        self._note_font = note_font
+        try:
+            bg = parent.cget("bg")
+        except Exception:
+            bg = self.theme.get("bg", "#f0f0f0")
+        # 高度按内容算：每张卡 = 标题一行（有副标题再多一行）+ 内边距
+        self._row_h = []
+        for _值, 标题, 副 in self._opts:
+            self._row_h.append(30 + (16 if 副 else 0))
+        总高 = sum(self._row_h) + self.PAD * max(0, len(self._opts) - 1)
+        self._cw = 0
+        self._enabled = True
+        self._hover = -1
+        self._img = None
+        self._texts = []
+        self._cache = {}
+        super().__init__(parent, bg=bg, highlightthickness=0, bd=0,
+                         height=height or max(1, 总高), **kw)
+        self._img = self.create_image(0, 0, anchor="nw")
+        self._photo = None
+        self._is_option_cards = True
+        self.bind("<Configure>", self._on_configure)
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Motion>", self._on_motion)
+        self.bind("<Leave>", self._on_leave)
+        self._redraw()
+
+    # ---------------------------------------------------------------- 对外
+    def get(self):
+        return self._value
+
+    def values(self):
+        return [v for v, _t, _d in self._opts]
+
+    def titles(self):
+        return [t for _v, t, _d in self._opts]
+
+    def set(self, value, animate=False):
+        if value not in self.values() or value == self._value:
+            return
+        self._value = value
+        self._redraw()
+
+    def get_enabled(self):
+        return self._enabled
+
+    def set_enabled(self, on):
+        self._enabled = bool(on)
+        try:
+            self.configure(cursor="hand2" if self._enabled else "")
+        except Exception:
+            pass
+        self._cache_clear()
+        self._redraw()
+
+    def set_theme(self, theme):
+        self.theme = dict(theme)
+        try:
+            self.configure(bg=theme.get("bg", "#f0f0f0"))
+        except Exception:
+            pass
+        self._cache_clear()
+        self._redraw()
+
+    # ---------------------------------------------------------------- 内部
+    @staticmethod
+    def _rgb(色, 缺省="#888888"):
+        try:
+            return tuple(int(str(色)[i:i + 2], 16) for i in (1, 3, 5))
+        except Exception:
+            return tuple(int(缺省[i:i + 2], 16) for i in (1, 3, 5))
+
+    def _accent(self):
+        th = self.theme
+        return (th.get("card_sel_bar") or th.get("switch_on") or th.get("accent_bg")
+                or "#2f7fd1")
+
+    def _cache_clear(self):
+        self._cache = {}
+
+    def _on_configure(self, event):
+        if int(event.width) != self._cw:
+            self._cw = int(event.width)
+            self._cache_clear()
+            self._redraw()
+
+    def _hit(self, y):
+        """y 命中第几张卡；-1 = 空白。"""
+        上 = 0
+        for i, 高 in enumerate(self._row_h):
+            if 上 <= y < 上 + 高:
+                return i
+            上 += 高 + self.PAD
+        return -1
+
+    def _卡图(self, 索引, 选中):
+        """一张卡片的底图（选中：主色描边 + 主色淡底；未选中：淡描边 + 悬浮淡底）。"""
+        键 = (索引, bool(选中), self._cw, self._enabled)
+        if 键 in self._cache:
+            return self._cache[键]
+        高 = self._row_h[索引]
+        宽 = max(1, self._cw)
+        底 = self._rgb(self.theme.get("entry_bg", "#ffffff"))
+        画布底 = self._rgb(self.theme.get("bg", "#f0f0f0"))
+        if 选中 and self._enabled:
+            强调 = self._rgb(self._accent())
+            底 = tuple(int(c * 0.86 + a * 0.14) for c, a in zip(底, 强调))
+            边色 = 强调
+        else:
+            if 索引 == self._hover and self._enabled:
+                底 = tuple(int(c * 0.95 + 128 * 0.05) for c in 底)
+            # 未选中的卡也要看得出是"一张卡"：描边取"底色与画布底之间"的灰
+            边色 = tuple(int((c + b) / 2.0) for c, b in zip(底, 画布底))
+        图 = _圆角矩形((宽, 高), 9, 底)
+        if 边色 != 底:
+            边 = _PILImage.new("RGBA", (宽, 高), (0, 0, 0, 0))
+            边.paste(_圆角矩形((宽, 高), 9, tuple(边色) + (255,)), (0, 0))
+            内 = _圆角矩形((max(1, 宽 - 2), max(1, 高 - 2)), 8, (0, 0, 0, 0))
+            边.paste(内, (1, 1))
+            图.alpha_composite(边)
+        self._cache[键] = 图
+        return 图
+
+    def _redraw(self):
+        if self._cw <= 0:
+            return
+        try:
+            底 = _PILImage.new("RGBA", (self._cw, max(1, self.winfo_height() or 1)),
+                               self._rgb(self.theme.get("bg", "#f0f0f0")) + (255,))
+        except Exception:
+            return
+        self.delete("all")
+        # 注意：delete("all") 会把上一次那张图也删掉，所以这里必须**重建**图片条目
+        # （拿旧 id 调 itemconfig 是静默无效的 —— 踩过：文字在、卡片底图全不见）。
+        self._img = self.create_image(0, 0, anchor="nw")
+        self._texts = []
+        上 = 0
+        强调 = self._accent()
+        标题色 = self.theme.get("fg", "#000000")
+        副色 = self.theme.get("muted_fg", "#888888")
+        for i, (值, 标题, 副) in enumerate(self._opts):
+            高 = self._row_h[i]
+            选中 = (值 == self._value)
+            底.alpha_composite(self._卡图(i, 选中), (0, 上))
+            # 圆点：选中 = 实心主色；未选中 = 空心圈
+            cx = self.INSET + 14
+            cy = 上 + 15
+            r = self.DOT / 2.0
+            if 选中:
+                底.alpha_composite(_圆角矩形((self.DOT, self.DOT), r, self._rgb(强调)), (int(cx - r), int(cy - r)))
+            else:
+                环 = _圆角矩形((self.DOT, self.DOT), r, self._rgb(self.theme.get("muted_fg", "#9e9e9e")))
+                内 = _圆角矩形((max(1, self.DOT - 4), max(1, self.DOT - 4)), max(1, r - 2), (0, 0, 0, 0))
+                环.paste(内, (2, 2))
+                底.alpha_composite(环, (int(cx - r), int(cy - r)))
+            tx = self.INSET + self.GAP + 14
+            self.create_text(tx, cy, anchor="w", text=标题,
+                             fill=强调 if 选中 else 标题色, font=self._font)
+            if 副:
+                self.create_text(tx, cy + 15, anchor="w", text=副, fill=副色,
+                                 font=self._note_font)
+            上 += 高 + self.PAD
+        self._photo = _PILImageTk.PhotoImage(底.convert("RGB"))
+        self.itemconfig(self._img, image=self._photo)
+
+    def _on_click(self, event):
+        if not self._enabled:
+            return
+        i = self._hit(event.y)
+        if i < 0:
+            return
+        新 = self._opts[i][0]
+        if 新 == self._value:
+            return
+        self._value = 新
+        self._redraw()
+        if self._command:
+            try:
+                self._command(新)
+            except Exception:
+                pass
+
+    def _on_motion(self, event):
+        if not self._enabled:
+            return
+        i = self._hit(event.y)
+        if i != self._hover:
+            self._hover = i
+            self._cache_clear()
+            self._redraw()
+
+    def _on_leave(self, _event):
+        if self._hover != -1:
+            self._hover = -1
+            self._cache_clear()
+            self._redraw()

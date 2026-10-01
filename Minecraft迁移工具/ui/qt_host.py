@@ -182,6 +182,84 @@ def run_host(argv):
             pass
         return 5
 
+    # 窗口一关，这个子进程的活儿就干完了 —— **必须退出**。
+    # 主进程判断"窗口还开着没有"靠的就是"这个进程还在不在"（编辑锁、重复点放大查看
+    # 时的 raise 都指着它）。而 `ensure_app` 里把 quitOnLastWindowClosed 关掉了，
+    # 那是"Qt 跑在 Tk 主进程里"那会儿留的（关个 Qt 窗口不能把主进程带走）；
+    # 子进程里只跑这一个窗口，就得打开它，否则关窗后进程一直挂在后台，
+    # 表现就是：窗口明明关了，主界面编辑还是锁着；再点"放大查看"也只会给一个
+    # 已经没有窗口的进程发 raise，窗口再也出不来。
+    try:
+        app.setQuitOnLastWindowClosed(True)
+        # 双保险：窗口对象真被销毁（WA_DeleteOnClose）也明确退一次
+        view.destroyed.connect(lambda *_: QtCore.QTimer.singleShot(0, app.quit))
+    except Exception:
+        pass
+
+    # 父进程（主界面，或者跑验证脚本的那个 python）没了就自己退。
+    # 不然它崩掉 / 被强杀之后，桌面上会留一个没人管的窗口 —— 而且这种孤儿窗口
+    # 还会让"按标题找窗口"的测试认错对象（踩过一次：WM_CLOSE 发给了上一个残留窗口，
+    # 被测进程当然没反应，看起来像修复失效）。1.5 秒问一次，开销可以忽略。
+    #
+    # 判活的两个坑：
+    #   1) `OpenProcess` 对"已经退出、进程对象还没销毁"的 pid **照样返回句柄**（实测非 0），
+    #      必须再看 `GetExitCodeProcess == STILL_ACTIVE(259)`；
+    #   2) pid 会被**复用** —— 长回归里几百个进程起落，父进程的号很快会被别人用上，
+    #      光看"这个号还活着"就会一直误判"父还在"，于是留下孤儿窗口（实测就这么漏了一个）。
+    #      所以启动时把父进程的**创建时间**记下来，每次再对一遍。
+    try:
+        import ctypes
+        from ctypes import wintypes as _wt
+
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [("低", _wt.DWORD), ("高", _wt.DWORD)]
+
+        _k32 = ctypes.windll.kernel32
+        _父pid = os.getppid()
+
+        def _创建时间(pid):
+            """取进程创建时间（100ns 计数）。取不到返回 None。"""
+            h = _k32.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                建, 退, 内, 用 = (_FILETIME(), _FILETIME(), _FILETIME(), _FILETIME())
+                if not _k32.GetProcessTimes(h, ctypes.byref(建), ctypes.byref(退),
+                                            ctypes.byref(内), ctypes.byref(用)):
+                    return None
+                return (建.高 << 32) | 建.低
+            except Exception:
+                return None
+            finally:
+                _k32.CloseHandle(h)
+
+        _父创建 = _创建时间(_父pid)
+
+        def _父还在():
+            h = _k32.OpenProcess(0x1000, False, _父pid)
+            if not h:
+                return _k32.GetLastError() == 5              # 拒绝访问 = 还在，只是没权限
+            try:
+                code = ctypes.c_ulong()
+                if not _k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return True
+                if code.value != 259:                        # STILL_ACTIVE
+                    return False
+                if _父创建 is not None:
+                    现在 = _创建时间(_父pid)
+                    if 现在 is not None and 现在 != _父创建:
+                        return False                         # 号被复用了，原父进程已经没了
+                return True
+            finally:
+                _k32.CloseHandle(h)
+
+        _看门 = QtCore.QTimer()
+        _看门.setInterval(1500)
+        _看门.timeout.connect(lambda: app.quit() if not _父还在() else None)
+        _看门.start()
+    except Exception:
+        pass
+
     # 滚轮缓动现在由控件自己驱动（`_SmoothWheel._sw_ensure_timer`，收到滚轮就起一个
     # 12ms 的 QTimer）。这里**不再额外 tick** —— 两处一起推会让动画速度翻倍。
     # 只上报"窗口好了、缓动自驱可用"给主进程（诊断用）。
@@ -203,10 +281,18 @@ def run_host(argv):
                         continue
                     动作 = 命令.get("cmd")
                     if 动作 == "raise":
+                        # 重复点「放大查看 / 模组差异」时主进程就写这条命令。
+                        # 光 showNormal+raise_+activateWindow 在 Windows 前台锁下
+                        # 常常只是任务栏闪一下，窗口还压在后面 —— 再走一次 Win32 级置顶。
                         try:
                             view.showNormal()
                             view.raise_()
                             view.activateWindow()
+                            try:
+                                from utils.helpers import force_foreground
+                                force_foreground(view)
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                     elif 动作 == "entries":

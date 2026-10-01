@@ -10,7 +10,7 @@ import queue
 import webbrowser
 from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
                            center_window, lighten_color, SmoothScroller, RoundedEntry,
-                           LiquidProgress)
+                           LiquidProgress, SwitchRow)
 from core.scanner import (get_full_mod_metadata, split_cn_name, guess_tags,
                           compare_versions, get_mod_icon)
 from core.mod_search import (search_modrinth, fetch_project_latest, format_downloads,
@@ -211,13 +211,12 @@ def ask_close_action(parent, theme):
              font=("微软雅黑", 9), justify="left").pack(padx=26, anchor="w")
 
     remember = tk.BooleanVar(value=False)
-    tk.Checkbutton(win, text="记住我的选择，以后不再询问",
-                   variable=remember,
-                   bg=theme["bg"], fg=theme["fg"],
-                   activebackground=theme["bg"], activeforeground=theme["fg"],
-                   selectcolor=theme.get("entry_bg", theme["bg"]),
-                   highlightthickness=0, bd=0,
-                   font=("微软雅黑", 9)).pack(padx=22, pady=(12, 0), anchor="w")
+    # 自绘小开关（原来是原生 tk.Checkbutton：系统灰底方块，跟这套 UI 不搭）
+    _记住开关 = SwitchRow(win, theme, "记住我的选择，以后不再询问",
+                          command=lambda: remember.set(_记住开关.get()),
+                          compact=True, accent="switch_on")
+    _记住开关.pack(padx=22, pady=(12, 0), anchor="w")
+    _记住开关.set(False)
     tk.Label(win, text="（以后想改：右键任务栏托盘图标，勾选/取消"
                        "「关闭窗口时收进托盘」）",
              bg=theme["bg"], fg=theme.get("muted_fg", theme["fg"]),
@@ -535,8 +534,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     for w in getattr(parent, '_mod_detail_windows', []):
         try:
             if w.winfo_exists() and w.title() == win_title:
-                w.lift()
-                w.focus_force()
+                focus_window(w)        # 已有就置顶（lift 在前台锁下常常只是闪一下）
                 return
         except Exception:
             pass
@@ -1003,22 +1001,26 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
                 "获取中…", r.get("slug", "")), tags=(tag,) if tag else ())
             base_tag[iid] = tag
             result_items[iid] = r
+        # 过滤条件**在主线程读好**再传进线程：mc_var/loader_var 是 Tk 变量，
+        # 子线程里 .get() 会抛 "main thread is not in main loop"（迁移那边早就踩过，
+        # 见 main_window._run_migration_thread 的注释）。
+        过滤 = _filters()
         # 后台并发拉取各候选最新版本（使用排序后位置，与 iid 一致）
         for pos, (score, orig_i, r) in enumerate(scored):
             pid = r.get("project_id")
-            threading.Thread(target=lambda pid=pid, i=pos: _fetch_version_for(pid, i),
-                             daemon=True).start()
+            threading.Thread(target=lambda pid=pid, i=pos, f=过滤:
+                             _fetch_version_for(pid, i, f), daemon=True).start()
         extra = "★为最相似项，已置顶。" if best >= MIN else "未找到相似度足够的候选。"
         set_status(("%s " % 备注 if 备注 else "")
                    + f"找到 {len(results)} 个结果。{extra} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）", ok)
         # 后台并发拉取各候选的最新版本，逐行填充
         for i, r in enumerate(results):
             pid = r.get("project_id")
-            threading.Thread(target=lambda pid=pid, i=i: _fetch_version_for(pid, i),
-                             daemon=True).start()
+            threading.Thread(target=lambda pid=pid, i=i, f=过滤:
+                             _fetch_version_for(pid, i, f), daemon=True).start()
 
-    def _fetch_version_for(pid, i):
-        mc, loader = _filters()
+    def _fetch_version_for(pid, i, 过滤=None):
+        mc, loader = 过滤 if 过滤 is not None else ("", "")
         try:
             d = fetch_project_latest(pid, mc_version=mc, loader=loader)
         except Exception:
@@ -1100,8 +1102,12 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         widen_state["tried"] = False        # 这次搜索允许自动放宽一次
         _set_search_btn(True)
 
+        # 过滤条件**在主线程读好**再传进线程：mc_var/loader_var 是 Tk 变量，
+        # 子线程里 .get() 会抛 "main thread is not in main loop"。
+        搜索过滤 = _filters()
+
         def worker():
-            mc, loader = _filters()
+            mc, loader = 搜索过滤
             try:
                 results = search_modrinth(q, limit=8, mc_version=mc, loader=loader)
             except Exception as e:

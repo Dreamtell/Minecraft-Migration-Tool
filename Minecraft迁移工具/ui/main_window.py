@@ -35,7 +35,7 @@ from utils.helpers import (create_gradient_button, set_window_icon, center_windo
                            bind_text_scroll, SwitchRow, DataText, data_label,
                            make_theme_icon, clear_layered_style, SmoothScroller,
                            tree_row_px, style_window, is_dark_theme, trace_exc,
-                           text_delta)
+                           text_delta, SegmentedControl, OptionCards)
 from core.migrator import (
     run_migration,
     do_backup,
@@ -57,6 +57,14 @@ from ui.virtual_table import VirtualTable
 
 _GRAD_FONT = None
 _GRAD_PAD = 26
+
+# 扫描线程 → 主线程的"干完了"哨兵。进度的消息是 (序号:int, 文件名:str)，
+# 所以拿字符串当哨兵不会撞（见 _poll_scan_progress）。
+_SCAN_DONE = "§扫描完成§"
+
+# 后台线程 → 主线程 UI 调用队列的泵间隔（ms）。只做"取空队列"这件事，
+# 空转开销可以忽略；50ms 的延迟人眼看不出来。
+_UI_PUMP_MS = 50
 
 # Tk 量一个 emoji/符号会去查一次字体回退，进程里第一次要 260 ms 以上，后面每个新
 # 字符几毫秒；界面上十几个按钮的文案都带 emoji，累计约 300 ms 全卡在启动那一刻。
@@ -182,9 +190,9 @@ _EXTRA_PRESETS = (
     ("iris.properties", "iris.properties", "Iris 光影设置"),
 )
 
-# 配置里还没有 extra_defaults 时用这组默认：**一个都不勾**。
-# 要带哪些目录由用户自己点 —— 迁移这种改文件的活儿，不该有"偷偷多带几样"的默认值。
-_EXTRA_DEFAULT_KEYS = ()
+# 迁移这种会改文件的活儿，不该有"偷偷多带几样"的默认值：**清单是唯一依据**，
+# 要带什么由用户自己加（清单页的「＋ 常用目录」提供现成条目）。
+# （这里原先还有 _EXTRA_DEFAULT_KEYS：老配置没这个键时默认勾上的目录 —— 已删）
 
 # 放大查看窗口的实现方式。PySide6 试点：圆角/阴影/逐帧动画是原生能力；
 # 缺库或想用回老窗口时切 tk。
@@ -385,12 +393,9 @@ class MigrationGUI:
             self.lock_mode = "all"
         # 迁移跑完的完成态怎么收：True=按任意键关闭 / False=2 秒后自动关
         self.lock_wait_key = bool(self.config.get("lock_wait_key", True))
-        # 每次迁移默认带上的目录（键取自 _EXTRA_PRESETS；只影响迁移那一刻，不动清单）
-        存的默认 = self.config.get("extra_defaults", None)
-        if 存的默认 is None:
-            存的默认 = list(_EXTRA_DEFAULT_KEYS)
-        合法键 = {k for k, _, _ in _EXTRA_PRESETS}
-        self.extra_defaults = [k for k in (存的默认 or []) if k in 合法键]
+        # 注：以前这里有个 `extra_defaults`（"默认携带的目录"勾选）—— 那套在迁移那一刻
+        # 自动往清单里并东西，用户要求"一切都要自己选"，已经删掉、统一到「其它文件」清单。
+        # 老配置里勾过的条目由 _并入旧的默认携带目录() 一次性并进清单，不会悄悄丢掉。
         # 放大查看窗口用哪个实现：qt=PySide6 试点（缺库时自动回落）/ tk=经典 Tk
         self.big_view_backend = str(self.config.get("big_view_backend", "qt") or "qt")
         if self.big_view_backend not in ("qt", "tk"):
@@ -432,6 +437,14 @@ class MigrationGUI:
 
         self._stage("正在构建界面…")
         self.create_widgets()
+
+        # 后台线程 → 主线程的 UI 通道（worker 只往队列里丢，由主线程的泵执行）。
+        # tkinter 的 after 不是线程安全的：从 worker 里调，事件循环不是 mainloop 时
+        # （验证脚本用 update() 泵的那种）会抛 `main thread is not in main loop`，
+        # 那条日志 / 那次收尾就悄悄丢了。队列 + 主线程泵是唯一稳的写法。
+        self._ui_calls = queue.Queue()
+        self._ui_pump_id = self.root.after(_UI_PUMP_MS, self._ui_pump)
+
         self.init_log_colors()
         self._stage("正在应用主题…")
         self.apply_theme()
@@ -451,6 +464,9 @@ class MigrationGUI:
         self.mod_text.edit_reset()
         self.config_text.edit_reset()
         self.extra_text.edit_reset()
+        # 老配置里如果还留着「默认携带的目录」勾选（那套已删）：把它并进清单一次，
+        # 免得用户原本会带的东西因为改机制就不带了
+        self._并入旧的默认携带目录()
         # 用自定义撤销栈替代 Tk 原生撤销（Tk 会把连续删除合并为一步撤销）
         self._setup_custom_undo(self.mod_text, "mod")
         self._setup_custom_undo(self.config_text, "config")
@@ -601,19 +617,20 @@ class MigrationGUI:
             "config_list": self.config_text.get("1.0", tk.END).strip(),
             "extra_list": self.extra_text.get("1.0", tk.END).strip(),
             "extra_conflict": self.extra_conflict.get(),
-            "edit_enabled": self.edit_mode.get(),
+            "edit_enabled": self._edit_enabled_for_config(),
             "blank_exit_edit": self.blank_exit_edit.get(),
             "close_action": self.close_action,
             "splash": bool(getattr(self, "splash_enabled", True)),
             "silent_background": bool(getattr(self, "silent_background", False)),
             "buttons_hidden": list(getattr(self, "hidden_buttons", []) or []),
             "button_order": dict(getattr(self, "button_order", {}) or {}),
+            # 注：extra_defaults（老的"默认携带的目录"）不写了 —— 那套已删，
+            # 老值在 __init__ 里并进清单后就会被清掉
             "rename_migrated_mods": bool(getattr(self, "rename_migrated_mods", False)),
             "rename_marker": str(getattr(self, "rename_marker", "★")),
             "online_tags": bool(getattr(self, "online_tags", False)),
             "lock_mode": str(getattr(self, "lock_mode", "all")),
             "lock_wait_key": bool(getattr(self, "lock_wait_key", True)),
-            "extra_defaults": list(getattr(self, "extra_defaults", []) or []),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
             "qt_enabled": bool(getattr(self, "qt_enabled", True)),
@@ -1112,9 +1129,16 @@ class MigrationGUI:
         # 这些区域用的是专用配色，通用刷新会把它们刷成普通背景，这里逐个补回来
         if hasattr(self, 'opt_frame'):
             self.opt_frame.configure(bg=self.theme["bg"])
-        for _name in ("dry_run_sw", "overwrite_sw"):
-            _sw = getattr(self, _name, None)
+        for _名字 in ("dry_run_sw", "overwrite_sw", "extra_conflict_seg"):
+            _sw = getattr(self, _名字, None)
             if _sw is not None:
+                try:
+                    _sw.set_theme(self.theme)
+                except Exception:
+                    pass
+        # 设置里那批自绘选项控件（分段选择 / 选择卡片 / 紧凑开关）也要跟着换肤
+        for _列表 in ("_settings_segs", "_settings_cards", "_settings_sws"):
+            for _sw in (getattr(self, _列表, None) or []):
                 try:
                     _sw.set_theme(self.theme)
                 except Exception:
@@ -1535,12 +1559,48 @@ class MigrationGUI:
         tabs = RoundedTabs(win, self.theme)
         tabs.pack(fill="both", expand=True, padx=12, pady=(8, 0))
         self.settings_tabs = tabs
-        pages = []
+        内容 = []
+
+        def 滚动页(page):
+            """把标签页做成"装不下就自己滚"，返回可以塞内容的那层容器。
+
+            为什么改成滚：窗口原来是按**最高那页**撑开的（迁移那页 816 高），于是
+            设置窗变成 700x926 的一条窄柱（用户：设置窗口做成正常尺寸）。窗口给正常
+            大小、页内容高了就滚，比"按内容撑"更经得住折腾 —— 窗口被拉小也不会把选项裁掉。
+
+            滚轮走 `SmoothScroller.for_canvas`：和列表/文本框同一套逐帧插值，
+            所以 `yscrollincrement` 要设成 1（一步 1 像素才能停在半行上）。
+            """
+            画布 = tk.Canvas(page, bg=self.theme["bg"], highlightthickness=0, bd=0)
+            画布.configure(yscrollincrement=1)           # 1 像素一步：平滑滚动的前提
+            条 = ttk.Scrollbar(page, orient="vertical", command=画布.yview)
+            inner = tk.Frame(画布, bg=self.theme["bg"])
+            窗 = 画布.create_window(0, 0, window=inner, anchor="nw")
+
+            def 同步滚动条(第一, 最后):
+                # 装得下就把滚动条收起来：短页不该白拖一条灰杠
+                if float(第一) <= 0.0 and float(最后) >= 1.0:
+                    if 条.winfo_ismapped():
+                        条.pack_forget()
+                elif not 条.winfo_ismapped():
+                    条.pack(side="right", fill="y")
+                条.set(第一, 最后)
+
+            画布.configure(yscrollcommand=同步滚动条)
+            画布.pack(side="left", fill="both", expand=True)
+            画布.bind("<Configure>", lambda e: 画布.itemconfigure(窗, width=e.width))
+            inner.bind("<Configure>", lambda e: 画布.configure(scrollregion=画布.bbox("all")))
+            page._滚动画布 = 画布                          # 滚轮处理器按页找它
+            # 只绑在画布本身上：内容（子控件）上的滚轮由顶层那个处理器按"当前页"转发，
+            # 落在画布空白处的才由它自己接 —— 见 滚轮()，两边不会各滚一格
+            page._滚动器 = SmoothScroller.for_canvas(画布, bind_widgets=[画布])
+            return inner
 
         def tab(label):
             page = tabs.page(label)
-            pages.append(page)
-            return page
+            inner = 滚动页(page)
+            内容.append(inner)                # 窗口宽度按内容算才准
+            return inner
 
         page_look = tab("🎨 外观与启动")
         page_mig = tab("🚚 迁移与分类")
@@ -1567,22 +1627,112 @@ class MigrationGUI:
             inner.pack(fill="x", padx=8, pady=6)
             return inner
 
-        def radio(parent, text, value, var, command, **kw):
-            return tk.Radiobutton(
-                parent, text=text, value=value, variable=var, command=command,
-                bg=self.theme["bg"], fg=self.theme["fg"],
-                activebackground=self.theme["bg"], activeforeground=self.theme["fg"],
-                selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
-                highlightthickness=0, bd=0, font=("微软雅黑", 9),
-                anchor="w", **kw)
+        # ---------- 现代化选项控件（替掉 tk.Radiobutton / tk.Checkbutton）----------
+        # 系统那套小圆点/小方块是原生渲染（灰底、老式字重），跟这里自绘的 UI 明显不搭。
+        # 分工：
+        #   · 短标签（2~9 个字的互斥项）→ SegmentedControl：一条药丸，选中段滑过去；
+        #     文案里"（……）"那一截太长，塞进分段条会撑爆，所以拆出来放到下面说明行，
+        #     跟着选中项变。
+        #   · 整句话那么长的互斥项 → OptionCards：一行一张卡（后面 3 个锁屏模式、
+        #     3 个关闭方式就是这种）。
+        #   · 是/否 → SwitchRow(compact=True)，和设置里其它开关同一个样式。
+        self._settings_segs = []
+        self._settings_cards = []
+        self._settings_sws = []
+        # 名字 → 控件：同一个选项组（比如 _BIG_VIEW_BACKENDS 被两处复用）光按"值"找
+        # 会找错，所以起个名，验证脚本和自己要回头取的时候都靠它。
+        self._settings_seg_map = {}
+        self._settings_card_map = {}
+        self._settings_sw_map = {}
+        self._settings_note_map = {}        # 分段组下面那行"选中项说明"
 
-        def check(parent, text, var, command):
-            return tk.Checkbutton(
-                parent, text=text, variable=var, command=command,
-                bg=self.theme["bg"], fg=self.theme["fg"],
-                activebackground=self.theme["bg"], activeforeground=self.theme["fg"],
-                selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
-                highlightthickness=0, bd=0, font=("微软雅黑", 9), anchor="w")
+        def _拆名(文案):
+            """'📋 表格视图（打开就是列表…）' → ('📋 表格视图', '打开就是列表…')"""
+            文案 = str(文案)
+            if "（" in 文案:
+                短, _, 余 = 文案.partition("（")
+                return 短.strip(), 余.rstrip("）").strip()
+            return 文案, ""
+
+        def 分段(parent, 变量, 选项, 命令, 说明_前缀="", 名=""):
+            """短标签的互斥选项：分段选择 +（文案够长时）一行"选中项说明"。"""
+            条 = [""]
+            行 = tk.Frame(parent, bg=self.theme["bg"])
+            行.pack(fill="x", pady=(4, 0))
+            段 = []
+            说明表 = {}
+            for 值, 文案 in 选项:
+                短, 长 = _拆名(文案)
+                段.append((值, 短))
+                说明表[值] = 长
+            有说明 = any(v for v in 说明表.values())
+            说明标签 = None
+            if 有说明:
+                说明标签 = tk.Label(parent, text="", bg=self.theme["bg"],
+                                    fg=self.theme.get("muted_fg", self.theme["fg"]),
+                                    font=("微软雅黑", 8), justify="left", wraplength=580)
+                说明标签.pack(anchor="w", pady=(3, 0))
+
+            def 刷新说明(值=None):
+                if 说明标签 is None:
+                    return
+                说明标签.configure(text=(说明_前缀 + 说明表.get(值 if 值 is not None
+                                                          else 变量.get(), "")))
+
+            def 选了(值):
+                变量.set(值)
+                刷新说明(值)
+                命令(值)
+
+            控件 = SegmentedControl(行, self.theme, 段, value=变量.get(), command=选了)
+            控件.pack(side="left")
+            self._settings_segs.append(控件)
+            if 名:
+                self._settings_seg_map[名] = 控件
+                if 说明标签 is not None:
+                    self._settings_note_map[名] = 说明标签
+            刷新说明(变量.get())
+            条[0] = 控件
+            return 控件
+
+        def 卡片(parent, 变量, 选项, 命令, 名=""):
+            """整句话那么长的互斥选项：一列选择卡片（标题取"："前那截，其余当说明）。"""
+            三列 = []
+            for 值, 文案 in 选项:
+                文案 = str(文案)
+                if "：" in 文案:
+                    标题, _, 说明 = 文案.partition("：")
+                else:
+                    标题, 说明 = 文案, ""
+                三列.append((值, 标题.strip(), 说明.strip()))
+
+            def 选了(值):
+                变量.set(值)
+                命令(值)
+
+            控件 = OptionCards(parent, self.theme, 三列, value=变量.get(), command=选了)
+            控件.pack(fill="x", pady=(4, 0))
+            self._settings_cards.append(控件)
+            if 名:
+                self._settings_card_map[名] = 控件
+            return 控件
+
+        def 开关(parent, 文字, 变量, 命令, desc="", 名=""):
+            """紧凑开关，替原来的 tk.Checkbutton。"""
+            壳 = {}
+
+            def 切了():
+                变量.set(壳["sw"].get())
+                命令()
+
+            控件 = SwitchRow(parent, self.theme, 文字, desc=desc, command=切了,
+                             compact=True, accent="switch_on")
+            壳["sw"] = 控件
+            控件.set(bool(变量.get()))
+            self._settings_sws.append(控件)
+            if 名:
+                self._settings_sw_map[名] = 控件
+            return 控件
 
         # ---------- 外观与启动 ----------
         box1 = section("look", page_look)
@@ -1591,13 +1741,13 @@ class MigrationGUI:
         row_theme.pack(fill="x")
         tk.Label(row_theme, text="主题：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
-        for value, text in (("light", "浅色"), ("dark", "深色")):
-            radio(row_theme, text, value, self.settings_theme_var,
-                  lambda v=value: self.choose_theme(v)).pack(side="left", padx=(0, 18))
+        分段(row_theme, self.settings_theme_var,
+             (("light", "浅色"), ("dark", "深色")),
+             lambda v: self.choose_theme(v), 名="theme")
 
         self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
-        check(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
-              self._toggle_splash).pack(fill="x", pady=(6, 0))
+        开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
+             self._toggle_splash, 名="splash").pack(fill="x", pady=(6, 0))
 
         # 点窗口空白处要不要顺手退出「主界面编辑」（默认开）。
         # 开着：编辑时随手点一下背景就回只读；关掉：只能用编辑开关自己关，
@@ -1613,16 +1763,16 @@ class MigrationGUI:
         # ---------- 迁移行为 ----------
         box_m = section("migrate", page_mig)
         self.settings_rename_var = tk.BooleanVar(value=self.rename_migrated_mods)
-        check(box_m, "复制过去的模组加标记前缀（方便在目标 mods 里一眼认出）",
-              self.settings_rename_var, self._toggle_rename_marker).pack(fill="x")
+        开关(box_m, "复制过去的模组加标记前缀（方便在目标 mods 里一眼认出）",
+             self.settings_rename_var, self._toggle_rename_marker, 名="rename").pack(fill="x")
         row_mark = tk.Frame(box_m, bg=self.theme["bg"])
         row_mark.pack(fill="x", pady=(4, 0))
         tk.Label(row_mark, text="标记：", bg=self.theme["bg"], fg=self.theme["fg"],
                  font=("微软雅黑", 9)).pack(side="left")
         self.settings_marker_var = tk.StringVar(value=self.rename_marker)
-        for mark in _RENAME_MARKERS:
-            radio(row_mark, mark, mark, self.settings_marker_var,
-                  lambda m=mark: self._set_rename_marker(m)).pack(side="left", padx=1)
+        分段(row_mark, self.settings_marker_var,
+             tuple((mark, mark) for mark in _RENAME_MARKERS),
+             self._set_rename_marker, 名="marker")
         self.settings_marker_preview = tk.Label(
             box_m, text="", bg=self.theme["bg"],
             fg=self.theme.get("muted_fg", self.theme["fg"]), font=("微软雅黑", 8))
@@ -1639,8 +1789,8 @@ class MigrationGUI:
         # ---------- 模组分类标签 ----------
         box_t = section("tags", page_mig)
         self.settings_tags_var = tk.BooleanVar(value=getattr(self, "online_tags", False))
-        check(box_t, "联网获取真实分类（Modrinth；默认关闭）",
-              self.settings_tags_var, self._toggle_online_tags).pack(fill="x")
+        开关(box_t, "联网获取真实分类（Modrinth；默认关闭）",
+             self.settings_tags_var, self._toggle_online_tags, 名="tags").pack(fill="x")
         tk.Label(box_t,
                  text="关闭时按关键词推测（标注“推测”的就是它）。开启后扫描会在后台联网查询，"
                       "结果缓存到本地；断网或匹配不到时自动沿用推测结果。",
@@ -1657,9 +1807,7 @@ class MigrationGUI:
         # ---------- 任务与锁定 ----------
         box_lock = section("lock", page_mig)
         self.settings_lock_var = tk.StringVar(value=getattr(self, "lock_mode", "all"))
-        for value, text in _LOCK_MODES:
-            radio(box_lock, text, value, self.settings_lock_var,
-                  lambda v=value: self._set_lock_mode(v)).pack(fill="x")
+        卡片(box_lock, self.settings_lock_var, _LOCK_MODES, self._set_lock_mode, 名="lock")
         tk.Label(box_lock,
                  text="三个选项都只是「盖不盖遮罩」的区别：迁移期间所有操作按钮一律禁用，"
                       "执行日志始终留着，方便看进度。",
@@ -1680,29 +1828,17 @@ class MigrationGUI:
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(4, 0))
 
-        # ---------- 默认携带的目录 ----------
+        # ---------- 携带什么，全在「其它文件」清单里说了算 ----------
+        # 以前这里有一组「默认携带的目录」勾选框：勾上的目录在迁移那一刻被**自动**
+        # 并进临时清单。用户要求"一切都要自己选"，所以那套删了 —— 现在清单是唯一依据，
+        # 常带的目录去「其它文件」页用「＋ 常用目录」加进去（看得见、删得掉、带备份策略）。
         box_extra = section("extras", page_mig)
         tk.Label(box_extra,
-                 text="勾上的目录会在每次迁移时自动带上（默认全部不勾）：源实例里存在才算数，"
-                      "只并进这一次的迁移，不会改动你的「其它文件」清单"
-                      "（清单里手动删掉的条目不会被塞回来）。",
+                 text="迁移只带「其它文件」清单里列出的东西（还有模组 / config / 存档这三个清单）。\n"
+                      "清单是唯一依据：不在这里的一律不动。常用目录在「其它文件」页用"
+                      "「＋ 常用目录」加，加完能看见、能改、能删。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w")
-        网格 = tk.Frame(box_extra, bg=self.theme["bg"])
-        网格.pack(fill="x", pady=(6, 0))
-        网格.columnconfigure(0, weight=1)
-        网格.columnconfigure(1, weight=1)
-        self.settings_extra_vars = {}
-        for 序, (键, 条目, 说明) in enumerate(_EXTRA_PRESETS):
-            格 = tk.Frame(网格, bg=self.theme["bg"])
-            格.grid(row=序 // 2, column=序 % 2, sticky="w", padx=(0, 12), pady=1)
-            变量 = tk.BooleanVar(value=键 in getattr(self, "extra_defaults", []))
-            self.settings_extra_vars[键] = 变量
-            check(格, 条目, 变量,
-                  (lambda k=键, v=变量: self._toggle_extra_default(k, v))).pack(side="left")
-            tk.Label(格, text=说明, bg=self.theme["bg"],
-                     fg=self.theme.get("muted_fg", self.theme["fg"]),
-                     font=("微软雅黑", 8)).pack(side="left", padx=(2, 0))
         self.settings_extra_lbl = tk.Label(
             box_extra, text="", bg=self.theme["bg"],
             fg=self.theme.get("muted_fg", self.theme["fg"]),
@@ -1721,9 +1857,8 @@ class MigrationGUI:
         self.settings_qt_sw.set(getattr(self, "qt_enabled", True))
         self.settings_view_var = tk.StringVar(value=getattr(self, "big_view_backend", "qt"))
         _qt_ok, _qt_why = self._qt_available()
-        for value, text in _BIG_VIEW_BACKENDS:
-            radio(box_view, text, value, self.settings_view_var,
-                  lambda v=value: self._set_big_view_backend(v)).pack(fill="x")
+        分段(box_view, self.settings_view_var, _BIG_VIEW_BACKENDS,
+             self._set_big_view_backend, 名="view")
         tk.Label(box_view,
                  text=("PySide6 当前%s。%s"
                        % ("可用" if _qt_ok else "不可用", _qt_why)),
@@ -1734,25 +1869,21 @@ class MigrationGUI:
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
         self.settings_view_mode_var = tk.StringVar(
             value=getattr(self, "big_view_view", "table"))
-        for value, text in _BIG_VIEW_VIEWS:
-            radio(box_view, text, value, self.settings_view_mode_var,
-                  lambda v=value: self._set_big_view_view(v)).pack(fill="x")
+        分段(box_view, self.settings_view_mode_var, _BIG_VIEW_VIEWS,
+             self._set_big_view_view, 名="view_mode")
 
         # ---------- 差异窗口用哪个实现 ----------
         tk.Label(box_view, text="差异扫描窗口用哪个实现：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
         self.settings_diff_backend_var = tk.StringVar(
             value=getattr(self, "diff_backend", "qt"))
-        for value, text in _BIG_VIEW_BACKENDS:
-            radio(box_view, text, value, self.settings_diff_backend_var,
-                  lambda v=value: self._set_diff_backend(v)).pack(fill="x")
+        分段(box_view, self.settings_diff_backend_var, _BIG_VIEW_BACKENDS,
+             self._set_diff_backend, 名="diff_backend")
         tk.Label(box_view, text="差异窗口打开时用哪个视图：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
         self.settings_diff_view_var = tk.StringVar(
             value=getattr(self, "diff_view", "table"))
-        for value, text in _DIFF_VIEWS:
-            radio(box_view, text, value, self.settings_diff_view_var,
-                  lambda v=value: self._set_diff_view(v)).pack(fill="x")
+        分段(box_view, self.settings_diff_view_var, _DIFF_VIEWS, self._set_diff_view, 名="diff_view")
         tk.Label(box_view,
                  text="两个窗口默认都用 PySide6；如果遇到窗口相关的异常，可以把它们切回"
                       "经典 Tk 实现（功能和数据完全一样，只是观感旧一些）。",
@@ -1806,14 +1937,13 @@ class MigrationGUI:
         box3 = section("close", page_close)
         self.settings_close_var = tk.StringVar(
             value=getattr(self, "close_action", "ask"))
-        for value, text in (("tray", "收进系统托盘，程序继续在后台跑"),
-                            ("exit", "直接退出程序"),
-                            ("ask", "每次问我")):
-            radio(box3, text, value, self.settings_close_var,
-                  lambda v=value: self.set_close_action(v)).pack(fill="x")
+        卡片(box3, self.settings_close_var,
+             (("tray", "收进系统托盘：程序继续在后台跑"),
+              ("exit", "直接退出程序"), ("ask", "每次问我")),
+             self.set_close_action, 名="close")
         self.settings_silent_var = tk.BooleanVar(value=self.silent_background)
-        check(box3, "后台静默执行任务（不弹进度/结果窗口，完成后系统通知）",
-              self.settings_silent_var, self._toggle_silent).pack(fill="x", pady=(6, 0))
+        开关(box3, "后台静默执行任务（不弹进度/结果窗口，完成后系统通知）",
+             self.settings_silent_var, self._toggle_silent, 名="silent").pack(fill="x", pady=(6, 0))
 
         # ---------- 快捷链接（放"外观与启动"页最下面）----------
         box4 = section("links", page_look)
@@ -1843,16 +1973,44 @@ class MigrationGUI:
 
         win.protocol("WM_DELETE_WINDOW", win.destroy)
         win.update_idletasks()
-        # 按**最大的那一页**定窗口尺寸：换页时窗口不跳、内容也不会被裁
-        # （Notebook 只会请求当前页的尺寸，只看它会把别的页裁掉）
+
+        # 滚轮：滚当前页的内容（走 SmoothScroller 逐帧插值，和列表一个手感）。
+        # 列表/文本框自己有滚动的，让给它们；落在画布空白处的由画布自己的滚动器接，
+        # 这里就不要再喂一次（否则一格滚两格）。
+        def 滚轮(ev):
+            try:
+                if ev.widget.winfo_class() in ("Treeview", "Text", "Listbox"):
+                    return
+            except Exception:
+                pass
+            page = tabs.current_page()
+            if page is None:
+                return
+            画布 = getattr(page, "_滚动画布", None)
+            if 画布 is not None and ev.widget is 画布:
+                return
+            滚动器 = getattr(page, "_滚动器", None)
+            if 滚动器 is not None:
+                滚动器.wheel(ev)
+
+        win.bind("<MouseWheel>", 滚轮)
+
+        # 正常尺寸：宽度按最宽的那页内容给，高度给一个正常值（原来按"最高那页"撑成
+        # 700x926 的窄柱 —— 迁移那页 816 高，比别的窗口都高）；装不下的页自己滚。
+        # 同时钳到屏幕内：center_window 只居中不裁剪，太高就会顶出屏幕下沿。
         try:
-            pw = max(p.winfo_reqwidth() for p in pages) + 70
-            ph = max(p.winfo_reqheight() for p in pages) + 110
+            pw = max(w.winfo_reqwidth() for w in 内容) + 100       # 内容 + 边距 + 滚动条
         except Exception:
-            pw = ph = 0
-        center_window(win, max(pw, 700), max(ph, 520))
+            pw = 0
+        屏宽, 屏高 = win.winfo_screenwidth(), win.winfo_screenheight()
+        窗宽 = max(660, min(max(pw, 700), 屏宽 - 120))
+        窗高 = max(480, min(640, 屏高 - 140))
+        win.resizable(True, True)
+        win.minsize(min(660, 窗宽), 460)
+        center_window(win, 窗宽, 窗高)
         win.deiconify()
         focus_window(win)
+        return win                                  # 调用方/测试要拿它
 
     # ---------- 设置窗口里的按钮列表 ----------
     def _refresh_button_tree(self):
@@ -2012,75 +2170,84 @@ class MigrationGUI:
 
     # ---- 「默认携带的目录」（设置里勾选，迁移时自动并进清单） ----
 
-    def _toggle_extra_default(self, key, var=None):
-        """勾/取消一个默认携带的目录。"""
-        try:
-            开 = bool(var.get()) if var is not None else True
-        except Exception:
-            开 = True
-        选中 = set(getattr(self, "extra_defaults", []) or [])
-        if 开:
-            选中.add(key)
-        else:
-            选中.discard(key)
-        # 按 _EXTRA_PRESETS 的声明顺序存，配置文件里读起来整齐
-        self.extra_defaults = [k for k, _, _ in _EXTRA_PRESETS if k in 选中]
+    # ---------- 「其它文件」清单 = 唯一依据 ----------
+    def _并入旧的默认携带目录(self):
+        """把老配置里勾过的「默认携带的目录」并进「其它文件」清单（只做一次）。
+
+        那套勾选机制（迁移时自动并进临时清单）已经删了，统一成"清单里有什么就带什么"。
+        但用户原本会带的东西不能因为改机制就悄悄不带了 —— 所以第一次跑新版本时把它们
+        写进清单，并清掉 extra_defaults；之后用户手动删掉的条目不会又被塞回来。
+        """
+        旧的 = self.config.get("extra_defaults") or []
+        合法 = {k: 条目 for k, 条目, _ in _EXTRA_PRESETS}
+        条目们 = [合法[k] for k in 旧的 if k in 合法]
+        if not 条目们:
+            return
+        已有 = {x.strip().replace("\\", "/").rstrip("/").lower()
+                for x in self.extra_text.get("1.0", "end-1c").splitlines() if x.strip()}
+        要加 = [e for e in 条目们
+                if e.replace("\\", "/").rstrip("/").lower() not in 已有]
+        现有 = self.extra_text.get("1.0", "end-1c")
+        if 要加:
+            if 现有 and not 现有.endswith("\n"):
+                现有 += "\n"
+            self.extra_text.delete("1.0", tk.END)
+            self.extra_text.insert("1.0", 现有 + "".join(e + "\n" for e in 要加))
+            self.extra_text.edit_reset()
+            try:
+                self._update_text_states()
+            except Exception:
+                pass
+        self.config["extra_defaults"] = []
         self.save_config()
-        self._update_extra_defaults_label()
-        条目 = next((rel for k, rel, _ in _EXTRA_PRESETS if k == key), key)
-        self.log("📦 默认携带的目录%s：%s" % ("已勾选" if 开 else "已取消", 条目),
+        self.log("📦 原先勾选的「默认携带目录」已并入「其它文件」清单（%d 项：%s）。"
+                 "以后**清单就是唯一依据** —— 从清单里删掉就不会再带。"
+                 % (len(要加), "、".join(要加) if 要加 else "都在清单里了"),
                  level="INFO", save=False)
 
-    def _extra_default_status(self, src=None):
-        """算出勾选项里哪些在源实例中确实存在。返回 (存在的条目, 找不到的条目)。"""
-        选中 = set(getattr(self, "extra_defaults", []) or [])
+    # 以前这里还有一套「默认携带的目录」：勾选框里的目录会在迁移那一刻被自动并进临时
+    # 清单（刻意不写回用户清单）。用户要求"之前默认带的东西现在都要自己选"，所以那套
+    # 删了 —— 现在**清单里有什么就带什么**，常带的目录去清单页用「＋ 常用目录」加。
+    def _extra_list_status(self, src=None):
+        """清单里哪些条目在源实例里真实存在。返回 (存在, 缺失)。"""
+        条目们 = [x.strip() for x in
+                 self.extra_text.get("1.0", "end-1c").splitlines() if x.strip()]
         源 = src if src is not None else self.source_path.get().strip()
-        有, 缺 = [], []
         if not 源:
-            return 有, 缺
+            return [], 条目们
         base = Path(源)
-        for 键, 条目, _ in _EXTRA_PRESETS:
-            if 键 not in 选中:
-                continue
+        有, 缺 = [], []
+        for 条目 in 条目们:
             try:
-                在 = (base / 条目.rstrip("/")).exists()
+                在 = (base / 条目.replace("\\", "/").rstrip("/")).exists()
             except Exception:
                 在 = False
             (有 if 在 else 缺).append(条目)
         return 有, 缺
 
     def _update_extra_defaults_label(self):
-        """设置页那行状态：勾了哪些、源目录里能找到几项。"""
+        """设置页那行状态：清单里现在有几条、源目录里找得到几条。"""
         lbl = getattr(self, "settings_extra_lbl", None)
         if lbl is None:
             return
-        选中 = getattr(self, "extra_defaults", []) or []
-        if not 选中:
-            文本 = "当前没有勾选：迁移时不会自动带任何目录。"
+        条目们 = [x.strip() for x in
+                 self.extra_text.get("1.0", "end-1c").splitlines() if x.strip()]
+        if not 条目们:
+            文本 = ("当前清单是空的：迁移时只带模组 / config / 存档，别的一律不动。")
         elif not self.source_path.get().strip():
-            文本 = ("已勾选 %d 项；选择源整合包目录后才能显示哪些实际存在。" % len(选中))
+            文本 = ("清单里 %d 条；选了源整合包目录后才能显示哪些实际存在。" % len(条目们))
         else:
-            有, 缺 = self._extra_default_status()
-            文本 = "已勾选 %d 项，源目录里能找到 %d 项" % (len(选中), len(有))
+            有, 缺 = self._extra_list_status()
+            文本 = "清单里 %d 条，源目录里找得到 %d 条" % (len(条目们), len(有))
             if 缺:
-                文本 += "（这次带不了：%s%s）" % (
-                    "、".join(x.rstrip("/") for x in 缺[:6]),
-                    " 等" if len(缺) > 6 else "")
+                文本 += "（找不到：%s%s）" % ("、".join(缺[:4]),
+                                            " 等" if len(缺) > 4 else "")
             else:
-                文本 += "，全部都会带上 ✅"
+                文本 += "，这次都会带上 ✅"
         try:
             lbl.configure(text=文本)
         except Exception:
             pass
-
-    def _auto_extra_entries(self, src_path):
-        """按设置挑出"默认携带"的条目（只留源实例里真实存在的）。
-
-        返回 (存在列表, 缺失列表)。刻意不写进用户的「其它文件」清单：那份清单是
-        用户自己的东西，工具不该偷偷改它 —— 这里只是迁移那一刻临时并进去。
-        """
-        有, 缺 = self._extra_default_status(str(src_path) if src_path else "")
-        return 有, 缺
 
     # ------------------------------------------------------------------ #
     # 放大查看：PySide6 试点窗口（Tk 主窗口 + root.after 驱动 Qt 事件循环）
@@ -2888,18 +3055,14 @@ class MigrationGUI:
                 except Exception:
                     pass
 
-        try:
-            self.root.after(0, _log)
-        except RuntimeError:
-            # 工作线程里调 Tk 的 after 偶尔会抛 "main thread is not in main loop"
-            # （主线程那时如果不在 mainloop 里就会这样）。日志不能把迁移线程带崩，
-            # 所以退化成直接写一次；再失败就只保留文件里的记录。
+        if threading.current_thread() is threading.main_thread():
             try:
-                _log()
+                self.root.after(0, _log)          # 主线程：照旧，立刻排上（快）
             except Exception:
                 pass
-        except Exception:
-            pass
+        else:
+            # 子线程：只丢队列，让主线程的泵去写 —— 别在 worker 里碰 Tk
+            self._ui_post(_log)
 
     def _flush_logs_to_file(self, include_header=False):
         """把缓存的日志写入本地文件；文件过大时先轮转（改名），避免无限增长。"""
@@ -2979,8 +3142,7 @@ class MigrationGUI:
         if existing is not None:
             try:
                 if existing.winfo_exists():
-                    existing.lift()
-                    existing.focus_force()
+                    focus_window(existing)      # 已有就置顶（不只是 lift：前台锁下没效果）
                     return
             except tk.TclError:
                 pass
@@ -3455,28 +3617,31 @@ class MigrationGUI:
     def _create_extra_page(self, parent):
         """其它文件页：带走 mods / config / saves 之外的东西。
 
-        路径相对**整合包根目录**（不是 config）：shaderpacks/、resourcepacks/、
-        options.txt、servers.dat、kubejs/、scripts/ 这类都走这一页。
+        路径相对**整合包根目录**（不是 config）：options.txt、servers.dat、
+        shaderpacks/、resourcepacks/、kubejs/、scripts/ 这类都走这一页。
+
+        **空清单 = 什么都不多带**（包括 options.txt —— 它以前是被无条件复制的，
+        现在也得用户自己勾）。
         """
         tk.Label(parent,
                  text=("每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。\n"
-                       "例：shaderpacks/   resourcepacks/   options.txt   servers.dat   kubejs/"),
+                       "不会自动带任何东西 —— 想要的自己加。\n"
+                       "例：options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/"),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
 
         row_rule = tk.Frame(parent, bg=self.theme["bg"])
         row_rule.pack(fill="x", padx=5, pady=(4, 2))
         tk.Label(row_rule, text="目标已有同名文件时：", bg=self.theme["bg"],
-                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
-        for _val, _text in (("overwrite", "覆盖（先备份）"),
-                            ("skip", "跳过（目标保持不动）")):
-            tk.Radiobutton(
-                row_rule, text=_text, value=_val, variable=self.extra_conflict,
-                command=self.save_config, bg=self.theme["bg"], fg=self.theme["fg"],
-                activebackground=self.theme["bg"], activeforeground=self.theme["fg"],
-                selectcolor=self.theme.get("entry_bg", self.theme["bg"]),
-                highlightthickness=0, bd=0, font=("微软雅黑", 9)).pack(side="left",
-                                                                       padx=(0, 14))
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left",
+                                                                padx=(0, 8))
+        # 原来是一对 tk.Radiobutton（系统小圆点，跟这套自绘 UI 不搭）；
+        # 换成自绘的分段选择：选中的那段用滑动的色块浮起来
+        self.extra_conflict_seg = SegmentedControl(
+            row_rule, self.theme,
+            [("overwrite", "覆盖（先备份）"), ("skip", "跳过（目标保持不变）")],
+            command=self._set_extra_conflict, value=self.extra_conflict.get())
+        self.extra_conflict_seg.pack(side="left")
 
         self.extra_text_box = RoundedTextArea(parent, self.theme, height=6,
                                               wrap=tk.NONE, undo=True,
@@ -3521,6 +3686,22 @@ class MigrationGUI:
             colors=("#00c853", "#00e676"),
             width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_extra_file_btn.pack(side="left", padx=5)
+        # 一键把最常见的那个加进来：options.txt 以前是**默认复制**的，现在也得用户自己勾，
+        # 但没必要让人手打文件名/去文件夹里翻
+        self.add_extra_options_btn = create_gradient_button(
+            btn_extra_frame, "＋ options.txt", self._quick_add_options_txt,
+            colors=("#3949ab", "#5c6bc0"),
+            width=_grad_width("＋ options.txt"), height=30,
+            font=("微软雅黑", 9, "bold"))
+        self.add_extra_options_btn.pack(side="left", padx=5)
+        # 常用目录（原来的「默认携带的目录」勾选框已删，统一到这里"主动加进清单"）：
+        # 菜单里点一下就写进清单 —— 看得见、能改、能删，备份/回滚也跟着清单走
+        self.add_extra_preset_btn = create_gradient_button(
+            btn_extra_frame, "＋ 常用目录 ▾", self._open_extra_preset_menu,
+            colors=("#5e35b1", "#7e57c2"),
+            width=_grad_width("＋ 常用目录 ▾"), height=30,
+            font=("微软雅黑", 9, "bold"))
+        self.add_extra_preset_btn.pack(side="left", padx=5)
         self.clear_extra_btn = create_gradient_button(
             btn_extra_frame, "🗑️ 清空其它文件清单", self.clear_extra_list,
             colors=("#e53935", "#c62828"),
@@ -3541,6 +3722,84 @@ class MigrationGUI:
         self._stage()
 
     # ---------- 清单页标签上的条数徽章 ----------
+    def _quick_add_extra(self, 条目, 说明=""):
+        """快捷把某个条目加进「其它文件」清单（清单是唯一依据：加了才会带）。
+
+        和"浏览添加"的区别：这里给的是**固定名字**（options.txt、shaderpacks/…），
+        所以先看源实例里到底有没有 —— 没有就别往清单里塞（塞了也会在迁移时被跳过，
+        只会让人以为"我明明加了"）。
+        """
+        源 = self.source_path.get().strip()
+        if not 源:
+            self.log("⚠️ 请先选择源整合包目录，再往清单里加东西", level="WARNING")
+            return 0
+        if not (Path(源) / 条目.replace("\\", "/").rstrip("/")).exists():
+            self.log("⚠️ 源目录里没有 %s，没加进清单" % 条目, level="WARNING")
+            return 0
+        添加, _失败 = self._add_extra_paths([条目])
+        if 添加:
+            self.log("✅ 已把 %s 加入「其它文件」清单，迁移时会一起带过去%s"
+                     % (条目, ("（%s）" % 说明) if 说明 else ""), level="SUCCESS")
+        else:
+            self.log("ℹ️ %s 已经在清单里了" % 条目, level="INFO", save=False)
+        return 添加
+
+    def _quick_add_preset(self, 条目):
+        """「＋ 常用目录」菜单里的一项 → 加进清单。"""
+        说明 = next((d for _k, rel, d in _EXTRA_PRESETS if rel == 条目), "")
+        self._quick_add_extra(条目, 说明)
+
+    def _open_extra_preset_menu(self):
+        """「＋ 常用目录」：点一下就把它加进清单（清单是唯一依据，加了才会带）。
+
+        以前这些是设置页里的一组勾选框（"默认携带的目录"）：勾上之后迁移那一刻自动
+        并进清单，而且**不写回**清单 —— 用户看不到、也删不掉。现在统一成"主动加进清单"。
+        """
+        已有 = {x.strip().replace("\\", "/").rstrip("/").lower()
+                for x in self.extra_text.get("1.0", "end-1c").splitlines() if x.strip()}
+        try:
+            菜单 = tk.Menu(self.root, tearoff=0, bg=self.theme.get("entry_bg", "#ffffff"),
+                           fg=self.theme.get("fg", "#000000"),
+                           activebackground=self.theme.get("card_sel_bar", "#2f7fd1"),
+                           activeforeground="#ffffff", font=("微软雅黑", 9))
+        except Exception:
+            菜单 = tk.Menu(self.root, tearoff=0)
+        for _键, 条目, 说明 in _EXTRA_PRESETS:
+            在了 = 条目.replace("\\", "/").rstrip("/").lower() in 已有
+            菜单.add_command(
+                label=("%s   %s%s" % (条目, 说明, "　✅ 已在清单" if 在了 else "")),
+                command=(lambda e=条目: self._quick_add_preset(e)))
+        try:
+            x = self.add_extra_preset_btn.winfo_rootx()
+            y = (self.add_extra_preset_btn.winfo_rooty()
+                 + self.add_extra_preset_btn.winfo_height())
+            菜单.tk_popup(x, y)
+        finally:
+            try:
+                菜单.grab_release()
+            except Exception:
+                pass
+
+    def _quick_add_options_txt(self):
+        """一键把 options.txt 加进「其它文件」清单。
+
+        options.txt 以前是迁移里**无条件复制**的（还 overwrite=True）；用户要求
+        "一切都要自己选"，所以那一步删了 —— 想带就用这个按钮加进清单，
+        冲突策略/备份/回滚都跟别的清单条目一样。
+        """
+        self._quick_add_extra("options.txt")
+
+    def _set_extra_conflict(self, value):
+        """「其它文件」遇到目标已有同名文件时怎么办：overwrite（先备份）/ skip。
+
+        分段选择控件的回调（替掉原来那对 Radiobutton）。
+        """
+        try:
+            self.extra_conflict.set(value)
+        except Exception:
+            pass
+        self.save_config()
+
     def _bind_badge_refresh(self, widget):
         """文本框内容一变就刷新标签上的条数（<<Modified>> 覆盖键盘输入、粘贴、程序插入）。"""
         def _on_modified(event):
@@ -3959,8 +4218,7 @@ class MigrationGUI:
         if existing is not None:
             try:
                 if existing.winfo_exists():
-                    existing.lift()
-                    existing.focus_force()
+                    focus_window(existing)      # 已有就置顶
                     return
             except Exception:
                 pass
@@ -4343,8 +4601,7 @@ class MigrationGUI:
         if existing is not None:
             try:
                 if existing.winfo_exists():
-                    existing.lift()
-                    existing.focus_force()
+                    focus_window(existing)      # 已有就置顶
                     return
             except Exception:
                 pass
@@ -4484,7 +4741,7 @@ class MigrationGUI:
                 f"即将把目标实例恢复到迁移前的状态，此操作将覆盖当前所有内容！\n\n"
                 f"目标路径：{tgt}\n"
                 f"备份路径：{backup_root}\n\n"
-                "mods / config / saves 以及根目录的 options.txt 都会还原；\n"
+                "mods / config / saves 以及「其它文件」清单里复制过的东西都会还原；\n"
                 "迁移前不存在的部分会被删掉。\n\n"
                 "此操作不可撤销！\n确定要继续吗？"
         ):
@@ -4552,8 +4809,7 @@ class MigrationGUI:
             return
         if hasattr(self,
                    'diff_window') and self.diff_window is not None and self.diff_window.winfo_exists():
-            self.diff_window.lift()
-            self.diff_window.focus_force()
+            focus_window(self.diff_window)      # 已有就置顶
             return
 
         if self._scanning:
@@ -4599,19 +4855,60 @@ class MigrationGUI:
                 error_msg = str(e)
             else:
                 error_msg = None
-            self.root.after(0, lambda: self._finish_scan(data, error_msg))
+            # 结果丢回队列，由主线程的轮询取走。**不要**在这里调 self.root.after()：
+            # tkinter 明确声明 Tk 不是线程安全的；实测事件循环不是 mainloop 时
+            # （验证脚本用 update() 泵的那种）会抛 `main thread is not in main loop`，
+            # 扫描结果直接丢掉。迁移进度用的是同一条队列路线（见 _run_migration_thread）。
+            progress_queue.put((_SCAN_DONE, data, error_msg))
 
         self._poll_scan_progress()
         threading.Thread(target=scan_task, daemon=True).start()
+
+    # ---------- 后台线程 → 主线程的 UI 通道 ----------
+    def _ui_post(self, fn, *args):
+        """从**任意线程**请求主线程执行一段 UI 代码（线程安全：只碰队列）。
+
+        为什么不直接用 `root.after`：tkinter 的文档明确说 Tk 不是线程安全的。实测在
+        "事件循环不是 mainloop"的场合（验证脚本用 update() 泵的那种）从 worker 调
+        `after` 会抛 `main thread is not in main loop`，那一句日志 / 那次收尾就没了
+        （`log()` 里原来那段 RuntimeError 兜底注释说的就是这件事）。迁移进度本来就是
+        "队列 + 主线程轮询"，这里把日志和迁移收尾也统一到这条路上。
+        """
+        self._ui_calls.put((fn, args))
+
+    def _ui_pump(self):
+        """主线程：执行后台线程排下的 UI 调用，然后继续等下一批。"""
+        队列 = getattr(self, "_ui_calls", None)
+        if 队列 is not None:
+            while True:
+                try:
+                    fn, args = 队列.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn(*args)
+                except Exception:
+                    pass
+        try:
+            self._ui_pump_id = self.root.after(_UI_PUMP_MS, self._ui_pump)
+        except Exception:
+            self._ui_pump_id = None
 
     def _poll_scan_progress(self):
         try:
             while True:
                 msg = self._scan_progress_queue.get_nowait()
                 if msg is None:
+                    # 扫描器报完进度会放一个 None（"进度到头了"）：关掉进度窗，
+                    # 但**不能就此停止轮询** —— 结果还在后头（扫描线程跑完才放进队列）。
                     if hasattr(self, 'scan_progress_window'):
                         self.scan_progress_window.close()
                         delattr(self, 'scan_progress_window')
+                    break
+                if isinstance(msg, tuple) and msg[:1] == (_SCAN_DONE,):
+                    # 扫描线程把结果交回来了（这里已经是主线程）—— 收尾后停止轮询，
+                    # 下次扫描会重新起这个轮询，别让它空转一辈子。
+                    self._finish_scan(msg[1], msg[2])
                     return
                 current, filename = msg
                 total = getattr(self, '_scan_total', 0)
@@ -4693,6 +4990,7 @@ class MigrationGUI:
             self.diff_window = show_diff_window(self.root, data, self.theme,
                                                 self.current_theme, apply_callback,
                                                 cards=_想卡片, env=self._instance_env())
+            self._lock_tk_mirror("diff", self.diff_window)
             return self.diff_window
         if self._start_qt_host("diff",
                                {"data": data, "cards": _想卡片,
@@ -4710,6 +5008,7 @@ class MigrationGUI:
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback,
                                             cards=_想卡片, env=self._instance_env())
+        self._lock_tk_mirror("diff", self.diff_window)
         return self.diff_window
 
     # ---------- Qt 窗口的独立子进程宿主 ----------
@@ -4764,6 +5063,7 @@ class MigrationGUI:
             self._qt_hosts[kind] = {"proc": proc, "req": req, "res": res, "cmd": cmd,
                                     "err": err, "apply_cb": apply_callback,
                                     "source_text": source_text}
+            self._lock_edit(kind)          # 放大查看 / 模组差异开着 → 主界面不能编辑
             if not getattr(self, "_qt_host_poll", None):
                 self._poll_qt_host()
             return True
@@ -4821,6 +5121,7 @@ class MigrationGUI:
             if proc is not None and proc.poll() is not None:
                 code = proc.returncode
                 主机们.pop(kind, None)
+                self._unlock_edit(kind)        # 窗口没了 → 主界面编辑解锁
                 if code not in (0, None):
                     err = 信息.get("err")
                     尾巴 = ""
@@ -4858,6 +5159,10 @@ class MigrationGUI:
                                            消息.get("added"), 消息.get("removed"))
                 except Exception:
                     pass
+        elif 动作 == "close":
+            # 子进程自己说"窗口关了"（app.exec() 返回后补的这条）：立刻解锁，不等轮询
+            # 那边发现进程没了。两条路都走 _unlock_edit，重复调用是幂等的。
+            self._unlock_edit(kind)
         elif 动作 == "entries_ok":
             # 子进程确认换好了清单（实时重载）；只留最新的，用于诊断/测试
             self._qt_entries_ok = {"kind": 消息.get("kind"), "rows": 消息.get("rows")}
@@ -5417,23 +5722,9 @@ class MigrationGUI:
             messagebox.showwarning("提示", "三个清单都是空的，没有可迁移的内容。")
             return
 
-        # 按设置自动带上「默认携带的目录」（shaderpacks / resourcepacks / xaero …）：
-        # 只并进这一次迁移用的 extralist，**不写回用户的「其它文件」清单** ——
-        # 清单是用户自己的东西，工具不能偷偷往里塞（否则删了下次又回来）。
-        try:
-            自动有, 自动缺 = self._auto_extra_entries(src_path)
-            已有 = {e.replace("\\", "/").rstrip("/").lower() for e in extralist}
-            要加 = [e for e in 自动有 if e.rstrip("/").lower() not in 已有]
-            if 要加:
-                extralist.extend(要加)
-                self.log("📦 按设置自动带上 %d 项：%s"
-                         % (len(要加), "、".join(e.rstrip("/") for e in 要加)), level="INFO")
-            if 自动缺 and getattr(self, "extra_defaults", None):
-                self.log("ℹ️ 默认携带的目录里有 %d 项在源实例中不存在，已跳过：%s"
-                         % (len(自动缺),
-                            "、".join(x.rstrip("/") for x in 自动缺[:6])), level="INFO")
-        except Exception:
-            trace_exc("main_window", "默认携带目录")
+        # 「其它文件」清单是**唯一依据**：以前这里会把「默认携带的目录」自动并进这次
+        # 迁移的临时清单（不写回用户清单），用户要求"一切都要自己选" —— 那套删了。
+        # 想带常用目录，去清单页用「＋ 常用目录」加进清单：看得见、能删、有备份策略。
 
         # 计算要复制的文件数与总大小
         total_files, total_size = self._calculate_migration_stats(
@@ -5496,9 +5787,10 @@ class MigrationGUI:
             thread.start()
             return
 
-        # 实际迁移：先备份
+        # 实际迁移：先备份。**要把这次迁移的「其它文件」清单一起传进去** ——
+        # 那些条目迁移时会被覆盖/新建，没备份的话"覆盖（先备份）"就是空话、回滚也还原不了
         try:
-            do_backup(tgt_path, log_func=self.log)
+            do_backup(tgt_path, log_func=self.log, extra_entries=extralist)
         except Exception as e:
             self.log(f"❌ 备份失败：{e}", level="ERROR")
             messagebox.showerror("备份错误", f"备份目标实例失败：{e}\n迁移已取消。")
@@ -5542,11 +5834,6 @@ class MigrationGUI:
                 if matched:
                     total_files += 1
                     total_size += (src_mods / matched).stat().st_size
-
-        src_opts = src_path / "options.txt"
-        if src_opts.exists():
-            total_files += 1
-            total_size += src_opts.stat().st_size
 
         src_world = src_path / "saves" / world
         if src_world.exists():
@@ -5650,20 +5937,15 @@ class MigrationGUI:
             )
         finally:
             self._migration_running = False
-            try:
-                # 收尾交给"锁屏完成态"：写总结 → 边框红转绿 → 等用户按任意键
-                self.root.after(0, self._finish_migration_lock)
-                self.root.after(0, self._refresh_busy_state)
-            except Exception:
-                pass
+            # 收尾交给"锁屏完成态"：写总结 → 边框红转绿 → 等用户按任意键。
+            # 这里是**迁移线程**，不能直接碰 Tk —— 丢给主线程的 UI 泵执行。
+            self._ui_post(self._finish_migration_lock)
+            self._ui_post(self._refresh_busy_state)
             # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
             if getattr(self, "_silent_notify_on_finish", False):
                 self._silent_notify_on_finish = False
-                try:
-                    self.root.after(0, lambda: self._notify_task_done(
-                        "迁移", "后台静默执行已结束，点托盘图标查看日志", force=True))
-                except Exception:
-                    pass
+                self._ui_post(lambda: self._notify_task_done(
+                    "迁移", "后台静默执行已结束，点托盘图标查看日志", force=True))
 
     # ---------- 其他辅助 ----------
     def _is_text_overflow(self, text_widget):
@@ -6543,8 +6825,7 @@ class MigrationGUI:
         for w in getattr(self, '_big_view_windows', []):
             try:
                 if w.winfo_exists() and w.title() == win_title:
-                    w.lift()
-                    w.focus_force()
+                    focus_window(w)      # 置顶（不只是 lift：前台锁下 lift 常常没效果）
                     return
             except Exception:
                 pass
@@ -7629,9 +7910,115 @@ class MigrationGUI:
         except Exception:
             pass
         focus_window(win)
+        self._lock_tk_mirror("bigview", win)      # 清单窗口开着 → 主界面不能编辑
+        return win                                # 调用方/测试要拿它（原来返回 None）
+
+    # ---------- 清单窗口开着时，锁住"主界面编辑" ----------
+    # 哪些窗口算"照着清单显示"的：放大查看 / 模组差异（Qt 子进程版和 Tk 回退版都算）。
+    # 执行日志的放大查看不在内 —— 它看的是日志，不碰清单。
+    _MIRROR_EDIT_NAMES = {"bigview": "放大查看", "diff": "模组差异"}
+
+    def _edit_locked(self):
+        return bool(getattr(self, "_edit_locks", None))
+
+    def _edit_enabled_for_config(self):
+        """写进配置的「主界面编辑」= **用户的意图**，不是被锁强制关掉的那个值。
+
+        放大查看 / 模组差异开着时，`edit_mode` 是被我们强制设成 False 的（窗口里冻结的
+        是它们那份清单快照）。如果这时候正好保存了配置（改任何设置、拖文件、开迁移都会
+        存），或者程序被强杀，写下去的就是这个 False —— 下次启动编辑莫名其妙是关的，
+        用户看到的就是"原本是打开着的，怎么没恢复"。所以锁着时按"锁之前的意愿"写。
+        """
+        if self._edit_locked():
+            return bool(getattr(self, "_edit_before_lock", False))
+        return bool(self.edit_mode.get())
+
+    def _lock_edit(self, kind):
+        """放大查看 / 模组差异打开：把「主界面编辑」关掉并锁住，窗口全关了再还回去。
+
+        为什么必须锁：这两个窗口手里是**打开那一刻的清单快照**，而且会往回写（增删同步）。
+        主界面同时还在编辑，就是两边同时改同一份清单 —— 之前那个"主界面编辑的内容被
+        写回盖掉"的 bug 正是从这儿来的。锁住期间：三个清单文本框只读、开关灰掉点不动、
+        说明文字写清是哪个窗口拦着。
+        """
+        if kind not in self._MIRROR_EDIT_NAMES:
+            return
+        锁 = getattr(self, "_edit_locks", None)
+        if 锁 is None:
+            self._edit_locks = 锁 = {}
+        if kind in 锁:
+            return
+        if not 锁:                                  # 第一次锁：记住用户原来的选择
+            self._edit_before_lock = bool(self.edit_mode.get())
+        锁[kind] = True
+        if self.edit_mode.get():
+            self.edit_mode.set(False)
+            self.log("ℹ️ %s 打开期间，主界面编辑已关闭（清单两边同时改会互相盖）。"
+                     % self._MIRROR_EDIT_NAMES[kind], level="INFO", save=False)
+        self._sync_edit_lock()
+        self._update_text_states()
+
+    def _unlock_edit(self, kind):
+        """窗口关掉了：解锁；最后一个也关了，就把编辑状态还回用户原来的选择。"""
+        锁 = getattr(self, "_edit_locks", None)
+        if not 锁 or kind not in 锁:
+            return
+        del 锁[kind]
+        if 锁:
+            self._sync_edit_lock()
+            self._update_text_states()
+            return
+        旧 = bool(getattr(self, "_edit_before_lock", False))
+        self._edit_before_lock = None
+        if 旧 and not self.edit_mode.get():
+            self.edit_mode.set(True)
+            self.log("ℹ️ 清单窗口都关了，主界面编辑恢复成「开」。", level="INFO", save=False)
+        self._sync_edit_lock()
+        self._update_text_states()
+        self.save_config()
+
+    def _sync_edit_lock(self):
+        """把"锁着"画到编辑开关上：灰掉 + 说明写清原因；解锁还原。"""
+        sw = getattr(self, "edit_switch", None)
+        if sw is None:
+            return
+        try:
+            锁 = getattr(self, "_edit_locks", None) or {}
+            if sw.get() != bool(self.edit_mode.get()):
+                sw.set(self.edit_mode.get(), animate=True)     # 被自动关掉时开关也得跟上
+            if 锁:
+                名 = "、".join(self._MIRROR_EDIT_NAMES.get(k, k) for k in 锁)
+                sw.set_text(desc="%s 开着时不能编辑 · 关掉那个窗口即可恢复" % 名)
+                sw.set_enabled(False)
+            else:
+                sw.set_text(desc="直接改动清单文字 · 谨慎使用")
+                sw.set_enabled(True)
+        except Exception:
+            trace_exc("main_window", "同步编辑锁")
+
+    def _lock_tk_mirror(self, kind, win):
+        """Tk 回退版（进程内的放大查看 / 模组差异）同样要锁；窗口销毁时解锁。"""
+        if win is None:
+            return
+        self._lock_edit(kind)
+
+        def 关掉了(ev):
+            try:
+                if ev.widget is win and not win.winfo_exists():
+                    self._unlock_edit(kind)
+            except Exception:
+                pass
+
+        try:
+            win.bind("<Destroy>", 关掉了, add="+")
+        except Exception:
+            pass
 
     def _update_text_states(self):
-        state = tk.NORMAL if self.edit_mode.get() else tk.DISABLED
+        # 放大查看 / 模组差异开着时**强制只读**：它们手里是清单快照（还会往回写），
+        # 两边同时改就是互相盖（见 _lock_edit）
+        state = (tk.NORMAL if self.edit_mode.get() and not self._edit_locked()
+                 else tk.DISABLED)
         self.mod_text.configure(state=state)
         self.config_text.configure(state=state)
         self.extra_text.configure(state=state)

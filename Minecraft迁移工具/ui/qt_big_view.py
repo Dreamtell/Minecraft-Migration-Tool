@@ -1052,6 +1052,19 @@ class SmoothCards(_SmoothWheel, QtWidgets.QListView):
         return float(CARD_H)      # 一格滚一张卡（Tk 版卡片列表也是这么定的）
 
 
+class SmoothTextEdit(_SmoothWheel, QtWidgets.QTextEdit):
+    """只读描述框：滚轮也用主界面那套缓动。
+
+    原来它就是 QTextEdit 自带的滚轮 —— 一格"啪"地跳好几行，和别的列表手感明显不一样
+    （用户：把滚轮都改成主界面那种）。一格给约三行文字的量。
+    """
+    def wheel_px(self) -> float:
+        try:
+            return max(16.0, float(self.fontMetrics().lineSpacing())) * 3.0
+        except Exception:
+            return 48.0
+
+
 class CardModel(QtCore.QAbstractListModel):
     def __init__(self, store: Store, parent=None):
         super().__init__(parent)
@@ -1694,7 +1707,7 @@ class DetailDialog(QtWidgets.QDialog):
                 tag_row.addWidget(lb)
             tag_row.addStretch(1)
             lay.addLayout(tag_row)
-        desc = QtWidgets.QTextEdit()
+        desc = SmoothTextEdit()           # 滚轮缓动，和别的列表一个手感
         desc.setReadOnly(True)
         desc.setPlainText(it.desc or "（该模组未提供描述）")
         desc.setStyleSheet("QTextEdit{background:%s;color:%s;border:1px solid %s;"

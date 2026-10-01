@@ -1,8 +1,13 @@
 # utils/config.py
 import json
+import os
 from pathlib import Path
 
-CONFIG_FILE = Path.home() / ".minecraft_migrate_config.json"
+# 配置默认放用户主目录；`MCTOOL_CONFIG` 可以指到别处 ——
+# 验证脚本跑真程序（比如测"开第二个实例"）时用它指向临时文件，
+# 免得动到用户的真实配置（模组清单/存档名那些）。
+CONFIG_FILE = Path(os.environ.get("MCTOOL_CONFIG")
+                   or (Path.home() / ".minecraft_migrate_config.json"))
 
 
 def load_raw_config():

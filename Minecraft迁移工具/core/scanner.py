@@ -353,6 +353,16 @@ def get_full_mod_metadata(jar_path):
     return info
 
 
+# 并发解析 jar 元数据的线程数。取多少是量出来的（`_dctest/基准_扫描线程.py`，
+# 450 个真 jar / 108MB）：
+#     线程数        1     2     3     4     6     8    12
+#     扫描耗时   0.40  0.42  0.42  0.41  0.43  0.43  0.43 秒   ← 基本不变
+#     界面最坏延迟 13   13    13    14    15    17    17  ms  ← 线程越多界面越挤
+# 解析是"解 zip + 解 JSON"的 Python 活，**卡在 GIL 上**，多开线程换不来速度；
+# 却会让界面线程在 GIL 上排队。3 和 Qt 那侧调好的并发数一致（见 ui/qt_big_view.py）。
+SCAN_WORKERS = 3
+
+
 def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
     """
     扫描两个 mods 目录的差异，返回差异列表
@@ -420,43 +430,42 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
 
     current = 0
     lock = threading.Lock()
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_path = {executor.submit(parse_jar, p, True): p for p in src_paths}
-        for future in as_completed(future_to_path):
-            with lock:
-                current += 1
-                result = future.result()
-                src_files[result["name"]] = result
-                key = result["name"]
-                fingerprint = f"{result['mtime']}_{result['size']}"
-                src_cache[key] = {
-                    "fingerprint": fingerprint,
-                    "modid": result["modid"],
-                    "version": result["version"],
-                    "mod_type": result["mod_type"]
-                }
-                if progress_queue:
-                    progress_queue.put((current, result["name"]))
-    save_cache(src_cache_file, src_cache)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_path = {executor.submit(parse_jar, p, False): p for p in tgt_paths}
-        for future in as_completed(future_to_path):
-            with lock:
-                current += 1
-                result = future.result()
-                tgt_files[result["name"]] = result
-                key = result["name"]
-                fingerprint = f"{result['mtime']}_{result['size']}"
-                tgt_cache[key] = {
-                    "fingerprint": fingerprint,
-                    "modid": result["modid"],
-                    "version": result["version"],
-                    "mod_type": result["mod_type"]
-                }
-                if progress_queue:
-                    progress_queue.put((current, result["name"]))
-    save_cache(tgt_cache_file, tgt_cache)
+    def 收一条(result, 是源):
+        """一条解析完了：写进对应容器 + 缓存 + 报进度（都在锁里）。
+
+        注意：这里**只碰普通对象和队列**，不碰 Tk —— 这个方法在 worker 线程上跑。
+        """
+        nonlocal current
+        current += 1
+        if 是源:
+            src_files[result["name"]] = result
+            src_cache[result["name"]] = {
+                "fingerprint": f"{result['mtime']}_{result['size']}",
+                "modid": result["modid"],
+                "version": result["version"],
+                "mod_type": result["mod_type"],
+            }
+        else:
+            tgt_files[result["name"]] = result
+            tgt_cache[result["name"]] = {
+                "fingerprint": f"{result['mtime']}_{result['size']}",
+                "modid": result["modid"],
+                "version": result["version"],
+                "mod_type": result["mod_type"],
+            }
+        if progress_queue:
+            progress_queue.put((current, result["name"]))
+
+    # 源和目标分两批跑（实测合成一个池没有收益，见 SCAN_WORKERS 上面的对照表）
+    for 是源, 路径们, 缓存文件 in ((True, src_paths, src_cache_file),
+                                  (False, tgt_paths, tgt_cache_file)):
+        with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as executor:
+            future_to_path = {executor.submit(parse_jar, p, 是源): p for p in 路径们}
+            for future in as_completed(future_to_path):
+                with lock:
+                    收一条(future.result(), 是源)
+        save_cache(缓存文件, src_cache if 是源 else tgt_cache)
 
     src_by_modid = {info["modid"]: name for name,
                     info in src_files.items() if info["modid"]}

@@ -65,6 +65,12 @@ class RoundedTabs(tk.Frame):
     def labels(self):
         return [t["label"] for t in self._tabs]
 
+    def current_page(self):
+        """当前显示的那一页的容器（设置窗做"页内滚动"时要用它）。"""
+        if 0 <= self._cur < len(self._tabs):
+            return self._tabs[self._cur]["page"]
+        return None
+
     def set_label(self, index, text):
         """只改某个标签的文字（主界面拿它挂条数徽章：🧩 模组清单 376）。
 
