@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import filedialog
 from ui.mw_common import _grad_width
 from utils.helpers import RoundedEntry, create_gradient_button
+from utils.i18n import tr, trp
 
 
 class PathsMixin:
@@ -173,45 +174,48 @@ class PathsMixin:
         """
         if not path_str:
             self._set_status_semantic(status_label, "muted", "（未选择）",
-                                      tip=f"尚未选择「{label_text}」整合包路径")
+                                      tip=trp("尚未选择「{0}」整合包路径", label_text))
             return
 
         is_valid, reason, details = self._is_valid_instance(path_str)
 
         # 悬停提示：路径本身 + 这次校验到底看出了什么
+        # ⚠ 全是**拼出来的**句子，所以逐段走 tr/trp —— 语言层按整串查表对不上
+        # （用户报过"tip 没有英文"）。
         tip_lines = [f"📁 {path_str}", ""]
         if is_valid:
-            tip_lines.append("✅ 有效的 Minecraft 整合包实例")
-            tip_lines.append("· 有 saves/ 存档目录" if details.get("has_saves")
-                             else "· 无 saves/ 存档目录")
-            tip_lines.append(f"· 模组 {details.get('mod_count', 0)} 个")
+            tip_lines.append(tr("✅ 有效的 Minecraft 整合包实例"))
+            tip_lines.append(tr("· 有 saves/ 存档目录") if details.get("has_saves")
+                             else tr("· 无 saves/ 存档目录"))
+            tip_lines.append(trp("· 模组 {0} 个", details.get("mod_count", 0)))
             if details.get("valid_versions"):
-                tip_lines.append(f"· 版本：{', '.join(details['valid_versions'][:3])}")
+                tip_lines.append(trp("· 版本：{0}",
+                                     ", ".join(details['valid_versions'][:3])))
             loaders = []
             if details.get("fabric_mods"):
                 loaders.append("Fabric")
             if details.get("forge_mods"):
                 loaders.append("Forge")
             if loaders:
-                tip_lines.append("· 加载器：" + ", ".join(loaders))
+                tip_lines.append(tr("· 加载器：") + ", ".join(loaders))
             launchers = []
             if details.get("has_launcher_profiles"):
-                launchers.append("官方启动器")
+                launchers.append(tr("官方启动器"))
             if details.get("has_pcl_ini"):
                 launchers.append("PCL2")
             if launchers:
-                tip_lines.append("· 启动器：" + ", ".join(launchers))
+                tip_lines.append(tr("· 启动器：") + ", ".join(launchers))
 
             if details.get("has_chinese"):
-                tip_lines += ["", "⚠️ 路径含中文，建议改成纯英文（个别模组/存档读取会出问题）"]
+                tip_lines += ["", tr("⚠️ 路径含中文，建议改成纯英文（个别模组/存档读取会出问题）")]
                 self._set_status_semantic(status_label, "warn", "⚠️",
                                           tip="\n".join(tip_lines))
             else:
                 self._set_status_semantic(status_label, "ok", "✅",
                                           tip="\n".join(tip_lines))
         else:
-            tip_lines.append("❌ 不是有效的整合包实例")
-            tip_lines.append("· 原因：" + reason)
+            tip_lines.append(tr("❌ 不是有效的整合包实例"))
+            tip_lines.append(tr("· 原因：") + tr(reason))
             self._set_status_semantic(status_label, "fail", "❌",
                                       tip="\n".join(tip_lines))
 

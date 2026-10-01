@@ -227,7 +227,42 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "🔎 检查存在": "🔎 Check existence",
     "📁 添加文件夹": "📁 Add folder",
     "📄 添加文件": "📄 Add file",
+    # 设置里的「打开配置文件」
+    "📝 打开配置文件": "📝 Open config file",
+    "改完要重启程序才生效": "Restart the app for changes to take effect",
+    "📝 已打开配置文件：{0}": "📝 Opened config file: {0}",
+    "❌ 打开配置文件失败：{0}": "❌ Failed to open config file: {0}",
     "← 填充路径": "← Fill",
+    # ---------- 悬停提示（tooltip）----------
+    # ⚠ 这一类以前整片漏掉：`create_tooltip` 里确实调了 tr()，但静态审计只扫 `tr(...)`
+    # 的参数、扫不到 tooltip 的字符串，于是英文界面下提示全是中文（用户报过"tip 没有英文"）。
+    "切换浅色 / 深色主题": "Switch light / dark theme",
+    "设置": "Settings",
+    "你需要提供的是“崩溃助手”模组给予的mod变更列表":
+        "Provide the mod changelist exported by the \"Crash Assistant\" mod",
+    "检查清单里的模组在“源目录”里是否存在":
+        "Check whether the mods in the list exist in the source folder",
+    "检查 config 清单里的条目在“源目录”里是否存在":
+        "Check whether the config entries exist in the source folder",
+    "检查其它文件清单里的条目在“源目录”里是否存在":
+        "Check whether the other-file entries exist in the source folder",
+    "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作":
+        "Copy the target path into the source field (quick testing / reverse migration)",
+    # ---------- 路径校验的悬停说明（都是拼出来的句子，逐段翻）----------
+    "尚未选择「{0}」整合包路径": "No \"{0}\" instance selected yet",
+    "✅ 有效的 Minecraft 整合包实例": "✅ Valid Minecraft modpack instance",
+    "· 有 saves/ 存档目录": "· has a saves/ folder",
+    "· 无 saves/ 存档目录": "· no saves/ folder",
+    "· 模组 {0} 个": "· {0} mods",
+    "· 版本：{0}": "· Versions: {0}",
+    "· 加载器：": "· Loader: ",
+    "· 启动器：": "· Launcher: ",
+    "官方启动器": "Official launcher",
+    "❌ 不是有效的整合包实例": "❌ Not a valid modpack instance",
+    "· 原因：": "· Reason: ",
+    "⚠️ 路径含中文，建议改成纯英文（个别模组/存档读取会出问题）":
+        "⚠️ The path contains non-ASCII characters; use plain English instead "
+        "(some mods/saves fail to load otherwise)",
     # 其它文件页的说明文字：**合成一整句**（原来是三段写死 `\n`，英文下会按中文的断句
     # 位置换行、右边留一大片空白 —— 用户"右边有空为什么不用"）。合并后交给 wraplength
     # 按容器宽度自动折行，所以这个"整句"必须有自己的词条。

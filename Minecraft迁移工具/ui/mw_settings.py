@@ -4,6 +4,9 @@
 拆自 ui/main_window.py（2026-10 拆分），方法原样搬移、未改逻辑；
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
+import os
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -261,6 +264,19 @@ class SettingsMixin:
         self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
         开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
              self._toggle_splash, 名="splash").pack(fill="x", pady=(6, 0))
+
+        # 配置文件是这个程序唯一的"数据文件"（语言 / 主题 / 各种偏好都在里面），
+        # 给个一键用系统默认程序打开；改完要重启才生效，所以顺手写在旁边。
+        row_cfg = tk.Frame(box1, bg=self.theme["bg"])
+        row_cfg.pack(fill="x", pady=(10, 0))
+        打开配置 = create_gradient_button(
+            row_cfg, "📝 打开配置文件", self.open_config_file,
+            colors=("#607d8b", "#90a4ae"),
+            height=30, font=("微软雅黑", 9, "bold"))
+        打开配置.pack(side="left")
+        tk.Label(row_cfg, text="改完要重启程序才生效", bg=self.theme["bg"],
+                 fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8)).pack(side="left", padx=(10, 0))
 
         # 点窗口空白处要不要顺手退出「主界面编辑」（默认开）。
         # 开着：编辑时随手点一下背景就回只读；关掉：只能用编辑开关自己关，
@@ -572,6 +588,34 @@ class SettingsMixin:
         win.deiconify()
         focus_window(win)
         return win                                  # 调用方/测试要拿它
+
+    # ---------- 配置文件 ----------
+    def open_config_file(self):
+        """用系统默认程序打开配置文件（没有就先存一份，别点了没反应）。
+
+        和「打开日志文件夹」同一套做法；Windows 上顺带在资源管理器里**选中**它，
+        因为 .json 不一定有关联程序，至少能让用户看到文件在哪。
+        """
+        from utils.config import CONFIG_FILE
+        路径 = Path(CONFIG_FILE)
+        try:
+            if not 路径.exists():
+                try:
+                    self.save_config()          # 顺手落盘一份当前配置
+                except Exception:
+                    pass
+            if sys.platform == "win32":
+                if 路径.exists():
+                    subprocess.Popen(["explorer", "/select,", str(路径)])
+                else:
+                    os.startfile(str(路径.parent))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(路径)])
+            else:
+                subprocess.Popen(["xdg-open", str(路径)])
+            self.log(trp("📝 已打开配置文件：{0}", 路径), level="INFO")
+        except Exception as e:
+            self.log(trp("❌ 打开配置文件失败：{0}", e), level="ERROR")
 
     # ---------- 设置窗口里的按钮列表 ----------
     def _refresh_button_tree(self):

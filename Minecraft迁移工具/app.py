@@ -27,11 +27,9 @@ if "--qt-host" in sys.argv:
     sys.exit(run_host(sys.argv))
 
 from tendo import singleton
-from ui.main_window import MigrationGUI
-from ui.dialogs import ask_close_action
 from utils.helpers import (get_icon_path, warm_up_emoji_font, clear_layered_style,
                            focus_window, force_foreground)
-from utils.config import load_raw_config
+from utils.config import load_raw_config, save_raw_config
 from winotify import Notification, audio
 
 # 界面语言：**必须在任何窗口建起来之前**装上（见 utils/i18n.py 顶部说明）。
@@ -39,7 +37,10 @@ from winotify import Notification, audio
 from utils import i18n
 # 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
 from utils.i18n import trp
-i18n.install()
+# ⚠ `i18n.install()` 与界面模块的 import 都在 main() 里、按"先装语言再导入界面"的顺序做：
+#   界面模块的模块级文案（表头、标签）是在 **import 那一刻**求值的，早一步导入就永远
+#   翻不到。以前 install() 写在 import 之后，真实的启动顺序下那些文案其实都没翻。
+#   另外首次启动要先问一次语言，那也必须发生在 install() 之前。
 
 # 闪屏最短显示时长（秒）。主界面构建只要 ~0.7s，不兜底的话立方体刚起转就淡出了；
 # 超过这个时间就立刻淡出，不会平白拖慢启动。
@@ -135,6 +136,26 @@ def main():
             root.iconbitmap(icon_path)
         except:
             pass
+
+    # ---- 首次启动先问语言 ----
+    # 判断依据：配置里**没有 `language` 键**（老用户只要在设置里改过语言就会写进去）。
+    # 这一步必须赶在 install() 和界面模块 import 之前 —— 界面文案是按语言渲染的。
+    if "language" not in load_raw_config():
+        try:
+            from ui.lang_picker import ask_language
+            语言 = ask_language(root, icon_path)
+        except Exception:
+            语言 = "zh"                       # 出任何问题都退回默认中文，别挡住启动
+        try:
+            i18n.set_language(语言)
+            save_raw_config({"language": 语言})
+        except Exception:
+            pass
+
+    # 装语言层（中文时什么都不做），然后**才**导入界面模块
+    i18n.install()
+    from ui.main_window import MigrationGUI
+    from ui.dialogs import ask_close_action
 
     # 先把 emoji 那边的一次性开销（字体回退枚举 ~270ms + 首个带 emoji 的 Label
     # 排版 ~40ms）做掉，再弹闪屏。放这儿是为了"闪屏一出现就是流畅的"——挪到闪屏
