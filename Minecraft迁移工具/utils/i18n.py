@@ -48,7 +48,6 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "旧版整合包（要迁移出去的源）": "Source instance (the old pack)",
     "新版整合包（迁移目的地）": "Target instance (the new pack)",
     "浏览…": "Browse…",
-    "← 使用新版路径填充": "← Fill from target",
     "存档文件夹名称": "Save folder name",
     "（例如：新的世界）": "(e.g. New World)",
     "✅ 存档已存在": "✅ Save exists",
@@ -151,8 +150,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "🗑️ 清空 config 清单": "🗑️ Clear config list",
     "🗑️ 清空其它文件清单": "🗑️ Clear \"Other files\"",
     "🗑️ 清空日志": "🗑️ Clear log",
-    "📂 打开日志文件夹": "📂 Open log folder",
-    "📍 定位错误": "📍 Locate errors",
+    "📂 打开日志文件夹": "📂 Log folder",
+    "📍 定位错误": "📍 Locate",
     "📥 从变更日志导入（含Updated）": "📥 Import from changelog",
     "🔎 检查清单模组是否存在（源目录）": "🔎 Check mods",
     "🔎 检查 config 是否存在（源目录）": "🔎 Check config",
@@ -218,7 +217,26 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
 
     # ---------- 设置页：说明文字（静态的） ----------
     "💡 双击日志行可定位到清单里的那条":
-        "💡 Double-click a log line to locate that entry in the lists",
+        "💡 Double-click a log line to locate it",
+    # 窄窗口时换成这条（见 mw_pages 里日志工具栏的 <Configure>）：英文完整句 41 字符
+    # 约 280px，加上 4 个按钮会超出窗口，left/right 两组就会互相压掉（用户报过）
+    "💡 双击日志行可定位": "💡 Double-click to locate",
+    # 主界面按钮的**短文案**：按钮上写短句，被省掉的限定语交给 tooltip
+    # （`🔎 检查存在` 在模组 / config / 其它文件三处都出现，各自 tooltip 说明检查的是源目录）
+    "🔍 扫描差异": "🔍 Scan diff",
+    "🔎 检查存在": "🔎 Check existence",
+    "📁 添加文件夹": "📁 Add folder",
+    "📄 添加文件": "📄 Add file",
+    "← 填充路径": "← Fill",
+    # 其它文件页的说明文字：**合成一整句**（原来是三段写死 `\n`，英文下会按中文的断句
+    # 位置换行、右边留一大片空白 —— 用户"右边有空为什么不用"）。合并后交给 wraplength
+    # 按容器宽度自动折行，所以这个"整句"必须有自己的词条。
+    "每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。"
+    "不会自动带任何东西 —— 想要的自己加。"
+    "例：options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/":
+        "One path per line, relative to the modpack root (a file or a folder; folders "
+        "are copied recursively). Nothing is carried automatically — add whatever you "
+        "want. e.g. options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/",
     "双击一行也能切换显示/隐藏；顺序只在同一排内调整。":
         "Double-clicking a row also toggles it; order is adjusted within a row only.",
     "主界面的按钮改完立刻生效；放大查看 / 日志放大查看这些窗口里的按钮，"

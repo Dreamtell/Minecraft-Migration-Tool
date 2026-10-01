@@ -704,7 +704,7 @@ class RoundedEntry(tk.Frame):
     """
 
     def __init__(self, master, theme, textvariable=None, chars=20, height=30,
-                 radius=8, pad_x=9, font=("微软雅黑", 10), width=None,
+                 radius=12, pad_x=9, font=("微软雅黑", 10), width=None,
                  fg_key="entry_fg", **kw):
         base_bg = "#f0f0f0"
         try:
@@ -723,6 +723,18 @@ class RoundedEntry(tk.Frame):
         self._h = height
         self._focus = False
         self._photo = None
+        # ⚠ 液态描边的运行时状态**必须在这里先占位**：这个类有 `__getattr__`，
+        # 会把未知属性转发给内部的 tk.Entry，于是第一帧读一个还没赋值的名字
+        # 就会抛 "Entry object has no attribute ..."（真踩过：`self._liq_w`）。
+        self._liq_job = None
+        self._liq_img = None
+        self._liq_photo = None
+        self._liq_pts = None
+        self._liq_sf = None
+        self._liq_len = 0.0
+        self._liq_t = 0.0
+        self._liq_w = 0
+        self._liq_h = 0
         try:
             self.pack_propagate(False)
             self.grid_propagate(False)
@@ -752,6 +764,8 @@ class RoundedEntry(tk.Frame):
         self.canvas.bind("<Button-1>", lambda e: self.entry.focus_set())
         self.entry.bind("<FocusIn>", lambda e: self._set_focus(True))
         self.entry.bind("<FocusOut>", lambda e: self._set_focus(False))
+        # 控件没了必须停表：否则 after 回调会打到已销毁的 canvas 上（TclError）
+        self.bind("<Destroy>", lambda e: self._liquid_stop(), add="+")
         self.configure(width=self._px_w)
         self.after_idle(self._redraw)
 
@@ -837,6 +851,224 @@ class RoundedEntry(tk.Frame):
     def _set_focus(self, focused):
         self._focus = bool(focused)
         self._redraw()
+        # 聚焦 = 液面开始流；失焦立刻停表（不烧 CPU），并让描边回到安静的灰
+        if self._focus:
+            self._liquid_start()
+        else:
+            self._liquid_stop()
+
+    # ------------------------------------------------------------------ 液态描边
+    # 聚焦时描边不再是"一条死蓝边"，而是**沿边框流动的液面高光**：
+    # 把圆角矩形按周长切成 N 段，每段亮度按 sin(相位 − 段位置) 走，相位每帧推进一点。
+    # 和锁屏那个"流动边框"是同一套视觉语言（那边用渐变瓦片平移，这边用分段染色，
+    # 因为输入框小、段数少，直接改颜色比重建位图便宜得多）。
+    _LIQ_TICK = 33              # ≈30fps，和 LiquidProgress / 锁屏流动边同一档
+    _LIQ_SPEED_PX = 8.0         # 每帧走过的**像素**（一圈约 4.5 秒）
+    #   ⚠ 锁屏那边是每帧 3.5px 左右，但它的边框是四边同时有带、窗口又大，慢得看不出来；
+    #     输入框只有一条带、周长才一千像素，照那个速度一圈要 10 秒，盯着看像卡住了。
+    #     所以按比例调快，保持"从容流动"而不是"呆滞"。
+    _LIQ_BAND = 260.0           # 渐变带长度（像素）：锁屏瓦片是 240，这里对齐同一档
+    _LIQ_BAND_MIN = 0.30        # 但最多占周长的 30%（小框上不至于半圈都在亮）
+    # 形态照搬 `ui/mw_lock.py` 的流动边框：一段"暗→亮→暗"的**渐变带**沿边跑
+    # （那边是渐变瓦片整体平移，这边因为控件小，改成沿弧长给每段染色）。
+    # ⚠ 别用高斯光点：那是"一个亮点"，不是锁屏那种"一条流动的光带"。
+
+    def _liquid_trough(self):
+        """波谷色 = 渐变带的**暗端**。
+
+        ⚠ 这里**不能**取"接近输入框底色"的灰：那样暗端等于隐形，整圈只剩一段亮带在飘，
+        看着不像锁屏那种"暗→亮→暗"。锁屏的暗端是**看得见的**（瓦片铺满整圈，处处能看到
+        暗红/暗绿）。所以这里给一条明显的暗蓝：整圈的边都看得见，其中一段渐亮着流动。
+        """
+        dark = is_dark_theme(self.theme)
+        base = self.theme.get("entry_bg", "#ffffff")
+        # 混 16%（浅色 12%）。这个数是量出来的，不是拍脑袋：
+        #   · 4%（原来那版）→ 暗端完全隐形，整圈只剩一段亮带在飘，用户说"不是暗→亮→暗"；
+        #   · 28% → 暗端本身就亮（深色底 #3e3e3e 上蓝通道高出 40 多，就是一条显眼蓝线），
+        #           整圈都在发光，明暗对比反而没了；
+        #   · 12~20% 才是"整圈有一条看得见但明显偏暗的边，其中一段渐亮着流动"。
+        return _mix_color(base, "#4a90d9", 0.10 if dark else 0.10)
+
+    def _liquid_crest(self):
+        """波峰色：深色用亮蓝、浅色用主题里的选中蓝（和卡片选中共用一个色）。"""
+        dark = is_dark_theme(self.theme)
+        return "#7cc4ff" if dark else self.theme.get("card_sel_bar", "#2f7fd1")
+
+    def _liquid_points(self, w, h, r):
+        """圆角矩形的路径点序列（首尾相接、闭合）。
+
+        ⚠ 不能按"周长等分"切段：那样圆角只落到两三段折线上，拐点处的方头会戳到弧外，
+        看起来就是"描边没描整齐、边角长毛刺"（用户报过）。这里**直边按长度切、
+        圆角按角度切**（每 90° 十段），弧才够圆 —— 用户还是嫌圆角不够，所以又加密了。
+        """
+        r = max(0.0, min(r, w / 2.0, h / 2.0))
+        直上 = max(0.0, w - 2 * r)
+        直侧 = max(0.0, h - 2 * r)
+        n上 = max(2, int(直上 / 9) + 1)                   # 直边约 9px 一段
+        n侧 = max(2, int(直侧 / 9) + 1)
+        n弧 = 14                                          # 每 90° 十四段（用户要"加强圆角化"）
+        d弧 = math.pi / 2 / n弧
+        点 = []
+        for i in range(1, n上 + 1):                       # 上边：左→右
+            点.append((r + 直上 * i / n上, 0.0))
+        for i in range(1, n弧 + 1):                       # 右上圆角：-90°→0°
+            a = -math.pi / 2 + d弧 * i
+            点.append((w - r + r * math.cos(a), r + r * math.sin(a)))
+        for i in range(1, n侧 + 1):                       # 右边：上→下
+            点.append((w, r + 直侧 * i / n侧))
+        for i in range(1, n弧 + 1):                       # 右下圆角：0°→90°
+            a = d弧 * i
+            点.append((w - r + r * math.cos(a), h - r + r * math.sin(a)))
+        for i in range(1, n上 + 1):                       # 下边：右→左
+            点.append((w - r - 直上 * i / n上, h))
+        for i in range(1, n弧 + 1):                       # 左下圆角：90°→180°
+            a = math.pi / 2 + d弧 * i
+            点.append((r + r * math.cos(a), h - r + r * math.sin(a)))
+        for i in range(1, n侧 + 1):                       # 左边：下→上
+            点.append((0.0, h - r - 直侧 * i / n侧))
+        for i in range(1, n弧 + 1):                       # 左上圆角：180°→270°
+            a = math.pi + d弧 * i
+            点.append((r + r * math.cos(a), r + r * math.sin(a)))
+        return 点
+
+    def _liquid_start(self):
+        """准备光环（首次建 canvas image item），然后起动画。重复调是安全的。"""
+        try:
+            w = self.canvas.winfo_width()
+            if w <= 1:
+                w = self._px_w
+            h = self._h
+            if w <= 8 or h <= 8:
+                return
+            点, sf, 总长 = self._liquid_geom(w, h)
+            changed = (self._liq_w != w or self._liq_h != h
+                       or getattr(self, "_liq_photo", None) is None)
+            self._liq_w, self._liq_h = w, h
+            self._liq_sf, self._liq_len = sf, 总长
+            self._liq_pts = 点
+            if changed:
+                # 复用同一个 PhotoImage：`paste` 换内容比每帧新建 PhotoImage 省约 5ms
+                self._liq_photo = _PILImageTk.PhotoImage(
+                    _PILImage.new("RGBA", (w, h), (0, 0, 0, 0)))
+                if getattr(self, "_liq_img", None) is None:
+                    self._liq_img = self.canvas.create_image(0, 0, anchor="nw",
+                                                             tags="liquid")
+                self.canvas.itemconfigure(self._liq_img, image=self._liq_photo)
+                self.canvas.coords(self._liq_img, 0, 0)
+            self.canvas.tag_raise("liquid")
+            if getattr(self, "_liq_job", None) is None:
+                self._liq_t = getattr(self, "_liq_t", 0.0)
+            # 建完立刻刷一帧：不然聚焦的头一帧还是"没上色"的状态，看着像没生效
+            self._liquid_step()
+        except Exception as e:
+            trace_exc("helpers", e)
+
+    def _liquid_geom(self, w, h):
+        """光环的路径点（绝对坐标）+ 累计弧长占比。
+
+        光环**贴在框的描边内侧**（中心线距边 2px）：框本身那条亮蓝描边照旧，
+        光环是额外套上去的一圈 —— 用户要的是"套在边框上"，不是"变成边框"。
+        """
+        内缩 = 5.0
+        # 光环中心线距边 5px、宽 3px（覆盖 3.5~6.5px）：正好让开 0~2px 那条亮蓝描边，
+        # 两层不叠在一起，才看得出"框 + 套上去的一圈光环"。
+        点 = self._liquid_points(max(6.0, w - 2 * 内缩), max(6.0, h - 2 * 内缩),
+                                 max(2.0, self._radius - 内缩))
+        点 = [(x + 内缩, y + 内缩) for x, y in 点]
+        累计 = [0.0]
+        for i in range(1, len(点) + 1):
+            x0, y0 = 点[i - 1]
+            x1, y1 = 点[i % len(点)]
+            累计.append(累计[-1] + math.hypot(x1 - x0, y1 - y0))
+        总长 = 累计[-1] or 1.0
+        return 点, [c / 总长 for c in 累计[:-1]], 总长
+
+    def _liquid_frame(self, w, h, 相位):
+        """渲染一帧光环。
+
+        ⚠ 必须走 PIL + 超采样：Tk canvas 的 `create_line` 在 Windows 上是 GDI 画线，
+        **没有抗锯齿**，2px 的圆弧上锯齿非常明显（用户提的就是这个）。这里在 2 倍画布上
+        逐小段上色、再 LANCZOS 缩回来，边缘就平滑了。
+        """
+        s = 2
+        总长 = self._liq_len or 400.0
+        亮 = self._liquid_crest()
+        暗 = self._liquid_trough()
+        暗rgb = (int(暗[1:3], 16), int(暗[3:5], 16), int(暗[5:7], 16))
+        亮rgb = (int(亮[1:3], 16), int(亮[3:5], 16), int(亮[5:7], 16))
+        半带 = max(60.0, min(self._LIQ_BAND, 总长 * self._LIQ_BAND_MIN)) / 2.0
+        im = _PILImage.new("RGBA", (w * s, h * s), (0, 0, 0, 0))
+        d = _PILDraw.Draw(im)
+        点 = self._liq_pts
+        n = len(点)
+        宽 = max(2, int(round(3 * s)))
+        for i in range(n):
+            x0, y0 = 点[i]
+            x1, y1 = 点[(i + 1) % n]
+            弧0 = self._liq_sf[i] * 总长
+            段长 = math.hypot(x1 - x0, y1 - y0)
+            子 = max(1, int(段长 * s / 2.0))          # 超采样画布上每 ~2px 一个小段
+            for k in range(子):
+                t = k / 子
+                弧 = 弧0 + 段长 * t
+                dd = abs(弧 / 总长 - 相位)
+                dd = min(dd, 1.0 - dd) * 总长
+                if dd >= 半带:
+                    v = 0.0
+                else:
+                    # 余弦包：中间最亮、两端渐隐 —— 锁屏那段"暗→亮→暗"的瓦片
+                    v = (math.cos(math.pi * dd / 半带) + 1.0) / 2.0
+                # 带内从暗端渐变到亮端；带外就是暗端本身（整圈有一条看得见的暗边）
+                f = v
+                d.line([((x0 + (x1 - x0) * t) * s, (y0 + (y1 - y0) * t) * s),
+                        ((x0 + (x1 - x0) * (t + 1.0 / 子)) * s,
+                         (y0 + (y1 - y0) * (t + 1.0 / 子)) * s)],
+                       fill=(int(暗rgb[0] + (亮rgb[0] - 暗rgb[0]) * f),
+                             int(暗rgb[1] + (亮rgb[1] - 暗rgb[1]) * f),
+                             int(暗rgb[2] + (亮rgb[2] - 暗rgb[2]) * f), 255),
+                       width=宽)
+        return im.resize((w, h), _PILImage.LANCZOS)
+
+    def _liquid_step(self):
+        """每帧重渲染一帧光环（PIL 超采样 → 抗锯齿），比 Tk 分段画线平滑得多。"""
+        self._liq_job = None
+        try:
+            if not self._focus:
+                return
+            w, h = self._liq_w, self._liq_h
+            if w <= 8 or h <= 8 or not getattr(self, "_liq_pts", None):
+                return
+            总长 = self._liq_len or 1.0
+            # 速度按**像素**算（和锁屏流动边同一套手感），换算成沿周长的比例
+            self._liq_t = (getattr(self, "_liq_t", 0.0)
+                           + self._LIQ_SPEED_PX / 总长) % 1.0
+            图 = self._liquid_frame(w, h, self._liq_t)
+            if 图 is not None and getattr(self, "_liq_photo", None) is not None:
+                self._liq_photo.paste(图)
+            self._liq_job = self.after(self._LIQ_TICK, self._liquid_step)
+        except Exception as e:
+            trace_exc("helpers", e)
+            self._liq_job = None
+
+    def _liquid_stop(self):
+        """停表 + 清掉高光段（失焦、切主题、销毁都要走这里）。"""
+        job = getattr(self, "_liq_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._liq_job = None
+        img = getattr(self, "_liq_img", None)
+        if img is not None:
+            try:
+                self.canvas.delete(img)
+            except Exception:
+                pass
+            self._liq_img = None
+        self._liq_photo = None
+        self._liq_pts = None
+        self._liq_w = self._liq_h = 0
 
     def _entry_fg(self):
         """输入框文字色：优先 fg_key 指定的数据色，取不到再退回 entry_fg。"""
@@ -866,9 +1098,9 @@ class RoundedEntry(tk.Frame):
         fill = self.theme.get("entry_bg", "#ffffff")
         dark = is_dark_theme(self.theme)
         if self._focus:
-            # 正在编辑的那个必须最显眼：深色主题用亮蓝，浅色主题用中蓝，并且加粗到 2px。
-            # （以前这两种都用 accent_bg 压暗算：深色主题的 accent_bg 是 #3a4a5a，
-            #   压暗后接近全黑，反而比没聚焦的浅灰描边还看不见 —— 等于搞反了。）
+            # 框**还是原来那个框**：聚焦就用原来的亮蓝 2px 描边。
+            # 液态光环是**另外套上去的一圈**（见 _liquid_frame，画在描边内侧），
+            # 不是拿它取代描边 —— 用户明确要的是"套在边框上，而不是变成原本的边框"。
             border = "#64b5f6" if dark else "#4a90d9"
             bw = 2
         else:
@@ -902,6 +1134,9 @@ class RoundedEntry(tk.Frame):
                                       height=max(10, h - 8))
         except Exception:
             pass
+        # 液态描边压在底图之上：尺寸/主题变了要重排分段（跑着的动画不用重启）
+        if self._focus and not fast:
+            self._liquid_start()
 
 
 class RoundedTextArea(tk.Frame):
@@ -1203,21 +1438,24 @@ def _btn_text_width(text, font=None):
 
 
 _BTN_FONT_CACHE = None      # 量按钮文字用的 Font（tkinter 里 new Font 很慢，缓存）
-_BTN_TEXT_PAD = 30          # 按钮左右内边距（和 _grad_width 里那句对齐）
+_BTN_TEXT_PAD = 18          # 按钮左右内边距（和 _grad_width 里那句对齐）
 
 
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
-                           width=180, height=32, font=("微软雅黑", 10, "bold"),
+                           width=None, height=32, font=("微软雅黑", 10, "bold"),
                            click_guard_ms=300):
     # 文案在**函数本体**里过 tr()，不能靠在别处包一层：调用方早把原函数 import 走了。
     # 中文（默认）时 tr() 原样返回，行为不变。见 utils/i18n.py。
     text = i18n.tr(text)
-    # 英文普遍比中文长，而调用方给的 width 都是按中文量着调的 —— 装不下就把按钮撑到
-    # 文字宽度（宁可宽一点也不让字溢出去）。中文模式下测出来还是原宽度，布局不变。
+    # 宽度：**不传就按实际译文量**（默认行为，按钮紧贴文字，左右各半个内边距）；
+    # 传了就取"传的值"与"文字需要"的较大者，免得英文比中文长时把字挤出去。
+    # ⚠ 这里的默认值原来是 180 —— 于是所有"不传 width"的按钮都变成 180px 宽，
+    #   看着像"统一了大小"，而不是按文字自适应（用户点出来的就是这个）。
     try:
-        width = max(int(width), _btn_text_width(text, font) + _BTN_TEXT_PAD)
+        需要 = max(44, _btn_text_width(text, font) + _BTN_TEXT_PAD)
+        width = max(int(width or 0), 需要)
     except Exception:
-        pass
+        width = int(width or 180)
     state = {"colors": colors, "hover": hover_pair(colors), "text": text, "icon": None,
              "fg": "white"}
     radius = max(0, min(_BTN_RADIUS, height // 3))
@@ -2282,8 +2520,8 @@ def bind_text_scroll(text_widget, on_view):
         text_widget.bind("<<Modified>>", 内容变了, add="+")
         text_widget.bind("<Map>", 内容变了, add="+")
         同步()                          # 先按当前内容同步一次，别停在初始状态
-    except Exception:
-        trace_exc("helpers", "绑定文本框滚动")
+    except Exception as e:
+        trace_exc("helpers", e)
 
 
 def _parent_bg(widget, theme):
@@ -2473,8 +2711,8 @@ class SwitchRow(tk.Canvas):
         if self._command is not None:
             try:
                 self._command()
-            except Exception:
-                trace_exc("helpers", "开关回调")
+            except Exception as e:
+                trace_exc("helpers", e)
 
     def get_enabled(self):
         return bool(self._enabled)
@@ -2930,8 +3168,8 @@ class SegmentedControl(tk.Canvas):
         if self._command is not None:
             try:
                 self._command(新)
-            except Exception:
-                trace_exc("helpers", "分段选择回调")
+            except Exception as e:
+                trace_exc("helpers", e)
 
     def _on_motion(self, event):
         if not self._enabled:

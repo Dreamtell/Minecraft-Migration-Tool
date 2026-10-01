@@ -6,7 +6,7 @@
 """
 import tkinter as tk
 from tkinter import messagebox
-from ui.mw_common import _ICON_BTN, _grad_width
+from ui.mw_common import _ICON_BTN, _grad_width, WrapRow
 from ui.rounded_tabs import RoundedTabs
 from utils.helpers import (
     LiquidProgress, RoundedTextArea, SegmentedControl, SmoothScroller, SwitchRow,
@@ -155,6 +155,24 @@ class PagesMixin:
 
         # 全部按钮建完，最后按配置摆一遍（显示/隐藏 + 自定义顺序）
         self._apply_button_layout()
+        # 窗口宽度变了要重摆：按钮是 place 出来的，不重算就一直是旧宽度下的一行 ——
+        # 英文按钮更宽，拉窄窗口就会溢出（用户报过 config / other files 三处）。
+        # 防抖 260ms：拖动窗口时别每一帧都重排。
+        def _reflow(_e=None):
+            旧 = getattr(self, "_reflow_job", None)
+            if 旧 is not None:
+                try:
+                    self.root.after_cancel(旧)
+                except Exception:
+                    pass
+            try:
+                self._reflow_job = self.root.after(
+                    260, lambda: self._apply_button_layout(animate=False))
+            except Exception:
+                self._reflow_job = None
+
+        self._reflow_job = None
+        self.root.bind("<Configure>", _reflow, add="+")
 
     def _create_modlist_widgets(self):
         """清单区：三个清单**共用一个区**（标签页），不再各占一大块地方。
@@ -245,41 +263,40 @@ class PagesMixin:
         self._bind_badge_refresh(self.mod_text)
         self._stage()               # ScrolledText 建一个要一百来毫秒，建完先让一帧
 
-        btn_frame = tk.Frame(parent)
+        btn_frame = WrapRow(parent)
         btn_frame.pack(fill="x", pady=5)
 
         # 统一渐变按钮（同高度/字体，语义配色，宽度按文字自适应）
         gw = _grad_width      # 用缓存了 Font 的量宽函数，别再就地 new 一个 Font
 
         self.btn_changelog = create_gradient_button(
-            btn_frame, "📥 从变更日志导入（含Updated）", self.import_from_changelog,
+            btn_frame, "📥 从变更日志导入", self.import_from_changelog,
             colors=("#00acc1", "#26c6da"),
-            width=gw("📥 从变更日志导入（含Updated）"), height=30, font=("微软雅黑", 9, "bold"))
+            height=30, font=("微软雅黑", 9, "bold"))
         self.btn_changelog.pack(side="left", padx=5)
         self._btn_widgets["changelog"] = self.btn_changelog
         self.create_tooltip(self.btn_changelog, "你需要提供的是“崩溃助手”模组给予的mod变更列表")
 
         self.scan_btn = create_gradient_button(
-            btn_frame, "🔍 扫描模组差异", self.action_scan_mod_diff,
+            btn_frame, "🔍 扫描差异", self.action_scan_mod_diff,
             colors=("#00bcd4", "#3f51b5"),
-            width=gw("🔍 扫描模组差异"), height=30, font=("微软雅黑", 9, "bold"))
+            height=30, font=("微软雅黑", 9, "bold"))
         self.mod_magnify_btn = create_gradient_button(
             btn_frame, "📂 放大查看", self.open_mod_big_view,
-            colors=("#607d8b", "#90a4ae"),
-            width=gw("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_mods_btn = create_gradient_button(
             btn_frame, "➕ 添加模组", self.add_mods,
-            colors=("#00c853", "#00e676"),
-            width=gw("➕ 添加模组"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#00c853", "#00e676"), height=30, font=("微软雅黑", 9, "bold"))
         self._stage()               # 这批有 6 个按钮，中间让一次
         self.clear_mods_btn = create_gradient_button(
             btn_frame, "🗑️ 清空清单", self.clear_mod_list,
-            colors=("#e53935", "#c62828"),
-            width=gw("🗑️ 清空清单"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#e53935", "#c62828"), height=30, font=("微软雅黑", 9, "bold"))
         self.check_mods_btn = create_gradient_button(
-            btn_frame, "🔎 检查清单模组是否存在（源目录）", self.check_modlist_existence,
+            btn_frame, "🔎 检查存在", self.check_modlist_existence,
             colors=("#fb8c00", "#ffb74d"),
-            width=gw("🔎 检查清单模组是否存在（源目录）"), height=30, font=("微软雅黑", 9, "bold"))
+            height=30, font=("微软雅黑", 9, "bold"))
+        # 按钮上写短句，限定语放 tooltip（照原文案"（源目录）"的意思）
+        self.create_tooltip(self.check_mods_btn, "检查清单里的模组在“源目录”里是否存在")
         self._stage()
 
         self.mod_magnify_btn.pack(side="left", padx=5)
@@ -342,35 +359,31 @@ class PagesMixin:
             pass
         self._stage()
 
-        btn_config_frame = tk.Frame(parent)
+        btn_config_frame = WrapRow(parent)
         btn_config_frame.pack(fill="x", pady=5)
 
         self.config_magnify_btn = create_gradient_button(
             btn_config_frame, "📂 放大查看", self.open_config_big_view,
-            colors=("#607d8b", "#90a4ae"),
-            width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         self.config_magnify_btn.pack(side="left", padx=5)
         self.add_config_dir_btn = create_gradient_button(
-            btn_config_frame, "📁 浏览添加文件夹", self.browse_add_config_entry,
-            colors=("#00c853", "#00e676"),
-            width=_grad_width("📁 浏览添加文件夹"), height=30, font=("微软雅黑", 9, "bold"))
+            btn_config_frame, "📁 添加文件夹", self.browse_add_config_entry,
+            colors=("#00c853", "#00e676"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_config_dir_btn.pack(side="left", padx=5)
         self.add_config_file_btn = create_gradient_button(
-            btn_config_frame, "📄 浏览添加文件", self.browse_add_config_file,
-            colors=("#00c853", "#00e676"),
-            width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
+            btn_config_frame, "📄 添加文件", self.browse_add_config_file,
+            colors=("#00c853", "#00e676"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_config_file_btn.pack(side="left", padx=5)
         self.clear_config_btn = create_gradient_button(
             btn_config_frame, "🗑️ 清空 config 清单", self.clear_config,
-            colors=("#e53935", "#c62828"),
-            width=_grad_width("🗑️ 清空 config 清单"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#e53935", "#c62828"), height=30, font=("微软雅黑", 9, "bold"))
         self.clear_config_btn.pack(side="left", padx=5)
         self.config_check_btn = create_gradient_button(
-            btn_config_frame, "🔎 检查 config 是否存在（源目录）", self.check_configlist_existence,
-            colors=("#fb8c00", "#ffb74d"),
-            width=_grad_width("🔎 检查 config 是否存在（源目录）"), height=30,
+            btn_config_frame, "🔎 检查存在", self.check_configlist_existence,
+            colors=("#fb8c00", "#ffb74d"), height=30,
             font=("微软雅黑", 9, "bold"))
         self.config_check_btn.pack(side="left", padx=5)
+        self.create_tooltip(self.config_check_btn, "检查 config 清单里的条目在“源目录”里是否存在")
         self._btn_widgets.update({
             "cfg_magnify": self.config_magnify_btn,
             "add_cfg_dir": self.add_config_dir_btn,
@@ -378,7 +391,13 @@ class PagesMixin:
             "clear_cfg": self.clear_config_btn,
             "check_cfg": self.config_check_btn,
         })
-        self._create_check_legend(btn_config_frame)
+        # ⚠ 图例**不能**和按钮混在同一个容器里：`mw_buttons._placeable_row` 只接
+        # "容器里全是按钮"的排，混着别的控件就退回单行 pack —— 英文按钮更宽时会溢出
+        # （用户报过 config / other files 两页）。挪到按钮排下面的独立一行，
+        # 按钮排变成"纯按钮排"，才能走那套带自动换行的 place 布局。
+        legend_row = tk.Frame(parent)
+        legend_row.pack(fill="x", padx=5, pady=(0, 2))
+        self._create_check_legend(legend_row)
         self._bind_badge_refresh(self.config_text)
         self._stage()
 
@@ -391,12 +410,25 @@ class PagesMixin:
         **空清单 = 什么都不多带**（包括 options.txt —— 它以前是被无条件复制的，
         现在也得用户自己勾）。
         """
-        tk.Label(parent,
-                 text=("每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。\n"
-                       "不会自动带任何东西 —— 想要的自己加。\n"
-                       "例：options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/"),
-                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
-                 font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
+        # 说明文字：**占满可用宽度 + 自动换行**（原来文案里写死 `\n`、又 anchor="w"，
+        # 于是英文下每行长短不一、右边一大片空白 —— 用户："右边有空为什么不用"）。
+        # wraplength 跟着容器宽度走，中英文都能铺满。
+        _tip = tk.Label(parent,
+                        text=("每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。"
+                              "不会自动带任何东西 —— 想要的自己加。"
+                              "例：options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/"),
+                        bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                        font=("微软雅黑", 8), justify="left", anchor="w")
+        _tip.pack(fill="x", padx=5, pady=(2, 0))
+
+        def _wrap_tip(_e=None):
+            try:
+                _tip.configure(wraplength=max(120, parent.winfo_width() - 16))
+            except Exception:
+                pass
+
+        parent.bind("<Configure>", _wrap_tip, add="+")
+        parent.after(120, _wrap_tip)
 
         row_rule = tk.Frame(parent, bg=self.theme["bg"])
         row_rule.pack(fill="x", padx=5, pady=(4, 2))
@@ -442,45 +474,40 @@ class PagesMixin:
         self._bind_badge_refresh(self.extra_text)
         self._stage()
 
-        btn_extra_frame = tk.Frame(parent)
+        btn_extra_frame = WrapRow(parent)
         btn_extra_frame.pack(fill="x", pady=5)
         self.add_extra_dir_btn = create_gradient_button(
-            btn_extra_frame, "📁 浏览添加文件夹", self.browse_add_extra_entry,
-            colors=("#00c853", "#00e676"),
-            width=_grad_width("📁 浏览添加文件夹"), height=30, font=("微软雅黑", 9, "bold"))
+            btn_extra_frame, "📁 添加文件夹", self.browse_add_extra_entry,
+            colors=("#00c853", "#00e676"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_extra_dir_btn.pack(side="left", padx=5)
         self.add_extra_file_btn = create_gradient_button(
-            btn_extra_frame, "📄 浏览添加文件", self.browse_add_extra_file,
-            colors=("#00c853", "#00e676"),
-            width=_grad_width("📄 浏览添加文件"), height=30, font=("微软雅黑", 9, "bold"))
+            btn_extra_frame, "📄 添加文件", self.browse_add_extra_file,
+            colors=("#00c853", "#00e676"), height=30, font=("微软雅黑", 9, "bold"))
         self.add_extra_file_btn.pack(side="left", padx=5)
         # 一键把最常见的那个加进来：options.txt 以前是**默认复制**的，现在也得用户自己勾，
         # 但没必要让人手打文件名/去文件夹里翻
         self.add_extra_options_btn = create_gradient_button(
             btn_extra_frame, "＋ options.txt", self._quick_add_options_txt,
-            colors=("#3949ab", "#5c6bc0"),
-            width=_grad_width("＋ options.txt"), height=30,
+            colors=("#3949ab", "#5c6bc0"), height=30,
             font=("微软雅黑", 9, "bold"))
         self.add_extra_options_btn.pack(side="left", padx=5)
         # 常用目录（原来的「默认携带的目录」勾选框已删，统一到这里"主动加进清单"）：
         # 菜单里点一下就写进清单 —— 看得见、能改、能删，备份/回滚也跟着清单走
         self.add_extra_preset_btn = create_gradient_button(
             btn_extra_frame, "＋ 常用目录 ▾", self._open_extra_preset_menu,
-            colors=("#5e35b1", "#7e57c2"),
-            width=_grad_width("＋ 常用目录 ▾"), height=30,
+            colors=("#5e35b1", "#7e57c2"), height=30,
             font=("微软雅黑", 9, "bold"))
         self.add_extra_preset_btn.pack(side="left", padx=5)
         self.clear_extra_btn = create_gradient_button(
-            btn_extra_frame, "🗑️ 清空其它文件清单", self.clear_extra_list,
-            colors=("#e53935", "#c62828"),
-            width=_grad_width("🗑️ 清空其它文件清单"), height=30, font=("微软雅黑", 9, "bold"))
+            btn_extra_frame, "🗑️ 清空清单", self.clear_extra_list,
+            colors=("#e53935", "#c62828"), height=30, font=("微软雅黑", 9, "bold"))
         self.clear_extra_btn.pack(side="left", padx=5)
         self.extra_check_btn = create_gradient_button(
-            btn_extra_frame, "🔎 检查是否存在（源目录）", self.check_extralist_existence,
-            colors=("#fb8c00", "#ffb74d"),
-            width=_grad_width("🔎 检查是否存在（源目录）"), height=30,
+            btn_extra_frame, "🔎 检查存在", self.check_extralist_existence,
+            colors=("#fb8c00", "#ffb74d"), height=30,
             font=("微软雅黑", 9, "bold"))
         self.extra_check_btn.pack(side="left", padx=5)
+        self.create_tooltip(self.extra_check_btn, "检查其它文件清单里的条目在“源目录”里是否存在")
         self._btn_widgets.update({
             "add_extra_dir": self.add_extra_dir_btn,
             "add_extra_file": self.add_extra_file_btn,
@@ -508,7 +535,7 @@ class PagesMixin:
         self.overwrite_cb = self.overwrite_sw
         self._stage()
 
-        # 右侧按钮组
+        # 右侧按钮组（普通 Frame：三个按钮横排、贴右，维持原样）
         btn_group = tk.Frame(self.opt_frame, bg=self.theme["bg"])
         btn_group.pack(side="right")
 
@@ -517,7 +544,6 @@ class PagesMixin:
             text="🚀 开始迁移",
             command=self.start_migration,
             colors=("#00c853", "#00e676"),
-            width=180,
             height=38,
             font=("微软雅黑", 12, "bold")
         )
@@ -529,7 +555,6 @@ class PagesMixin:
             text="⚠️ 回滚",
             command=self.action_rollback,
             colors=("#e53935", "#ff7043"),
-            width=160,
             height=38,
             font=("微软雅黑", 11, "bold")
         )
@@ -541,7 +566,6 @@ class PagesMixin:
             text="📋 查看历史",
             command=self.action_show_history,
             colors=("#00acc1", "#26c6da"),
-            width=160,
             height=38,
             font=("微软雅黑", 11, "bold")
         )
@@ -557,12 +581,12 @@ class PagesMixin:
         frame_log = tk.LabelFrame(self.root, text="执行日志", padx=5, pady=5)
         frame_log.pack(fill="both", expand=True, padx=10, pady=5)
 
-        log_toolbar = tk.Frame(frame_log)
+        log_toolbar = WrapRow(frame_log)
         log_toolbar.pack(fill="x", pady=(0, 5))
+        self.log_toolbar = log_toolbar          # 自适应/测试要用到它
         btn_big_log = create_gradient_button(
             log_toolbar, "📂 放大查看", self.open_log_big_view_busy,
-            colors=("#607d8b", "#90a4ae"),
-            width=_grad_width("📂 放大查看"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         btn_big_log.pack(side="left", padx=5)
         self.log_magnify_btn = btn_big_log      # 打开中要改它的文字
         # 提示：日志里出错的行可以直接双击定位过去
@@ -573,13 +597,11 @@ class PagesMixin:
         self.log_hint_label.pack(side="left", padx=(10, 0))
         btn_clear_log = create_gradient_button(
             log_toolbar, "🗑️ 清空日志", self.clear_log,
-            colors=("#e53935", "#c62828"),
-            width=_grad_width("🗑️ 清空日志"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#e53935", "#c62828"), height=30, font=("微软雅黑", 9, "bold"))
         btn_clear_log.pack(side="right", padx=5)
         btn_open_log = create_gradient_button(
             log_toolbar, "📂 打开日志文件夹", self.open_log_folder,
-            colors=("#607d8b", "#90a4ae"),
-            width=_grad_width("📂 打开日志文件夹"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
         # 定位错误：一次点击就跳到下一个出错的清单条目（比在日志里找、双击都快）
         self.btn_fail_locate = create_gradient_button(
@@ -595,6 +617,50 @@ class PagesMixin:
             "log_clear": btn_clear_log,
         })
         self._refresh_fail_button()      # 启动时没有错误 → 一开始就是灰的
+        # 窗口一窄，left / right 两组按钮会互相压掉（英文按钮更宽：完整提示句 41 字符
+        # 约 280px，加 4 个按钮就超出窗口，用户报过 "Open log folder 被裁"）。
+        # 这里做三级自适应：完整句 → 短句 → 整条收起来。它只是辅助说明，按钮才是要点的。
+        # 用 `before=` 插回原位，所以不会跳位置，也不会和 left/right 的排布打架。
+        _长句 = "💡 双击日志行可定位到清单里的那条"
+        _短句 = "💡 双击日志行可定位"
+
+        def _fit_hint(_e=None):
+            try:
+                import tkinter.font as _tkfont
+                档 = _tkfont.Font(font=self.log_hint_label.cget("font"))
+                其他 = sum(c.winfo_reqwidth() + 10
+                           for c in log_toolbar.winfo_children()
+                           if c.winfo_manager() and c is not self.log_hint_label)
+                宽 = log_toolbar.winfo_width()
+                长宽 = 档.measure(_i18n.tr(_长句)) + 10
+                短宽 = 档.measure(_i18n.tr(_短句)) + 10
+                已显示 = bool(self.log_hint_label.winfo_manager())
+                if 其他 + 长宽 <= 宽:
+                    目标 = _长句
+                elif 其他 + 短宽 <= 宽:
+                    目标 = _短句
+                else:
+                    目标 = None
+                if 目标 is None:
+                    if 已显示:
+                        self.log_hint_label.pack_forget()
+                else:
+                    if not 已显示:
+                        self.log_hint_label.pack(side="left", padx=(10, 0),
+                                                 before=self.btn_fail_locate)
+                    self.log_hint_label.configure(text=目标)
+            except Exception:
+                pass
+
+        log_toolbar.bind("<Configure>", _fit_hint)
+        self.root.after(200, _fit_hint)          # 首帧也判一次（<Configure> 未必触发）
+        # 窗口能缩到多窄，由这排按钮决定：主窗口以前**没设过 minsize**，拉到 640 时
+        # 四个按钮（英文下合计 605px）就互相压掉（用户报过 "Open log folder 被裁"）。
+        try:
+            self.root.minsize(max(720, min(self.log_toolbar.winfo_reqwidth() + 90, 1200)),
+                              520)
+        except Exception:
+            self.root.minsize(800, 520)
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
         self.log_text_box = RoundedTextArea(frame_log, self.theme, height=22,

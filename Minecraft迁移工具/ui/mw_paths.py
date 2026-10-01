@@ -233,20 +233,20 @@ class PathsMixin:
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
         frame_source.pack(fill="x", padx=10, pady=5)
         self.source_entry = RoundedEntry(frame_source, self.theme,
-                                         textvariable=self.source_path, chars=58,
+                                         textvariable=self.source_path, chars=32,
                                          fg_key="data_fg")
-        self.source_entry.pack(side="left", padx=5)
+        # ⚠ 可伸缩：字符数是按中文定的固定宽，英文下会把右边的状态标签挤出容器
+        # （英文 `(none selected)` 被裁成 `ne select`）。fill+expand 让它自己让位。
+        self.source_entry.pack(side="left", fill="x", expand=True, padx=5)
         btn_source_browse = create_gradient_button(
             frame_source, "📂 浏览...", self.select_source,
-            colors=("#607d8b", "#90a4ae"),
-            width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         btn_source_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_source"] = btn_source_browse
         self._stage()
         btn_copy = create_gradient_button(
-            frame_source, "← 使用新版路径填充", self.copy_target_to_source,
-            colors=("#fb8c00", "#ffb74d"),
-            width=_grad_width("← 使用新版路径填充"), height=30, font=("微软雅黑", 9, "bold"))
+            frame_source, "← 填充路径", self.copy_target_to_source,
+            colors=("#fb8c00", "#ffb74d"), height=30, font=("微软雅黑", 9, "bold"))
         btn_copy.pack(side="left", padx=5)
         self._btn_widgets["copy_target"] = btn_copy
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
@@ -254,7 +254,11 @@ class PathsMixin:
         self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"],
                                       font=("微软雅黑", 11))
         self.source_status._keep_fg = True      # 颜色由状态决定，别被主题统一刷掉
-        self.source_status.pack(side="left", padx=10)
+        self.source_status.pack(side="right", padx=10)
+        # pack 是"先到先得"：输入框带 expand 会吃掉全部剩余宽度，把状态标签挤出去
+        # （英文 `(none selected)` 被裁成 `ne select`）。所以标签先占右侧，
+        # 这里再把输入框 pack 一次，让它只吃剩下的。
+        self.source_entry.pack(side="left", fill="x", expand=True, padx=5)
         self.create_tooltip(self.source_status,
                             lambda: getattr(self.source_status, "_tip_text", ""))
         self._stage()
@@ -267,19 +271,20 @@ class PathsMixin:
                                      padx=5, pady=5)
         frame_target.pack(fill="x", padx=10, pady=5)
         self.target_entry = RoundedEntry(frame_target, self.theme,
-                                         textvariable=self.target_path, chars=66,
+                                         textvariable=self.target_path, chars=36,
                                          fg_key="data_fg")
-        self.target_entry.pack(side="left", padx=5)
+        self.target_entry.pack(side="left", fill="x", expand=True, padx=5)
         btn_target_browse = create_gradient_button(
             frame_target, "📂 浏览...", self.select_target,
-            colors=("#607d8b", "#90a4ae"),
-            width=_grad_width("📂 浏览..."), height=30, font=("微软雅黑", 9, "bold"))
+            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         btn_target_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_target"] = btn_target_browse
         self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"],
                                       font=("微软雅黑", 11))
         self.target_status._keep_fg = True      # 同上
-        self.target_status.pack(side="left", padx=10)
+        self.target_status.pack(side="right", padx=10)
+        # 同上：标签先占右侧，输入框再吃剩余
+        self.target_entry.pack(side="left", fill="x", expand=True, padx=5)
         self.create_tooltip(self.target_status,
                             lambda: getattr(self.target_status, "_tip_text", ""))
 
@@ -287,13 +292,13 @@ class PathsMixin:
         frame_world = tk.LabelFrame(self.root, text="存档文件夹名称", padx=5, pady=5)
         frame_world.pack(fill="x", padx=10, pady=5)
         self.world_entry = RoundedEntry(frame_world, self.theme,
-                                        textvariable=self.world_name, chars=30,
+                                        textvariable=self.world_name, chars=24,
                                         fg_key="data_id_fg")
         self.world_entry.pack(side="left", padx=5)
         tk.Label(frame_world, text="（例如：新的世界）").pack(side="left")
         self.world_status = tk.Label(frame_world, text="", fg=self.theme["muted_fg"])
         self.world_status._keep_fg = True       # 同上
-        self.world_status.pack(side="left", padx=10)
+        self.world_status.pack(side="right", padx=10)
 
     # ---------- 路径选择 ----------
     def select_source(self):

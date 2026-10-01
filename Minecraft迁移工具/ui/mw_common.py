@@ -59,7 +59,7 @@ from ui.virtual_table import VirtualTable
 
 
 _GRAD_FONT = None
-_GRAD_PAD = 26
+_GRAD_PAD = 18
 
 # 扫描线程 → 主线程的"干完了"哨兵。进度的消息是 (序号:int, 文件名:str)，
 # 所以拿字符串当哨兵不会撞（见 _poll_scan_progress）。
@@ -109,7 +109,12 @@ _DEFAULT_BUTTON_ORDER = {
     # 「其它文件」清单：相对整合包根目录（不是相对 config），
     # 用来带走路径不在 mods/config/saves 里的东西：shaderpacks / resourcepacks /
     # options.txt / servers.dat / kubejs / scripts 之类
-    "extra":       ["add_extra_dir", "add_extra_file", "clear_extra", "check_extra"],
+    # ⚠ 这里必须把这一排**所有**按钮都登记上：`mw_buttons._placeable_row` 要求
+    # "容器里的子控件全在这一排的名单里"才肯用 place 摆（才能自动换行）。少登记一个，
+    # 那一排就被当成"混着别的控件"，退回单行 pack —— 英文下就溢出。
+    # （漏过 add_extra_options / add_extra_preset，两个都在界面上。）
+    "extra":       ["add_extra_dir", "add_extra_file", "add_extra_options",
+                    "add_extra_preset", "clear_extra", "check_extra"],
     "action":      ["history", "rollback", "start"],
     "log_left":    ["log_big"],
     "log_right":   ["log_open", "log_clear"],
@@ -120,7 +125,7 @@ _DEFAULT_BUTTON_ORDER.update(button_prefs.DEFAULTS)
 
 _BUTTON_LABELS = {
     "browse_source": "📂 浏览…（来源路径）",
-    "copy_target": "← 使用新版路径填充",
+    "copy_target": "← 填充路径",
     "browse_target": "📂 浏览…（目标路径）",
     "changelog": "📥 从变更日志导入",
     "mod_magnify": "📂 放大查看（模组清单）",
@@ -275,6 +280,175 @@ def _grad_width(text):
     extra = sum(_GRAD_ARROW_W if _GRAD_ARROW_RE.match(c) else _GRAD_SYM_W
                 for c in syms)
     return int(_GRAD_FONT.measure(plain)) + extra + _GRAD_PAD
+
+
+class WrapRow(tk.Frame):
+    """一排控件（按钮 / 图例 / 分段控件都行）：**按容器宽度自动包裹到多行**。
+
+    为什么要有这个类：这些排原来是死的一行 `pack`，英文按钮比中文宽一截，窗口一窄就
+    溢出；而项目里那套 place 布局（`ui/mw_buttons._place_row`）**只接"容器里全是登记过的
+    按钮"的排**，混进一个图例、或者有个按钮没登记进配置，那排就退回单行 pack ——
+    config / other files 两页就是这么漏的。
+
+    这里不挑内容：拿容器宽度从左往右累加，放不下就换到下一行，容器高度报成多行的高度。
+    之前那版失败在**收集子控件**：子控件一轮轮在 pack 和 place 之间换，
+    `pack_info()` 有时读得到、有时读不到，于是清单收不全、剩下的留在旧位置和新位置重叠。
+    现在改成**冻结清单**：第一次收集完就固定，之后只按 `winfo_manager()` 判断谁被隐藏。
+
+    用法：把这一排的容器换成它，子控件照旧 `pack` / `pack_forget`（含 `before=`）。
+    """
+
+    _GAP = 5          # 横向间距（和原来 pack(padx=5) 一致）
+    _VGAP = 4         # 行间距
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        self._frozen = []         # 冻结清单：[[控件, side, padx], ...]
+        self._last_w = -1
+        self._job = None
+        self._busy = False
+        # ⚠ 子控件用 place 摆、不参与父容器的几何计算，不关 propagate 高度会塌成 1px
+        try:
+            self.pack_propagate(False)
+            self.grid_propagate(False)
+        except Exception:
+            pass
+        self.bind("<Configure>", self._schedule)
+        # 建在没选中的标签页里时容器宽度还是 1，映射出来后再排一次
+        self.bind("<Map>", self._on_map, add="+")
+
+    # ---------------------------------------------------------------- 清单
+    def freeze(self):
+        """把当前 pack 着的子控件记成固定清单（之后不再读 pack_info）。"""
+        if self._frozen:
+            return
+        try:
+            项 = []
+            for c in self.winfo_children():
+                if c.winfo_manager() != "pack":
+                    continue
+                try:
+                    info = c.pack_info()
+                    padx = int(str(info.get("padx", self._GAP)).split()[0])
+                except Exception:
+                    info, padx = {}, self._GAP
+                项.append([c, str(info.get("side", "left")), padx])
+            if 项:
+                self._frozen = 项
+        except Exception:
+            pass
+
+    def rebuild(self):
+        """内容变了（新加了控件）再收一次。"""
+        self._frozen = []
+        self.freeze()
+        self.relayout(force=True)
+
+    # ---------------------------------------------------------------- 调度
+    def _on_map(self, e=None):
+        if e is None or getattr(e, "widget", None) is self:
+            self._last_w = -1
+            self.relayout(force=True)
+
+    def _schedule(self, _e=None):
+        """宽度变了才排（place 会触发 <Configure>，不拦就是死循环）。"""
+        try:
+            w = self.winfo_width()
+        except Exception:
+            return
+        if w <= 1 or w == self._last_w or self._job is not None:
+            return
+        try:
+            self._job = self.after_idle(self.relayout)
+        except Exception:
+            self._job = None
+
+    def _avail_width(self):
+        """可用宽度：**先看父容器**，再看自己，最后退回顶层窗口。
+
+        ⚠ 顺序很重要：本容器会把自己申报成"内容实际占用"的宽度（贴右的小容器不能被
+        撑满整行），如果反过来先读自己，第二轮就会拿这个偏小的值去算 → 越算越窄，
+        一排按钮会莫名其妙竖起来（真踩过：`History / Roll back / Start migration`）。
+        """
+        p = getattr(self, "master", None)
+        for _ in range(4):
+            try:
+                if p is None:
+                    break
+                pw = p.winfo_width()
+                if pw > 1:
+                    return max(1, pw - 8)
+                p = getattr(p, "master", None)
+            except Exception:
+                break
+        try:
+            w = self.winfo_width()
+        except Exception:
+            w = 0
+        if w > 1:
+            return w
+        try:
+            return max(1, self.winfo_toplevel().winfo_width() - 60)
+        except Exception:
+            return 0
+
+    # ---------------------------------------------------------------- 摆放
+    def relayout(self, force=False):
+        self._job = None
+        if self._busy:
+            return
+        self._busy = True
+        try:
+            w = self._avail_width()
+            if w <= 1:
+                return
+            if not force and w == self._last_w:
+                return
+            self.freeze()
+            if not self._frozen:
+                # 还没收集到子控件（多半是按钮还没 pack 上来）：**不要占用 `_last_w`**，
+                # 否则宽度再变也不会重排 —— 真踩过，整排一直是单行溢出的样子。
+                return
+            self._last_w = w
+            可见 = [(c, s, p) for c, s, p in self._frozen if c.winfo_manager()]
+            左 = [(c, p) for c, s, p in 可见 if s != "right"]
+            右 = [(c, p) for c, s, p in 可见 if s == "right"]
+            for c, _s, _p in self._frozen:
+                try:
+                    c.pack_forget()
+                except Exception:
+                    pass
+            x = y = 0
+            行高 = 0
+            for c, padx in 左:
+                bw, bh = c.winfo_reqwidth(), c.winfo_reqheight()
+                if x and x + bw + 2 * padx > w:        # 这一行放不下 → 换行
+                    y += 行高 + self._VGAP
+                    x = 0
+                    行高 = 0
+                c.place(x=x + padx, y=y, width=bw, height=bh)
+                x += bw + 2 * padx
+                行高 = max(行高, bh)
+            rx = w                                          # 靠右那组贴末行右端
+            for c, padx in 右:
+                bw, bh = c.winfo_reqwidth(), c.winfo_reqheight()
+                if rx - bw - 2 * padx < 0:
+                    y += 行高 + self._VGAP
+                    rx = w
+                    行高 = 0
+                rx -= bw + 2 * padx
+                c.place(x=max(0, rx) + padx, y=y, width=bw, height=bh)
+                行高 = max(行高, bh)
+            # 自己申报尺寸：子控件是 place 出来的、不参与父容器几何计算，
+            # 不报宽度就会塌成 1px（贴右那种 `pack(side="right")` 的容器尤其明显，
+            # 真踩过：动作按钮整组跑到容器外看不见）。宽度取"可用宽度"和
+            # "内容实际占用的宽度"的较小值 —— 贴右的小容器不能被撑满整行。
+            实际宽 = max(x, w - rx, 1)
+            self.configure(width=min(w, 实际宽), height=y + (行高 or 30))
+        except Exception:
+            pass
+        finally:
+            self._busy = False
 
 
 def _center_window(win, w, h):

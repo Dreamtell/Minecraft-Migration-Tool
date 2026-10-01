@@ -5,7 +5,7 @@
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
 from ui import button_prefs
-from ui.mw_common import _BUTTON_GROUPS, _DEFAULT_BUTTON_ORDER
+from ui.mw_common import _BUTTON_GROUPS, _DEFAULT_BUTTON_ORDER, WrapRow
 
 
 class ButtonsMixin:
@@ -52,6 +52,10 @@ class ButtonsMixin:
             if len(rows) != 1:
                 return None
             row = rows.pop()
+            # 这一排如果是 WrapRow，就交给它自己按宽度包裹 —— 它连图例、分段控件、
+            # 没登记进配置的按钮一起摆，不挑内容；place 那条路只认容器里全是登记按钮。
+            if isinstance(row, WrapRow):
+                return None
             group = {w for _k, w in widgets}
             if set(row.winfo_children()) - group:
                 return None
@@ -72,6 +76,9 @@ class ButtonsMixin:
         vis_seq = [(k, w) for k, w in entries if k not in hidden]
         if side != "left":
             vis_seq = list(reversed(vis_seq))
+        # 只按单行算：**自动换行交给 WrapRow**（容器是 WrapRow 的排根本不会走到这里，
+        # 见 `_placeable_row`）。这里再塞一套换行逻辑，两条路会互相打架 ——
+        # 真踩过：动作区那排按钮被算出容器外的坐标，整排看不见。
         offsets, off = {}, pad
         for k, w in vis_seq:
             offsets[k] = off
@@ -122,7 +129,13 @@ class ButtonsMixin:
             if side == "left":
                 w.place(x=x, y=y, anchor="nw")
             else:
-                # 靠右对齐：用 relx=1.0 定位，窗口拉宽拉窄都跟着右边缘走
+                # 靠右对齐：用 relx=1.0 定位，窗口拉宽拉窄都跟着右边缘走。
+                # `x` 是"距右边缘多远"，钳一下别超过容器宽度 —— 否则最左那个会被摆到
+                # 容器外面（英文按钮更宽时，`📋 History` 会在滑动动画途中被裁掉一半）。
+                try:
+                    x = min(x, max(0, row.winfo_width() - w.winfo_reqwidth()))
+                except Exception:
+                    pass
                 w.place(relx=1.0, x=-(x + w.winfo_reqwidth()), y=y, anchor="nw")
 
         for k, w in entries:
@@ -221,6 +234,16 @@ class ButtonsMixin:
                         w.pack(side=side, padx=5)
                     except Exception:
                         pass
+            # pack 完让 WrapRow 重排一次：pack 子控件不改变容器宽度，容器收不到
+            # <Configure>，不显式叫它一次就永远停在单行溢出
+            for _k, w in entries:
+                m = getattr(w, "master", None)
+                if isinstance(m, WrapRow):
+                    try:
+                        m.relayout(force=True)
+                    except Exception:
+                        pass
+                    break
 
     def set_button_hidden(self, key, hidden):
         """在设置里勾/取消某个按钮的显示。"""
