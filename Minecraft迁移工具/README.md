@@ -420,10 +420,31 @@ Minecraft迁移工具/
 │   └── mod_search.py           # Modrinth 联网搜索（最新版/下载链接）
 └── ui/                         # 🖥️ 界面模块
     ├── __init__.py
-    ├── main_window.py          # 主窗口（清单、配置、迁移调度）
-    ├── diff_window.py          # 差异列表窗口
+    ├── main_window.py          # 主窗口 MigrationGUI：核心生命周期 + 配置读写 + mixin 组装
+    ├── mw_common.py            # 拆出来的共用常量/辅助函数（老 `MW.<名字>` 接口面在这儿）
+    ├── mw_log.py               # ├ 执行日志：写日志、配色、双击定位、失败标记
+    ├── mw_theme.py             # ├ 深浅主题切换与重绘
+    ├── mw_buttons.py           # ├ 按钮分组 / 顺序 / 显隐 / 位移动画
+    ├── mw_settings.py          # ├ 设置窗口与所有选项回调
+    ├── mw_qt.py                # ├ Qt 子进程宿主（建窗 / 传命令 / 收结果）
+    ├── mw_paths.py             # ├ 源·目标路径校验、环境探测、状态语义色
+    ├── mw_pages.py             # ├ 界面搭建（三个清单页 / 底栏 / 日志区 / 窗口样式）
+    ├── mw_lists.py             # ├ 清单增删改、拖入粘贴、存在性检查、撤销、徽章
+    ├── mw_edit.py              # ├ 编辑模式与编辑锁
+    ├── mw_migration.py         # ├ 迁移流程、统计、历史、回滚、差异扫描
+    ├── mw_lock.py              # ├ 锁屏遮罩（流动边框）
+    ├── mw_big_view.py          # └ 放大查看（Tk 版）+ 日志大窗口
+    ├── qt_host.py              # Qt 窗口的子进程宿主入口
+    ├── qt_big_view.py          # 放大查看（PySide6 版）
+    ├── qt_diff_view.py         # 差异窗口（PySide6 版）
+    ├── diff_window.py          # 差异列表窗口（Tk 版）
+    ├── virtual_table.py        # 自绘表格（像素级滚动）
+    ├── card_list.py            # 卡片列表
+    ├── rounded_tabs.py         # 圆角页签栏
     ├── dialogs.py              # 进度窗口、模组详情（含联网搜索）、关闭方式选择
-    ├── splash.py               # 启动闪屏（旋转立方体）
+    ├── splash.py               # 启动闪屏（Tk 版：旋转立方体）
+    ├── splash_qt.py            # 启动闪屏（PySide6 子进程版）
+    ├── button_prefs.py         # 可自定义按钮的登记表
     └── tray.py                 # 系统托盘图标（后台运行）
 ```
 
@@ -520,6 +541,26 @@ Minecraft迁移工具/
 ### v4.0.0（当前版本）
 
 **✨ 新增**
+- **主窗口拆细：`ui/main_window.py` 8134 行 → 348 行**（拆出 13 个模块）。
+  `MigrationGUI` 现在由 **12 个 mixin** 组装而成，另有 `mw_common.py` 装常量、模块级
+  辅助函数和第三方导入：
+  · `mw_log`（日志/定位）、`mw_theme`（主题）、`mw_buttons`（按钮布局）、
+    `mw_settings`（设置窗口）、`mw_qt`（Qt 子进程宿主）、`mw_paths`（路径校验）、
+    `mw_pages`（界面搭建）、`mw_lists`（清单）、`mw_edit`（编辑锁）、
+    `mw_migration`（迁移/历史/回滚/扫描）、`mw_lock`（锁屏遮罩）、
+    `mw_big_view`（放大查看 Tk 版 —— 它原本是**单个 1095 行的方法**，里面 45 个闭包）
+  · **一个方法都没改**：拆分脚本按方法名分桶、源码原样搬移，校验脚本再逐字比对
+    （223 个方法/类属性全部一致）。唯一动过的是 `_start_migration_locked` 里两处依赖，
+    改成"调用时再去主模块取一次" —— 好让 `_dctest` 里 `MW.do_backup = …`、
+    `MW.ask_migrate_confirm = …` 的老打桩继续生效（否则确认框会真弹、备份会真跑）
+  · **老接口面原样保留**：`from ui.mw_common import *` 把拆分前 `MW.<名字>` 那一整套
+    搬回 `ui.main_window`（`CONFIG_FILE`、`messagebox`、`DARK_THEME`…），103 个验证
+    脚本**一行都不用改**；`MW.CONFIG_FILE` 打桩也照旧生效（`__init__` 仍留在
+    `main_window.py`，所以 `MigrationGUI.__init__.__globals__` 那套补丁对得上）
+  · 工具与校验在 `_dctest/_split/`：`拆分.py`（可重跑、结果一致）、`分块.py`（拆分与
+    校验共用的切块规则）、`校验.py`（源码逐字比对 + `symtable` 查漏导入 + 打桩链路实测）
+  · 顺带把本节的 `ui/` 目录树补全（`qt_*.py`、`virtual_table.py`、`card_list.py`、
+    `rounded_tabs.py`、`button_prefs.py` 这些以前没列出来）
 - **Qt 窗口搬进独立子进程 —— 那个 GIL 致命错误的最终解法**。第七次崩溃的日志最后一行是
   `差异窗口 切到卡片`（细粒度追踪生效），加上前几次的"打开窗口 / 打开详情"，可以确认
   崩点全在 Qt 窗口的操作路径上。既然进程内加固（托盘单线程化、主线程 deleteLater、
