@@ -291,12 +291,14 @@ def scrub_obj(值):
 
 def status_text():
     """设置页那一行状态（不含 key 本身，只说"从哪儿来的 + 末 4 位 + 指纹"）。"""
+    from utils import i18n
     if not has_key():
-        return "未设置 —— 联网搜索仍然走 Modrinth，功能不受影响"
+        return i18n.tr("未设置 —— 联网搜索仍然走 Modrinth，功能不受影响")
     前缀 = {"用户设置": "你自己填的",
             "环境变量": "来自环境变量",
             "内置": "程序内置的（想用自己的配额就在上面填一个）"}.get(key_source(), "已保存")
-    return "%s：%s（指纹 %s）" % (前缀, mask(), fingerprint())
+    return i18n.trf("{prefix}：{masked}（指纹 {fp}）",
+                    prefix=i18n.tr(前缀), masked=mask(), fp=fingerprint())
 
 
 def where_text():

@@ -8,6 +8,9 @@ import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 界面语言：备注/来源这类拼出来才显示的文案走 trp 模板
+from utils.i18n import trp
+
 # 模组图标缓存目录（和日志文件一样放用户目录，不动用户实例里的东西）
 ICON_CACHE_DIR = Path.home() / ".minecraft_migrate_icons"
 
@@ -502,7 +505,8 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
             if (src_info["version"] and src_info["version"] != "?" and
                     tgt_info["version"] and tgt_info["version"] != "?" and
                     src_info["version"] != tgt_info["version"]):
-                update_reason.append(f"版本 {tgt_info['version']} → {src_info['version']}")
+                update_reason.append(trp("版本 {0} → {1}", tgt_info['version'],
+                                             src_info['version']))
             if src_info["size"] != tgt_info["size"]:
                 update_reason.append("大小变化")
             if src_info["mtime"] > tgt_info["mtime"]:
@@ -516,8 +520,8 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
                 比 = compare_versions(src_info.get("version"), tgt_info.get("version"))
                 if 比 is not None and 比 < 0:
                     状态 = "降级"
-                    备注 = ("目标版本更高：%s → %s（复制过去会降级，建议保留目标的）"
-                            % (tgt_info["version"], src_info["version"]))
+                    备注 = trp("目标版本更高：{0} → {1}（复制过去会降级，建议保留目标的）",
+                              tgt_info["version"], src_info["version"])
                 results.append((
                     src_name,
                     状态,
@@ -703,7 +707,7 @@ def _env_from_jars(root):
     if not 票:
         return "", "", ""
     loader = max(票.items(), key=lambda kv: kv[1])[0]
-    return mc, loader, "mods 里的模组元数据（抽查 %d 个）" % len(jars)
+    return mc, loader, trp("mods 里的模组元数据（抽查 {0} 个）", len(jars))
 
 
 def _env_from_filenames(root):
@@ -736,7 +740,7 @@ def _env_from_filenames(root):
         return "", ""
     for tok, 次 in 票.items():
         if 次 == 最多:
-            return tok, "模组文件名（%d 个文件里出现 %d 次）" % (len(names), 次)
+            return tok, trp("模组文件名（{0} 个文件里出现 {1} 次）", len(names), 次)
     return "", ""
 
 
@@ -793,9 +797,9 @@ def detect_instance_env(root):
 
     来源 = []
     if mc:
-        来源.append("版本来自%s" % (mc_src or "未知来源"))
+        来源.append(trp("版本来自{0}", trp(mc_src) if mc_src else trp("未知来源")))
     if loader:
-        来源.append("加载器来自%s" % (loader_src or "未知来源"))
+        来源.append(trp("加载器来自{0}", trp(loader_src) if loader_src else trp("未知来源")))
     结果 = {"mc": mc, "loader": loader, "src": "；".join(来源)}
     with _ENV_CACHE_LOCK:
         _ENV_CACHE[键] = dict(结果)

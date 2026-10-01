@@ -23,6 +23,7 @@ import tkinter as tk
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils.i18n import trp          # noqa: E402
 
 from utils.config import load_raw_config                                    # noqa: E402
 from utils.helpers import measured_double_click_sec, system_double_click_sec  # noqa: E402
@@ -111,9 +112,9 @@ class DoubleClickTest:
         tk.Label(root, text="🖱 双击间隙诊断", bg=th["bg"], fg=th["fg"],
                  font=("微软雅黑", 14, "bold")).pack(anchor="w", **pad)
         tk.Label(root,
-                 text=("在下面的方框里，按你平时习惯的速度双击 %d 次。\n"
-                       "每次双击之间停一下（程序会自动分对），不用刻意快或慢。"
-                       % TARGET),
+                 text=trp("在下面的方框里，按你平时习惯的速度双击 {0} 次。\n"
+                          "每次双击之间停一下（程序会自动分对），不用刻意快或慢。",
+                          TARGET),
                  bg=th["bg"], fg=th.get("muted_fg", th["fg"]), justify="left",
                  font=("微软雅黑", 9)).pack(anchor="w", padx=16)
 
@@ -205,7 +206,7 @@ class DoubleClickTest:
 
     def _refresh(self):
         n = len(self.samples)
-        self.progress.config(text="已记录 %d / %d 次" % (n, TARGET))
+        self.progress.config(text=trp("已记录 {0} / {1} 次", n, TARGET))
         if self.samples:
             fast, med, slow, outliers = analyze(self.samples)
             txt = ("每次间隔（秒）：%s\n最快 %.2f  中位 %.2f  最慢 %.2f"

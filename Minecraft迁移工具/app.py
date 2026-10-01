@@ -34,6 +34,13 @@ from utils.helpers import (get_icon_path, warm_up_emoji_font, clear_layered_styl
 from utils.config import load_raw_config
 from winotify import Notification, audio
 
+# 界面语言：**必须在任何窗口建起来之前**装上（见 utils/i18n.py 顶部说明）。
+# 中文（默认）时 install() 直接返回、什么都不做，行为与以前逐字节一致。
+from utils import i18n
+# 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
+from utils.i18n import trp
+i18n.install()
+
 # 闪屏最短显示时长（秒）。主界面构建只要 ~0.7s，不兜底的话立方体刚起转就淡出了；
 # 超过这个时间就立刻淡出，不会平白拖慢启动。
 SPLASH_MIN_SEC = 1.5
@@ -389,11 +396,8 @@ def main():
                     elif cmd == "exit":
                         busy = app.busy_task_name()
                         if busy and not messagebox.askyesno(
-                                f"⚠️ {busy}进行中",
-                                f"{busy}任务还在执行，现在退出会中断它，"
-                                "可能导致数据损坏或程序状态异常。\n\n"
-                                "确定要退出吗？（也可以选“否”，把窗口收进托盘"
-                                "让它跑完）",
+                                trp("⚠️ {0}进行中", busy),
+                                trp("{0}任务还在执行，现在退出会中断它，可能导致数据损坏或程序状态异常。\n\n确定要退出吗？（也可以选“否”，把窗口收进托盘让它跑完）", busy),
                                 default="no", icon="warning", parent=root):
                             continue        # 不退出，继续处理后面的命令
                         request_quit()
@@ -413,16 +417,13 @@ def main():
             if tray is None:
                 # 没有托盘就没地方"挂着跑"，只能劝住
                 messagebox.showwarning(
-                    f"⚠️ {busy}进行中",
-                    f"{busy}任务正在执行，现在关闭会中断操作，可能导致数据损坏"
-                    "或程序状态异常。\n\n请等任务结束后再关闭窗口。",
+                    trp("⚠️ {0}进行中", busy),
+                    trp("{0}任务正在执行，现在关闭会中断操作，可能导致数据损坏或程序状态异常。\n\n请等任务结束后再关闭窗口。", busy),
                     parent=root)
                 return
             if messagebox.askyesno(
-                    f"⚠️ {busy}进行中",
-                    f"{busy}任务正在执行，窗口不能直接关闭。\n\n"
-                    "点击「是」 → 收进系统托盘，任务在后台继续跑，跑完会弹通知\n"
-                    "点击「否」 → 返回程序，等任务结束",
+                    trp("⚠️ {0}进行中", busy),
+                    trp("{0}任务正在执行，窗口不能直接关闭。\n\n点击「是」 → 收进系统托盘，任务在后台继续跑，跑完会弹通知\n点击「否」 → 返回程序，等任务结束", busy),
                     default="no", icon="warning", parent=root):
                 hide_to_tray()
             return

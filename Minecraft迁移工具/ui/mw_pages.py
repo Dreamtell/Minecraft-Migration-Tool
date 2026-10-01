@@ -14,6 +14,12 @@ from utils.helpers import (
 )
 
 
+from utils import i18n as _i18n
+# 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
+
+
+
 class PagesMixin:
     """界面搭建：主框架、三个清单页、底栏、日志区、窗口样式。"""
 
@@ -22,9 +28,9 @@ class PagesMixin:
         try:
             import webbrowser
             webbrowser.open_new_tab(url)
-            self.log(f"🔗 已打开链接：{url}", level="INFO", save=False)
+            self.log(trp("🔗 已打开链接：{0}", url), level="INFO", save=False)
         except Exception as e:
-            messagebox.showerror("打开失败", f"无法打开链接：{e}", parent=self.settings_win)
+            messagebox.showerror("打开失败", trp("无法打开链接：{0}", e), parent=self.settings_win)
 
     def create_tooltip(self, widget, text):
         """给控件挂悬停提示。
@@ -34,7 +40,8 @@ class PagesMixin:
         """
         def enter(event):
             try:
-                msg = text() if callable(text) else text
+                # 悬停提示的文案也要过语言层（这里不是控件构造器，包装层拦不到）
+                msg = _i18n.tr(text() if callable(text) else text)
             except Exception:
                 msg = ""
             tip = getattr(widget, "_tooltip", None)

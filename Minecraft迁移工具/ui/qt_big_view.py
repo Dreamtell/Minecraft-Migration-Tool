@@ -47,6 +47,9 @@ from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
                            get_icon_path, style_window_hwnd, text_delta,
                            trace_exc, trace_line)
+# 界面语言：Qt 侧没法包 Tk 那套，靠"包住会显示文字的 Qt API" + 这里显式的 tr()。
+# 中文（默认）时 tr() 原样返回，行为不变；英文时由 ui/qt_host.py 里的 install_qt() 激活。
+from utils.i18n import tr, trf                                      # noqa: E402
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
 CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
@@ -184,7 +187,7 @@ def resolve_entry(entry: str, is_mod: bool, mods_dir, config_dir):
 def scan_entry(entry: str, is_mod: bool, mods_dir, config_dir, online_tags: bool,
                source_path: str) -> dict:
     """扫描单条目，返回元数据 dict（字段与 Tk 版一致）。"""
-    base = {"status": "❌ 缺失", "name": Path(entry).name or entry, "path": str(entry),
+    base = {"status": tr("❌ 缺失"), "name": Path(entry).name or entry, "path": str(entry),
             "type": "?", "modid": "?", "version": "?", "size": "?", "cn": "", "desc": "",
             "disp": "", "tags": [], "tags_online": False, "icon_path": None}
     try:
@@ -223,17 +226,17 @@ def scan_entry(entry: str, is_mod: bool, mods_dir, config_dir, online_tags: bool
                 icon_path = get_mod_icon(str(obj))
             except Exception:
                 icon_path = None
-            base.update({"status": "✅ 存在", "name": obj.name, "path": str(obj),
+            base.update({"status": tr("✅ 存在"), "name": obj.name, "path": str(obj),
                          "type": info.get("mod_type", "?"), "modid": info.get("modid", "?"),
                          "version": info.get("version", "?"),
                          "size": round(obj.stat().st_size / 1024, 1),
                          "cn": cn, "disp": str(info.get("name") or "").strip(),
-                         "desc": "" if desc in ("无", "未知") else desc,
+                         "desc": "" if desc in ("无", "未知") else tr(desc),
                          "tags": tags, "tags_online": online, "icon_path": icon_path})
         else:
             size = round(obj.stat().st_size / 1024, 1) if obj.is_file() else ""
-            base.update({"status": "✅ 存在", "name": obj.name, "path": str(obj),
-                         "type": "文件夹" if obj.is_dir() else "文件", "modid": "",
+            base.update({"status": tr("✅ 存在"), "name": obj.name, "path": str(obj),
+                         "type": tr("文件夹") if obj.is_dir() else tr("文件"), "modid": "",
                          "version": "", "size": size, "cn": "", "desc": "",
                          "icon_path": None})
     except Exception:
@@ -260,7 +263,7 @@ class _ScanTask(QtCore.QRunnable):
                               self.ctx["config_dir"], self.ctx["online_tags"],
                               self.ctx["source_path"])
         except Exception:
-            meta = {"status": "❌ 缺失"}
+            meta = {"status": tr("❌ 缺失")}
         try:
             self.signals.done.emit(self.item, meta)
         except RuntimeError:
@@ -786,11 +789,11 @@ class AnimButton(QtWidgets.QPushButton):
 # --------------------------------------------------------------------------- #
 # 表格视图
 # --------------------------------------------------------------------------- #
-_COLS = (("status", "🔵 状态", 88), ("name", "📄 文件名", 220), ("path", "📁 完整路径", 320),
-         ("type", "🧩 类型", 92), ("modid", "🆔 Mod ID", 150), ("version", "🔖 版本", 110),
-         ("size", "💾 大小KB", 84))
-_COLS_CFG = (("status", "🔵 状态", 88), ("name", "📄 名称", 220),
-             ("path", "📁 相对路径/完整路径", 380), ("type", "🏷️ 类型", 100))
+_COLS = (("status", tr("🔵 状态"), 88), ("name", tr("📄 文件名"), 220), ("path", tr("📁 完整路径"), 320),
+         ("type", tr("🧩 类型"), 92), ("modid", "🆔 Mod ID", 150), ("version", tr("🔖 版本"), 110),
+         ("size", tr("💾 大小KB"), 84))
+_COLS_CFG = (("status", tr("🔵 状态"), 88), ("name", tr("📄 名称"), 220),
+             ("path", tr("📁 相对路径/完整路径"), 380), ("type", tr("🏷️ 类型"), 100))
 
 
 class TableModel(QtCore.QAbstractTableModel):
@@ -871,7 +874,7 @@ class TableModel(QtCore.QAbstractTableModel):
             return it
         if role == QtCore.Qt.DisplayRole:
             if cname == "status":
-                return {"✅ 存在": "存在", "❌ 缺失": "缺失"}.get(it.status, "检测中")
+                return {"✅ 存在": tr("存在"), "❌ 缺失": tr("缺失")}.get(it.status, tr("检测中"))
             if cname == "name":
                 return it.name
             if cname == "path":
@@ -879,7 +882,7 @@ class TableModel(QtCore.QAbstractTableModel):
             if cname == "type":
                 v = it.type if it.type and it.type != "?" else "…"
                 if v in ("文件夹", "文件"):
-                    v = ("📁 " if v == "文件夹" else "📄 ") + v
+                    v = ("📁 " if v == "文件夹" else "📄 ") + tr(v)
                 elif v != "…":
                     v = "🧩 " + v
                 return v
@@ -1266,7 +1269,7 @@ class OverviewBar(QtWidgets.QWidget):
         self.setFixedWidth(14)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setMouseTracking(True)
-        self.setToolTip("总览：整份列表的缩略图 · 点或拖可跳转")
+        self.setToolTip(tr("总览：整份列表的缩略图 · 点或拖可跳转"))
 
     # ---- 对外 ----
     def set_colors(self, colors):
@@ -1586,7 +1589,10 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
                          int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), title)
         painter.setFont(self._f_small)
         painter.setPen(muted)
-        sub_parts = [p for p in (it.subtitle, it.name if it.subtitle != it.name else "") if p]
+        # 标题/副标题是**数据**（模组自己的名字），但里面可能夹着我们产的占位词
+        # （"未知" / "无" 这类）—— 按段过一遍 tr，查不到就原样，模组名不受影响
+        sub_parts = [tr(p) for p in (it.subtitle, it.name if it.subtitle != it.name else "")
+                     if p]
         sub = " · ".join(dict.fromkeys(sub_parts))
         if it.version and it.version != "?":
             sub = (sub + "  " if sub else "") + "v" + str(it.version)
@@ -1600,11 +1606,14 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         painter.setFont(self._f_tiny)
         fm = painter.fontMetrics()
         for tag in list(it.tags or [])[:5]:
-            label = str(tag)
+            # 标签是**数据**（"科技" / "Fabric" 之类，查配色表用的就是原文），
+            # 只有画到卡片上这一刻才翻 —— 颜色仍按原文查（见 _tag_color）
+            原 = str(tag)
+            label = tr(原)
             w = fm.horizontalAdvance(label) + 12
             if chip_x + w > tx + tw:
                 break
-            bgc, fgc = _tag_color(label)
+            bgc, fgc = _tag_color(原)
             painter.setPen(QtCore.Qt.NoPen)
             painter.setBrush(QtGui.QColor(bgc))
             painter.drawRoundedRect(QtCore.QRectF(chip_x, chip_y, w, 15), 7.5, 7.5)
@@ -1656,7 +1665,7 @@ class DetailDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.theme = theme
         self.env = dict(env or {})
-        self.setWindowTitle("模组详情")
+        self.setWindowTitle(tr("模组详情"))
         self.setMinimumSize(620, 460)
         self.setStyleSheet("QDialog{background:%s;} QLabel{color:%s;}"
                            % (theme.get("bg"), theme.get("fg")))
@@ -1666,7 +1675,7 @@ class DetailDialog(QtWidgets.QDialog):
         self.tabs.setDocumentMode(True)
         外层.addWidget(self.tabs)
         页 = QtWidgets.QWidget()
-        self.tabs.addTab(页, "📋 详情")
+        self.tabs.addTab(页, tr("📋 详情"))
         lay = QtWidgets.QVBoxLayout(页)
         lay.setContentsMargins(8, 10, 8, 6)
         lay.setSpacing(10)
@@ -1691,14 +1700,14 @@ class DetailDialog(QtWidgets.QDialog):
         head.addLayout(box, 1)
         lay.addLayout(head)
         info = QtWidgets.QLabel(
-            "Mod ID：%s\n版本：%s\n类型：%s\n大小：%s KB\n状态：%s\n路径：%s"
+            tr("Mod ID：%s\n版本：%s\n类型：%s\n大小：%s KB\n状态：%s\n路径：%s")
             % (it.modid, it.version, it.type, it.size, it.status, it.path))
         info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         info.setWordWrap(True)
         lay.addWidget(info)
         if it.tags:
             tag_row = QtWidgets.QHBoxLayout()
-            tag_row.addWidget(QtWidgets.QLabel("分类："))
+            tag_row.addWidget(QtWidgets.QLabel(tr("分类：")))
             for tag in it.tags[:8]:
                 lb = QtWidgets.QLabel(str(tag))
                 bgc, fgc = _tag_color(str(tag))
@@ -1709,7 +1718,7 @@ class DetailDialog(QtWidgets.QDialog):
             lay.addLayout(tag_row)
         desc = SmoothTextEdit()           # 滚轮缓动，和别的列表一个手感
         desc.setReadOnly(True)
-        desc.setPlainText(it.desc or "（该模组未提供描述）")
+        desc.setPlainText(it.desc or tr("（该模组未提供描述）"))
         desc.setStyleSheet("QTextEdit{background:%s;color:%s;border:1px solid %s;"
                            "border-radius:8px;padding:6px;}"
                            % (theme.get("entry_bg"), theme.get("fg"),
@@ -1717,9 +1726,9 @@ class DetailDialog(QtWidgets.QDialog):
         lay.addWidget(desc, 1)
         btns = QtWidgets.QHBoxLayout()
         btns.addStretch(1)
-        reveal = QtWidgets.QPushButton("📂 打开所在位置")
+        reveal = QtWidgets.QPushButton(tr("📂 打开所在位置"))
         reveal.clicked.connect(lambda: on_reveal(it.path))
-        close = QtWidgets.QPushButton("关闭")
+        close = QtWidgets.QPushButton(tr("关闭"))
         close.setStyleSheet("QPushButton{background:#e53935;color:#ffffff;border:none;"
                             "border-radius:6px;padding:6px 18px;}"
                             "QPushButton:hover{background:#c62828;}")
@@ -1736,10 +1745,10 @@ class DetailDialog(QtWidgets.QDialog):
             except Exception:
                 pass
             panel.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
-            self.tabs.addTab(panel, "🌐 联网搜索")
+            self.tabs.addTab(panel, tr("🌐 联网搜索"))
             self._search_panel = panel
         except Exception as e:
-            trace_exc("DetailDialog/联网搜索标签", e)
+            trace_exc(tr("DetailDialog/联网搜索标签"), e)
 
     def showEvent(self, ev):
         """详情窗也上原生深色标题栏（和 Tk 版详情窗一致）。"""
@@ -1850,9 +1859,9 @@ class _VersionTask(QtCore.QRunnable):
 
 class SearchModel(QtCore.QAbstractTableModel):
     """搜索结果表：0 列是名称，最相似项置顶并标绿；本地版本不一致的标黄（可更新）。"""
-    COLS = (("name", "📄 名称", 240), ("author", "👤 作者", 110),
-            ("downloads", "⬇️ 下载量", 90), ("version", "🔖 最新版本", 220),
-            ("slug", "🆔 项目ID", 120))
+    COLS = (("name", tr("📄 名称"), 240), ("author", tr("👤 作者"), 110),
+            ("downloads", tr("⬇️ 下载量"), 90), ("version", tr("🔖 最新版本"), 220),
+            ("slug", tr("🆔 项目ID"), 120))
 
     def __init__(self, theme: dict, local_version: str = "", parent=None):
         super().__init__(parent)
@@ -1936,21 +1945,21 @@ class SearchModel(QtCore.QAbstractTableModel):
                 st = r.get("ver_status")
                 if st == "no_match":
                     过滤 = self.filter_text()
-                    return ("无 %s 的版本" % 过滤) if 过滤 else "没有可用版本"
+                    return (tr("无 %s 的版本") % 过滤) if 过滤 else tr("没有可用版本")
                 if st == "error":
-                    return "获取失败"
+                    return tr("获取失败")
                 v = r.get("latest_version", "")
-                return (v + " ⬆ 可更新") if r.get("updatable") else (v or "获取中…")
+                return (v + tr(" ⬆ 可更新")) if r.get("updatable") else (v or tr("获取中…"))
             return r.get("slug", "")
         if role == QtCore.Qt.ToolTipRole:
             行 = [r.get("title", ""), r.get("description", "")]
             st = r.get("ver_status")
             if st == "no_match":
                 过滤 = self.filter_text()
-                行.append("这个项目没有「%s」的构建" % 过滤 if 过滤
-                          else "这个项目没有可用的版本文件")
+                行.append(tr("这个项目没有「%s」的构建") % 过滤 if 过滤
+                          else tr("这个项目没有可用的版本文件"))
             elif st == "error":
-                行.append("版本信息没取到（网络或接口失败），可在外面手动打开项目页看")
+                行.append(tr("版本信息没取到（网络或接口失败），可在外面手动打开项目页看"))
             行.append(r.get("project_url", ""))
             return "\n".join(x for x in 行 if x)
         if role == QtCore.Qt.BackgroundRole:
@@ -2005,8 +2014,8 @@ class SearchCardItem:
                                       format_downloads(r.get("downloads") or 0))
         v = str(r.get("latest_version") or "")
         self.version = normalize_online_version(v) if v else ""
-        self.status = ("最相似" if r.get("is_match")
-                       else ("可更新" if r.get("updatable") else ""))
+        self.status = (tr("最相似") if r.get("is_match")
+                       else (tr("可更新") if r.get("updatable") else ""))
         # Modrinth 的 categories 里混着加载器和分类：加载器单独拿出来（Fabric/NeoForge…），
         # 其余走中文分类映射。卡片上"这个项目支持哪些加载器"是最该一眼看到的信息。
         slugs = list(r.get("categories") or [])
@@ -2088,7 +2097,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.env = dict(env or {})
         self._widen_note = ""       # "自动放宽过滤"的说明，下一次结果里带出来
         self._widen_tried = False   # 同一次搜索只自动放宽一次，别来回弹
-        self.setWindowTitle("联网搜索 - %s" % title)
+        self.setWindowTitle(tr("联网搜索 - %s") % title)
         self.resize(880, 520)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         self._signals = _SearchSignals()
@@ -2104,7 +2113,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(8)
 
-        head = QtWidgets.QLabel("🌐 联网搜索（Modrinth）· %s" % title)
+        head = QtWidgets.QLabel(tr("🌐 联网搜索（Modrinth）· %s") % title)
         f = head.font()
         f.setPointSize(11)
         f.setBold(True)
@@ -2115,13 +2124,13 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(6)
         self.entry = QtWidgets.QLineEdit(query)
-        self.entry.setPlaceholderText("搜索词（模组名 / Mod ID）")
+        self.entry.setPlaceholderText(tr("搜索词（模组名 / Mod ID）"))
         self.entry.setFixedHeight(30)
         self.entry.setClearButtonEnabled(True)
         self.entry.setMinimumWidth(320)
-        self.btn = AnimButton("🔍 联网搜索", "#00bcd4", "#0097a7", th)
+        self.btn = AnimButton(tr("🔍 联网搜索"), "#00bcd4", "#0097a7", th)
         self.btn.setFixedWidth(120)
-        row.addWidget(QtWidgets.QLabel("搜索词:"))
+        row.addWidget(QtWidgets.QLabel(tr("搜索词:")))
         row.addWidget(self.entry, 1)
         row.addWidget(self.btn)
         lay.addLayout(row)
@@ -2201,10 +2210,10 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
         act = QtWidgets.QHBoxLayout()
         act.setSpacing(6)
-        self.btn_page = AnimButton("🌍 打开项目页", "#43a047", "#2e7d32", th)
-        self.btn_dl = AnimButton("⬇️ 打开下载页", "#3f8ae0", "#2f6fd0", th)
-        self.btn_copy = AnimButton("📋 复制下载链接", "#6b7280", "#4b5563", th)
-        self.btn_close = AnimButton("关闭", "#e53935", "#c62828", th)
+        self.btn_page = AnimButton(tr("🌍 打开项目页"), "#43a047", "#2e7d32", th)
+        self.btn_dl = AnimButton(tr("⬇️ 打开下载页"), "#3f8ae0", "#2f6fd0", th)
+        self.btn_copy = AnimButton(tr("📋 复制下载链接"), "#6b7280", "#4b5563", th)
+        self.btn_close = AnimButton(tr("关闭"), "#e53935", "#c62828", th)
         for b in (self.btn_page, self.btn_dl, self.btn_copy, self.btn_close):
             act.addWidget(b)
         act.addStretch(1)
@@ -2228,7 +2237,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         """
         行 = QtWidgets.QHBoxLayout()
         行.setSpacing(6)
-        提示 = QtWidgets.QLabel("只看：")
+        提示 = QtWidgets.QLabel(tr("只看："))
         提示.setStyleSheet("color:%s;" % th.get("muted_fg"))
         行.addWidget(提示)
 
@@ -2236,8 +2245,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.cb_mc.setEditable(True)            # 探测不到 / 探测错了，自己敲一个
         self.cb_mc.setFixedHeight(26)
         self.cb_mc.setMinimumWidth(120)
-        self.cb_mc.setToolTip("只搜支持这个 MC 版本的项目；清空或选「不限版本」就是不过滤")
-        self.cb_mc.addItem("不限版本", "")
+        self.cb_mc.setToolTip(tr("只搜支持这个 MC 版本的项目；清空或选「不限版本」就是不过滤"))
+        self.cb_mc.addItem(tr("不限版本"), "")
         for v in ("1.21.4", "1.21.1", "1.20.6", "1.20.1", "1.19.2", "1.18.2", "1.16.5"):
             self.cb_mc.addItem(v, v)
         探测_mc = str(self.env.get("mc") or "").strip()
@@ -2251,8 +2260,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
         self.cb_loader = QtWidgets.QComboBox()
         self.cb_loader.setFixedHeight(26)
-        self.cb_loader.setToolTip("只搜这个加载器的项目")
-        for 显示, 值 in (("不限加载器", ""), ("Fabric", "fabric"), ("Forge", "forge"),
+        self.cb_loader.setToolTip(tr("只搜这个加载器的项目"))
+        for 显示, 值 in ((tr("不限加载器"), ""), ("Fabric", "fabric"), ("Forge", "forge"),
                         ("NeoForge", "neoforge"), ("Quilt", "quilt")):
             self.cb_loader.addItem(显示, 值)
         探测_loader = str(self.env.get("loader") or "").strip()
@@ -2263,12 +2272,12 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.lbl_filter = QtWidgets.QLabel()
         self.lbl_filter.setStyleSheet("color:%s;" % th.get("muted_fg"))
         if 探测_mc or 探测_loader:
-            self.lbl_filter.setText("自动识别自 %s" % (self.env.get("src") or "实例"))
+            self.lbl_filter.setText(tr("自动识别自 %s") % (self.env.get("src") or tr("实例")))
         else:
-            self.lbl_filter.setText("没认出你的实例版本，可手动选")
+            self.lbl_filter.setText(tr("没认出你的实例版本，可手动选"))
         行.addWidget(self.lbl_filter)
         # 表格 / 卡片切换放这一行最右（和"放大查看""差异窗口"那颗按钮同一套语义）
-        self.btn_view = AnimButton("🗂 卡片视图", "#607d8b", "#90a4ae", th)
+        self.btn_view = AnimButton(tr("🗂 卡片视图"), "#607d8b", "#90a4ae", th)
         self.btn_view.setFixedWidth(120)
         行.addWidget(self.btn_view)
         lay.addLayout(行)
@@ -2287,7 +2296,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         mc = ""
         try:
             t = self.cb_mc.currentText().strip()
-            mc = "" if t in ("", "不限", "不限版本") else t
+            mc = "" if t in ("", tr("不限"), tr("不限版本")) else t
         except Exception:
             pass
         loader = ""
@@ -2337,7 +2346,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         """表格 ↔ 卡片（和放大查看/差异窗口同一套按钮语义）。"""
         to_cards = self.stack.currentIndex() == 0
         self.stack.setCurrentIndex(1 if to_cards else 0)
-        self.btn_view.setText("📋 表格视图" if to_cards else "🗂 卡片视图")
+        self.btn_view.setText(tr("📋 表格视图") if to_cards else tr("🗂 卡片视图"))
         if to_cards:
             # 把表格当前的选中行带过去（卡片没有 Qt 选中态，用 sel_t 自己画）
             idx = self.table.currentIndex()
@@ -2392,14 +2401,14 @@ class OnlineSearchDialog(QtWidgets.QDialog):
     def search(self):
         q = self.entry.text().strip()
         if not q:
-            self.status.setText("请输入搜索词。")
+            self.status.setText(tr("请输入搜索词。"))
             return
         mc, loader = self._filters()
         self.model.filters = (mc, loader)
         self._widen_tried = False       # 这次搜索允许自动放宽一次
         过滤 = self.model.filter_text()
-        self.status.setText("搜索中…（%s首次联网可能要几秒）"
-                            % ("只看 %s；" % 过滤 if 过滤 else ""))
+        self.status.setText(tr("搜索中…（%s首次联网可能要几秒）")
+                            % (tr("只看 %s；") % 过滤 if 过滤 else ""))
         self.btn.setEnabled(False)
         QtCore.QThreadPool.globalInstance().start(
             _SearchTask(q, 8, self._signals, self.modid, q, mc, loader))
@@ -2413,7 +2422,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         # 加载器不认识就放宽的收益不大（那层是读 jar 元数据认的，比较准），所以只放宽版本。
         if not results and mc and not self._widen_tried:
             self._widen_tried = True
-            self._widen_note = "按 %s 没搜到东西 —— 可能是版本认错了，已自动放宽版本再搜一次。" % mc
+            self._widen_note = tr("按 %s 没搜到东西 —— 可能是版本认错了，已自动放宽版本再搜一次。") % mc
             self.cb_mc.setCurrentIndex(0)          # 触发 _on_filter_changed → 重搜
             return
         备注 = self._widen_note
@@ -2425,15 +2434,15 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         if not n:
             过滤 = self.model.filter_text()
             self.status.setText(备注 + " " if 备注 else "" +
-                                "没有找到相关模组%s，换个关键词试试。"
-                                % ("（当前只看 %s）" % 过滤 if 过滤 else ""))
+                                tr("没有找到相关模组%s，换个关键词试试。")
+                                % (tr("（当前只看 %s）") % 过滤 if 过滤 else ""))
             return
         best = self.model.rows[0].get("score", 0)
-        extra = "★为最相似项，已置顶。" if best >= 20 else "未找到相似度足够的候选。"
+        extra = tr("★为最相似项，已置顶。") if best >= 20 else tr("未找到相似度足够的候选。")
         过滤 = self.model.filter_text()
-        前缀 = "（已按 %s 过滤）" % 过滤 if 过滤 else ""
+        前缀 = tr("（已按 %s 过滤）") % 过滤 if 过滤 else ""
         self.status.setText(("%s " % 备注 if 备注 else "")
-                            + "找到 %d 个结果。%s%s 版本/下载链接加载中…" % (n, extra, 前缀))
+                            + tr("找到 %d 个结果。%s%s 版本/下载链接加载中…") % (n, extra, 前缀))
         pool = QtCore.QThreadPool.globalInstance()
         for i, r in enumerate(self.model.rows):
             if r.get("project_id"):
@@ -2450,9 +2459,9 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         total = sum(1 for r in self.model.rows if r.get("project_id"))
         if total and self._versions_done >= total:
             过滤 = self.model.filter_text()
-            self.status.setText("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。"
+            self.status.setText(tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。")
                                 % (len(self.model.rows),
-                                   "，按 %s 过滤" % 过滤 if 过滤 else ""))
+                                   tr("，按 %s 过滤") % 过滤 if 过滤 else ""))
 
     # ---------------- 动作 ----------------
     def _card_mode(self) -> bool:
@@ -2477,7 +2486,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         if r.get("project_url"):
             webbrowser.open(r["project_url"])
         else:
-            self.status.setText("先搜出结果、再点一行。")
+            self.status.setText(tr("先搜出结果、再点一行。"))
 
     def _open_download_page(self):
         r = self._current()
@@ -2485,16 +2494,16 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         if url:
             webbrowser.open(url)
         else:
-            self.status.setText("这一项还没拿到下载链接（或该项目没有可用文件）。")
+            self.status.setText(tr("这一项还没拿到下载链接（或该项目没有可用文件）。"))
 
     def _copy_download(self):
         r = self._current()
         url = r.get("download_url")
         if url:
             QtWidgets.QApplication.clipboard().setText(url)
-            self.status.setText("已复制下载链接：%s" % url)
+            self.status.setText(tr("已复制下载链接：%s") % url)
         else:
-            self.status.setText("这一项还没拿到下载链接。")
+            self.status.setText(tr("这一项还没拿到下载链接。"))
 
 
 # --------------------------------------------------------------------------- #
@@ -2517,7 +2526,7 @@ class QtBigView(QtWidgets.QWidget):
         # 只探一次（建窗口时），拿不准就是空串 = 不过滤。
         self.env = detect_instance_env(source_path) if source_path else \
             {"mc": "", "loader": "", "src": ""}
-        self.setWindowTitle("放大查看 - %s" % title)
+        self.setWindowTitle(tr("放大查看 - %s") % title)
         self.setMinimumSize(880, 560)
         self.resize(1060, 680)
         # 打开时用表格还是卡片：默认视图在设置里选（_BIG_VIEW_VIEWS），这里只管摆好初始状态
@@ -2543,17 +2552,17 @@ class QtBigView(QtWidgets.QWidget):
         # ---- 标题栏 ----
         bar = QtWidgets.QHBoxLayout()
         bar.setSpacing(6)
-        self.title_label = QtWidgets.QLabel("🗂 放大查看 · %s" % self.title_text)
+        self.title_label = QtWidgets.QLabel(tr("🗂 放大查看 · %s") % self.title_text)
         f = self.title_label.font()
         f.setPointSize(11)
         f.setBold(True)
         self.title_label.setFont(f)
         bar.addWidget(self.title_label)
-        tag = QtWidgets.QLabel("PySide6 试点")
+        tag = QtWidgets.QLabel(tr("PySide6 试点"))
         self.tag_label = tag
         bar.addWidget(tag)
         bar.addStretch(1)
-        self.hint_tag = QtWidgets.QLabel("🪟 系统原生窗口")
+        self.hint_tag = QtWidgets.QLabel(tr("🪟 系统原生窗口"))
         self.hint_tag.setStyleSheet("color:%s;" % th.get("muted_fg"))
         bar.addWidget(self.hint_tag)
         lay.addLayout(bar)
@@ -2562,23 +2571,23 @@ class QtBigView(QtWidgets.QWidget):
         tools = QtWidgets.QHBoxLayout()
         tools.setSpacing(6)
         is_mod = self.store.is_mod
-        self.btn_detect = AnimButton("🔍 检测存在性", "#3f8ae0", "#2f6fd0", th)
-        self.btn_del = AnimButton("🗑 移出清单", "#e0574f", "#c62828", th)
-        self.btn_add = AnimButton("➕ 添加模组", "#3fb27f", "#2e8b57", th) if is_mod else None
-        self.btn_all = AnimButton("☑ 全选", "#7c6cf0", "#5b4bd6", th)
-        self.btn_inv = AnimButton("⇄ 反选", "#7c6cf0", "#5b4bd6", th)
+        self.btn_detect = AnimButton(tr("🔍 检测存在性"), "#3f8ae0", "#2f6fd0", th)
+        self.btn_del = AnimButton(tr("🗑 移出清单"), "#e0574f", "#c62828", th)
+        self.btn_add = AnimButton(tr("➕ 添加模组"), "#3fb27f", "#2e8b57", th) if is_mod else None
+        self.btn_all = AnimButton(tr("☑ 全选"), "#7c6cf0", "#5b4bd6", th)
+        self.btn_inv = AnimButton(tr("⇄ 反选"), "#7c6cf0", "#5b4bd6", th)
         # 不要写"清空"：它清的是**勾选**（选中态），不是清空清单 —— 那有"移出清单"负责，
         # 两个都叫清空会让人以为清单被删了
-        self.btn_none = AnimButton("⬜ 清空勾选", "#e53935", "#c62828", th)
-        self.btn_all.setToolTip("勾选当前显示的所有条目（不会改清单内容）")
-        self.btn_inv.setToolTip("把已勾选 / 未勾选反过来（只作用于当前显示）")
-        self.btn_none.setToolTip("取消所有勾选（只清选中态，清单内容不动）")
-        self.btn_online = (AnimButton("🌐 联网搜索", "#7e57c2", "#5e35b1", th)
+        self.btn_none = AnimButton(tr("⬜ 清空勾选"), "#e53935", "#c62828", th)
+        self.btn_all.setToolTip(tr("勾选当前显示的所有条目（不会改清单内容）"))
+        self.btn_inv.setToolTip(tr("把已勾选 / 未勾选反过来（只作用于当前显示）"))
+        self.btn_none.setToolTip(tr("取消所有勾选（只清选中态，清单内容不动）"))
+        self.btn_online = (AnimButton(tr("🌐 联网搜索"), "#7e57c2", "#5e35b1", th)
                            if is_mod else None)
-        self.btn_view = AnimButton("🗂 卡片视图", "#0ea5a4", "#0b7f7f", th)
+        self.btn_view = AnimButton(tr("🗂 卡片视图"), "#0ea5a4", "#0b7f7f", th)
         # 定位错误：跳到下一个"迁移/扫描时报过错的条目"（主界面记着那份名单，见 hooks.failed）
-        self.btn_fail = AnimButton("📍 定位错误", "#e53935", "#c62828", th)
-        self.btn_fail.setToolTip("跳到下一个出错的条目（清单里标红的那几条）")
+        self.btn_fail = AnimButton(tr("📍 定位错误"), "#e53935", "#c62828", th)
+        self.btn_fail.setToolTip(tr("跳到下一个出错的条目（清单里标红的那几条）"))
         # 工具条按钮按「界面按钮」的配置摆：隐藏的不加、顺序照配置（和 Tk 版共用一套 key，
         # 两个窗口各自有哪几个按钮就摆哪几个）。改完设置后下次打开这个窗口生效。
         _btns = {"bv_detect": self.btn_detect, "bv_remove": self.btn_del,
@@ -2598,12 +2607,25 @@ class QtBigView(QtWidgets.QWidget):
                 tools.addWidget(_btns[_k])
         tools.addStretch(1)
         self.search = QtWidgets.QLineEdit()
-        self.search.setPlaceholderText("🔍 搜索（文件名 / 完整路径）")
+        self.search.setPlaceholderText(tr("🔍 搜索（文件名 / 完整路径）"))
         self.search.setFixedHeight(30)
         self.search.setClearButtonEnabled(True)
         self.search.setMinimumWidth(240)
         tools.addWidget(self.search)
         lay.addLayout(tools)
+        # ⚠ 窗口最小宽度按工具栏**实测**来定：英文按钮比中文宽一截，最小宽还停在
+        # 880 的话，窗口一窄搜索框就被挤扁/裁掉（用户报过"搜索框显示不全"）。
+        # 留 12% 余量给以后可能变长的文案；屏幕比这更窄时按屏幕收着点，别开出屏幕外。
+        try:
+            可见按钮 = [_btns[k] for k in _seq if _btns.get(k) is not None]
+            需要 = (sum(b.sizeHint().width() for b in 可见按钮)
+                    + 6 * (len(可见按钮) + 2) + self.search.minimumWidth())
+            需要 = int(需要 * 1.12)
+            屏幕 = QtWidgets.QApplication.primaryScreen()
+            上限 = int(屏幕.availableGeometry().width() * 0.96) if 屏幕 else 需要
+            self.setMinimumWidth(max(880, min(需要, 上限)))
+        except Exception:
+            pass
 
         self.btn_detect.clicked.connect(self._on_detect)
         self.btn_del.clicked.connect(self._on_remove)
@@ -2714,7 +2736,7 @@ class QtBigView(QtWidgets.QWidget):
         self.stack.currentChanged.connect(lambda *_a: self._update_scroll_progress())
         if self._start_cards:                 # 设置里选了"打开就是卡片"
             self.stack.setCurrentIndex(1)
-            self.btn_view.setText("📋 表格视图")
+            self.btn_view.setText(tr("📋 表格视图"))
 
         # ---- 底栏 ----
         # 原生窗口框自己就能从四边拖拽缩放，不需要 QSizeGrip
@@ -2963,7 +2985,7 @@ class QtBigView(QtWidgets.QWidget):
                            "QMenu::item:selected{background:%s;}"
                            % (self.theme.get("bg"), self.theme.get("fg"),
                               self.theme.get("muted_fg"), self.theme.get("hover_bg")))
-        act = {"info": "ℹ 详情", "reveal": "📂 打开所在位置", "remove": "🗑 移出清单"}
+        act = {"info": tr("ℹ 详情"), "reveal": tr("📂 打开所在位置"), "remove": tr("🗑 移出清单")}
         self._cur_row = row
         for name, _g in self.card_delegate.actions:      # config 清单里没有"详情"
             menu.addAction(act[name]).setData(name)
@@ -2971,10 +2993,10 @@ class QtBigView(QtWidgets.QWidget):
         # 靠双击切换选中本来就不靠谱，这里补一条
         it_here = self.store.at(row)
         menu.addSeparator()
-        menu.addAction("☐ 取消选中" if it_here.checked else "☑ 选中").setData("toggle")
+        menu.addAction(tr("☐ 取消选中") if it_here.checked else tr("☑ 选中")).setData("toggle")
         if self.store.is_mod:
             menu.addSeparator()
-            menu.addAction("🌐 联网搜索（Modrinth）").setData("online")
+            menu.addAction(tr("🌐 联网搜索（Modrinth）")).setData("online")
 
         def _picked(pick):
             if pick is not None:
@@ -3122,7 +3144,7 @@ class QtBigView(QtWidgets.QWidget):
         try:
             fn()                            # 动画播完才真删
         except Exception:
-            trace_exc("qt_big_view", "退场动画结束后执行删除")
+            trace_exc("qt_big_view", tr("退场动画结束后执行删除"))
 
     def _add_with_pop(self, paths) -> int:
         """加条目，并给新加的那几条播进场动画（返回新增数量）。"""
@@ -3237,7 +3259,7 @@ class QtBigView(QtWidgets.QWidget):
         else:
             base = self.store.config_dir
             if base is None:
-                self._message("添加提示", "请先在主界面设置源整合包目录，再往这里拖。")
+                self._message(tr("添加提示"), tr("请先在主界面设置源整合包目录，再往这里拖。"))
                 return
             for p in paths:
                 tp = Path(p)
@@ -3254,28 +3276,28 @@ class QtBigView(QtWidgets.QWidget):
                     rel_s = rel_s.rstrip("/") + "/"
                 收.append(rel_s)
         if not 收:
-            self._message("添加提示",
-                          "只支持拖入 .jar 模组文件。" if self.store.is_mod
-                          else "拖入的文件不在源整合包的 config 目录下。")
+            self._message(tr("添加提示"),
+                          tr("只支持拖入 .jar 模组文件。") if self.store.is_mod
+                          else tr("拖入的文件不在源整合包的 config 目录下。"))
             return
         n = self._add_with_pop(收)
         if not n:
-            self._message("添加提示", "这些条目已经在清单里了。")
+            self._message(tr("添加提示"), tr("这些条目已经在清单里了。"))
             return
         self._write_back()
-        提示 = ("已添加 %d 个模组。" % n) if self.store.is_mod else ("已添加 %d 个条目。" % n)
+        提示 = (tr("已添加 %d 个模组。") % n) if self.store.is_mod else (tr("已添加 %d 个条目。") % n)
         if 跳过:
-            提示 += "（另有 %d 项被跳过）" % 跳过
-        self._message("添加成功", 提示)
+            提示 += tr("（另有 %d 项被跳过）") % 跳过
+        self._message(tr("添加成功"), 提示)
 
     def _on_remove(self):
         if self._pending_remove is not None:
             return                          # 上一批的退场动画还没播完
         n = len(self.store.selected_items())
         if not n:
-            self._message("提示", "请先选中要移出的条目（单击行/卡片即选中）。")
+            self._message(tr("提示"), tr("请先选中要移出的条目（单击行/卡片即选中）。"))
             return
-        self._confirm("移出清单", "把选中的 %d 项从清单里移出？（不会删除磁盘文件）" % n,
+        self._confirm(tr("移出清单"), tr("把选中的 %d 项从清单里移出？（不会删除磁盘文件）") % n,
                       self._do_remove_selected)
 
     def _do_remove_selected(self):
@@ -3300,9 +3322,9 @@ class QtBigView(QtWidgets.QWidget):
             self._write_back()
 
     def _on_add(self):
-        dlg = QtWidgets.QFileDialog(self, "选择要添加的模组（可多选）")
+        dlg = QtWidgets.QFileDialog(self, tr("选择要添加的模组（可多选）"))
         dlg.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
-        dlg.setNameFilters(["Minecraft 模组 (*.jar)", "所有文件 (*.*)"])
+        dlg.setNameFilters([tr("Minecraft 模组 (*.jar)"), tr("所有文件 (*.*)")])
         if self.store.source_path:
             dlg.setDirectory(self.store.source_path)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -3313,7 +3335,7 @@ class QtBigView(QtWidgets.QWidget):
             n = self._add_with_pop(list(files))
             if n:
                 self._write_back()
-                self._message("添加成功", "已添加 %d 个模组。" % n)
+                self._message(tr("添加成功"), tr("已添加 %d 个模组。") % n)
 
         dlg.filesSelected.connect(_picked)
         self._track(dlg)
@@ -3359,12 +3381,12 @@ class QtBigView(QtWidgets.QWidget):
         """
         n = self._refresh_failed()
         if not n:
-            self._hint_temp("这次没有出错的条目")
+            self._hint_temp(tr("这次没有出错的条目"))
             return
         命中 = [r for r in range(len(self.store.order))
                if self.store.at(r).failed]
         if not 命中:
-            self._hint_temp("出错的条目被搜索/过滤挡住了，先清一下搜索框")
+            self._hint_temp(tr("出错的条目被搜索/过滤挡住了，先清一下搜索框"))
             return
         self._fail_cursor = (getattr(self, "_fail_cursor", -1) + 1) % len(命中)
         row = 命中[self._fail_cursor]
@@ -3375,12 +3397,12 @@ class QtBigView(QtWidgets.QWidget):
             视图.setCurrentIndex(idx)
             视图.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
         except Exception:
-            trace_exc("qt_big_view", "滚动到出错条目")
+            trace_exc("qt_big_view", tr("滚动到出错条目"))
         it = self.store.at(row)
-        self._hint_temp("📍 第 %d/%d 个出错条目：%s"
+        self._hint_temp(tr("📍 第 %d/%d 个出错条目：%s")
                         % (self._fail_cursor + 1, len(命中), it.name))
 
-    _HINT_DEFAULT = "单击=选中 · 双击=详情 · 右键=菜单 · Ctrl+V=粘贴文件 · Esc=关闭"
+    _HINT_DEFAULT = tr("单击=选中 · 双击=详情 · 右键=菜单 · Ctrl+V=粘贴文件 · Esc=关闭")
 
     def _hint_temp(self, 文本, 毫秒=3000):
         """底栏临时说一句（不弹窗），到点恢复原来的提示。"""
@@ -3409,11 +3431,11 @@ class QtBigView(QtWidgets.QWidget):
     def _toggle_view(self):
         to_cards = self.stack.currentIndex() == 0
         self.stack.setCurrentIndex(1 if to_cards else 0)
-        self.btn_view.setText("📋 表格视图" if to_cards else "🗂 卡片视图")
+        self.btn_view.setText(tr("📋 表格视图") if to_cards else tr("🗂 卡片视图"))
 
     def _reveal(self, path):
         if not path or not Path(path).exists():
-            self._message("提示", "该文件不在磁盘上，无法定位。")
+            self._message(tr("提示"), tr("该文件不在磁盘上，无法定位。"))
             return
         import subprocess
         subprocess.Popen(["explorer", "/select,", str(path)])
@@ -3498,7 +3520,7 @@ class QtBigView(QtWidgets.QWidget):
                     if getattr(d, "_detail_key", None) == key and d.isVisible():
                         d.raise_()
                         d.activateWindow()
-                        trace_line("detail 复用 row=%d key=%s" % (row, key))
+                        trace_line(tr("detail 复用 row=%d key=%s") % (row, key))
                         return d
                 except RuntimeError:
                     continue
@@ -3603,7 +3625,7 @@ class QtBigView(QtWidgets.QWidget):
             self.scroll_pct.setText("%d%%" % round(比例 * 100))
             self._sync_overview_viewport(sb)
         except Exception:
-            trace_exc("qt_big_view", "更新滚动进度")
+            trace_exc("qt_big_view", tr("更新滚动进度"))
 
     def _sync_overview_viewport(self, sb=None):
         """总览条上的视口框：跟着滚动条走（0..1 的一小段）。"""
@@ -3629,7 +3651,7 @@ class QtBigView(QtWidgets.QWidget):
             self.overview.set_colors(self.store.overview_colors(self.theme))
             self._sync_overview_viewport()
         except Exception:
-            trace_exc("qt_big_view", "刷新总览条")
+            trace_exc("qt_big_view", tr("刷新总览条"))
 
     def _jump_to_overview(self, 比例):
         """在总览条上点/拖：把那个位置对到视口中间（和 VSCode 一致）。"""
@@ -3640,7 +3662,7 @@ class QtBigView(QtWidgets.QWidget):
             目标 = int(比例 * 总 - page / 2.0)
             sb.setValue(max(sb.minimum(), min(sb.maximum(), 目标)))
         except Exception:
-            trace_exc("qt_big_view", "总览条跳转")
+            trace_exc("qt_big_view", tr("总览条跳转"))
 
     def _on_sum_tick(self):
         """200ms 一次：先把攒下的扫描结果刷给"看得见的行"，再更新摘要。"""
@@ -3698,22 +3720,22 @@ class QtBigView(QtWidgets.QWidget):
         def label(text, color=muted):
             return '<span style="color:%s;">%s</span>' % (color, text)
 
-        parts = [num("共 %d 项" % total, fg, True)]
+        parts = [num(tr("共 %d 项") % total, fg, True)]
         if shown != total:
             # 搜索/过滤把显示数压下来了，值得单独提示一句
-            parts.append(num("显示 %d 项" % shown, accent if shown else muted, True))
-        parts.append(num("已选 %d 项" % sel, accent if sel else muted, bool(sel)))
+            parts.append(num(tr("显示 %d 项") % shown, accent if shown else muted, True))
+        parts.append(num(tr("已选 %d 项") % sel, accent if sel else muted, bool(sel)))
         parts.append(
-            label("存在 ") + num("%d" % ok, good if ok else muted, bool(ok))
-            + label(" / 缺失 ") + num("%d" % miss, bad if miss else muted, bool(miss)))
+            label(tr("存在 ")) + num("%d" % ok, good if ok else muted, bool(ok))
+            + label(tr(" / 缺失 ")) + num("%d" % miss, bad if miss else muted, bool(miss)))
         if self.store.scanning:
-            parts.append(label("检测中…", warn))
+            parts.append(label(tr("检测中…"), warn))
 
         html = dot.join(parts)
         if html != self._summary_text:          # 内容没变就不 setText，省掉重绘
             self._summary_text = html
             self.summary.setText(html)
-        title = "🗂 放大查看 · %s（%d）" % (self.title_text, total)
+        title = tr("🗂 放大查看 · %s（%d）") % (self.title_text, total)
         if title != getattr(self, "_title_shown", ""):
             self._title_shown = title
             self.title_label.setText(title)
@@ -3801,7 +3823,7 @@ class QtBigView(QtWidgets.QWidget):
             if paths:
                 self._drop_paths(paths)
         except Exception:
-            trace_exc("qt_big_view", "处理 Ctrl+V 粘贴")
+            trace_exc("qt_big_view", tr("处理 Ctrl+V 粘贴"))
 
     def closeEvent(self, ev):
         self._alive = False

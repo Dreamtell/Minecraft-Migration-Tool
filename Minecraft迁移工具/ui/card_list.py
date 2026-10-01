@@ -16,6 +16,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from utils.helpers import SmoothScroller, is_dark_theme
+# 界面语言：占位文字是画在画布上的（控件入口覆盖不到）
+from utils.i18n import tr
 
 # 分类标签的配色（中间调 + 白字，深浅主题下都清楚）
 TAG_COLORS = {
@@ -695,7 +697,10 @@ class ModCardList(tk.Frame):
         # 文本
         right = c.winfo_width() - mx - self.PAD
         title = row.get("title") or ""
-        sub = row.get("subtitle") or ""
+        # 标题/副标题/描述都是**数据**（模组自己的名字），但里面可能夹着我们产的占位词
+        # （"未知" / "无" 这类），所以按段过一遍 tr —— 查不到就原样，模组名不受影响
+        title = tr(title) if title else title
+        sub = tr(row.get("subtitle")) if row.get("subtitle") else ""
         ver = row.get("version") or ""
         ver_w = self._font_sub.measure(ver) + 10 if ver else 0
         title_max = max(60, right - x - ver_w - 8)
@@ -732,7 +737,9 @@ class ModCardList(tk.Frame):
         for tag in (row.get("tags") or []):
             chips.append((tag, TAG_COLORS.get(tag, ("#546e7a", "#ffffff"))))
         for text_c, (bg_c, fg_c) in chips[:4]:
-            w_chip = self._font_sub.measure(text_c) + 14
+            # 徽章文字是画在画布上的（控件入口覆盖不到）：**配色按原文查、显示才翻**
+            文字 = tr(text_c)
+            w_chip = self._font_sub.measure(文字) + 14
             if cx + w_chip > right - 120:
                 break
             chip = self._photo_for(rounded_image(w_chip, 17, 8, bg_c))
@@ -741,7 +748,7 @@ class ModCardList(tk.Frame):
             else:
                 c.create_rectangle(cx, y0 + 32, cx + w_chip, y0 + 49,
                                    fill=bg_c, outline="", tags=ctag)
-            c.create_text(cx + w_chip / 2, y0 + 40, text=text_c, fill=fg_c,
+            c.create_text(cx + w_chip / 2, y0 + 40, text=文字, fill=fg_c,
                           font=self._font_sub, tags=ctag)
             cx += w_chip + 5
         if desc:
@@ -789,7 +796,7 @@ class ModCardList(tk.Frame):
                     pass
         self._sel_anim.clear()
         if not self.rows:
-            c.create_text(c.winfo_width() // 2, 40, text="（没有内容）",
+            c.create_text(c.winfo_width() // 2, 40, text=tr("（没有内容）"),
                           fill=self.theme.get("muted_fg", self.theme["fg"]),
                           font=self._font_sub)
             return

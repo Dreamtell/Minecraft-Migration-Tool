@@ -5,6 +5,9 @@ import json
 import traceback
 from pathlib import Path
 
+# 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
+
 
 # ---------- 工具函数 ----------
 def _is_safe_path(rel_path):
@@ -598,7 +601,7 @@ def run_migration(
         src_mods = src_path / "mods"
         tgt_mods = tgt_path / "mods"
         if not src_mods.exists():
-            log(f"⚠️ 旧 mods 目录不存在: {src_mods}，跳过", "WARNING")
+            log(trp("⚠️ 旧 mods 目录不存在: {0}，跳过", src_mods), "WARNING")
         else:
             if not dry_run:
                 tgt_mods.mkdir(parents=True, exist_ok=True)
@@ -623,8 +626,7 @@ def run_migration(
             if not dry_run and tgt_mods.exists():
                 _t0 = time.perf_counter()
                 target_index = index_modids(tgt_mods)
-                log(f"🔎 已索引目标 mods（{len(target_index)} 个 modid，"
-                    f"耗时 {time.perf_counter() - _t0:.1f}s），用于识别旧版本", "INFO")
+                log(trp("🔎 已索引目标 mods（{0} 个 modid，耗时 {1:.1f}s），用于识别旧版本", len(target_index), time.perf_counter() - _t0), "INFO")
             for idx, item in enumerate(modlist):
                 if check_cancel and check_cancel():
                     log("⚠️ 用户取消了迁移", "WARNING")
@@ -639,7 +641,7 @@ def run_migration(
                     matched = match_mod(item, source_files, name_map)
                     if not matched:
                         failed.append((item, "未找到匹配的文件"))
-                        log(f"❌ 未找到匹配模组: {item}", "ERROR")
+                        log(trp("❌ 未找到匹配模组: {0}", item), "ERROR")
                         continue
                     src_file = source_files[matched]
 
@@ -648,7 +650,7 @@ def run_migration(
                 if marker:
                     dst_file = tgt_mods / (marker + matched)
                 if dst_file.exists() and not overwrite and not dry_run:
-                    log(f"⏭️ 跳过已存在的模组: {dst_file.name}", "WARNING")
+                    log(trp("⏭️ 跳过已存在的模组: {0}", dst_file.name), "WARNING")
                     skipped += 1
                     continue
                 # 复制之前先清掉目标里同 modid 的旧版本（否则两个版本共存会崩）
@@ -662,18 +664,17 @@ def run_migration(
                     file_index += 1
                     copied_bytes += src_file.stat().st_size
                     if dry_run:
-                        log(f"[模拟] 将复制: {dst_file.name}", "SIMULATE")
+                        log(trp("[模拟] 将复制: {0}", dst_file.name), "SIMULATE")
                     else:
-                        log(f"✅ 已复制: {dst_file.name}", "SUCCESS")
+                        log(trp("✅ 已复制: {0}", dst_file.name), "SUCCESS")
                     step = f"复制模组 ({idx + 1}/{total_mods})"
                     progress(file_index, dst_file.name, copied_bytes, step)
                 else:
                     failed.append((item, msg))
-                    log(f"❌ 复制失败 {matched}: {msg}", "ERROR")
-            log(f"模组复制完成: 成功 {success} 个, 跳过 {skipped} 个, 失败 {len(failed)} 个", "INFO")
+                    log(trp("❌ 复制失败 {0}: {1}", matched, msg), "ERROR")
+            log(trp("模组复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success, skipped, len(failed)), "INFO")
             if removed_old:
-                log(f"🧹 已移除 {removed_old} 个同 modid 的旧版本（移入 "
-                    f".migrate_backup/removed_mods，回滚时会自动恢复）", "SUCCESS")
+                log(trp("🧹 已移除 {0} 个同 modid 的旧版本（移入 .migrate_backup/removed_mods，回滚时会自动恢复）", removed_old), "SUCCESS")
 
         # -------- 步骤2: 复制存档 --------
         log("\n【步骤2】复制存档...", "INFO")
@@ -684,7 +685,7 @@ def run_migration(
         src_world = src_path / "saves" / world_name
         dst_world = tgt_path / "saves" / world_name
         if not src_world.exists():
-            log(f"⚠️ 源存档不存在: {src_world}，跳过", "WARNING")
+            log(trp("⚠️ 源存档不存在: {0}，跳过", src_world), "WARNING")
         else:
             if not dry_run:
                 dst_world.parent.mkdir(parents=True, exist_ok=True)
@@ -703,8 +704,9 @@ def run_migration(
                     step = f"复制存档 ({idx + 1}/{total_world_files})"
                     progress(file_index, f"存档/{rel}", copied_bytes, step)
                 else:
-                    log(f"❌ 复制存档文件 {rel} 失败: {msg}", "ERROR")
-            log(f"✅ 存档 {world_name} 已{'模拟' if dry_run else ''}复制完成，共 {total_world_files} 个文件", "SUCCESS")
+                    log(trp("❌ 复制存档文件 {0} 失败: {1}", rel, msg), "ERROR")
+            log(trp("✅ 存档 {0} 已{1}复制完成，共 {2} 个文件", world_name,
+                    trp('模拟') if dry_run else '', total_world_files), "SUCCESS")
 
         # -------- 步骤3: 复制 config --------
         log("\n【步骤3】复制 config 内容...", "INFO")
@@ -717,7 +719,7 @@ def run_migration(
         if not configlist:
             log("ℹ️ config 清单为空，跳过", "INFO")
         elif not src_config.exists():
-            log(f"⚠️ 源 config 目录不存在: {src_config}，跳过", "WARNING")
+            log(trp("⚠️ 源 config 目录不存在: {0}，跳过", src_config), "WARNING")
         else:
             if not dry_run:
                 tgt_config.mkdir(parents=True, exist_ok=True)
@@ -731,12 +733,12 @@ def run_migration(
                     return False
 
                 if not _is_safe_path(entry):
-                    log(f"⚠️ 跳过不安全 config 路径: {entry}", "WARNING")
+                    log(trp("⚠️ 跳过不安全 config 路径: {0}", entry), "WARNING")
                     continue
 
                 src_entry = src_config / entry
                 if not src_entry.exists():
-                    log(f"❌ 源 config 条目不存在: {entry}，跳过", "ERROR")
+                    log(trp("❌ 源 config 条目不存在: {0}，跳过", entry), "ERROR")
                     failed_cfg.append((entry, "源不存在"))
                     continue
 
@@ -749,14 +751,14 @@ def run_migration(
                         file_index += 1
                         copied_bytes += src_entry.stat().st_size
                         if dry_run:
-                            log(f"[模拟] 将复制 config: {entry}", "SIMULATE")
+                            log(trp("[模拟] 将复制 config: {0}", entry), "SIMULATE")
                         else:
-                            log(f"✅ 已复制 config: {entry}", "SUCCESS")
+                            log(trp("✅ 已复制 config: {0}", entry), "SUCCESS")
                         step = f"复制 config ({idx + 1}/{total_config_entries})"
                         progress(file_index, f"config/{entry}", copied_bytes, step)
                     else:
                         failed_cfg.append((entry, msg))
-                        log(f"❌ 复制 config 失败 {entry}: {msg}", "ERROR")
+                        log(trp("❌ 复制 config 失败 {0}: {1}", entry, msg), "ERROR")
                 elif src_entry.is_dir():
                     # 递归复制整个文件夹：目录本身也要建出来（含空文件夹），
                     # 每个文件都打日志、更新进度，并且支持中途取消。
@@ -765,7 +767,7 @@ def run_migration(
                             dst_entry.mkdir(parents=True, exist_ok=True)
                     except Exception as e:
                         failed_cfg.append((entry, f"创建目录失败: {e}"))
-                        log(f"❌ 创建 config 目录 {entry} 失败: {e}", "ERROR")
+                        log(trp("❌ 创建 config 目录 {0} 失败: {1}", entry, e), "ERROR")
                         continue
 
                     for src_item in sorted(src_entry.rglob("*")):
@@ -778,13 +780,13 @@ def run_migration(
                         if src_item.is_dir():
                             # 空文件夹也要保留，否则目标端目录结构不完整
                             if dry_run:
-                                log(f"[模拟] 将创建目录: {entry}/{rel}", "SIMULATE")
+                                log(trp("[模拟] 将创建目录: {0}/{1}", entry, rel), "SIMULATE")
                             else:
                                 try:
                                     dst_item.mkdir(parents=True, exist_ok=True)
                                 except Exception as e:
                                     failed_cfg.append((f"{entry}/{rel}", f"建目录失败: {e}"))
-                                    log(f"❌ 创建 config 目录 {entry}/{rel} 失败: {e}", "ERROR")
+                                    log(trp("❌ 创建 config 目录 {0}/{1} 失败: {2}", entry, rel, e), "ERROR")
                             continue
                         if not src_item.is_file():
                             continue
@@ -796,18 +798,18 @@ def run_migration(
                             file_index += 1
                             copied_bytes += src_item.stat().st_size
                             if dry_run:
-                                log(f"[模拟] 将复制 config: {entry}/{rel}", "SIMULATE")
+                                log(trp("[模拟] 将复制 config: {0}/{1}", entry, rel), "SIMULATE")
                             else:
-                                log(f"✅ 已复制 config: {entry}/{rel}", "SUCCESS")
+                                log(trp("✅ 已复制 config: {0}/{1}", entry, rel), "SUCCESS")
                             step = f"复制 config ({idx + 1}/{total_config_entries})"
                             progress(file_index, f"config/{entry}/{rel}", copied_bytes, step)
                         else:
                             failed_cfg.append((f"{entry}/{rel}", msg))
-                            log(f"❌ 复制 config 文件 {entry}/{rel} 失败: {msg}", "ERROR")
+                            log(trp("❌ 复制 config 文件 {0}/{1} 失败: {2}", entry, rel, msg), "ERROR")
                 else:
-                    log(f"⚠️ config 条目 {entry} 非文件非目录，跳过", "WARNING")
+                    log(trp("⚠️ config 条目 {0} 非文件非目录，跳过", entry), "WARNING")
 
-            log(f"config 复制完成: 成功 {success_cfg} 个, 失败 {len(failed_cfg)} 个", "INFO")
+            log(trp("config 复制完成: 成功 {0} 个, 失败 {1} 个", success_cfg, len(failed_cfg)), "INFO")
 
         # -------- 其它文件（路径相对整合包根目录） --------
         # 带走 mods / config / saves 之外的东西：shaderpacks/、resourcepacks/、
@@ -828,14 +830,14 @@ def run_migration(
                 if not entry:
                     continue
                 if not _is_safe_path(entry):
-                    log(f"⚠️ 跳过不安全路径: {entry}", "WARNING")
+                    log(trp("⚠️ 跳过不安全路径: {0}", entry), "WARNING")
                     continue
 
                 src_entry = src_path / entry
                 dst_entry = tgt_path / entry
                 if not src_entry.exists():
                     failed_extra.append((entry, "源不存在"))
-                    log(f"❌ 源条目不存在: {entry}，跳过", "ERROR")
+                    log(trp("❌ 源条目不存在: {0}，跳过", entry), "ERROR")
                     continue
 
                 step = f"复制其它文件 ({idx + 1}/{total_extra})"
@@ -843,7 +845,7 @@ def run_migration(
                 if src_entry.is_file():
                     if dst_entry.exists() and not extra_overwrite:
                         skipped_extra += 1
-                        log(f"⏭️ 目标已存在，按设置跳过: {entry}", "INFO")
+                        log(trp("⏭️ 目标已存在，按设置跳过: {0}", entry), "INFO")
                         continue
                     ok, msg = safe_copy(src_entry, dst_entry, dry_run, overwrite=True,
                                         is_file=True)
@@ -852,13 +854,13 @@ def run_migration(
                         file_index += 1
                         copied_bytes += src_entry.stat().st_size
                         if dry_run:
-                            log(f"[模拟] 将复制其它文件: {entry}", "SIMULATE")
+                            log(trp("[模拟] 将复制其它文件: {0}", entry), "SIMULATE")
                         else:
-                            log(f"✅ 已复制其它文件: {entry}", "SUCCESS")
+                            log(trp("✅ 已复制其它文件: {0}", entry), "SUCCESS")
                         progress(file_index, entry, copied_bytes, step)
                     else:
                         failed_extra.append((entry, msg))
-                        log(f"❌ 复制其它文件失败 {entry}: {msg}", "ERROR")
+                        log(trp("❌ 复制其它文件失败 {0}: {1}", entry, msg), "ERROR")
 
                 elif src_entry.is_dir():
                     try:
@@ -866,7 +868,7 @@ def run_migration(
                             dst_entry.mkdir(parents=True, exist_ok=True)
                     except Exception as e:
                         failed_extra.append((entry, f"创建目录失败: {e}"))
-                        log(f"❌ 创建目录 {entry} 失败: {e}", "ERROR")
+                        log(trp("❌ 创建目录 {0} 失败: {1}", entry, e), "ERROR")
                         continue
 
                     for src_item in sorted(src_entry.rglob("*")):
@@ -881,19 +883,19 @@ def run_migration(
                         if src_item.is_dir():
                             # 空文件夹也要保留，否则目标端目录结构不完整
                             if dry_run:
-                                log(f"[模拟] 将创建目录: {rel_s}", "SIMULATE")
+                                log(trp("[模拟] 将创建目录: {0}", rel_s), "SIMULATE")
                             else:
                                 try:
                                     dst_item.mkdir(parents=True, exist_ok=True)
                                 except Exception as e:
                                     failed_extra.append((rel_s, f"建目录失败: {e}"))
-                                    log(f"❌ 创建目录 {rel_s} 失败: {e}", "ERROR")
+                                    log(trp("❌ 创建目录 {0} 失败: {1}", rel_s, e), "ERROR")
                             continue
                         if not src_item.is_file():
                             continue
                         if dst_item.exists() and not extra_overwrite:
                             skipped_extra += 1
-                            log(f"⏭️ 目标已存在，按设置跳过: {rel_s}", "INFO")
+                            log(trp("⏭️ 目标已存在，按设置跳过: {0}", rel_s), "INFO")
                             continue
 
                         ok, msg = safe_copy(src_item, dst_item, dry_run, overwrite=True,
@@ -903,24 +905,23 @@ def run_migration(
                             file_index += 1
                             copied_bytes += src_item.stat().st_size
                             if dry_run:
-                                log(f"[模拟] 将复制其它文件: {rel_s}", "SIMULATE")
+                                log(trp("[模拟] 将复制其它文件: {0}", rel_s), "SIMULATE")
                             else:
-                                log(f"✅ 已复制其它文件: {rel_s}", "SUCCESS")
+                                log(trp("✅ 已复制其它文件: {0}", rel_s), "SUCCESS")
                             progress(file_index, rel_s, copied_bytes, step)
                         else:
                             failed_extra.append((rel_s, msg))
-                            log(f"❌ 复制其它文件失败 {rel_s}: {msg}", "ERROR")
+                            log(trp("❌ 复制其它文件失败 {0}: {1}", rel_s, msg), "ERROR")
                 else:
-                    log(f"⚠️ 条目 {entry} 非文件非目录，跳过", "WARNING")
+                    log(trp("⚠️ 条目 {0} 非文件非目录，跳过", entry), "WARNING")
 
-            log(f"其它文件复制完成: 成功 {success_extra} 个, 跳过 {skipped_extra} 个, "
-                f"失败 {len(failed_extra)} 个", "INFO")
+            log(trp("其它文件复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success_extra, skipped_extra, len(failed_extra)), "INFO")
 
         # -------- 记录历史 --------
         if not dry_run and add_history:
             add_history_entry(tgt_path, src_path, modlist, configlist,
                               extralist=extralist)
-            log(f"📝 已记录迁移历史到 {get_history_path(tgt_path)}", "INFO")
+            log(trp("📝 已记录迁移历史到 {0}", get_history_path(tgt_path)), "INFO")
 
         # -------- 完成 --------
         log("\n========== 迁移完成 ==========", "INFO")
@@ -935,7 +936,7 @@ def run_migration(
         return True
 
     except Exception as e:
-        log(f"❌ 迁移过程中发生未预期错误: {e}", "ERROR")
+        log(trp("❌ 迁移过程中发生未预期错误: {0}", e), "ERROR")
         log(traceback.format_exc(), "ERROR")
         if progress_callback:
             progress_callback(None, None, None)

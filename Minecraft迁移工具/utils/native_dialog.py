@@ -19,6 +19,9 @@ import comtypes
 # C 扩展与元类动态层，静态分析看不到，故对整行关闭类型检查（运行时均存在）。
 from comtypes import GUID, HRESULT, IUnknown, COMMETHOD  # type: ignore
 
+# 界面语言：这几处文字不进 tk 控件（画进图片 / 走 COM），得自己翻
+from utils.i18n import tr
+
 # GUID 常量
 CLSID_FileOpenDialog = GUID("{DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7}")
 IID_IFileOpenDialog = GUID("{D57C7288-D4AD-4768-BE02-9D969532D960}")
@@ -167,7 +170,8 @@ def pick_folders(parent_hwnd=0, initial_dir=None, title="选择文件夹（可�
             pass
         try:
             if title:
-                dlg.SetTitle(title)
+                # 原生对话框的标题走 COM，不是 tk 控件 —— 语言层包不到，这里自己翻
+                dlg.SetTitle(tr(title))
         except Exception:
             pass
         try:

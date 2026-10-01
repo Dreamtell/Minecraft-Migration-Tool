@@ -11,7 +11,7 @@ have tuned for months.
 - 🆓 Free and open source (MIT) — no ads, no donations, no paid tier, **no telemetry**
 - 📴 The core job (migration) works fully offline
 - 🪟 Windows 10 / 11 · Python 3.12 + Tkinter
-- 🈶 The UI is Chinese; there is no English localization yet
+- 🌐 Chinese / English UI — switch it in *Settings → Appearance & startup → Language*
 
 ---
 
@@ -46,6 +46,19 @@ have tuned for months.
 - A **big view** window (table or card layout) for searching, sorting, selecting and editing —
   it follows changes made in the main window in real time.
 - Drag & drop files and folders into the lists; paste paths in the Qt big view.
+
+### 🌐 Language
+- Ships in Chinese and English. Switch it in **Settings → 🎨 Appearance & startup → Language**;
+  the change applies the next time you start the app (the interface is built once at startup).
+- Coverage today: **the whole interface** — main window, settings, every Tk dialog and fallback
+  window, the Qt windows (big view, mod diff; they run in a child process with their own
+  translation layer), the execution log, and the system message boxes. Two independent checks
+  report **zero** untranslated strings: a source scan over ~380 text-API literals, and a walk of
+  the real widget tree in English mode.
+- The dictionary (`utils/i18n.py`, 821 entries) is the only thing you touch to add a string, and
+  values assembled from several pieces use `trf`/`trp` templates so they can be translated too.
+- Under the hood: in Chinese (the default) the translation layer is **not installed at all**, so
+  the behaviour is byte-for-byte what it was before.
 
 ### 🎨 UI
 - Dark / light themes, applied consistently — including the Qt windows (which run in a separate
@@ -151,6 +164,10 @@ not let you kill a migration by accident.
 the options row and the live log:
 
 ![Main window](docs/main-window.png)
+
+**Main window in English** — the same window with the language set to English:
+
+![Main window, English](docs/main-window-en.png)
 
 **Mod diff scan** — every jar classified as *new / updated / downgrade / target-only*, with
 per-row selection, notes, and the distribution bar on the right:

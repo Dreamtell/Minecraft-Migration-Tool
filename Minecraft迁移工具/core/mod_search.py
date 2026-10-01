@@ -17,6 +17,10 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 
+# 界面语言：下载量单位（万/亿 ↔ k/M）走 trp 模板
+from utils import i18n
+from utils.i18n import trp
+
 USER_AGENT = "MinecraftMigrateTool/1.0 (contact: local)"
 
 MODRINTH_SEARCH = "https://api.modrinth.com/v2/search?query={query}&limit={limit}&index=downloads"
@@ -165,15 +169,25 @@ def normalize_online_version(v):
 
 
 def format_downloads(n):
-    """把下载量格式化成 2.1亿 / 9000万 之类的可读形式。"""
+    """把下载量格式化成 2.1亿 / 9000万 之类的可读形式。
+
+    界面语言：中文用「亿 / 万」，英文用 M / k —— **阈值也不一样**（英文是 1e6 / 1e3，
+    否则会出现"9000.0k"这种别扭写法）。中文模式下与原来一字不差。
+    """
     try:
         n = int(n)
     except (TypeError, ValueError):
         return "0"
+    if i18n.language() == i18n.EN:
+        if n >= 1000000:
+            return trp("{0:.1f}M", n / 1000000)
+        if n >= 1000:
+            return trp("{0:.1f}k", n / 1000)
+        return str(n)
     if n >= 100000000:
-        return "%.1f亿" % (n / 100000000)
+        return trp("{0:.1f}亿", n / 100000000)
     if n >= 10000:
-        return "%.1f万" % (n / 10000)
+        return trp("{0:.1f}万", n / 10000)
     return str(n)
 
 

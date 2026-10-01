@@ -46,6 +46,9 @@ from core.migrator import (
     _is_safe_path,
     match_mod
 )
+
+# 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
+from utils.i18n import trp
 from core.scanner import (scan_mod_differences, get_full_mod_metadata,
                           split_cn_name, get_mod_icon, guess_tags,
                           detect_instance_env)
@@ -162,9 +165,12 @@ _SECTION_STYLE = {
 
 # 迁移时如何锁定主界面：不管选哪个，"所有操作按钮都会禁用"，区别只在盖不盖遮罩
 _LOCK_MODES = (
-    ("all",  "迁移时锁定界面：盖一层遮罩（正式迁移和模拟运行都锁）"),
-    ("real", "只锁正式迁移：模拟运行不盖遮罩（按钮照样禁用）"),
-    ("off",  "不锁屏：不盖遮罩，只把按钮全部禁用"),
+    # 用**三元组**（值, 标题, 说明）而不是"标题：说明"一整句：OptionCards 会把一整句在
+    # 冒号处劈成两段画到画布上（自绘文字，语言层包不到），那样只能整句翻、英文里还得留
+    # 个全角冒号才劈得开。分开写之后标题和说明各自成词条，换语言两段都干净。
+    ("all",  "迁移时锁定界面", "盖一层遮罩（正式迁移和模拟运行都锁）"),
+    ("real", "只锁正式迁移", "模拟运行不盖遮罩（按钮照样禁用）"),
+    ("off",  "不锁屏", "不盖遮罩，只把按钮全部禁用"),
 )
 
 # 迁移标记可选的符号：都是微软雅黑里有字形、且文件名安全的（不含 \ / : * ? " < > |）
@@ -328,7 +334,7 @@ def _file_task_lock(name):
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
             if self._migration_running:
-                messagebox.showwarning("提示", f"迁移进行中，暂不能{name}。")
+                messagebox.showwarning("提示", trp("迁移进行中，暂不能{0}。", name))
                 return None
             self._begin_file_task(name)
             try:

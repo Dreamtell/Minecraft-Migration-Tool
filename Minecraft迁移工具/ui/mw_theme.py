@@ -11,6 +11,9 @@ from ui.mw_common import _ICON_SIZE
 from utils.helpers import circular_reveal, lighten_color, make_theme_icon
 from utils.theme import DARK_THEME, LIGHT_THEME, apply_theme_to_widget_tree
 
+# 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
+
 
 class ThemeMixin:
     """深浅主题：切换动画、重绘、图标。"""
@@ -372,7 +375,8 @@ class ThemeMixin:
             self.apply_theme()
             self.on_path_change()
             self.save_config()
-            self.log(f"主题已切换为{'深色' if new_name == 'dark' else '浅色'}模式",
+            self.log(trp("主题已切换为{0}模式",
+                         i18n.tr('深色' if new_name == 'dark' else '浅色')),
                      level="SUCCESS", save=False)
             # 更新已打开的差异窗口（Qt 版是自绘控件，得显式喂新主题）
             qt_diff = getattr(self, "diff_qt", None)

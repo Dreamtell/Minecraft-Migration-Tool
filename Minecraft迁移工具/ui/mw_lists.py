@@ -12,10 +12,13 @@ from core.migrator import _is_safe_path, match_mod
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from ui.mw_common import _EXTRA_PRESETS, _center_window, _file_task_lock, _grad_width
+from utils import i18n
 from utils.helpers import (
     DataText, RoundedTextArea, create_gradient_button, focus_window, set_window_icon,
 )
 from utils.theme import apply_theme_to_widget_tree
+# 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
 
 
 class ListsMixin:
@@ -143,9 +146,14 @@ class ListsMixin:
                 if hasattr(self, "config_text") else 0
             extras = count(getattr(self, "extra_text", None), True) \
                 if hasattr(self, "extra_text") else 0
-            tabs.set_label(0, "🧩 模组清单 %d" % mods if mods else "🧩 模组清单")
-            tabs.set_label(1, "⚙️ config 清单 %d" % cfgs if cfgs else "⚙️ config 清单")
-            tabs.set_label(2, "📦 其它文件 %d" % extras if extras else "📦 其它文件")
+            # 带条数的页签文案是 % 拼出来的 —— 词典对不上这种动态串，
+            # 所以走 trf 模板（见 utils/i18n.py 顶部说明）
+            tabs.set_label(0, i18n.trf("🧩 模组清单 {n}", n=mods) if mods
+                           else i18n.tr("🧩 模组清单"))
+            tabs.set_label(1, i18n.trf("⚙️ config 清单 {n}", n=cfgs) if cfgs
+                           else i18n.tr("⚙️ config 清单"))
+            tabs.set_label(2, i18n.trf("📦 其它文件 {n}", n=extras) if extras
+                           else i18n.tr("📦 其它文件"))
         except Exception:
             pass
 
@@ -166,7 +174,7 @@ class ListsMixin:
         src_mods = Path(src) / "mods"
         if not src_mods.exists():
             self.root.bell()
-            self.log(f"❌ 源 mods 目录不存在：{src_mods}", level="ERROR")
+            self.log(trp("❌ 源 mods 目录不存在：{0}", src_mods), level="ERROR")
             return
 
         modlist_raw = self.mod_text.get(1.0, tk.END).splitlines()
@@ -199,9 +207,9 @@ class ListsMixin:
             else:
                 missing.append(item)
 
-        self.log(f"📊 模组清单检查结果：总清单项数 {len(modlist)}", level="INFO")
-        self.log(f"✅ 存在的模组：{len(found)}", level="SUCCESS")
-        self.log(f"❌ 缺失的模组：{len(missing)}",
+        self.log(trp("📊 模组清单检查结果：总清单项数 {0}", len(modlist)), level="INFO")
+        self.log(trp("✅ 存在的模组：{0}", len(found)), level="SUCCESS")
+        self.log(trp("❌ 缺失的模组：{0}", len(missing)),
                  level="PLAIN" if missing else "INFO")
         if missing:
             self.root.bell()
@@ -209,7 +217,7 @@ class ListsMixin:
             for m in missing[:50]:
                 self.log(f"  - {m}", level="ERROR")
             if len(missing) > 50:
-                self.log(f"  ... 还有 {len(missing) - 50} 个未显示", level="WARNING")
+                self.log(trp("  ... 还有 {0} 个未显示", len(missing) - 50), level="WARNING")
 
         # 主界面临时闪烁高亮：存在=绿 / 缺失=红 / 重复=黄，1秒后自动恢复
         self._clear_mod_status()
@@ -269,11 +277,7 @@ class ListsMixin:
             if updated:
                 ans = messagebox.askyesnocancel(
                     "发现 Updated mods",
-                    f"已提取到 {len(added)} 个 Added 模组，{len(updated)} 个 Updated 模组。\n"
-                    "是否将 Updated 模组也添加到复制清单中？\n\n"
-                    "点击“是” → 全部添加\n"
-                    "点击“否” → 只添加 Added 模组\n"
-                    "点击“取消” → 不添加任何模组"
+                    trp("已提取到 {0} 个 Added 模组，{1} 个 Updated 模组。\n是否将 Updated 模组也添加到复制清单中？\n\n点击“是” → 全部添加\n点击“否” → 只添加 Added 模组\n点击“取消” → 不添加任何模组", len(added), len(updated))
                 )
                 if ans is None:
                     return
@@ -292,7 +296,7 @@ class ListsMixin:
                 self.save_config()
                 self._update_text_states()
                 self.log(
-                    f"从变更日志中提取了 {len(all_mods)} 个模组（Added: {len(added)}, Updated: {len(updated)}）",
+                    trp("从变更日志中提取了 {0} 个模组（Added: {1}, Updated: {2}）", len(all_mods), len(added), len(updated)),
                     level="SUCCESS"
                 )
                 self.save_config()
@@ -349,7 +353,7 @@ class ListsMixin:
         src_config = Path(src) / "config"
         if not src_config.exists():
             self.root.bell()
-            self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
+            self.log(trp("❌ 源 config 目录不存在：{0}", src_config), level="ERROR")
             return
 
         # 优先原生多选文件夹对话框（返回绝对路径）
@@ -378,7 +382,7 @@ class ListsMixin:
 
         added, failed = self._add_config_paths(selected_paths)
         if added:
-            self.log(f"✅ 已添加 {added} 个 config 子文件夹条目", level="SUCCESS")
+            self.log(trp("✅ 已添加 {0} 个 config 子文件夹条目", added), level="SUCCESS")
         elif not failed:
             self.log("ℹ️ 所选文件夹均已在 config 清单中，未重复添加", level="INFO")
         if failed:
@@ -586,7 +590,7 @@ class ListsMixin:
         src_config = Path(src) / "config"
         if not src_config.exists():
             self.root.bell()
-            self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
+            self.log(trp("❌ 源 config 目录不存在：{0}", src_config), level="ERROR")
             return
 
         selected = filedialog.askopenfilenames(
@@ -598,7 +602,7 @@ class ListsMixin:
             return
         added, failed = self._add_config_paths(selected)
         if added:
-            self.log(f"✅ 已添加 {added} 个 config 文件条目", level="SUCCESS")
+            self.log(trp("✅ 已添加 {0} 个 config 文件条目", added), level="SUCCESS")
         elif not failed:
             self.log("ℹ️ 所选文件均已在 config 清单中，未重复添加", level="INFO")
         if failed:
@@ -749,7 +753,7 @@ class ListsMixin:
         self._apply_mod_new_tags()
         self.save_config()
         self._update_text_states()
-        self.log(f"✅ 已添加 {len(new)} 个模组", level="SUCCESS")
+        self.log(trp("✅ 已添加 {0} 个模组", len(new)), level="SUCCESS")
         self._notify_modlist_change()
         return len(new)
 
@@ -771,11 +775,11 @@ class ListsMixin:
         """模组添加后的成功/失败提示。"""
         non_jar = len(files) - sum(1 for f in files if Path(f).suffix.lower() == ".jar")
         if added:
-            messagebox.showinfo("添加成功", f"✅ 已添加 {added} 个模组。", parent=self.root)
+            messagebox.showinfo("添加成功", trp("✅ 已添加 {0} 个模组。", added), parent=self.root)
         else:
             messagebox.showinfo("添加提示", "所选模组已在清单中，未新增。", parent=self.root)
         if non_jar:
-            messagebox.showwarning("添加提示", f"⚠️ 有 {non_jar} 个非 .jar 文件被跳过。", parent=self.root)
+            messagebox.showwarning("添加提示", trp("⚠️ 有 {0} 个非 .jar 文件被跳过。", non_jar), parent=self.root)
 
     def add_mods(self):
         """从文件选择器多选并批量添加模组（默认定位到源实例的 mods 目录）。"""
@@ -862,7 +866,7 @@ class ListsMixin:
             files = event.data
         added, failed = self._add_config_paths(files)
         if added:
-            messagebox.showinfo("添加成功", f"✅ 已添加 {added} 个 config 条目。", parent=self.root)
+            messagebox.showinfo("添加成功", trp("✅ 已添加 {0} 个 config 条目。", added), parent=self.root)
         if failed:
             messagebox.showwarning("添加提示",
                                    f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
@@ -914,12 +918,13 @@ class ListsMixin:
             return
         if not base.exists():
             self.root.bell()
-            self.log(f"❌ 源整合包目录不存在：{base}", level="ERROR")
+            self.log(trp("❌ 源整合包目录不存在：{0}", base), level="ERROR")
             return
 
         selected, native_ok = None, False
         try:
             from utils.native_dialog import pick_folders
+
             selected = pick_folders(
                 parent_hwnd=self.root.winfo_id(), initial_dir=str(base),
                 title="请选择要一起带走的文件夹（相对整合包根目录，可多选）")
@@ -935,7 +940,7 @@ class ListsMixin:
 
         added, failed = self._add_extra_paths([str(p) for p in selected])
         if added:
-            self.log(f"✅ 已添加 {added} 个其它文件条目（相对整合包根目录）", level="SUCCESS")
+            self.log(trp("✅ 已添加 {0} 个其它文件条目（相对整合包根目录）", added), level="SUCCESS")
         elif not failed:
             self.log("ℹ️ 所选文件夹均已在其它文件清单中，未重复添加", level="INFO")
         if failed:
@@ -953,7 +958,7 @@ class ListsMixin:
             return
         if not base.exists():
             self.root.bell()
-            self.log(f"❌ 源整合包目录不存在：{base}", level="ERROR")
+            self.log(trp("❌ 源整合包目录不存在：{0}", base), level="ERROR")
             return
         selected = filedialog.askopenfilenames(
             title="请选择要一起带走的文件（可多选，相对整合包根目录）",
@@ -962,7 +967,7 @@ class ListsMixin:
             return
         added, failed = self._add_extra_paths(list(selected))
         if added:
-            self.log(f"✅ 已添加 {added} 个其它文件条目", level="SUCCESS")
+            self.log(trp("✅ 已添加 {0} 个其它文件条目", added), level="SUCCESS")
         elif not failed:
             self.log("ℹ️ 所选文件均已在其它文件清单中，未重复添加", level="INFO")
         if failed:
@@ -979,7 +984,7 @@ class ListsMixin:
             files = event.data
         added, failed = self._add_extra_paths(list(files))
         if added:
-            messagebox.showinfo("添加成功", f"✅ 已添加 {added} 个其它文件条目。",
+            messagebox.showinfo("添加成功", trp("✅ 已添加 {0} 个其它文件条目。", added),
                                parent=self.root)
         if failed:
             messagebox.showwarning(
@@ -1020,7 +1025,7 @@ class ListsMixin:
             return
         if not base.exists():
             self.root.bell()
-            self.log(f"❌ 源整合包目录不存在：{base}", level="ERROR")
+            self.log(trp("❌ 源整合包目录不存在：{0}", base), level="ERROR")
             return
 
         entries = [l.strip() for l in self.extra_text.get("1.0", tk.END).splitlines()
@@ -1056,18 +1061,18 @@ class ListsMixin:
                 ok += 1
         self._extra_status_applied = True
 
-        self.log(f"📊 其它文件清单检查结果：总条目 {len(entries)}，去重后 {len(counts)} 个",
+        self.log(trp("📊 其它文件清单检查结果：总条目 {0}，去重后 {1} 个", len(entries), len(counts)),
                  level="INFO")
-        self.log(f"✅ 存在的条目：{ok}", level="SUCCESS")
+        self.log(trp("✅ 存在的条目：{0}", ok), level="SUCCESS")
         if duplicate:
-            self.log(f"⚠️ 重复条目：{duplicate} 行", level="WARNING")
+            self.log(trp("⚠️ 重复条目：{0} 行", duplicate), level="WARNING")
         if missing:
-            self.log(f"❌ 缺失的条目：{missing}", level="PLAIN")
+            self.log(trp("❌ 缺失的条目：{0}", missing), level="PLAIN")
             self.root.bell()
             for m in missing_samples[:50]:
                 self.log(f"  - {m}", level="ERROR")
             if missing > 50:
-                self.log(f"  ... 还有 {missing - 50} 条未显示", level="WARNING")
+                self.log(trp("  ... 还有 {0} 条未显示", missing - 50), level="WARNING")
         elif not duplicate:
             self.log("✅ 其它文件条目均存在且无重复。", level="SUCCESS")
 
@@ -1226,7 +1231,7 @@ class ListsMixin:
         src_config = Path(src) / "config"
         if not src_config.exists():
             self.root.bell()
-            self.log(f"❌ 源 config 目录不存在：{src_config}", level="ERROR")
+            self.log(trp("❌ 源 config 目录不存在：{0}", src_config), level="ERROR")
             return
 
         # 先按源目录把文件夹条目补上末尾 "/"（便于区分，且与高亮/重复判定一致）
@@ -1266,18 +1271,18 @@ class ListsMixin:
                 ok += 1
         self._config_status_applied = True
 
-        self.log(f"📊 config 清单检查结果：总条目 {len(entries)}，去重后 {len(counts)} 个", level="INFO")
-        self.log(f"✅ 存在的条目：{ok}", level="SUCCESS")
+        self.log(trp("📊 config 清单检查结果：总条目 {0}，去重后 {1} 个", len(entries), len(counts)), level="INFO")
+        self.log(trp("✅ 存在的条目：{0}", ok), level="SUCCESS")
         if duplicate:
-            self.log(f"⚠️ 重复条目：{duplicate} 行", level="WARNING")
+            self.log(trp("⚠️ 重复条目：{0} 行", duplicate), level="WARNING")
         if missing:
-            self.log(f"❌ 缺失的条目：{missing}", level="PLAIN")
+            self.log(trp("❌ 缺失的条目：{0}", missing), level="PLAIN")
             self.root.bell()
             self.log("缺失条目：", level="WARNING")
             for m in missing_samples[:50]:
                 self.log(f"  - {m}", level="ERROR")
             if missing > 50:
-                self.log(f"  ... 还有 {missing - 50} 条未显示", level="WARNING")
+                self.log(trp("  ... 还有 {0} 条未显示", missing - 50), level="WARNING")
         elif not duplicate:
             self.log("✅ 所有 config 条目均存在且无重复。", level="SUCCESS")
 

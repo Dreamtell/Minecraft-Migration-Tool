@@ -22,6 +22,9 @@ from utils.helpers import (
 )
 from utils.theme import apply_theme_to_widget_tree
 
+# 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
+from utils.i18n import tr, trp
+
 
 class BigViewMixin:
     """放大查看（Tk 版）：清单大窗口、日志大窗口、忙碌/溢出处理。"""
@@ -112,7 +115,7 @@ class BigViewMixin:
                     if state["bottom"]:
                         big.see(tk.END)
                     state["last"] = content
-                    self._roll_counter(count_lbl, f"{content.count(chr(10))} 行")
+                    self._roll_counter(count_lbl, trp("{0} 行", content.count(chr(10))))
             except tk.TclError:
                 return
             except Exception:
@@ -744,7 +747,7 @@ class BigViewMixin:
         win._scan_debug = lambda: {"entries": len(entries), "order": len(order),
                                    "meta": len(meta),
                                    "keys": sorted(str(k) for k in meta.keys())[:5],
-                                   "st": [str(v.get("status")) for v in list(meta.values())[:5]],
+                                   "st": [str(tr(v.get("status"))) for v in list(meta.values())[:5]],
                                    "ktype": [type(k).__name__ for k in list(meta.keys())[:3]],
                                    "calc": sum(1 for i in range(len(entries))
                                                if (meta.get(i) or {}).get("status") == "✅ 存在"),
@@ -795,7 +798,8 @@ class BigViewMixin:
             # 新行在清单末尾，重写后让它们淡入
             write_back(fade_in_lines=range(len(entries) - len(new_entries) + 1,
                                            len(entries) + 1))
-            messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
+            messagebox.showinfo("添加成功", trp("✅ 已添加 {0} 个模组。", len(new_entries)),
+                                parent=win)
 
         def del_selected():
             if big_scanning["flag"]:
@@ -829,7 +833,8 @@ class BigViewMixin:
             rebuild(rescan=True)
             write_back(fade_in_lines=range(len(entries) - len(new_entries) + 1,
                                            len(entries) + 1))
-            messagebox.showinfo("添加成功", f"✅ 已添加 {len(new_entries)} 个模组。", parent=win)
+            messagebox.showinfo("添加成功", trp("✅ 已添加 {0} 个模组。", len(new_entries)),
+                                parent=win)
 
         def toggle_row(row: int):
             """切换某行勾选状态，并只重绘这一行（不整表重画）。"""
@@ -857,7 +862,7 @@ class BigViewMixin:
                     return
                 subprocess.Popen(['explorer', '/select,', str(path)])
             except Exception as e:
-                messagebox.showinfo("提示", f"定位失败：{e}", parent=win)
+                messagebox.showinfo("提示", trp("定位失败：{0}", e), parent=win)
 
         def set_checked_mode(mode):
             """全选 / 反选 / 清空勾选 —— 只作用于当前显示（搜索/排序后）的行。
@@ -881,8 +886,10 @@ class BigViewMixin:
             update_summary()
             n = sum(1 for i in order if checked.get(key_of(entries[i])))
             _MODE_TEXT = {"all": "全选", "none": "清空勾选", "invert": "反选"}
-            self.log(f"☑ 已{_MODE_TEXT.get(mode, mode)}：当前显示 {len(order)} 项，"
-                     f"选中 {n} 项", level="INFO", save=False)
+            # 这几个词是**拼进模板里的值**，得单独过一遍语言层（trp 无参时等于 tr）
+            self.log(trp("☑ 已{0}：当前显示 {1} 项，选中 {2} 项",
+                         trp(_MODE_TEXT.get(mode, mode)), len(order), n),
+                     level="INFO", save=False)
 
         def open_mod_detail(row: int):
             """打开指定行对应模组的详情窗口（含 Modrinth 联网搜索）。"""
@@ -973,7 +980,8 @@ class BigViewMixin:
                                               if m.get("status") == "❌ 缺失")
                                 messagebox.showinfo(
                                     "检测完成",
-                                    f"✅ 存在性检测完成：共 {len(entries)} 项，缺失 {missing} 项。",
+                                    trp("✅ 存在性检测完成：共 {0} 项，缺失 {1} 项。",
+                                        len(entries), missing),
                                     parent=win)
                 except Exception:
                     pass
@@ -1021,9 +1029,11 @@ class BigViewMixin:
         row_btns = tk.Frame(top, bg=self.theme["bg"])
         row_btns.pack(fill="x")
         _PAD = 4          # 按钮间距（原来 6，7 个按钮并排就撑爆一行）
-        _BTN_W = max(_grad_width("🔍 检测存在性"),
-                     _grad_width("🗑️ 删除选中"),
-                     _grad_width("➕ 添加模组"))
+        # 统一的按钮宽度按**翻译后**的文字量（英文更长；create_gradient_button 那边
+        # 还会各自兜底撑宽，这里量准了整排才齐）
+        _BTN_W = max(_grad_width(tr("🔍 检测存在性")),
+                     _grad_width(tr("🗑️ 删除选中")),
+                     _grad_width(tr("➕ 添加模组")))
         # "共 N 项"里那个 N 是数据，单独上数字色
         count_lbl = DataText(row_search, self.theme,
                              [("共 ", "muted_fg"),
@@ -1058,6 +1068,17 @@ class BigViewMixin:
         win._exist_lbl = exist_lbl
         win._miss_lbl = miss_lbl
         win._scan_lbl = scan_lbl
+
+        # ⚠ 最小宽度按**实测**来定：英文按钮比中文宽，还写死 820 的话窗口一窄
+        # 这排按钮/汇总就会被裁掉（和 Qt 版搜索框被挤扁是同一个毛病）。
+        try:
+            win.update_idletasks()
+            需要 = max(row_btns.winfo_reqwidth(), row_search.winfo_reqwidth()) + 40
+            屏幕宽 = win.winfo_screenwidth()
+            win.minsize(max(820, min(需要, int(屏幕宽 * 0.96))),
+                        max(520, win.winfo_reqheight() // 2))
+        except Exception:
+            pass
 
         def update_summary():
             """刷新"已选 N / 总数"和"存在/缺失"两个汇总（数字带滚动动画）。"""
@@ -1171,7 +1192,7 @@ class BigViewMixin:
                 "tags": m.get("tags") or [],
                 "tags_online": bool(m.get("tags_online")),
                 # 存在性状态 + 勾选态：卡片视图跟表格共用同一份数据
-                "status": str(m.get("status") or "…"),
+                "status": str(tr(m.get("status")) if m.get("status") else "…"),
                 "checked": bool(checked.get(key_of(entries[idx]))) if idx < len(entries) else False,
             }
 
@@ -1216,7 +1237,7 @@ class BigViewMixin:
                 rebuild(rescan=True)
                 # 删掉的那一行在文本里就是 entry_idx+1，让它先淡出再重写
                 write_back(fade_out_lines=[entry_idx + 1])
-                self.log(f"🗑 已从清单移除：{name}", level="WARNING", save=False)
+                self.log(trp("🗑 已从清单移除：{0}", name), level="WARNING", save=False)
 
         def card_menu(i: int, event):
             """单行操作（详情/定位/移除）+ 批量勾选，省得去顶栏点。
@@ -1307,7 +1328,7 @@ class BigViewMixin:
                     table.grid()
                 except Exception:
                     pass
-                self.log(f"⚠️ 卡片视图不可用：{exc}", level="WARNING", save=False)
+                self.log(trp("⚠️ 卡片视图不可用：{0}", exc), level="WARNING", save=False)
 
         btn_view = create_gradient_button(
             row_btns, "🗂 卡片视图", toggle_view,

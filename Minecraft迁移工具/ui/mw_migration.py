@@ -24,6 +24,9 @@ from ui.virtual_table import VirtualTable
 from utils.helpers import DataText, create_gradient_button, focus_window, set_window_icon
 from utils.theme import apply_theme_to_widget_tree
 
+# 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
+
 
 def _打桩优先(名字, 默认):
     """取被 _dctest 验证脚本打过桩的那个函数，没打桩就用本模块 import 的那份。
@@ -181,26 +184,21 @@ class MigrationMixin:
             return
         tgt_path = Path(tgt)
         if not tgt_path.exists():
-            self.log(f"❌ 回滚失败：目标路径不存在 {tgt}", level="ERROR")
-            messagebox.showerror("错误", f"目标路径不存在：{tgt}")
+            self.log(trp("❌ 回滚失败：目标路径不存在 {0}", tgt), level="ERROR")
+            messagebox.showerror("错误", trp("目标路径不存在：{0}", tgt))
             return
 
         backup_root = get_backup_path(tgt_path)
         if not backup_root.exists():
-            self.log(f"❌ 回滚失败：未找到备份目录 {backup_root}", level="ERROR")
+            self.log(trp("❌ 回滚失败：未找到备份目录 {0}", backup_root), level="ERROR")
             messagebox.showerror("回滚失败", "没有找到可用的备份，无法回滚。")
             return
 
-        self.log(f"📁 找到备份目录：{backup_root}", level="INFO")
+        self.log(trp("📁 找到备份目录：{0}", backup_root), level="INFO")
 
         if not messagebox.askyesno(
                 "⚠️ 确认回滚",
-                f"即将把目标实例恢复到迁移前的状态，此操作将覆盖当前所有内容！\n\n"
-                f"目标路径：{tgt}\n"
-                f"备份路径：{backup_root}\n\n"
-                "mods / config / saves 以及「其它文件」清单里复制过的东西都会还原；\n"
-                "迁移前不存在的部分会被删掉。\n\n"
-                "此操作不可撤销！\n确定要继续吗？"
+                trp("即将把目标实例恢复到迁移前的状态，此操作将覆盖当前所有内容！\n\n目标路径：{0}\n备份路径：{1}\n\nmods / config / saves 以及「其它文件」清单里复制过的东西都会还原；\n迁移前不存在的部分会被删掉。\n\n此操作不可撤销！\n确定要继续吗？", tgt, backup_root)
         ):
             self.log("❌ 用户取消了回滚操作", level="WARNING")
             return
@@ -371,7 +369,7 @@ class MigrationMixin:
                 total = getattr(self, '_scan_total', 0)
                 if total > 0:
                     self.scan_btn.itemconfig(self.scan_btn.text_id,
-                                             text=f"⏳ 解析中 ({current}/{total})")
+                                             text=trp("⏳ 解析中 ({0}/{1})", current, total))
                 else:
                     self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 解析中...")
                 if hasattr(self, 'scan_progress_window'):
@@ -390,11 +388,11 @@ class MigrationMixin:
             delattr(self, 'scan_progress_window')
 
         if error_msg:
-            self.log(f"❌ 扫描出错: {error_msg}", level="ERROR")
+            self.log(trp("❌ 扫描出错: {0}", error_msg), level="ERROR")
             if self._in_tray():
                 self._notify_task_done("扫描模组差异", f"扫描出错：{error_msg}")
             else:
-                messagebox.showerror("扫描错误", f"扫描过程中发生异常：{error_msg}")
+                messagebox.showerror("扫描错误", trp("扫描过程中发生异常：{0}", error_msg))
             return
 
         if data is None:
@@ -408,7 +406,7 @@ class MigrationMixin:
                 messagebox.showinfo("提示", "两个 mods 目录完全一致，没有任何差异。")
             return
 
-        self.log(f"📊 扫描完成，发现 {len(data)} 项差异", level="SUCCESS")
+        self.log(trp("📊 扫描完成，发现 {0} 项差异", len(data)), level="SUCCESS")
 
         def apply_callback(selected_files):
             self.mod_text.configure(state=tk.NORMAL)
@@ -416,7 +414,7 @@ class MigrationMixin:
             self.mod_text.insert(tk.END, "\n".join(selected_files))
             self.mod_text.edit_reset()
             self._update_text_states()
-            self.log(f"✅ 从差异扫描中导入了 {len(selected_files)} 个模组", level="SUCCESS")
+            self.log(trp("✅ 从差异扫描中导入了 {0} 个模组", len(selected_files)), level="SUCCESS")
             self.save_config()
             self._notify_modlist_change()
 
@@ -487,9 +485,8 @@ class MigrationMixin:
         if task:
             messagebox.showwarning(
                 "提示",
-                f"正在执行「{task}」，为避免两个任务同时改动同一批文件，"
-                "请等它结束后再开始迁移（模拟运行同样需要等待）。")
-            self.log(f"⚠️ 已拦截：{task} 进行中，暂不允许启动迁移", level="WARNING")
+                trp("正在执行「{0}」，为避免两个任务同时改动同一批文件，请等它结束后再开始迁移（模拟运行同样需要等待）。", task))
+            self.log(trp("⚠️ 已拦截：{0} 进行中，暂不允许启动迁移", task), level="WARNING")
             return
 
         src = self.source_path.get().strip()
@@ -505,10 +502,10 @@ class MigrationMixin:
         src_path = Path(src)
         tgt_path = Path(tgt)
         if not src_path.exists():
-            messagebox.showerror("错误", f"源路径不存在：{src}")
+            messagebox.showerror("错误", trp("源路径不存在：{0}", src))
             return
         if not tgt_path.exists():
-            messagebox.showerror("错误", f"目标路径不存在：{tgt}")
+            messagebox.showerror("错误", trp("目标路径不存在：{0}", tgt))
             return
 
         modlist_raw = self.mod_text.get(1.0, tk.END).splitlines()
@@ -522,9 +519,9 @@ class MigrationMixin:
                 if _is_safe_path(line):
                     configlist.append(line)
                 else:
-                    self.log(f"⚠️ 跳过不安全 config 路径: {line}", level="WARNING")
+                    self.log(trp("⚠️ 跳过不安全 config 路径: {0}", line), level="WARNING")
                     messagebox.showwarning("不安全路径",
-                                           f"Config 清单中的 '{line}' 包含 '..'，已自动跳过。")
+                                           trp("Config 清单中的 '{0}' 包含 '..'，已自动跳过。", line))
 
         # 其它文件清单：路径相对整合包根目录，安全校验和 config 一样
         extralist_raw = self.extra_text.get(1.0, tk.END).splitlines()
@@ -535,7 +532,7 @@ class MigrationMixin:
                 if _is_safe_path(line):
                     extralist.append(line.rstrip("/") or line)
                 else:
-                    self.log(f"⚠️ 跳过不安全的其它文件路径: {line}", level="WARNING")
+                    self.log(trp("⚠️ 跳过不安全的其它文件路径: {0}", line), level="WARNING")
 
         if not modlist and not configlist and not extralist:
             messagebox.showwarning("提示", "三个清单都是空的，没有可迁移的内容。")
@@ -548,7 +545,7 @@ class MigrationMixin:
         # 计算要复制的文件数与总大小
         total_files, total_size = self._calculate_migration_stats(
             src_path, tgt_path, world, modlist, configlist, extralist)
-        self.log(f"📦 待迁移文件 {total_files} 个，总大小 {total_size / 1024 / 1024:.1f} MB",
+        self.log(trp("📦 待迁移文件 {0} 个，总大小 {1:.1f} MB", total_files, total_size / 1024 / 1024),
                  level="INFO")
 
         if total_files == 0:
@@ -562,9 +559,7 @@ class MigrationMixin:
         elif not ok:
             messagebox.showerror(
                 "磁盘空间不足",
-                f"目标磁盘剩余空间 {free / 1024 / 1024:.1f} MB，"
-                f"本次迁移约需 {needed / 1024 / 1024:.1f} MB（含备份余量）。\n"
-                "空间不足，请清理目标磁盘后重试。")
+                trp("目标磁盘剩余空间 {0:.1f} MB，本次迁移约需 {1:.1f} MB（含备份余量）。\n空间不足，请清理目标磁盘后重试。", free / 1024 / 1024, needed / 1024 / 1024))
             return
 
         # 正式迁移前再确认一次（模拟运行不用 —— 它不改任何文件）。设置里可以关掉。
@@ -592,9 +587,9 @@ class MigrationMixin:
         # 模拟模式
         if self.dry_run.get():
             self.log("========== 开始迁移（模拟） ==========", level="INFO")
-            self.log(f"旧版目录（源）: {src}", level="INFO")
-            self.log(f"新版目录（目标）: {tgt}", level="INFO")
-            self.log(f"存档名称: {world}", level="INFO")
+            self.log(trp("旧版目录（源）: {0}", src), level="INFO")
+            self.log(trp("新版目录（目标）: {0}", tgt), level="INFO")
+            self.log(trp("存档名称: {0}", world), level="INFO")
             self.log("模拟模式: 是", level="INFO")
             self.log("不会实际修改任何文件", level="INFO")
             thread = threading.Thread(
@@ -613,8 +608,8 @@ class MigrationMixin:
             _打桩优先("do_backup", do_backup)(
                 tgt_path, log_func=self.log, extra_entries=extralist)
         except Exception as e:
-            self.log(f"❌ 备份失败：{e}", level="ERROR")
-            messagebox.showerror("备份错误", f"备份目标实例失败：{e}\n迁移已取消。")
+            self.log(trp("❌ 备份失败：{0}", e), level="ERROR")
+            messagebox.showerror("备份错误", trp("备份目标实例失败：{0}\n迁移已取消。", e))
             self._migration_running = False
             self._unlock_main_window()
             self._refresh_busy_state()

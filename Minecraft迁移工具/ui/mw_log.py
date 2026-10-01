@@ -13,8 +13,11 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
-from utils import secrets
+from utils import i18n, secrets
 from utils.helpers import SmoothScroller, tree_row_px
+# 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
+
 
 
 class LogMixin:
@@ -199,7 +202,7 @@ class LogMixin:
                     框.configure(state=tk.DISABLED)
                 except Exception:
                     pass
-        self.log(f"📍 已定位到「{名}」（{页名} 第 {行号} 行）", level="INFO", save=False)
+        self.log(trp("📍 已定位到「{0}」（{1} 第 {2} 行）", 名, 页名, 行号), level="INFO", save=False)
 
     def init_log_colors(self):
         """按当前主题设置日志分类颜色（INFO/警告/错误/成功/模拟）。"""
@@ -396,6 +399,9 @@ class LogMixin:
         # 所以 API Key 之类的敏感串必须在这一行就抹掉，不能指望调用方自觉。
         # 见 utils/secrets.py：没配 key 时这一步只多一次 in 判断，可以忽略。
         message = secrets.redact(message)
+        # 界面语言：日志正文也翻。静态串在这里一次命中（core/ 里的模块也是回调到这儿，
+        # 所以它们发的日志一样被覆盖）；f-string 拼的串走 trp 模板，见 utils/i18n.py。
+        message = i18n.tr(message)
 
         def _log():
             self.log_text.configure(state="normal")
@@ -501,10 +507,10 @@ class LogMixin:
             self.log_text.configure(state="disabled")
             self.mod_text.edit_reset()
             self.mod_text.edit_modified(False)
-            self.log(f"📋 日志已清空，有效操作记录已追加至 {Path.home() / '.minecraft_migrate_last_log.txt'}",
+            self.log(trp("📋 日志已清空，有效操作记录已追加至 {0}", Path.home() / '.minecraft_migrate_last_log.txt'),
                      level="INFO", save=False)
         except Exception as e:
-            self.log(f"❌ 日志保存失败：{e}", level="ERROR", save=False)
+            self.log(trp("❌ 日志保存失败：{0}", e), level="ERROR", save=False)
 
     def open_log_folder(self):
         log_file = Path.home() / ".minecraft_migrate_last_log.txt"
@@ -523,10 +529,10 @@ class LogMixin:
                 subprocess.Popen(['open', str(folder)])
             else:
                 subprocess.Popen(['xdg-open', str(folder)])
-            self.log(f"📂 已打开日志文件夹：{folder}", level="INFO")
+            self.log(trp("📂 已打开日志文件夹：{0}", folder), level="INFO")
         except Exception as e:
-            self.log(f"❌ 打开文件夹失败：{e}", level="ERROR")
-            messagebox.showerror("错误", f"无法打开文件夹：{e}")
+            self.log(trp("❌ 打开文件夹失败：{0}", e), level="ERROR")
+            messagebox.showerror("错误", trp("无法打开文件夹：{0}", e))
 
     # ---------- 日志区平滑滚动联动 ----------
     def _smooth(self, widget, rows=False, bind_widgets=None, on_render=None, **kw):

@@ -14,11 +14,14 @@ from ui.mw_common import (
     _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS, _LOCK_MODES,
     _RENAME_MARKERS, _SECTION_STYLE, _mix,
 )
+from utils import i18n
 from utils import secrets
 from utils.helpers import (
     DataText, OptionCards, RoundedEntry, SegmentedControl, SmoothScroller, SwitchRow,
     center_window, create_gradient_button, focus_window, set_window_icon,
 )
+# 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
 
 
 class SettingsMixin:
@@ -187,10 +190,19 @@ class SettingsMixin:
             return 控件
 
         def 卡片(parent, 变量, 选项, 命令, 名=""):
-            """整句话那么长的互斥选项：一列选择卡片（标题取"："前那截，其余当说明）。"""
+            """一列选择卡片。
+
+            选项两种形状都收：
+              · `(值, "标题：说明")` —— 老写法，标题取"："前那截；
+              · `(值, "标题", "说明")` —— 推荐写法：标题和说明分开，**各成一整条**，
+                语言层能分别翻（合成一整句的话自绘卡片劈不开，英文里还得留全角冒号）。
+            """
             三列 = []
-            for 值, 文案 in 选项:
-                文案 = str(文案)
+            for 项 in 选项:
+                if len(项) >= 3:
+                    三列.append((项[0], str(项[1]), str(项[2] or "")))
+                    continue
+                值, 文案 = 项[0], str(项[1])
                 if "：" in 文案:
                     标题, _, 说明 = 文案.partition("：")
                 else:
@@ -235,6 +247,16 @@ class SettingsMixin:
         分段(row_theme, self.settings_theme_var,
              (("light", "浅色"), ("dark", "深色")),
              lambda v: self.choose_theme(v), 名="theme")
+
+        # 界面语言（中文 / English）。文案是**启动时定下来**的（见 utils/i18n.py），
+        # 这里只负责记下选择，并提示重启 —— 界面是一次性建好的，运行中换不干净。
+        self.settings_lang_var = tk.StringVar(value=i18n.language())
+        row_lang = tk.Frame(box1, bg=self.theme["bg"])
+        row_lang.pack(fill="x", pady=(10, 0))
+        tk.Label(row_lang, text="界面语言：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        分段(row_lang, self.settings_lang_var, i18n.CHOICES,
+             lambda v: self._set_language(v), 名="lang")
 
         self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
         开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
@@ -322,10 +344,12 @@ class SettingsMixin:
                                         font=("微软雅黑", 8))
         self.settings_cf_lbl.pack(anchor="w", pady=(4, 0))
         tk.Label(box_t,
-                 text="不填也能用：程序内置了一把共享 Key 时直接用它；填了就用你自己的配额"
-                      "（更稳，共享那把被限流时你还能用）。\n"
-                      "你填的 Key 只存在这里：" + secrets.where_text() + "，和主配置分开。\n"
-                      "它不会进日志、报错或临时文件；输入框粘过就清空，保存后只显示末 4 位。",
+                 text=i18n.trf(
+                     "不填也能用：程序内置了一把共享 Key 时直接用它；填了就用你自己的配额"
+                     "（更稳，共享那把被限流时你还能用）。\n"
+                     "你填的 Key 只存在这里：{path}，和主配置分开。\n"
+                     "它不会进日志、报错或临时文件；输入框粘过就清空，保存后只显示末 4 位。",
+                     path=secrets.where_text()),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(2, 0))
@@ -387,8 +411,9 @@ class SettingsMixin:
         分段(box_view, self.settings_view_var, _BIG_VIEW_BACKENDS,
              self._set_big_view_backend, 名="view")
         tk.Label(box_view,
-                 text=("PySide6 当前%s。%s"
-                       % ("可用" if _qt_ok else "不可用", _qt_why)),
+                 text=i18n.trf("PySide6 当前{state}。{why}",
+                               state=i18n.tr("可用" if _qt_ok else "不可用"),
+                               why=_qt_why),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(4, 0))
@@ -465,8 +490,9 @@ class SettingsMixin:
         self.settings_close_var = tk.StringVar(
             value=getattr(self, "close_action", "ask"))
         卡片(box3, self.settings_close_var,
-             (("tray", "收进系统托盘：程序继续在后台跑"),
-              ("exit", "直接退出程序"), ("ask", "每次问我")),
+             # 同上：三元组，标题/说明分开，免得自绘卡片劈不开或英文里留全角冒号
+             (("tray", "收进系统托盘", "程序继续在后台跑"),
+              ("exit", "直接退出程序", ""), ("ask", "每次问我", "")),
              self.set_close_action, 名="close")
         self.settings_silent_var = tk.BooleanVar(value=self.silent_background)
         开关(box3, "后台静默执行任务（不弹进度/结果窗口，完成后系统通知）",
@@ -484,7 +510,7 @@ class SettingsMixin:
                                lambda: self.open_link(LINK_GITHUB),
                                colors=("#455a64", "#78909c"), width=150, height=28,
                                font=("微软雅黑", 9, "bold")).pack(side="left")
-        tk.Label(box4, text=f"{LINK_GITHUB}\n欢迎反馈问题或提交建议。",
+        tk.Label(box4, text=LINK_GITHUB + i18n.tr("\n欢迎反馈问题或提交建议。"),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left").pack(anchor="w", pady=(4, 0))
 
@@ -529,6 +555,14 @@ class SettingsMixin:
             pw = max(w.winfo_reqwidth() for w in 内容) + 100       # 内容 + 边距 + 滚动条
         except Exception:
             pw = 0
+        # ⚠ 页签那排是**自绘**的（画布药丸），宽度只按标签文字算 —— 英文标签更长，
+        # 不算进来的话窗口会按内容定宽、把页签裁掉（用户报过"设置界面标签溢出"）
+        try:
+            win.update_idletasks()
+            条宽 = tabs.bar.winfo_reqwidth() + 24 + 28        # 左右 padx + 余量
+            pw = max(pw, 条宽)
+        except Exception:
+            pass
         屏宽, 屏高 = win.winfo_screenwidth(), win.winfo_screenheight()
         窗宽 = max(660, min(max(pw, 700), 屏宽 - 120))
         窗高 = max(480, min(640, 屏高 - 140))
@@ -560,8 +594,11 @@ class SettingsMixin:
             pass
         tree.delete(*tree.get_children())
         for gkey, glabel, _side in _BUTTON_GROUPS:
+            # ⚠ 树行文字是**拼出来的**（缩进 + 标签 / 图标 + 组名），语言层按整串查表
+            # 对不上 —— 得在拼之前把"部件"过一遍 tr（用户报过这页整棵没翻）
             parent = tree.insert("", "end", iid=f"grp:{gkey}",
-                                 text=f" {_GROUP_ICONS.get(gkey, '')} {glabel}",
+                                 text=" %s %s" % (_GROUP_ICONS.get(gkey, ""),
+                                                  i18n.tr(glabel)),
                                  values=("",), open=True, tags=(f"grp_{gkey}",))
             for key in self._resolved_order(gkey):
                 # 主界面那几排看控件登记表；窗口工具栏的按钮（放大查看/日志放大查看）
@@ -570,8 +607,8 @@ class SettingsMixin:
                     continue
                 is_hidden = key in hidden
                 tree.insert(parent, "end", iid=f"btn:{key}",
-                            text="   " + _BUTTON_LABELS.get(key, key),
-                            values=("☐ 隐藏" if is_hidden else "☑ 显示",),
+                            text="   " + i18n.tr(_BUTTON_LABELS.get(key, key)),
+                            values=(i18n.tr("☐ 隐藏") if is_hidden else i18n.tr("☑ 显示"),),
                             tags=("hidden",) if is_hidden else ())
         if selected:
             try:
@@ -641,12 +678,34 @@ class SettingsMixin:
         if key is not None:
             self.set_button_hidden(key, key not in set(self.hidden_buttons or ()))
 
+    def _set_language(self, 值):
+        """切换界面语言：写进配置 + 提示重启。
+
+        界面是一次性建好的（见 utils/i18n.py 顶部说明），运行中切不干净，所以这里只
+        记住选择、并把**之后新开的窗口**（对话框等）变成新语言 —— 主界面要重启才换。
+        """
+        旧 = i18n.language()
+        try:
+            值 = i18n.set_language(值)
+        except Exception:
+            return
+        # 只有真的变了才落盘：验证脚本会逐个点设置里的控件（包括这一段），
+        # 没变也写一遍等于平白改动配置。
+        if 值 != 旧:
+            try:
+                self.save_config()
+            except Exception:
+                pass
+        名 = dict(i18n.CHOICES).get(值, 值)
+        self.log(trp("🌐 界面语言已设为「{0}」—— 重启程序后完全生效（此后新打开的窗口会立刻用新语言）", 名), level="INFO", save=False)
+
     def _toggle_splash(self):
         """启动动画开关：app.py 在创建闪屏前会直接读配置文件。"""
         self.splash_enabled = bool(self.settings_splash_var.get())
         self.save_config()
-        self.log(f"🎬 启动动画已{'启用' if self.splash_enabled else '关闭'}"
-                 f"（下次启动程序生效）", level="INFO", save=False)
+        self.log(trp("🎬 启动动画已{0}（下次启动程序生效）",
+                     i18n.tr('启用' if self.splash_enabled else '关闭')),
+                 level="INFO", save=False)
 
     # ---------- 迁移标记 ----------
     def _toggle_rename_marker(self):
@@ -654,8 +713,12 @@ class SettingsMixin:
         self.rename_migrated_mods = bool(self.settings_rename_var.get())
         self._update_marker_preview()
         self.save_config()
-        self.log(f"🏷️ 模组迁移标记已{'开启' if self.rename_migrated_mods else '关闭'}"
-                 + (f"（前缀「{self.rename_marker} 」）" if self.rename_migrated_mods else ""),
+        # 注意这里两段是拼起来的：f-string 那一段没法机械改成 trp，
+        # 而且「开启/关闭」这种**拼进模板里的词**也得自己过一遍 i18n.tr。
+        self.log(trp("🏷️ 模组迁移标记已{0}",
+                     i18n.tr('开启' if self.rename_migrated_mods else '关闭'))
+                 + (trf("（前缀「{marker}」）", marker=self.rename_marker)
+                    if self.rename_migrated_mods else ""),
                  level="INFO", save=False)
 
     def _set_rename_marker(self, mark):
@@ -663,7 +726,7 @@ class SettingsMixin:
         self.rename_marker = mark or "★"
         self._update_marker_preview()
         self.save_config()
-        self.log(f"🏷️ 迁移标记符号已改为「{self.rename_marker}」", level="INFO", save=False)
+        self.log(trp("🏷️ 迁移标记符号已改为「{0}」", self.rename_marker), level="INFO", save=False)
 
     def _update_marker_preview(self):
         """给用户看一眼实际效果（关着的时候也显示，方便先挑）。"""
@@ -671,9 +734,11 @@ class SettingsMixin:
         if lbl is None:
             return
         try:
-            state = "已开启" if getattr(self, "rename_migrated_mods", False) else "未开启"
-            lbl.config(text=f"效果（{state}）：{self.rename_marker} "
-                            f"create-1.20.1-6.0.9.jar")
+            state = i18n.tr("已开启" if getattr(self, "rename_migrated_mods", False)
+                            else "未开启")
+            # 动态文案：**模板**进词典（f-string 拼出来的串在词典里对不上，见 utils/i18n.py）
+            lbl.config(text=i18n.trf("效果（{state}）：{marker} create-1.20.1-6.0.9.jar",
+                                     state=state, marker=self.rename_marker))
         except Exception:
             pass
 
@@ -682,7 +747,7 @@ class SettingsMixin:
         self.lock_mode = value if value in ("all", "real", "off") else "all"
         self.save_config()
         text = dict(_LOCK_MODES).get(self.lock_mode, self.lock_mode)
-        self.log(f"🔒 迁移锁定方式已改为：{text}", level="INFO", save=False)
+        self.log(trp("🔒 迁移锁定方式已改为：{0}", text), level="INFO", save=False)
 
     def _toggle_lock_wait_key(self):
         """完成态是"按任意键关闭"还是"自动关闭"。"""
@@ -760,17 +825,20 @@ class SettingsMixin:
         条目们 = [x.strip() for x in
                  self.extra_text.get("1.0", "end-1c").splitlines() if x.strip()]
         if not 条目们:
-            文本 = ("当前清单是空的：迁移时只带模组 / config / 存档，别的一律不动。")
+            文本 = i18n.tr("当前清单是空的：迁移时只带模组 / config / 存档，别的一律不动。")
         elif not self.source_path.get().strip():
-            文本 = ("清单里 %d 条；选了源整合包目录后才能显示哪些实际存在。" % len(条目们))
+            文本 = i18n.trf("清单里 {n} 条；选了源整合包目录后才能显示哪些实际存在。",
+                            n=len(条目们))
         else:
             有, 缺 = self._extra_list_status()
-            文本 = "清单里 %d 条，源目录里找得到 %d 条" % (len(条目们), len(有))
+            文本 = i18n.trf("清单里 {n} 条，源目录里找得到 {m} 条",
+                            n=len(条目们), m=len(有))
             if 缺:
-                文本 += "（找不到：%s%s）" % ("、".join(缺[:4]),
-                                            " 等" if len(缺) > 4 else "")
+                文本 += i18n.trf("（找不到：{names}{more}）",
+                                 names=("、".join(缺[:4])),
+                                 more=i18n.tr(" 等") if len(缺) > 4 else "")
             else:
-                文本 += "，这次都会带上 ✅"
+                文本 += i18n.tr("，这次都会带上 ✅")
         try:
             lbl.configure(text=文本)
         except Exception:
@@ -944,8 +1012,9 @@ class SettingsMixin:
         """后台静默执行开关。"""
         self.silent_background = bool(self.settings_silent_var.get())
         self.save_config()
-        self.log(f"🤫 后台静默执行已{'开启' if self.silent_background else '关闭'}"
-                 f"（跑任务时不再弹进度/结果窗口）", level="INFO", save=False)
+        self.log(trp("🤫 后台静默执行已{0}（跑任务时不再弹进度/结果窗口）",
+                     i18n.tr('开启' if self.silent_background else '关闭')),
+                 level="INFO", save=False)
 
     def _set_extra_conflict(self, value):
         """「其它文件」遇到目标已有同名文件时怎么办：overwrite（先备份）/ skip。

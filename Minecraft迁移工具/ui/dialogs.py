@@ -16,6 +16,8 @@ from core.scanner import (get_full_mod_metadata, split_cn_name, guess_tags,
 from core.mod_search import (search_modrinth, fetch_project_latest, format_downloads,
                              normalize_online_version)
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
+# 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
+from utils.i18n import trp
 
 
 class ProgressWindow:
@@ -112,16 +114,16 @@ class ProgressWindow:
 
     def update_progress(self, file_index, file_name, copied_bytes, step=None):
         if step is not None:
-            self.step_label.config(text=f"📦 {step}")
-        self.file_label.config(text=f"正在复制: {file_name}")
+            self.step_label.config(text=trp("📦 {0}", trp(step)))
+        self.file_label.config(text=trp("正在复制: {0}", file_name))
         if self.total_size > 0:
             percent = min(100, (copied_bytes / self.total_size) * 100)
             self.progress.set_fraction(percent / 100.0)
         copied_mb = copied_bytes / (1024 * 1024)
         total_mb = self.total_size / (1024 * 1024)
         self.stats_label.config(
-            text=f"{file_index} / {self.total_files} 个文件  |  {copied_mb:.1f} MB / {total_mb:.1f} MB"
-        )
+            text=trp("{0} / {1} 个文件  |  {2:.1f} MB / {3:.1f} MB",
+                     file_index, self.total_files, copied_mb, total_mb))
         self.win.update_idletasks()
 
     def close(self):
@@ -167,11 +169,11 @@ class ScanProgressWindow:
         focus_window(self.win)
 
     def update_progress(self, current, filename):
-        self.file_label.config(text=f"正在解析: {filename}")
+        self.file_label.config(text=trp("正在解析: {0}", filename))
         if self.total_files > 0:
             percent = (current / self.total_files) * 100
             self.progress.set_fraction(percent / 100.0)
-        self.stats_label.config(text=f"{current} / {self.total_files} 个文件")
+        self.stats_label.config(text=trp("{0} / {1} 个文件", current, self.total_files))
         self.win.update_idletasks()
 
     def close(self):
@@ -306,14 +308,14 @@ def ask_migrate_confirm(parent, theme, info):
     一行("源", _shorten_path(info.get("源")))
     一行("目标", _shorten_path(info.get("目标")))
     一行("存档", str(info.get("存档") or "（未填）"))
-    一行("要复制", "模组 %d · config %d · 其它 %d ｜ 共 %d 个文件 / %.1f MB"
-       % (info.get("模组", 0), info.get("config", 0), info.get("其它文件", 0),
-          info.get("文件数", 0), info.get("大小MB", 0.0)))
+    一行("要复制", trp("模组 {0} · config {1} · 其它 {2} ｜ 共 {3} 个文件 / {4:.1f} MB",
+                   info.get("模组", 0), info.get("config", 0), info.get("其它文件", 0),
+                   info.get("文件数", 0), info.get("大小MB", 0.0)))
     覆盖 = bool(info.get("覆盖模组"))
-    一行("同名文件", "模组：%s ｜ 其它文件：%s"
-       % ("覆盖（先备份）" if 覆盖 else "跳过（目标保持不动）",
-          "覆盖（先备份）" if info.get("其它文件冲突") == "overwrite"
-          else "跳过（目标保持不动）"),
+    一行("同名文件", trp("模组：{0} ｜ 其它文件：{1}",
+                   trp("覆盖（先备份）" if 覆盖 else "跳过（目标保持不动）"),
+                   trp("覆盖（先备份）" if info.get("其它文件冲突") == "overwrite"
+                       else "跳过（目标保持不动）")),
        强调=覆盖)
 
     tk.Label(win, text="迁移前会自动备份目标实例的 mods / config / saves，出问题可一键回滚。",
@@ -692,21 +694,21 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             try:
                 os.startfile(os.path.dirname(jar_path))
             except Exception as e:
-                _flash(f"打开失败：{e}", fail)
+                _flash(trp("打开失败：{0}", e), fail)
                 return
         _flash("已在资源管理器中定位该文件。", ok)
 
     def copy_text(value, what):
         value = str(value or "").strip()
         if not value or value in ("未知", "无"):
-            _flash(f"没有可复制的{what}。", fail)
+            _flash(trp("没有可复制的{0}。", trp(what)), fail)
             return
         try:
             win.clipboard_clear()
             win.clipboard_append(value)
-            _flash(f"已复制{what}：{value}", ok)
+            _flash(trp("已复制{0}：{1}", trp(what), value), ok)
         except Exception as e:
-            _flash(f"复制失败：{e}", fail)
+            _flash(trp("复制失败：{0}", e), fail)
 
     create_gradient_button(ops, "📂 打开所在文件夹", reveal_file,
                            colors=("#607d8b", "#90a4ae"), width=150, height=28,
@@ -831,7 +833,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     act.pack(fill="x", pady=3)
     # 本地版本用徽章样式（和顶部那排一致），比一行灰字好认
     _vbg, _vfg = _chip_colors("version", info["version"], theme)
-    local_lbl = tk.Label(act, text=f"本地版本 {info['version']}", bg=_vbg, fg=_vfg,
+    local_lbl = tk.Label(act, text=trp("本地版本 {0}", info['version']), bg=_vbg, fg=_vfg,
                          padx=8, pady=1, font=("微软雅黑", 9, "bold"), bd=0)
     local_lbl._keep_colors = True
     local_lbl.pack(side="left", padx=5)

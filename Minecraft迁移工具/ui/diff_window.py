@@ -2,8 +2,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
-from utils.helpers import (set_window_icon, create_gradient_button, lighten_color,
+from utils.helpers import (DataText, set_window_icon, create_gradient_button,
+                           lighten_color,
                            RoundedEntry, focus_window)
+# 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
+from utils.i18n import tr, trp
 from ui.dialogs import show_mod_detail, update_mod_detail_theme
 from ui.virtual_table import VirtualTable
 
@@ -230,7 +233,7 @@ def show_diff_window(parent, data: list, theme, current_theme, apply_callback, c
                 "version": str(it[6]),
                 "desc": str(it[4]) or "",
                 "icon_key": str(it[8]),
-                "status": str(it[1]),
+                "status": str(tr(it[1])),        # 状态词是数据（查表用原文），显示时才翻
                 "checked": bool(selection_state.get(idx)),
                 "dc_key": str(idx),
             })
@@ -295,7 +298,7 @@ def show_diff_window(parent, data: list, theme, current_theme, apply_callback, c
                 table.grid()
             except Exception:
                 pass
-            messagebox.showwarning("提示", f"卡片视图不可用：{exc}")
+            messagebox.showwarning("提示", trp("卡片视图不可用：{0}", exc))
 
     # ---- 排序功能 ----
     sort_field = tk.StringVar(value="文件名")
@@ -372,16 +375,22 @@ def show_diff_window(parent, data: list, theme, current_theme, apply_callback, c
         # 卡片视图开着的话，卡片也要跟着重算（两种视图共用 visible）
         if view_state["cards"] and card_state["list"] is not None:
             card_state["list"].set_rows(card_rows())
-        # 底部统计：搜索过滤时提示「实际显示了几项」
+        # 底部统计：**按语义分段上色**（和放大查看顶部那行一个规矩）——
+        # 整行一个灰白色看不出哪个数字要紧。这里用 DataText，一段一个主题色键。
         try:
-            head = f"总计 {len(all_data)} 项差异"
+            段 = [(trp("总计 {0} 项差异", len(all_data)), "fg")]
             if search_var.get().strip():
-                head += f"（已过滤，显示 {len(visible)} 项）"
+                段 += [(" | ", "muted_fg"),
+                       (trp("已过滤，显示 {0} 项", len(visible)), "data_num_fg")]
+            段 += [(" | ", "muted_fg"), (trp("{0} 新增", new_count), "ok_fg"),
+                   (" | ", "muted_fg"),
+                   (trp("{0} 更新", update_count), "log_warning_fg")]
             降级 = sum(1 for item in all_data if item[1] == "降级")
-            尾巴 = f" | 降级 {降级}" if 降级 else ""
-            stat_lbl.configure(
-                text=f"{head} | 新增 {new_count} | 更新 {update_count}"
-                     f"{尾巴} | 目标独有 {target_only_count}")
+            if 降级:
+                段 += [(" | ", "muted_fg"), (trp("{0} 降级", 降级), "fail_fg")]
+            段 += [(" | ", "muted_fg"),
+                   (trp("{0} 目标独有", target_only_count), "muted_fg")]
+            stat_lbl.set_all(段)
         except Exception:
             pass
 
@@ -559,18 +568,20 @@ def show_diff_window(parent, data: list, theme, current_theme, apply_callback, c
                            width=62, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
 
-    # ---- 底部统计 ----
+    # ---- 底部统计（用 DataText：一段一个主题色键，能按语义上色）----
     total = len(all_data)
     new_count = sum(1 for item in all_data if item[1] == "新增")
     update_count = sum(1 for item in all_data if item[1] == "更新")
     target_only_count = sum(1 for item in all_data if item[1] == "目标独有")
     _降级数 = sum(1 for item in all_data if item[1] == "降级")
-    stat_lbl = tk.Label(
-        diff_win,
-        text=(f"总计 {total} 项差异 | 新增 {new_count} | 更新 {update_count}"
-              + (f" | 降级 {_降级数}" if _降级数 else "")
-              + f" | 目标独有 {target_only_count}"),
-        font=("微软雅黑", 9), bg=theme["bg"], fg=theme["fg"])
+    初始段 = [(trp("总计 {0} 项差异", total), "fg"), (" | ", "muted_fg"),
+              (trp("{0} 新增", new_count), "ok_fg"), (" | ", "muted_fg"),
+              (trp("{0} 更新", update_count), "log_warning_fg")]
+    if _降级数:
+        初始段 += [(" | ", "muted_fg"), (trp("{0} 降级", _降级数), "fail_fg")]
+    初始段 += [(" | ", "muted_fg"),
+               (trp("{0} 目标独有", target_only_count), "muted_fg")]
+    stat_lbl = DataText(diff_win, theme, 初始段, font=("微软雅黑", 9))
     stat_lbl.grid(row=4, column=0, columnspan=2, pady=5)
 
     # ---- 窗口居中 ----

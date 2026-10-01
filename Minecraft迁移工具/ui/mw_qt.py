@@ -10,7 +10,10 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from ui.diff_window import show_diff_window
+from utils import i18n
 from utils import secrets
+# 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
+from utils.i18n import trp
 
 
 class QtMixin:
@@ -27,7 +30,7 @@ class QtMixin:
         （否则又回到"Tk 与 Qt 共享主线程"那条老路）。所以这里用 find_spec 探一下。
         """
         if not getattr(self, "qt_enabled", True):
-            return (False, "已在设置里关掉 PySide6（纯 Tk 模式）：主进程不再加载 Qt。")
+            return (False, i18n.tr("已在设置里关掉 PySide6（纯 Tk 模式）：主进程不再加载 Qt。"))
         cached = getattr(self, "_qt_ok_cache", None)
         if cached is not None:
             return cached
@@ -41,12 +44,14 @@ class QtMixin:
                 except Exception:
                     pass
             if importlib.util.find_spec("PySide6") is not None:
-                cached = (True, "Qt 窗口由独立子进程渲染；它崩了也不会带走主程序。")
+                # 这几句会被拼进设置页的状态行，而那一行是动态模板 —— 所以在源头就翻
+                cached = (True, i18n.tr("Qt 窗口由独立子进程渲染；它崩了也不会带走主程序。"))
                 self._qt_ok_cache = cached
                 return cached
-            return (False, "装好 PySide6 后可切到 Qt 版窗口：pip install PySide6")
+            return (False, i18n.tr("装好 PySide6 后可切到 Qt 版窗口：pip install PySide6"))
         except Exception as e:
-            return (False, "PySide6 探测失败（%s: %s）" % (type(e).__name__, e))
+            return (False, i18n.trf("PySide6 探测失败（{kind}: {err}）",
+                                    kind=type(e).__name__, err=e))
 
     def _write_text_keep_scroll(self, text_widget, 行):
         """整份重写清单文本，但保持滚动位置（放大查看那条线共用）。
@@ -126,7 +131,7 @@ class QtMixin:
             try:
                 v.pump()
             except Exception as e:
-                self.log(f"⚠ PySide6 窗口事件循环异常：{e}", level="ERROR", save=False)
+                self.log(trp("⚠ PySide6 窗口事件循环异常：{0}", e), level="ERROR", save=False)
         # 关掉的窗口（pump 之前就关了、或者就在这次 pump 里关的）都交给主线程销毁。
         # 注意要拿"旧列表"和"现在还活着的"对比 —— 只看 views 的话，早就关掉的那些
         # 第一步就被过滤掉了，永远轮不到 deleteLater（C++ 对象就一直挂着）
@@ -200,7 +205,7 @@ class QtMixin:
             trace_line("打开 Qt 放大查看（子进程）%s rows=%d" % (title, len(entries)))
         except Exception:
             pass
-        self.log(f"🗂 已打开 Qt 放大查看：{title}（{len(entries)} 项，独立进程）",
+        self.log(trp("🗂 已打开 Qt 放大查看：{0}（{1} 项，独立进程）", title, len(entries)),
                  level="INFO", save=False)
         return True
 
@@ -233,7 +238,7 @@ class QtMixin:
                 trace_line("打开 Qt 差异窗口（子进程）rows=%d" % len(data))
             except Exception:
                 pass
-            self.log(f"🗂 已打开 Qt 差异窗口（{len(data)} 项，独立进程）",
+            self.log(trp("🗂 已打开 Qt 差异窗口（{0} 项，独立进程）", len(data)),
                      level="INFO", save=False)
             return None
         self.log("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口", level="WARNING", save=False)
@@ -304,7 +309,7 @@ class QtMixin:
                 self._poll_qt_host()
             return True
         except Exception as e:
-            self.log(f"⚠ 无法启动 Qt 子进程：{e}", level="ERROR", save=False)
+            self.log(trp("⚠ 无法启动 Qt 子进程：{0}", e), level="ERROR", save=False)
             return False
 
     def _send_qt_host_command(self, cmd, kind=None, 附加=None):
@@ -413,6 +418,7 @@ class QtMixin:
             self._qt_theme_ok[kind] = 消息.get("bg")
             try:
                 from utils.helpers import trace_line
+
                 trace_line("Qt 窗口主题已切换 kind=%s bg=%s"
                            % (kind, 消息.get("bg")))
             except Exception:

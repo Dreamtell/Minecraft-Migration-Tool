@@ -18,6 +18,8 @@ Python，所以这里自己建一个隐藏窗口，**在主线程里**用 Tk 的
 """
 import queue
 
+from utils.i18n import tr          # 界面语言（默认中文时原样返回）
+
 try:
     import win32api
     import win32con
@@ -67,7 +69,8 @@ class TrayIcon:
     def __init__(self, tooltip="Minecraft 整合包迁移工具", icon_path=None):
         if not _AVAILABLE:
             raise RuntimeError("系统托盘需要 pywin32：pip install pywin32")
-        self.tooltip = tooltip
+        # 提示文字是自绘的（不进任何 tk 控件），语言层包不到 —— 在这里自己翻
+        self.tooltip = tr(tooltip)
         self.icon_path = icon_path
         self.commands = queue.Queue()
         # 右键菜单里「关闭窗口时收进托盘」的勾选状态，由主线程更新
@@ -138,7 +141,7 @@ class TrayIcon:
 
     def set_tooltip(self, text):
         """改托盘提示文字（窗口显示/隐藏时切换）。"""
-        self.tooltip = text
+        self.tooltip = tr(text)
         if not (self._hwnd and self._added):
             return
         try:
@@ -207,15 +210,17 @@ class TrayIcon:
     def _popup_menu(self):
         try:
             menu = win32gui.CreatePopupMenu()
-            win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_OPEN, "打开主界面")
+            # 托盘菜单是 win32 原生菜单，不经过 Tk 控件构造器 —— 语言层拦不到，
+            # 这里显式过一遍 tr()（默认中文时原样返回）
+            win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_OPEN, tr("打开主界面"))
             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
             flags = win32con.MF_STRING
             if self.close_to_tray:
                 flags |= win32con.MF_CHECKED
             win32gui.AppendMenu(menu, flags, _MENU_CLOSE_TRAY,
-                                "关闭窗口时收进托盘")
+                                tr("关闭窗口时收进托盘"))
             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
-            win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_EXIT, "退出")
+            win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_EXIT, tr("退出"))
             # 不先把窗口设成前台，菜单点到别处不会消失（Windows 的老毛病）
             try:
                 win32gui.SetForegroundWindow(self._hwnd)

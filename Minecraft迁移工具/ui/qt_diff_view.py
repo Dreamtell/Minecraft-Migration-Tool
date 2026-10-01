@@ -22,18 +22,20 @@ from ui.qt_big_view import (AnimButton, CardDelegate, CardModel, DetailDialog,
                             SmoothTable, TableDelegate, _header_qss, _mix,
                             _style_view_palette, ensure_app)
 from core.scanner import detect_instance_env
+# 界面语言：见 utils/i18n.py。中文（默认）时 tr() 原样返回，行为不变。
+from utils.i18n import tr, trf
 
 ROLE_ITEM = Q.ROLE_ITEM
 
 # 列：(key, 标题, 宽度)
-_COLS = (("check", "☑ 选择", 68),
-         ("name", "📄 文件名", 240),
-         ("status", "🔵 状态", 92),
-         ("type", "🧩 类型", 92),
+_COLS = (("check", tr("☑ 选择"), 68),
+         ("name", tr("📄 文件名"), 240),
+         ("status", tr("🔵 状态"), 92),
+         ("type", tr("🧩 类型"), 92),
          ("modid", "🆔 Mod ID", 150),
-         ("version", "🔖 版本", 112),
-         ("size", "💾 大小(KB)", 92),
-         ("note", "📝 备注", 280))
+         ("version", tr("🔖 版本"), 112),
+         ("size", tr("💾 大小(KB)"), 92),
+         ("note", tr("📝 备注"), 280))
 
 _STATUS_ORDER = {"新增": 0, "更新": 1, "降级": 2, "目标独有": 3}
 # 状态 → 主题色键 / 行底色键。降级用红：那一条复制过去是倒退，得显眼
@@ -253,7 +255,9 @@ class DiffTableModel(QtCore.QAbstractTableModel):
             if cname == "name":
                 return it.name
             if cname == "status":
-                return it.status
+                # 状态词是**数据**（"新增"/"更新"…，查表/比较都用原文），
+                # 只有这里给视图显示时才翻
+                return tr(it.status)
             if cname == "note":
                 return it.path
             if cname == "type":
@@ -309,7 +313,7 @@ class QtDiffView(QtWidgets.QWidget):
         # 打开时用表格还是卡片：默认视图在设置里选（_DIFF_VIEWS），这里只管摆好初始状态
         self._start_cards = bool(cards)
         self.store = DiffStore(data, theme, parent=self)
-        self.setWindowTitle("智能模组差异扫描（元数据级）")
+        self.setWindowTitle(tr("智能模组差异扫描（元数据级）"))
         self.setMinimumSize(1120, 520)
         self.resize(1280, 640)
         self._dc_row = None
@@ -342,7 +346,7 @@ class QtDiffView(QtWidgets.QWidget):
 
         # ---- 标题 ----
         bar = QtWidgets.QHBoxLayout()
-        self.title_label = QtWidgets.QLabel("🧩 模组差异扫描")
+        self.title_label = QtWidgets.QLabel(tr("🧩 模组差异扫描"))
         f = self.title_label.font()
         f.setPointSize(11)
         f.setBold(True)
@@ -351,48 +355,48 @@ class QtDiffView(QtWidgets.QWidget):
         self.tag_label = QtWidgets.QLabel("PySide6")
         bar.addWidget(self.tag_label)
         bar.addStretch(1)
-        self.hint_tag = QtWidgets.QLabel("🪟 系统原生窗口")
+        self.hint_tag = QtWidgets.QLabel(tr("🪟 系统原生窗口"))
         bar.addWidget(self.hint_tag)
         lay.addLayout(bar)
 
         # ---- 工具条：选择类 + 视图 + 搜索 ----
         tools = QtWidgets.QHBoxLayout()
         tools.setSpacing(6)
-        self.btn_new = AnimButton("✅ 全选新增", "#43a047", "#2e7d32", th)
-        self.btn_upd = AnimButton("🔄 全选更新", "#fb8c00", "#e65100", th)
-        self.btn_only = AnimButton("📌 全选目标独有", "#6b7280", "#4b5563", th)
-        self.btn_combo = AnimButton("▾ 组合选择", "#26a69a", "#00838f", th)
-        self.btn_all = AnimButton("☑ 全选", "#7c6cf0", "#5b4bd6", th)
+        self.btn_new = AnimButton(tr("✅ 全选新增"), "#43a047", "#2e7d32", th)
+        self.btn_upd = AnimButton(tr("🔄 全选更新"), "#fb8c00", "#e65100", th)
+        self.btn_only = AnimButton(tr("📌 全选目标独有"), "#6b7280", "#4b5563", th)
+        self.btn_combo = AnimButton(tr("▾ 组合选择"), "#26a69a", "#00838f", th)
+        self.btn_all = AnimButton(tr("☑ 全选"), "#7c6cf0", "#5b4bd6", th)
         # 清空勾选是"破坏性"操作（勾好了手一抖就全没了），用红色
-        self.btn_none = AnimButton("⬜ 清空勾选", "#e53935", "#c62828", th)
-        self.btn_view = AnimButton("🗂 卡片视图", "#0ea5a4", "#0b7f7f", th)
+        self.btn_none = AnimButton(tr("⬜ 清空勾选"), "#e53935", "#c62828", th)
+        self.btn_view = AnimButton(tr("🗂 卡片视图"), "#0ea5a4", "#0b7f7f", th)
         for b in (self.btn_new, self.btn_upd, self.btn_only, self.btn_combo,
                   self.btn_all, self.btn_none):
             tools.addWidget(b)
         tools.addStretch(1)
         tools.addWidget(self.btn_view)
         self.search = QtWidgets.QLineEdit()
-        self.search.setPlaceholderText("🔍 搜索（文件名 / Mod ID / 版本 / 类型 / 备注）")
+        self.search.setPlaceholderText(tr("🔍 搜索（文件名 / Mod ID / 版本 / 类型 / 备注）"))
         self.search.setFixedHeight(30)
         self.search.setClearButtonEnabled(True)
         self.search.setMinimumWidth(260)
         tools.addWidget(self.search)
         lay.addLayout(tools)
 
-        self.btn_new.clicked.connect(lambda: self._by_status("新增"))
-        self.btn_upd.clicked.connect(lambda: self._by_status("更新"))
-        self.btn_only.clicked.connect(lambda: self._by_status("目标独有"))
+        self.btn_new.clicked.connect(lambda: self._by_status(tr("新增")))
+        self.btn_upd.clicked.connect(lambda: self._by_status(tr("更新")))
+        self.btn_only.clicked.connect(lambda: self._by_status(tr("目标独有")))
         self.btn_all.clicked.connect(lambda: self._set_checked(lambda it: True))
         self.btn_none.clicked.connect(lambda: self._set_checked(lambda it: False))
         self.btn_view.clicked.connect(self._toggle_view)
 
         combo_menu = QtWidgets.QMenu(self)
-        combo_menu.addAction("新增 + 更新（排除目标独有）",
-                             lambda: self._by_status("新增", "更新"))
-        combo_menu.addAction("新增 + 目标独有",
-                             lambda: self._by_status("新增", "目标独有"))
-        combo_menu.addAction("更新 + 目标独有",
-                             lambda: self._by_status("更新", "目标独有"))
+        combo_menu.addAction(tr("新增 + 更新（排除目标独有）"),
+                             lambda: self._by_status(tr("新增"), tr("更新")))
+        combo_menu.addAction(tr("新增 + 目标独有"),
+                             lambda: self._by_status(tr("新增"), tr("目标独有")))
+        combo_menu.addAction(tr("更新 + 目标独有"),
+                             lambda: self._by_status(tr("更新"), tr("目标独有")))
         self._combo_menu = combo_menu
         # 用 popup 而不是 exec，而且丢回 Tk 的 after 里弹：exec 会开一层**嵌套事件循环**，
         # 而这段代码跑在 Tk 的 after → processEvents 回调里，嵌套事件循环 + 在 Qt 栈上
@@ -415,18 +419,18 @@ class QtDiffView(QtWidgets.QWidget):
         self.summary.setTextFormat(QtCore.Qt.RichText)
         mid.addWidget(self.summary)
         mid.addStretch(1)
-        mid.addWidget(QtWidgets.QLabel("排序依据："))
+        mid.addWidget(QtWidgets.QLabel(tr("排序依据：")))
         self.sort_combo = QtWidgets.QComboBox()
-        for key, label in (("name", "文件名"), ("status", "状态"), ("type", "类型"),
-                           ("modid", "Mod ID"), ("version", "版本"), ("size", "大小(KB)")):
+        for key, label in (("name", tr("文件名")), ("status", tr("状态")), ("type", tr("类型")),
+                           ("modid", "Mod ID"), ("version", tr("版本")), ("size", tr("大小(KB)"))):
             self.sort_combo.addItem(label, key)
         self.sort_combo.setFixedHeight(28)
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         mid.addWidget(self.sort_combo)
-        self.btn_dir = AnimButton("▲ 升序", "#607d8b", "#455a64", th)
+        self.btn_dir = AnimButton(tr("▲ 升序"), "#607d8b", "#455a64", th)
         mid.addWidget(self.btn_dir)
-        self.btn_apply = AnimButton("✅ 应用所选", "#00c853", "#00a344", th)
-        self.btn_close = AnimButton("✖ 关闭", "#e53935", "#c62828", th)
+        self.btn_apply = AnimButton(tr("✅ 应用所选"), "#00c853", "#00a344", th)
+        self.btn_close = AnimButton(tr("✖ 关闭"), "#e53935", "#c62828", th)
         mid.addWidget(self.btn_apply)
         mid.addWidget(self.btn_close)
         lay.addLayout(mid)
@@ -521,12 +525,12 @@ class QtDiffView(QtWidgets.QWidget):
         self.stack.currentChanged.connect(lambda *_a: self._update_progress())
         if self._start_cards:                 # 设置里选了"打开就是卡片"
             self.stack.setCurrentIndex(1)
-            self.btn_view.setText("📋 表格视图")
+            self.btn_view.setText(tr("📋 表格视图"))
 
         # ---- 底栏 ----
         bottom = QtWidgets.QHBoxLayout()
         self.hint = QtWidgets.QLabel(
-            "单击=勾选 · 双击=模组详情 · Ctrl+A=全选 · Ctrl+F=搜索 · Esc=关闭")
+            tr("单击=勾选 · 双击=模组详情 · Ctrl+A=全选 · Ctrl+F=搜索 · Esc=关闭"))
         bottom.addWidget(self.hint)
         bottom.addStretch(1)
         lay.addLayout(bottom)
@@ -594,7 +598,7 @@ class QtDiffView(QtWidgets.QWidget):
         self._update_summary()          # 排序/过滤后摘要与总览条的颜色要跟着重出
         if not self.store.take_want_top():
             return
-        self._t("排序/过滤后回顶部")
+        self._t(tr("排序/过滤后回顶部"))
         for sb in (self.table.verticalScrollBar(), self.cards.verticalScrollBar()):
             try:
                 sb.setValue(0)
@@ -614,8 +618,8 @@ class QtDiffView(QtWidgets.QWidget):
             row = self.cards.verticalScrollBar().value() // max(1, Q.CARD_H)
             target = row * row_h
         self.stack.setCurrentIndex(1 if cards else 0)
-        self.btn_view.setText("📋 表格视图" if cards else "🗂 卡片视图")
-        self._t("切到%s" % ("卡片" if cards else "表格"))
+        self.btn_view.setText(tr("📋 表格视图") if cards else tr("🗂 卡片视图"))
+        self._t(tr("切到%s") % (tr("卡片") if cards else tr("表格")))
         view = self.cards if cards else self.table
         sb = view.verticalScrollBar()
         try:
@@ -796,7 +800,7 @@ class QtDiffView(QtWidgets.QWidget):
         self._sync_sort_ui()
 
     def _sync_sort_ui(self):
-        self.btn_dir.setText("▼ 降序" if self.store.sort_rev else "▲ 升序")
+        self.btn_dir.setText(tr("▼ 降序") if self.store.sort_rev else tr("▲ 升序"))
         key = self.store.sort_col
         idx = self.sort_combo.findData(key) if key else -1
         if idx >= 0 and idx != self.sort_combo.currentIndex():
@@ -822,7 +826,7 @@ class QtDiffView(QtWidgets.QWidget):
         """记一行操作时间线（排查崩溃用：`.minecraft_migrate_clicks.log`）。"""
         try:
             from utils.helpers import trace_line
-            trace_line("差异窗口 %s" % msg)
+            trace_line(tr("差异窗口 %s") % msg)
         except Exception:
             pass
 
@@ -922,7 +926,7 @@ class QtDiffView(QtWidgets.QWidget):
         dlg.activateWindow()
         try:
             from utils.helpers import trace_line
-            trace_line("差异窗口打开详情 row=%d %s" % (row, it.name))
+            trace_line(tr("差异窗口打开详情 row=%d %s") % (row, it.name))
         except Exception:
             pass
         return dlg
@@ -930,9 +934,9 @@ class QtDiffView(QtWidgets.QWidget):
     # ------------------------------------------------------------------ 应用
     def _apply(self):
         files = self.store.checked_data()
-        self._t("应用所选 %d 个" % len(files))
+        self._t(tr("应用所选 %d 个") % len(files))
         if not files:
-            QtWidgets.QMessageBox.warning(self, "提示", "没有勾选任何模组")
+            QtWidgets.QMessageBox.warning(self, tr("提示"), tr("没有勾选任何模组"))
             return
         cb = self.apply_callback
         defer = self.hooks.get("defer")
@@ -945,23 +949,45 @@ class QtDiffView(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ 杂项
     def _update_summary(self):
-        """摘要：总数 + 各状态计数 + 已选。"""
+        """摘要：总数 + 各状态计数 + 已选。**按语义分段上色**。
+
+        summary 是 RichText 的 QLabel（见 __init__），所以每段数字各自染色 ——
+        和放大查看顶部那行一个规矩：整行一个灰白色看不出哪个数字要紧。
+        为 0 的压成灰（"新增 0"顶着绿色像在报喜）。
+        """
         total = len(self.store.items)
-        计数 = []
-        for 名 in ("新增", "更新", "降级", "目标独有"):
-            n = sum(1 for it in self.store.items if it.status == 名)
-            if n or 名 != "降级":            # 没有降级就别占地方
-                计数.append((名, n))
         picked = sum(1 for it in self.store.items if it.checked)
         shown = len(self.store.order)
-        parts = ["总计 %d 项差异" % total]
+        th = self.theme
+        fg = th.get("fg", "#eeeeee")
+        muted = th.get("muted_fg", "#9a9a9a")
+        accent = th.get("card_sel_bar", "#2f7fd1")
+        good = th.get("ok_fg") or th.get("log_success_fg", "#2e7d32")
+        warn = th.get("log_warning_fg", "#e65100")
+        bad = th.get("fail_fg", "#c62828")
+
+        def num(text, color, bold=False):
+            body = "<b>%s</b>" % text if bold else text
+            return '<span style="color:%s;">%s</span>' % (color, body)
+
+        def label(text, color=muted):
+            return '<span style="color:%s;">%s</span>' % (color, text)
+
+        段 = [num(tr("总计 %d 项差异") % total, fg, True)]
         if self.store.query.strip():
-            parts.append("已过滤，显示 %d 项" % shown)
-        for 名, n in 计数:
-            parts.append("%s %d" % (名, n))
-        parts.append("已选 %d" % picked)
-        self.summary.setText(" ｜ ".join(parts))
-        self.title_label.setText("🧩 模组差异扫描 · %d 项" % total)
+            段.append(num(tr("已过滤，显示 %d 项") % shown, accent, True))
+        for 名, 色 in (("新增", good), ("更新", warn), ("降级", bad),
+                       ("目标独有", muted)):
+            n = sum(1 for it in self.store.items if it.status == 名)
+            if n or 名 != "降级":                # 没有降级就别占地方
+                # 比较用原文（数据），显示时才翻
+                段.append(num("%s %d" % (tr(名), n), 色 if n else muted, bool(n)))
+        段.append(num(tr("已选 %d") % picked, accent if picked else muted, bool(picked)))
+        html = label(" ｜ ").join(段)
+        if html != getattr(self, "_summary_html", None):
+            self._summary_html = html
+            self.summary.setText(html)
+        self.title_label.setText(tr("🧩 模组差异扫描 · %d 项") % total)
         self._refresh_overview()
 
     def _update_progress(self):
@@ -994,7 +1020,7 @@ class QtDiffView(QtWidgets.QWidget):
             self.overview.set_colors(self.store.overview_colors())
             self._sync_overview_viewport()
         except Exception:
-            trace_exc("qt_diff_view", "刷新总览条")
+            trace_exc("qt_diff_view", tr("刷新总览条"))
 
     def _jump_to_overview(self, 比例):
         """在总览条上点/拖：把那个位置对到视口中间。"""
@@ -1006,7 +1032,7 @@ class QtDiffView(QtWidgets.QWidget):
             目标 = int(比例 * 总 - page / 2.0)
             sb.setValue(max(sb.minimum(), min(sb.maximum(), 目标)))
         except Exception:
-            trace_exc("qt_diff_view", "总览条跳转")
+            trace_exc("qt_diff_view", tr("总览条跳转"))
 
     def _schedule_icon(self):
         """排下一张图标的解析（走 Tk 的 after；拿不到就退回 QTimer 单次触发）。"""
@@ -1082,7 +1108,7 @@ class QtDiffView(QtWidgets.QWidget):
 
     def closeEvent(self, ev):
         self._alive = False
-        self._t("关闭")
+        self._t(tr("关闭"))
         try:
             self.scroll_progress.stop()
         except Exception:

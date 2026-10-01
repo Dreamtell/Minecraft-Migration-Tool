@@ -10,6 +10,7 @@
 `MW.do_backup`…，这个 star 导入把拆分前的老接口面原样搬回来，脚本一行不用改。
 """
 from ui.mw_common import *          # noqa: F401,F403 —— 见上面 docstring
+from utils import i18n
 from ui.mw_log import LogMixin
 from ui.mw_theme import ThemeMixin
 from ui.mw_buttons import ButtonsMixin
@@ -173,8 +174,10 @@ class MigrationGUI(
         self._setup_custom_undo(self.extra_text, "extra")
         self._refresh_list_badges()
         self.log("=" * 60, level="INFO", save=False)
-        self.log("【免费声明】本工具完全免费，严禁用于商业用途或转卖。", level="WARNING", save=False)
-        self.log("如有任何收费行为，请立即举报。作者不会以任何形式向你收费。", level="WARNING", save=False)
+        self.log(i18n.tr("【免费声明】本工具完全免费，严禁用于商业用途或转卖。"),
+                 level="WARNING", save=False)
+        self.log(i18n.tr("如有任何收费行为，请立即举报。作者不会以任何形式向你收费。"),
+                 level="WARNING", save=False)
         self.log("=" * 60, level="INFO", save=False)
 
         self.progress_queue = None
@@ -227,7 +230,8 @@ class MigrationGUI(
         if not self._on_stage:
             return
         try:
-            self._on_stage(text)
+            # 闪屏那几行状态字是画在画布上的（不走 Tk 控件），语言层拦不到，这里显式过一遍
+            self._on_stage(i18n.tr(text))
         except Exception:
             pass
 
@@ -316,6 +320,9 @@ class MigrationGUI(
             "overwrite": self.overwrite_mods.get(),
             "confirm_migrate": self.confirm_migrate.get(),
             "theme": self.current_theme,
+            # 界面语言（下次启动生效）。i18n 是"文案入口查表"，打包层不持有语言状态，
+            # 所以这里读的是当前生效值。
+            "language": str(i18n.language()),
             "mod_list": self.mod_text.get("1.0", tk.END).strip(),
             "config_list": self.config_text.get("1.0", tk.END).strip(),
             "extra_list": self.extra_text.get("1.0", tk.END).strip(),

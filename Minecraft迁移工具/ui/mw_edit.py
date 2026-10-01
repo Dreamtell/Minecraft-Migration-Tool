@@ -6,6 +6,8 @@
 """
 import tkinter as tk
 from utils.helpers import trace_exc
+# 文案模板：trp 按位置填值
+from utils.i18n import trp
 
 
 class EditMixin:
@@ -86,10 +88,12 @@ class EditMixin:
                 sw.set(self.edit_mode.get(), animate=True)     # 被自动关掉时开关也得跟上
             if 锁:
                 名 = "、".join(self._MIRROR_EDIT_NAMES.get(k, k) for k in 锁)
-                sw.set_text(desc="%s 开着时不能编辑 · 关掉那个窗口即可恢复" % 名)
+                sw.set_text(desc=trp("{0} 开着时不能编辑 · 关掉那个窗口即可恢复", 名))
                 sw.set_enabled(False)
             else:
-                sw.set_text(desc="直接改动清单文字 · 谨慎使用")
+                # 这里显式过一遍语言层：虽然语言层也包了 SwitchRow.set_text（双保险），
+                # 但自绘控件的文字不走 tk 的 text=，漏包一次就是中文残留（踩过）
+                sw.set_text(desc=trp("直接改动清单文字 · 谨慎使用"))
                 sw.set_enabled(True)
         except Exception:
             trace_exc("main_window", "同步编辑锁")

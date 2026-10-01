@@ -19,6 +19,9 @@ import random
 import time
 import tkinter as tk
 
+# 界面语言：这几处文字不进 tk 控件（画进图片 / 走 COM），得自己翻
+from utils.i18n import tr
+
 CARD_W = 480
 CARD_H = 360
 CARD_RADIUS = 24
@@ -167,8 +170,10 @@ class SplashScreen:
         self._card_cache = (0, 0, None)
         self._card_master = None                   # 1 倍母版（缩放目标 ≤ 卡片原尺寸时用）
         self._card_master2 = None                  # 2 倍母版（放大时用，字更锐）
-        self._title = title
-        self._subtitle = subtitle
+        # ⚠ 标题/副标题是**画进图片里**的（PIL），不经过任何 tk 控件 —— 语言层包不到，
+        # 必须在这一步自己翻（默认值也是中文，所以连默认值一起过一遍）
+        self._title = tr(title)
+        self._subtitle = tr(subtitle)
         self._particles = [self._spawn_particle() for _ in range(_PARTICLES)]
 
         win = tk.Toplevel(parent)

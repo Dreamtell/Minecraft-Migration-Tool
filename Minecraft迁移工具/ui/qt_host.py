@@ -139,6 +139,14 @@ def run_host(argv):
 
     from PySide6 import QtCore          # 只在子进程里加载 Qt
 
+    # 界面语言：子进程不装 Tk 那一层（这里没有 Tk，也不许有），只激活翻译 + 包 Qt 控件。
+    # 语言取自同一个配置（MCTOOL_CONFIG 环境变量/用户主目录），主进程和子进程一致。
+    try:
+        from utils import i18n
+        i18n.install_qt()
+    except Exception:
+        pass
+
     hooks = _make_hooks(QtCore)
 
     try:

@@ -19,6 +19,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from utils.helpers import lighten_color
+# 界面语言：表头等内容是画在画布上的，控件入口覆盖不到（见下面 create_text 处）
+from utils.i18n import tr
 
 # 7x7 实心圆（透明背景）
 _DOT_PATTERN = (
@@ -211,9 +213,11 @@ class VirtualTable(tk.Frame):
             width = self._widths[j]
             x = self._col_x[j]
             c.create_line(x, 0, x, h, fill=self._border)
-            label = title
+            # 表头是**画在画布上**的（不是 ttk.Treeview.heading），所以语言层的控件入口
+            # 覆盖不到，得在这里自己翻
+            label = tr(title) if title else title
             if self.sort_col == key and title:
-                label = f"{title} {'▼' if self.sort_rev else '▲'}"
+                label = f"{label} {'▼' if self.sort_rev else '▲'}"
             if anchor == "w":
                 tx, ax = x + 6, "w"
             elif anchor == "e":
@@ -481,7 +485,9 @@ class VirtualTable(tk.Frame):
                 except Exception:
                     dot = None
                 if dot:
-                    text = dot[1]
+                    # 状态词是**数据**（扫描结果里就是中文，查表/比较都用原文），
+                    # 只有画到界面上这一刻才翻
+                    text = tr(dot[1])
                     tx, ax, avail = x + 22, "w", width - 26
                 else:
                     text, tx, ax, avail = "", x + 6, "w", width - 12

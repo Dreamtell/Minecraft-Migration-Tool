@@ -7,6 +7,8 @@ import threading
 import time
 import weakref
 
+from utils import i18n          # 界面语言（默认中文时 tr() 原样返回，行为不变）
+
 # 活着的平滑滚动器（弱引用，不阻止回收）。用来统一管理/诊断，
 # 也可以将来做"一键关掉平滑滚动"的开关。
 _LIVE_SCROLLERS = weakref.WeakSet()
@@ -1183,9 +1185,39 @@ def make_theme_icon(kind, size=20, color="#ffffff"):
     return img
 
 
+def _btn_text_width(text, font=None):
+    """量一段文字用渐变按钮字体画出来有多宽（Font 对象缓存，别每次 new）。
+
+    给 create_gradient_button 撑宽度用：英文文案比中文长，按中文调好的固定宽度会溢出。
+    """
+    global _BTN_FONT_CACHE
+    f = _BTN_FONT_CACHE
+    if f is None:
+        try:
+            f = tkfont.Font(font=font) if font else tkfont.Font(family="微软雅黑", size=10,
+                                                                weight="bold")
+        except Exception:
+            f = tkfont.Font(family="微软雅黑", size=10, weight="bold")
+        _BTN_FONT_CACHE = f
+    return f.measure(str(text or ""))
+
+
+_BTN_FONT_CACHE = None      # 量按钮文字用的 Font（tkinter 里 new Font 很慢，缓存）
+_BTN_TEXT_PAD = 30          # 按钮左右内边距（和 _grad_width 里那句对齐）
+
+
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            width=180, height=32, font=("微软雅黑", 10, "bold"),
                            click_guard_ms=300):
+    # 文案在**函数本体**里过 tr()，不能靠在别处包一层：调用方早把原函数 import 走了。
+    # 中文（默认）时 tr() 原样返回，行为不变。见 utils/i18n.py。
+    text = i18n.tr(text)
+    # 英文普遍比中文长，而调用方给的 width 都是按中文量着调的 —— 装不下就把按钮撑到
+    # 文字宽度（宁可宽一点也不让字溢出去）。中文模式下测出来还是原宽度，布局不变。
+    try:
+        width = max(int(width), _btn_text_width(text, font) + _BTN_TEXT_PAD)
+    except Exception:
+        pass
     state = {"colors": colors, "hover": hover_pair(colors), "text": text, "icon": None,
              "fg": "white"}
     radius = max(0, min(_BTN_RADIUS, height // 3))
@@ -1541,6 +1573,8 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
 
     def set_text(new_text):
         """动态改按钮文字（替代 tk.Button 的 config(text=...)）。"""
+        # 动态改文字也要过 tr()：按钮文字经常带状态（「正在扫描…」之类）
+        new_text = i18n.tr(new_text)
         state["text"] = new_text
         state["icon"] = None      # 回到文字模式
         draw_content()
@@ -2390,7 +2424,7 @@ class SwitchRow(tk.Canvas):
         self.theme = dict(theme)
         self._title = title
         self._desc = desc
-        self._warn_desc = warn_desc or "⚠ 已开启"
+        self._warn_desc = warn_desc or i18n.tr("⚠ 已开启")
         # 开着时的底色：紧凑形态（替代复选框的那些）统一用亮蓝 switch_on；
         # 卡片形态留给调用方按语义指定（主界面那个"编辑"开关是警示橙 edit_bg）
         self._accent = accent or ("switch_on" if self._compact else "edit_bg")
