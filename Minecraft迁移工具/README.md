@@ -613,7 +613,10 @@ Minecraft迁移工具/
   配套 `core/mod_search.py` 的 CurseForge 客户端（搜索 / 取最新版本 / 测 Key）：刻意
   **不用** API 返回的 CDN 直链、只给官网页面链接，也**不落盘缓存**（API ToS 3.1 明令禁止
   save/cache）—— 这两条正好对着 Overwolf 审核关心的"作者收入 / 服务器压力"。
-  验证：`_dctest/验证Key不泄露.py`（假 Key 走一圈 + 真跑一次打包脚本的注入路径）65/65
+  另外**每个请求都带可联系的 User-Agent**
+  （`MinecraftMigrateTool/1.0 (+https://github.com/Dreamtell/Minecraft-Migration-Tool)`）：
+  审核指南要求 UA 里能看出"谁在调、出问题找谁"，原来那个 `contact: local` 是占位符。
+  验证：`_dctest/验证Key不泄露.py`（假 Key 走一圈 + 真跑一次打包脚本的注入路径）72/72
 - **主窗口拆细：`ui/main_window.py` 8134 行 → 348 行**（拆出 13 个模块）。
   `MigrationGUI` 现在由 **12 个 mixin** 组装而成，另有 `mw_common.py` 装常量、模块级
   辅助函数和第三方导入：

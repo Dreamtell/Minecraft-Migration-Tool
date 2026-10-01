@@ -394,7 +394,10 @@ Minecraft迁移工具/
   同时把日志、点击轨迹、报错文字、Qt 子进程那份落在临时目录的明文请求 JSON、命令行参数
   全部脱敏，请求走 `x-api-key` 请求头而不放 URL；界面掩码显示、粘完即清空。
   另有 `core/mod_search.py` 的 CurseForge 客户端（只用官网页面链接、不落盘缓存）。
-  验证：`_dctest/验证Key不泄露.py` 65/65
+  **每个请求都带可联系的 User-Agent**（`MinecraftMigrateTool/1.0
+  (+https://github.com/Dreamtell/Minecraft-Migration-Tool)`）—— 审核指南明确要求
+  UA 里能看出"谁在调、怎么找他"，以前那个 `contact: local` 是个占位符，容易被追问。
+  验证：`_dctest/验证Key不泄露.py` 72/72
 - **主窗口拆细：`ui/main_window.py` 8134 行 → 348 行**（拆出 13 个模块）。
   `MigrationGUI` 现在由 **12 个 mixin** 组装而成，另有 `mw_common.py` 装常量、模块级
   辅助函数和第三方导入（日志 / 主题 / 按钮布局 / 设置 / Qt 宿主 / 路径 / 界面搭建 /

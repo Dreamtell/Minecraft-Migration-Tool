@@ -88,6 +88,9 @@ Two sources, both **read-only**:
   use the CDN `downloadUrl` returned by the API, because that would bypass the author's page.
 - Requests are **triggered by explicit user action only** (opening a mod's details or pressing
   *search*). There is no background polling, no bulk crawling and no scheduled refresh.
+- Every request carries a **descriptive `User-Agent` with a contact URL**
+  (`MinecraftMigrateTool/1.0 (+https://github.com/Dreamtell/Minecraft-Migration-Tool)`), so the
+  API operator can always tell who is calling and reach the maintainer.
 - API data is **not cached on disk** — the 3rd-party API terms forbid saving or caching it.
   (Modrinth's public API is used the same way; its local cache only stores category *names*.)
 - Online lookup is optional and isolated: if it fails, or there is no network, the migration

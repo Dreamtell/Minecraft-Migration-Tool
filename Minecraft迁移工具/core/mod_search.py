@@ -21,7 +21,11 @@ from pathlib import Path
 from utils import i18n
 from utils.i18n import trp
 
-USER_AGENT = "MinecraftMigrateTool/1.0 (contact: local)"
+# 请求头里的 User-Agent：**必须带可联系的信息**（CurseForge / Overwolf 的 API 审核明确要求，
+# 官方指南也这么建议）。以前这里是 "contact: local" —— 一看就是占位符，审核容易追问。
+# 有问题能被找到人才是关键；仓库地址点进去还能看到 README 里对那三条标准的说明。
+USER_AGENT = ("MinecraftMigrateTool/1.0 "
+              "(+https://github.com/Dreamtell/Minecraft-Migration-Tool)")
 
 MODRINTH_SEARCH = "https://api.modrinth.com/v2/search?query={query}&limit={limit}&index=downloads"
 # 取版本列表：**必须带 limit=1**。实测 JEI 这类版本极多的项目，不带参数会一次拉回
@@ -178,7 +182,7 @@ def format_downloads(n):
         n = int(n)
     except (TypeError, ValueError):
         return "0"
-    if i18n.language() == i18n.EN:
+    if i18n.active() and i18n.language() == i18n.EN:
         if n >= 1000000:
             return trp("{0:.1f}M", n / 1000000)
         if n >= 1000:
