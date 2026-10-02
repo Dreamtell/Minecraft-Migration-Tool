@@ -156,6 +156,8 @@ class LockMixin:
         """
         if getattr(self, "_lock_overlay", None) is not None:
             return
+        # 还没到完成态：任何"按任意键关闭"都不该生效（见 _lock_any_key 的说明）
+        self._lock_done = False
         mode = getattr(self, "lock_mode", "all")
         if mode == "off" or (mode == "real" and self.dry_run.get()):
             self.log("🔓 按设置未锁定界面（操作按钮仍全部禁用）", level="INFO", save=False)
@@ -219,7 +221,13 @@ class LockMixin:
             # 遮罩也不该一直盖着。
             self._mig_watch_job = self.root.after(250, self._watch_migration_end)
             self._lock_cfg_bind = self.root.bind("<Configure>", self._on_lock_configure, add="+")
-        except Exception:
+        except Exception as e:
+            # 别裸吞：遮罩建不起来意味着"界面没锁上"，迁移却已经在跑了 —— 必须留痕，
+            # 否则只能看到"锁屏没出现"这种没头没尾的现象（查这个 bug 时就吃过一次）。
+            try:
+                trace_exc("mw_lock", e)
+            except Exception:
+                pass
             self._lock_overlay = None
             self._lock_log_text = None
 
@@ -322,23 +330,36 @@ class LockMixin:
         except Exception:
             pass
         # 等按键 or 自动关
+        self._lock_done = True                  # 从这里开始"按键关闭"才合法
         if getattr(self, "lock_wait_key", True):
             try:
                 self._lock_sub.configure(text="按任意键（或点一下）关闭本界面")
             except Exception:
                 pass
-            self._lock_binds = []
-            for 事件, fn in (("<Key>", self._lock_any_key),
-                             ("<Button-1>", self._lock_any_key),
-                             ("<MouseWheel>", self._lock_any_key)):
-                try:
-                    self._lock_binds.append(self.root.bind(事件, fn, add="+"))
-                except Exception:
-                    pass
             try:
                 self.root.focus_force()          # 键盘事件得有焦点才收得到
             except Exception:
                 pass
+
+            # ⚠ **延迟**注册，别在这里直接 bind：迁移期间用户在遮罩上敲的键没有绑定去处理，
+            # 会一直积压在 tkinter 的事件队列里；绑定一注册，那些**旧的**按键就立刻被投递，
+            # 锁屏在完成的瞬间就被收掉（用户报过"还没完成时按键 → 完成时立即退出"）。
+            # 先空等一小会儿（这段时间没有绑定，积压的旧键会被丢掉），再挂上监听。
+            def _挂按键():
+                if not getattr(self, "_lock_done", False):
+                    return
+                self._lock_binds = []
+                for 事件, fn in (("<Key>", self._lock_any_key),
+                                 ("<Button-1>", self._lock_any_key),
+                                 ("<MouseWheel>", self._lock_any_key)):
+                    try:
+                        self._lock_binds.append(self.root.bind(事件, fn, add="+"))
+                    except Exception:
+                        pass
+            try:
+                self._lock_bind_job = self.root.after(260, _挂按键)
+            except Exception:
+                _挂按键()
         else:
             try:
                 self._lock_sub.configure(text="2 秒后自动关闭本界面")
@@ -347,14 +368,21 @@ class LockMixin:
             self._lock_auto_job = self.root.after(2000, self._unlock_main_window)
 
     def _lock_any_key(self, event=None):
-        """完成态下按任意键/点一下：收掉锁屏（幂等）。"""
+        """完成态下按任意键/点一下：收掉锁屏（幂等）。
+
+        ⚠ **必须先确认迁移真的结束了**：迁移期间用户在遮罩上敲的键会积压在事件队列里，
+        绑定一注册就会被投递进来（用户报过"还没完成时按键 → 完成时立即退出"）。
+        没到完成态就忽略这次事件，别把遮罩提前收掉。
+        """
+        if not getattr(self, "_lock_done", False):
+            return None
         self._unlock_main_window()
         self._refresh_busy_state()
         return None
 
     def _unlock_main_window(self):
         for attr in ("_mig_watch_job", "_lock_pulse_job", "_flow_job",
-                     "_lock_color_job", "_lock_auto_job"):
+                     "_lock_color_job", "_lock_auto_job", "_lock_bind_job"):
             job = getattr(self, attr, None)
             if job is not None:
                 try:
