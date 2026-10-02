@@ -334,7 +334,9 @@ class PathsMixin:
         tk.Label(frame_world, text="（例如：新的世界）").pack(side="left")
         self.world_status = tk.Label(frame_world, text="", fg=self.theme["muted_fg"])
         self.world_status._keep_fg = True       # 同上
-        self.world_status.pack(side="right", padx=10)
+        # 贴着提示文字（往左靠）：这一行很空（短输入框 + 一行提示），没必要像上面
+        # 路径区那样挤到最右边 —— 那两行控件多，标签贴右才不会被裁。
+        self.world_status.pack(side="left", padx=(12, 0))
 
     # ---------- 路径选择 ----------
     def select_source(self):
