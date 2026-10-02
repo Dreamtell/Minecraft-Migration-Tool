@@ -981,7 +981,10 @@ class BigViewMixin:
                                 messagebox.showinfo(
                                     "检测完成",
                                     trp("✅ 存在性检测完成：共 {0} 项，缺失 {1} 项。",
-                                        len(entries), missing),
+                                        len(entries), missing)
+                                    + ("\n\n" + tr("缺失的模组本工具不负责下载，"
+                                                   "请在你的启动器（如 PCL）里补装。")
+                                       if missing else ""),
                                     parent=win)
                 except Exception:
                     pass

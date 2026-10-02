@@ -95,6 +95,9 @@ Two sources, both **read-only**:
   (Modrinth's public API is used the same way; its local cache only stores category *names*.)
 - Online lookup is optional and isolated: if it fails, or there is no network, the migration
   itself is unaffected.
+- **This tool never downloads mods.** It only *moves files you already have* from one instance
+  to another. Missing mods are for you to install with your launcher (PCL, the CurseForge App,
+  Prism, ...) - the tool just tells you which ones are missing and links to their pages.
 
 ### API key handling
 

@@ -233,6 +233,10 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "📝 已打开配置文件：{0}": "📝 Opened config file: {0}",
     "❌ 打开配置文件失败：{0}": "❌ Failed to open config file: {0}",
     "← 填充路径": "← Fill",
+    # 本工具的定位：只做迁移，不提供下载（缺失的模组让用户用自己的启动器补）
+    "缺失的模组本工具不负责下载，请在你的启动器（如 PCL）里补装。":
+        "This tool does not download mods. Install the missing ones in your "
+        "launcher (e.g. PCL).",
     # ---------- 悬停提示（tooltip）----------
     # ⚠ 这一类以前整片漏掉：`create_tooltip` 里确实调了 tr()，但静态审计只扫 `tr(...)`
     # 的参数、扫不到 tooltip 的字符串，于是英文界面下提示全是中文（用户报过"tip 没有英文"）。
