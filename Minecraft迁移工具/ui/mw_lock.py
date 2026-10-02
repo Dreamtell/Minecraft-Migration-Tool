@@ -245,17 +245,23 @@ class LockMixin:
             self._lock_log_text = None
 
     def _play_lock_intro(self, ov, inner, text=""):
-        """锁屏入场特效（约 0.45 秒）：边框呼吸 + 锁图标脉冲 + 标题逐字浮现。
+        """锁屏入场特效（约 0.5 秒）：边框发光脉冲 + 锁图标热点脉冲 + 标题逐字浮现。
 
-        ⚠ 别用"半透明覆盖层"那套：Tk 的画布**不支持真透明**，盖上去只会把锁屏内容整个
-        糊掉（第一版就是这么翻车的 —— 截图里既没有内容也没有光带）。所以这里改成驱动
-        **已有的部件**动起来：稳、不吃性能、不需要透明，而且和流动边是同一套视觉语言。
+        ⚠ **只改颜色和文字，绝不碰布局**。第一版改的是 `inner` 的边距（边框变粗）+ 图标
+        字号（头部变高），逐帧量出来：日志框上下跳了 36px、高度变了 45px —— 整块内容
+        在"呼吸式抖动"，看着晕。所以粗细/字号这类会触发重排的都不能动：
+          · 边框发光 = 改底层画布 cv 的底色（红 → 亮红 → 红），厚度恒定；
+          · 图标脉冲 = 改 🔒 的 fg（暗红 → 亮红 → 近白），字号恒 28；
+          · 标题逐字浮现照旧（只影响它自己那一行的宽度，不会推动别的部件）。
+
+        ⚠ 也别用"半透明覆盖层"那套：Tk 的画布**不支持真透明**，盖上去只会把内容整个
+        糊掉（更早的一版就是这么翻车的）。驱动已有部件的颜色，稳、不吃性能。
+
+        ⚠ "代数"守卫：逐字浮现会往标题里写字，而迁移可能在动画没播完时就结束 ——
+        完成态把标题改成"迁移完成"，动画下一帧又覆盖回去（真踩过）。完成态一递增代数，
+        还在排队的入场帧立刻作废。
 
         纯视觉，不阻塞迁移线程（这些 after 和迁移线程各跑各的）。
-
-        ⚠ 用"代数"让完成态能**立刻作废**这场动画：逐字浮现会往标题里写字，而迁移可能
-        在动画还没播完时就结束了 —— 完成态把标题改成"迁移完成"，动画的下一帧又把它
-        覆盖回"正在执行迁移任务"（真踩过，验证锁屏完成态就是这么挂的）。
         """
         self._intro_gen = getattr(self, "_intro_gen", 0) + 1
         我的代 = self._intro_gen
@@ -263,40 +269,41 @@ class LockMixin:
         def 还轮到我():
             return getattr(self, "_intro_gen", 0) == 我的代
 
-        # 1) 边框"呼吸"：2 → 12 → 3。inner 是用 place 的负宽高留边的，改边距就是改边框粗细
+        # 1) 边框"发光"：底层画布底色在暗红 ↔ 亮红之间走一趟（粗细不动）
         try:
-            帧宽 = (2, 5, 9, 12, 10, 8, 6, 4, 3)
+            底板 = ("#8e0000", "#ff1744", "#ff1744", "#d50000", "#8e0000")
 
-            def 呼吸(i=0):
+            def 发光(i=0):
                 if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
-                        or i >= len(帧宽)):
+                        or i >= len(底板)):
                     return
-                b = 帧宽[i]
                 try:
-                    inner.place_configure(x=b, y=b, width=-2 * b, height=-2 * b)
+                    cv = getattr(self, "_flow_canvas", None)
+                    if cv is not None:
+                        cv.configure(bg=底板[i])
                 except Exception:
                     return
-                self.root.after(26, lambda: 呼吸(i + 1))
-            呼吸()
+                self.root.after(52, lambda: 发光(i + 1))
+            发光()
         except Exception:
             pass
-        # 2) 锁图标脉冲：🔒 字号 28 → 44 → 28
+        # 2) 锁图标脉冲：只换颜色（字号固定 28，免得把下面推来推去）
         try:
-            字号 = (28, 34, 40, 44, 41, 36, 32, 29)
+            图标色 = ("#ff1744", "#ff5252", "#ff8a80", "#ff5252", "#ff1744")
 
             def 脉冲(i=0):
                 if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
-                        or i >= len(字号)):
+                        or i >= len(图标色)):
                     return
                 try:
-                    self._lock_icon.configure(font=("微软雅黑", 字号[i]))
+                    self._lock_icon.configure(fg=图标色[i])
                 except Exception:
                     return
-                self.root.after(32, lambda: 脉冲(i + 1))
+                self.root.after(56, lambda: 脉冲(i + 1))
             脉冲()
         except Exception:
             pass
-        # 3) 标题逐字浮现（比整句"啪"地出现有仪式感）
+        # 3) 标题逐字浮现（比整句"啪"地出现有仪式感；只影响它自己那一行）
         try:
             全 = text or "正在执行迁移任务"
 
