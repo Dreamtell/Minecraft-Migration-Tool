@@ -408,9 +408,25 @@ class LogMixin:
             start = self.log_text.index("end-1c")
             self.log_text.insert(tk.END, message + "\n", level)
             end = self.log_text.index("end-1c")
+            # 行数上限：迁移几百个模组会灌进上千行，无上限地涨下去，重绘和内存都越来越贵。
+            # 留最近 2000 行足够回看，老日志仍在文件里（save）。
+            try:
+                总行 = int(self.log_text.index("end-1c").split(".")[0])
+                if 总行 > 2000:
+                    self.log_text.delete("1.0", "%d.0" % (总行 - 2000))
+            except Exception:
+                pass
             # 用户手动往上翻的时候别把他拽回底部（滚回底部会自动恢复跟随）
+            # ⚠ 而且**节流**：迁移时一秒几百条，每条都 see 会不断触发滚动（配合平滑滚动
+            #   就是一条永不结束的动画链）。80ms 一次足够跟手，肉眼看不出来。
             if getattr(self, "_log_follow", True):
-                self.log_text.see(tk.END)
+                try:
+                    现在 = time.monotonic()
+                    if 现在 - getattr(self, "_last_see_t", 0.0) >= 0.08:
+                        self._last_see_t = 现在
+                        self.log_text.see(tk.END)
+                except Exception:
+                    self.log_text.see(tk.END)
             self.log_text.configure(state="disabled")
             # 锁屏里那份日志是"第二个视图"：主日志照常记，这里同步追加一份
             lock_log = getattr(self, "_lock_log_text", None)
@@ -418,12 +434,27 @@ class LogMixin:
                 try:
                     lock_log.configure(state="normal")
                     lock_log.insert(tk.END, message + "\n", level)
+                    # 行数上限：迁移时几百条日志刷进来，Text 越大重绘越贵（实测
+                    # 1200 行时每条日志要 5.6ms），把锁屏那份掐在 400 行，成本就恒定
+                    try:
+                        总行 = int(lock_log.index("end-1c").split(".")[0])
+                        if 总行 > 400:
+                            lock_log.delete("1.0", "%d.0" % (总行 - 400))
+                    except Exception:
+                        pass
                     lock_log.configure(state="disabled")
                     lock_log.see(tk.END)
                 except Exception:
                     self._lock_log_text = None
+            # ⚠ 每行一个"淡入"after 链。迁移时一秒几百条日志 → 几百个并发动画 →
+            #   重绘风暴、主线程被打满（实测 5.6ms/条，600 条就是 3.4 秒），
+            #   用户这时候点鼠标就是"未响应"。所以刷屏时直接跳过动画：
+            #   距上一次淡入不到 25ms 就省掉（上限约 40 个/秒，肉眼仍然连贯）。
             try:
-                self._fade_log_line(start, end, level)
+                现在 = time.monotonic()
+                if 现在 - getattr(self, "_last_fade_t", 0.0) >= 0.025:
+                    self._last_fade_t = 现在
+                    self._fade_log_line(start, end, level)
             except Exception:
                 pass
             # 出错的行顺手去清单里把对应条目标红（并存进"失败列表"给定位按钮用）。

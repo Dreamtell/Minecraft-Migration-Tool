@@ -210,7 +210,10 @@ class LockMixin:
             sb.pack(side="right", fill="y")
             try:
                 self._configure_log_colors(lt)       # 级别配色和主日志保持一致
-                self._smooth(lt)                     # 平滑滚动
+                # ⚠ 这里**不装平滑滚动**：日志在迁移期间是持续追加的，平滑滚动会给每次
+                #   滚动挂一条 after 动画链 → 动画永不结束、主线程一直在重绘，用户点鼠标
+                #   就是"未响应"（实测每条日志 5.6ms，600 条 = 3.4 秒满载）。
+                #   锁屏日志只要"能看到最后一行"就够了，直接 see 到底。
                 tail = self.log_text.get("1.0", tk.END).splitlines()[-200:]
                 if tail:
                     lt.insert("1.0", "\n".join(tail) + "\n")
@@ -227,22 +230,32 @@ class LockMixin:
             self._flow_boost_total = 16
             self._flow_boost = self._flow_boost_total
             self._flow_job = self.root.after(23, self._flow_step)
-            # 吃掉落在遮罩上的鼠标/滚轮/按键。遮罩自身原本没有任何绑定，点击会落进里面的
-            # 日志 Text（反复获取焦点 + 触发平滑滚动重绘），连点就会让界面发卡 ——
-            # 用户报过"锁屏时候连续点击会未响应"。完成态则放行，交给 root 上的
-            # "按任意键关闭"处理。
+            # 吃掉落在遮罩上的鼠标/滚轮/按键 —— 而且**连同遮罩内部的所有控件**一起绑。
+            # 只绑 ov 是不够的：点击会先命中**点到的那个子控件**（日志框占了半屏，最常被点），
+            # 由它自己处理（获得焦点、开始选择、触发平滑滚动重绘），连点就会发卡
+            # （用户报过"迁移过程中如果点击鼠标会未响应"）。完成态则放行，
+            # 交给 root 上的"按任意键关闭"处理。
+            _吃的事件 = ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>",
+                        "<Triple-Button-1>", "<Button-2>", "<Button-3>",
+                        "<B1-Motion>", "<B2-Motion>", "<B3-Motion>",
+                        "<MouseWheel>", "<Key>", "<KeyRelease>")
+
             def _吞事件(event=None):
                 if getattr(self, "_lock_done", False):
                     return None
                 return "break"
 
-            for _事件 in ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>",
-                         "<Button-2>", "<Button-3>", "<MouseWheel>",
-                         "<Motion>", "<Key>", "<KeyRelease>"):
-                try:
-                    ov.bind(_事件, _吞事件)
-                except Exception:
-                    pass
+            def _绑吃事件(w):
+                for _事件 in _吃的事件:
+                    try:
+                        w.bind(_事件, _吞事件)
+                    except Exception:
+                        pass
+                for _子 in w.winfo_children():
+                    _绑吃事件(_子)
+
+            _绑吃事件(ov)
+            # ⚠ 不绑 <Motion>：鼠标只要动就会进 Python，纯属白烧 CPU（需要的只是点击/滚轮）
             # 兜底：迁移线程结束时会在主线程里解锁，这里再盯一道 —— 万一那次跨线程
             # after 没排上（Tk 在“没进 mainloop”的驱动方式下会直接拒绝跨线程调用），
             # 遮罩也不该一直盖着。
