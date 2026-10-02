@@ -177,7 +177,11 @@ class LockMixin:
             ov.place(x=0, y=0, relwidth=1, relheight=1)
             cv = tk.Canvas(ov, bg="#8e0000", highlightthickness=0, bd=0)
             cv.place(x=0, y=0, relwidth=1, relheight=1)
-            inner = tk.Frame(ov, bg=bg)
+            # 给内容框一圈**固定粗细**的发光边：动画只改它的颜色，粗细恒定，
+            # 所以不会推动任何内容（改边距/字号那种做法会把内容挤来挤去）。
+            inner = tk.Frame(ov, bg=bg, highlightthickness=8,
+                             highlightbackground="#8e0000",
+                             highlightcolor="#8e0000")
             inner.place(x=bw, y=bw, relwidth=1, relheight=1,
                         width=-2 * bw, height=-2 * bw)
 
@@ -285,21 +289,22 @@ class LockMixin:
         def 还轮到我():
             return getattr(self, "_intro_gen", 0) == 我的代
 
-        # 1) 边框"发光"：底层画布底色在暗红 ↔ 亮红之间走一趟（粗细不动）
+        # 1) 边框"发光"：内容框那圈 8px 的 highlight 在暗红 ↔ 亮红之间走一趟。
+        #    粗细恒定、只换颜色，所以不触碰布局（这一点是逐帧量过的：日志框 y/高差都是 0）。
         try:
-            底板 = ("#8e0000", "#ff1744", "#ff1744", "#d50000", "#8e0000")
+            底板 = ("#8e0000", "#c62828", "#ff1744", "#ff5252", "#ff1744",
+                    "#c62828", "#8e0000")
 
             def 发光(i=0):
                 if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
                         or i >= len(底板)):
                     return
                 try:
-                    cv = getattr(self, "_flow_canvas", None)
-                    if cv is not None:
-                        cv.configure(bg=底板[i])
+                    inner.configure(highlightbackground=底板[i],
+                                    highlightcolor=底板[i])
                 except Exception:
                     return
-                self.root.after(52, lambda: 发光(i + 1))
+                self.root.after(48, lambda: 发光(i + 1))
             发光()
         except Exception:
             pass
@@ -332,10 +337,8 @@ class LockMixin:
                 except Exception:
                     return
                 self.root.after(34, lambda: 逐字(i + 1))
-            try:
-                self._lock_title.configure(text="")
-            except Exception:
-                pass
+            # 别先清空：那样会有一瞬间标题是空的（"锁屏上什么都没有"的观感来源之一）。
+            # 直接从第一个字开始写，画面自始至终都有内容。
             逐字()
             # 保底：主线程忙的时候 after 会拖后腿，逐字可能停在半截（"正在执"）——
             # 用户报过"锁屏界面的文字有问题"。到点无论如何补成完整句子。
@@ -350,76 +353,6 @@ class LockMixin:
             self.root.after(len(全) * 34 + 260, 补全)
         except Exception:
             pass
-        # 4) 扫光：一道亮带从左扫到右（约 0.3 秒），然后自己销毁。
-        #    用**同底色**的画布临时盖住内容 —— Tk 画布不支持真透明，但只盖 0.3 秒、
-        #    底色和遮罩一致，观感就是"一道光扫过锁屏"。它用 place 覆盖，不参与 pack，
-        #    所以不会推动任何内容（布局零抖动，这一点是逐帧量过的）。
-        try:
-            from PIL import Image, ImageDraw, ImageTk
-            ov.update_idletasks()
-            宽 = max(2, ov.winfo_width())
-            高 = max(2, ov.winfo_height())
-            层 = tk.Canvas(ov, bg=ov.cget("bg"), highlightthickness=0, bd=0)
-            层.place(x=0, y=0, relwidth=1, relheight=1)
-            # ⚠ 提升窗口必须走 **tk.Misc.tkraise**：tkinter.Canvas 把 lift/tkraise
-            # 都重载成了"画布项提升"（要 tagOrId），直接 层.tkraise() 会 TclError，
-            # 整段扫光被异常跳过 —— 表现就是"点了迁移什么动画都没有"（真踩过）。
-            # （其实 place 到最后的控件本来就在最上层，这里只是写明确一点。）
-            try:
-                tk.Misc.tkraise(层)
-            except Exception:
-                pass
-            self._intro_layer = 层
-            总帧 = 12
-            带宽 = max(60, 宽 // 5)
-
-            def 扫(i=0):
-                if (not 还轮到我() or getattr(self, "_intro_layer", None) is None):
-                    try:
-                        层.destroy()
-                    except Exception:
-                        pass
-                    if getattr(self, "_intro_layer", None) is 层:
-                        self._intro_layer = None
-                    return
-                if i > 总帧:
-                    try:
-                        层.destroy()
-                    except Exception:
-                        pass
-                    if getattr(self, "_intro_layer", None) is 层:
-                        self._intro_layer = None
-                    return
-                try:
-                    img = Image.new("RGBA", (宽, 高), (0, 0, 0, 0))
-                    d = ImageDraw.Draw(img)
-                    cx = int(-带宽 + (宽 + 2 * 带宽) * (i / float(总帧)))
-                    # 一条竖直的亮带，中间亮、两侧渐隐（多画几条模拟渐变）
-                    for k in range(10):
-                        off = int(-带宽 / 2 + 带宽 * k / 10.0)
-                        a = int(70 * (1 - abs(k - 5) / 5.0)) + 6
-                        d.line([(cx + off, 0), (cx + off - 40, 高)],
-                               fill=(255, 64, 96, a), width=max(2, 带宽 // 14))
-                    photo = ImageTk.PhotoImage(img)
-                    层.delete("all")
-                    层.create_image(0, 0, anchor="nw", image=photo)
-                    层._photo = photo
-                except Exception:
-                    try:
-                        层.destroy()
-                    except Exception:
-                        pass
-                    self._intro_layer = None
-                    return
-                self.root.after(24, lambda: 扫(i + 1))
-            扫()
-        except Exception as e:
-            # 别再裸吞：第一版就是这里静默失败，表现成"动画没有"，白查了半天
-            try:
-                trace_exc("mw_lock", e)
-            except Exception:
-                pass
-
     def _on_lock_configure(self, event=None):
         """窗口大小变了：重铺一圈瓦片（瓦片图定长，不用重渲）。"""
         ov = getattr(self, "_lock_overlay", None)
