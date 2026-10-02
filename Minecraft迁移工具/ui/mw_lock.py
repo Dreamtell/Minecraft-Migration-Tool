@@ -243,8 +243,6 @@ class LockMixin:
                     ov.bind(_事件, _吞事件)
                 except Exception:
                     pass
-            # 入场特效：一道亮光扫过 + 边框发光 + 标题逐字（纯视觉，不阻塞迁移线程）
-            self._play_lock_intro(ov, inner, text)
             # 兜底：迁移线程结束时会在主线程里解锁，这里再盯一道 —— 万一那次跨线程
             # after 没排上（Tk 在“没进 mainloop”的驱动方式下会直接拒绝跨线程调用），
             # 遮罩也不该一直盖着。
@@ -260,67 +258,13 @@ class LockMixin:
             self._lock_overlay = None
             self._lock_log_text = None
 
-    def _play_lock_intro(self, ov, inner, text=""):
-        """锁屏入场特效（约 0.5 秒）：边框发光脉冲 + 锁图标热点脉冲 + 标题逐字浮现。
+    # 关于入场动画：试过 8 版，全部翻车，结论是**别做**。
+    # 逐字浮现这类效果依赖 after 的**准时性**，而真实迁移时主线程忙于刷日志，
+    # after 会被大幅延后 —— 标题就一直停在"正"（用户两次截图都是这个）。
+    # 盖层类（半透明描边 / 扫光）更糟：Tk 画布不支持真透明，直接把内容盖住。
+    # 现在的做法：锁屏**直接完整出现**，动感交给本来就在跑的流动边
+    # （入场先快后慢，见 _flow_boost）—— 它不依赖 after 准时，也从不遮内容。
 
-        ⚠ **只改颜色和文字，绝不碰布局**。第一版改的是 `inner` 的边距（边框变粗）+ 图标
-        字号（头部变高），逐帧量出来：日志框上下跳了 36px、高度变了 45px —— 整块内容
-        在"呼吸式抖动"，看着晕。所以粗细/字号这类会触发重排的都不能动：
-          · 边框发光 = 改底层画布 cv 的底色（红 → 亮红 → 红），厚度恒定；
-          · 图标脉冲 = 改 🔒 的 fg（暗红 → 亮红 → 近白），字号恒 28；
-          · 标题逐字浮现照旧（只影响它自己那一行的宽度，不会推动别的部件）。
-
-        ⚠ 也别用"半透明覆盖层"那套：Tk 的画布**不支持真透明**，盖上去只会把内容整个
-        糊掉（更早的一版就是这么翻车的）。驱动已有部件的颜色，稳、不吃性能。
-
-        ⚠ "代数"守卫：逐字浮现会往标题里写字，而迁移可能在动画没播完时就结束 ——
-        完成态把标题改成"迁移完成"，动画下一帧又覆盖回去（真踩过）。完成态一递增代数，
-        还在排队的入场帧立刻作废。
-
-        纯视觉，不阻塞迁移线程（这些 after 和迁移线程各跑各的）。
-        """
-        self._intro_gen = getattr(self, "_intro_gen", 0) + 1
-        我的代 = self._intro_gen
-
-        def 还轮到我():
-            return getattr(self, "_intro_gen", 0) == 我的代
-
-        # 入场只做"不动外观"的两件事：流动边先快后慢（见 _flow_boost）、标题逐字浮现。
-        # ⚠ 曾经试过三种更"炫"的做法，全部翻车，别再走回头路：
-        #   · 半透明描边覆盖层 / 扫光层 —— Tk 画布不支持真透明，把内容整个盖住；
-        #   · 改 inner 边距做"边框变粗" —— 内容跟着缩放抖动，日志框 y 差 36px；
-        #   · 改图标字号做脉冲 —— 头部变高，把下面全推下去；
-        #   · 加一圈 8px highlight 做发光 —— 和流动瓦片边重复（看着"边框变粗"），
-        #     而且完成态只把**流动边**渐变到绿色，那圈红边留着不走 → 绿红并存。
-        # 3) 标题逐字浮现（比整句"啪"地出现有仪式感；只影响它自己那一行）
-        try:
-            全 = text or "正在执行迁移任务"
-
-            def 逐字(i=1):
-                if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
-                        or i > len(全)):
-                    return
-                try:
-                    self._lock_title.configure(text=全[:i])
-                except Exception:
-                    return
-                self.root.after(34, lambda: 逐字(i + 1))
-            # 别先清空：那样会有一瞬间标题是空的（"锁屏上什么都没有"的观感来源之一）。
-            # 直接从第一个字开始写，画面自始至终都有内容。
-            逐字()
-            # 保底：主线程忙的时候 after 会拖后腿，逐字可能停在半截（"正在执"）——
-            # 用户报过"锁屏界面的文字有问题"。到点无论如何补成完整句子。
-            def 补全():
-                if not 还轮到我() or getattr(self, "_lock_overlay", None) is None:
-                    return
-                try:
-                    if self._lock_title.cget("text") != 全:
-                        self._lock_title.configure(text=全)
-                except Exception:
-                    pass
-            self.root.after(len(全) * 34 + 260, 补全)
-        except Exception:
-            pass
     def _on_lock_configure(self, event=None):
         """窗口大小变了：重铺一圈瓦片（瓦片图定长，不用重渲）。"""
         ov = getattr(self, "_lock_overlay", None)
@@ -343,8 +287,6 @@ class LockMixin:
         self._refresh_busy_state()
 
     def _finish_migration_lock(self):
-        # 作废还没播完的入场动画（它会写标题，会和下面的"迁移完成"打架）
-        self._intro_gen = getattr(self, "_intro_gen", 0) + 1
         """迁移收尾：锁屏里写总结、边框红→绿渐变，然后停在完成态等用户按键。
 
         用户要的手感：跑完别“啪”地一下消失 —— 先把总结打出来、边框带过渡地转绿，
@@ -482,19 +424,10 @@ class LockMixin:
                 except Exception:
                     pass
                 setattr(self, attr, None)
-        self._intro_gen = getattr(self, "_intro_gen", 0) + 1   # 同上，别和完成态抢标题
+        self._flow_boost = 0                # 入场加速的计数，复位
         self._flow_canvas = None
         self._flow_items = []
         self._lock_log_text = None
-        # 入场特效层：解锁时可能还在播（或者 after 已排上），一并收掉
-        self._flow_boost = 0
-        层 = getattr(self, "_intro_layer", None)
-        self._intro_layer = None
-        if 层 is not None:
-            try:
-                层.destroy()
-            except Exception:
-                pass
         if getattr(self, "_lock_cfg_bind", None) is not None:
             try:
                 self.root.unbind("<Configure>", self._lock_cfg_bind)
