@@ -125,7 +125,15 @@ class LockMixin:
         if cv is None or not items:
             self._flow_job = None
             return
-        step = 3
+        # 入场那一下故意跑快（间隔小、步长大），随后自己衰减到稳态 —— 红光像是"被点着了"
+        # 再稳住。_flow_boost 从初始值递减到 0，期间在 快/慢 之间插值。
+        boost = getattr(self, "_flow_boost", 0)
+        span_boost = getattr(self, "_flow_boost_total", 1) or 1
+        进度 = 1.0 - max(0, min(boost, span_boost)) / float(span_boost)
+        step = int(round(7 + (3 - 7) * 进度))
+        interval = int(round(12 + (32 - 12) * 进度))
+        if boost > 0:
+            self._flow_boost = boost - 1
         try:
             for it in items:
                 if it["horizontal"]:
@@ -145,7 +153,7 @@ class LockMixin:
                                 0 if it["horizontal"] else span)
         except Exception:
             pass
-        self._flow_job = self.root.after(32, self._flow_step)
+        self._flow_job = self.root.after(interval, self._flow_step)
 
     def _lock_main_window(self, text="正在执行迁移任务"):
         """迁移期间给主窗口盖一层遮罩（锁屏）：流动红边 + 内嵌执行日志。
@@ -215,7 +223,12 @@ class LockMixin:
             ov.lift()
             self._lock_overlay = ov
             self._build_flow_border(cv, max(2, ov.winfo_width()), max(2, ov.winfo_height()))
-            self._flow_job = self.root.after(32, self._flow_step)
+            # 入场：红光先"窜"起来再稳下来
+            self._flow_boost_total = 26
+            self._flow_boost = self._flow_boost_total
+            self._flow_job = self.root.after(12, self._flow_step)
+            # 入场特效：一圈发光描边从中心扩出去扫过全屏（纯视觉，不阻塞迁移线程）
+            self._play_lock_intro(ov, inner, text)
             # 兜底：迁移线程结束时会在主线程里解锁，这里再盯一道 —— 万一那次跨线程
             # after 没排上（Tk 在“没进 mainloop”的驱动方式下会直接拒绝跨线程调用），
             # 遮罩也不该一直盖着。
@@ -230,6 +243,79 @@ class LockMixin:
                 pass
             self._lock_overlay = None
             self._lock_log_text = None
+
+    def _play_lock_intro(self, ov, inner, text=""):
+        """锁屏入场特效（约 0.45 秒）：边框呼吸 + 锁图标脉冲 + 标题逐字浮现。
+
+        ⚠ 别用"半透明覆盖层"那套：Tk 的画布**不支持真透明**，盖上去只会把锁屏内容整个
+        糊掉（第一版就是这么翻车的 —— 截图里既没有内容也没有光带）。所以这里改成驱动
+        **已有的部件**动起来：稳、不吃性能、不需要透明，而且和流动边是同一套视觉语言。
+
+        纯视觉，不阻塞迁移线程（这些 after 和迁移线程各跑各的）。
+
+        ⚠ 用"代数"让完成态能**立刻作废**这场动画：逐字浮现会往标题里写字，而迁移可能
+        在动画还没播完时就结束了 —— 完成态把标题改成"迁移完成"，动画的下一帧又把它
+        覆盖回"正在执行迁移任务"（真踩过，验证锁屏完成态就是这么挂的）。
+        """
+        self._intro_gen = getattr(self, "_intro_gen", 0) + 1
+        我的代 = self._intro_gen
+
+        def 还轮到我():
+            return getattr(self, "_intro_gen", 0) == 我的代
+
+        # 1) 边框"呼吸"：2 → 12 → 3。inner 是用 place 的负宽高留边的，改边距就是改边框粗细
+        try:
+            帧宽 = (2, 5, 9, 12, 10, 8, 6, 4, 3)
+
+            def 呼吸(i=0):
+                if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
+                        or i >= len(帧宽)):
+                    return
+                b = 帧宽[i]
+                try:
+                    inner.place_configure(x=b, y=b, width=-2 * b, height=-2 * b)
+                except Exception:
+                    return
+                self.root.after(26, lambda: 呼吸(i + 1))
+            呼吸()
+        except Exception:
+            pass
+        # 2) 锁图标脉冲：🔒 字号 28 → 44 → 28
+        try:
+            字号 = (28, 34, 40, 44, 41, 36, 32, 29)
+
+            def 脉冲(i=0):
+                if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
+                        or i >= len(字号)):
+                    return
+                try:
+                    self._lock_icon.configure(font=("微软雅黑", 字号[i]))
+                except Exception:
+                    return
+                self.root.after(32, lambda: 脉冲(i + 1))
+            脉冲()
+        except Exception:
+            pass
+        # 3) 标题逐字浮现（比整句"啪"地出现有仪式感）
+        try:
+            全 = text or "正在执行迁移任务"
+
+            def 逐字(i=1):
+                if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
+                        or i > len(全)):
+                    return
+                try:
+                    self._lock_title.configure(text=全[:i])
+                except Exception:
+                    return
+                self.root.after(34, lambda: 逐字(i + 1))
+            try:
+                self._lock_title.configure(text="")
+            except Exception:
+                pass
+            逐字()
+        except Exception:
+            pass
 
     def _on_lock_configure(self, event=None):
         """窗口大小变了：重铺一圈瓦片（瓦片图定长，不用重渲）。"""
@@ -253,6 +339,8 @@ class LockMixin:
         self._refresh_busy_state()
 
     def _finish_migration_lock(self):
+        # 作废还没播完的入场动画（它会写标题，会和下面的"迁移完成"打架）
+        self._intro_gen = getattr(self, "_intro_gen", 0) + 1
         """迁移收尾：锁屏里写总结、边框红→绿渐变，然后停在完成态等用户按键。
 
         用户要的手感：跑完别“啪”地一下消失 —— 先把总结打出来、边框带过渡地转绿，
@@ -390,9 +478,19 @@ class LockMixin:
                 except Exception:
                     pass
                 setattr(self, attr, None)
+        self._intro_gen = getattr(self, "_intro_gen", 0) + 1   # 同上，别和完成态抢标题
         self._flow_canvas = None
         self._flow_items = []
         self._lock_log_text = None
+        # 入场特效层：解锁时可能还在播（或者 after 已排上），一并收掉
+        self._flow_boost = 0
+        层 = getattr(self, "_intro_layer", None)
+        self._intro_layer = None
+        if 层 is not None:
+            try:
+                层.destroy()
+            except Exception:
+                pass
         if getattr(self, "_lock_cfg_bind", None) is not None:
             try:
                 self.root.unbind("<Configure>", self._lock_cfg_bind)
