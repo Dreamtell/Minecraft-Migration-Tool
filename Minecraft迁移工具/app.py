@@ -458,6 +458,15 @@ def main():
     root.protocol("WM_DELETE_WINDOW", on_closing)
     if tray is not None:
         root.after(300, tray_poll)
+    # 主线程看门狗：界面被卡住超过 1 秒，就把**当时各线程的调用栈**写进
+    # ~/.minecraft_migrate_hang.log。用户报"点几下鼠标就未响应"这类问题时，让 ta 复现
+    # 一次、把这个文件发过来，就能直接看到卡在哪一行 —— 比事后猜靠谱得多。
+    # 平时开销只是每 100ms 一次 time.monotonic()，不卡就不写文件。
+    try:
+        from utils import hangwatch
+        hangwatch.start(root)
+    except Exception:
+        pass
     root.mainloop()
 
     # 主循环结束（不管从哪条路退出）：统一收尾
