@@ -296,6 +296,34 @@ class PathsMixin:
         self.create_tooltip(self.target_status,
                             lambda: getattr(self.target_status, "_tip_text", ""))
 
+        # ---- 两个路径框：按行宽**动态**伸缩 ----
+        # 固定字符宽总有一头不对：调小了"太短"，调大了窄窗口会被裁。这里按行宽算：
+        # 宽度 = 行宽 − 右侧那些控件要占的地方，**取两行里更挤的那份**（源目录行多一个
+        # "填充路径"按钮）。两框用同一个值，于是：
+        #   · 框吃到该行能给的极限（不浪费横向空间）；
+        #   · 两框等长；
+        #   · 两个「浏览…」紧跟在框后面，永远上下平齐；
+        #   · 窗口拉宽/收窄时框跟着变，不用再回来调 chars。
+        def _fit_path_entries(_e=None):
+            try:
+                浏览 = max(btn_source_browse.winfo_reqwidth(),
+                          btn_target_browse.winfo_reqwidth())
+                标签 = max(self.source_status.winfo_reqwidth(),
+                          self.target_status.winfo_reqwidth())
+                源占用 = 浏览 + btn_copy.winfo_reqwidth() + 标签 + 60
+                目标占用 = 浏览 + 标签 + 60
+                宽 = max(220, frame_source.winfo_width() - max(源占用, 目标占用))
+                for 框 in (self.source_entry, self.target_entry):
+                    if abs(框.winfo_width() - 宽) > 2:
+                        框.configure(width=宽)
+            except Exception:
+                pass
+
+        for _行 in (frame_source, frame_target):
+            _行.bind("<Configure>", _fit_path_entries, add="+")
+        self.root.after(150, _fit_path_entries)
+        self.root.after(600, _fit_path_entries)      # 字体/emoji 预热完再校一次
+
         # 存档名称
         frame_world = tk.LabelFrame(self.root, text="存档文件夹名称", padx=5, pady=5)
         frame_world.pack(fill="x", padx=10, pady=5)
