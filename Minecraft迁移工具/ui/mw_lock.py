@@ -223,11 +223,27 @@ class LockMixin:
             ov.lift()
             self._lock_overlay = ov
             self._build_flow_border(cv, max(2, ov.winfo_width()), max(2, ov.winfo_height()))
-            # 入场：红光先"窜"起来再稳下来
-            self._flow_boost_total = 26
+            # 入场：红光先"窜"起来再稳下来（温和一点：23ms 起步 → 稳态 32ms，别把主线程压满）
+            self._flow_boost_total = 16
             self._flow_boost = self._flow_boost_total
-            self._flow_job = self.root.after(12, self._flow_step)
-            # 入场特效：一圈发光描边从中心扩出去扫过全屏（纯视觉，不阻塞迁移线程）
+            self._flow_job = self.root.after(23, self._flow_step)
+            # 吃掉落在遮罩上的鼠标/滚轮/按键。遮罩自身原本没有任何绑定，点击会落进里面的
+            # 日志 Text（反复获取焦点 + 触发平滑滚动重绘），连点就会让界面发卡 ——
+            # 用户报过"锁屏时候连续点击会未响应"。完成态则放行，交给 root 上的
+            # "按任意键关闭"处理。
+            def _吞事件(event=None):
+                if getattr(self, "_lock_done", False):
+                    return None
+                return "break"
+
+            for _事件 in ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>",
+                         "<Button-2>", "<Button-3>", "<MouseWheel>",
+                         "<Motion>", "<Key>", "<KeyRelease>"):
+                try:
+                    ov.bind(_事件, _吞事件)
+                except Exception:
+                    pass
+            # 入场特效：一道亮光扫过 + 边框发光 + 标题逐字（纯视觉，不阻塞迁移线程）
             self._play_lock_intro(ov, inner, text)
             # 兜底：迁移线程结束时会在主线程里解锁，这里再盯一道 —— 万一那次跨线程
             # after 没排上（Tk 在“没进 mainloop”的驱动方式下会直接拒绝跨线程调用），
@@ -321,8 +337,88 @@ class LockMixin:
             except Exception:
                 pass
             逐字()
+            # 保底：主线程忙的时候 after 会拖后腿，逐字可能停在半截（"正在执"）——
+            # 用户报过"锁屏界面的文字有问题"。到点无论如何补成完整句子。
+            def 补全():
+                if not 还轮到我() or getattr(self, "_lock_overlay", None) is None:
+                    return
+                try:
+                    if self._lock_title.cget("text") != 全:
+                        self._lock_title.configure(text=全)
+                except Exception:
+                    pass
+            self.root.after(len(全) * 34 + 260, 补全)
         except Exception:
             pass
+        # 4) 扫光：一道亮带从左扫到右（约 0.3 秒），然后自己销毁。
+        #    用**同底色**的画布临时盖住内容 —— Tk 画布不支持真透明，但只盖 0.3 秒、
+        #    底色和遮罩一致，观感就是"一道光扫过锁屏"。它用 place 覆盖，不参与 pack，
+        #    所以不会推动任何内容（布局零抖动，这一点是逐帧量过的）。
+        try:
+            from PIL import Image, ImageDraw, ImageTk
+            ov.update_idletasks()
+            宽 = max(2, ov.winfo_width())
+            高 = max(2, ov.winfo_height())
+            层 = tk.Canvas(ov, bg=ov.cget("bg"), highlightthickness=0, bd=0)
+            层.place(x=0, y=0, relwidth=1, relheight=1)
+            # ⚠ 提升窗口必须走 **tk.Misc.tkraise**：tkinter.Canvas 把 lift/tkraise
+            # 都重载成了"画布项提升"（要 tagOrId），直接 层.tkraise() 会 TclError，
+            # 整段扫光被异常跳过 —— 表现就是"点了迁移什么动画都没有"（真踩过）。
+            # （其实 place 到最后的控件本来就在最上层，这里只是写明确一点。）
+            try:
+                tk.Misc.tkraise(层)
+            except Exception:
+                pass
+            self._intro_layer = 层
+            总帧 = 12
+            带宽 = max(60, 宽 // 5)
+
+            def 扫(i=0):
+                if (not 还轮到我() or getattr(self, "_intro_layer", None) is None):
+                    try:
+                        层.destroy()
+                    except Exception:
+                        pass
+                    if getattr(self, "_intro_layer", None) is 层:
+                        self._intro_layer = None
+                    return
+                if i > 总帧:
+                    try:
+                        层.destroy()
+                    except Exception:
+                        pass
+                    if getattr(self, "_intro_layer", None) is 层:
+                        self._intro_layer = None
+                    return
+                try:
+                    img = Image.new("RGBA", (宽, 高), (0, 0, 0, 0))
+                    d = ImageDraw.Draw(img)
+                    cx = int(-带宽 + (宽 + 2 * 带宽) * (i / float(总帧)))
+                    # 一条竖直的亮带，中间亮、两侧渐隐（多画几条模拟渐变）
+                    for k in range(10):
+                        off = int(-带宽 / 2 + 带宽 * k / 10.0)
+                        a = int(70 * (1 - abs(k - 5) / 5.0)) + 6
+                        d.line([(cx + off, 0), (cx + off - 40, 高)],
+                               fill=(255, 64, 96, a), width=max(2, 带宽 // 14))
+                    photo = ImageTk.PhotoImage(img)
+                    层.delete("all")
+                    层.create_image(0, 0, anchor="nw", image=photo)
+                    层._photo = photo
+                except Exception:
+                    try:
+                        层.destroy()
+                    except Exception:
+                        pass
+                    self._intro_layer = None
+                    return
+                self.root.after(24, lambda: 扫(i + 1))
+            扫()
+        except Exception as e:
+            # 别再裸吞：第一版就是这里静默失败，表现成"动画没有"，白查了半天
+            try:
+                trace_exc("mw_lock", e)
+            except Exception:
+                pass
 
     def _on_lock_configure(self, event=None):
         """窗口大小变了：重铺一圈瓦片（瓦片图定长，不用重渲）。"""
