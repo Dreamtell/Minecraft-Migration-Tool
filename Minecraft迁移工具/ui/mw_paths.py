@@ -237,7 +237,7 @@ class PathsMixin:
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
         frame_source.pack(fill="x", padx=10, pady=5)
         self.source_entry = RoundedEntry(frame_source, self.theme,
-                                         textvariable=self.source_path, chars=46,
+                                         textvariable=self.source_path, chars=52,
                                          fg_key="data_fg")
         # ⚠ 可伸缩：字符数是按中文定的固定宽，英文下会把右边的状态标签挤出容器
         # （英文 `(none selected)` 被裁成 `ne select`）。fill+expand 让它自己让位。
@@ -260,9 +260,11 @@ class PathsMixin:
                                       font=("微软雅黑", 11))
         self.source_status._keep_fg = True      # 颜色由状态决定，别被主题统一刷掉
         self.source_status.pack(side="right", padx=10)
-        # 两个路径框都用**固定字符宽**（chars=46）并且不 expand —— 这样两行长度一致
-        # （用户要求"统一长度"）。以前两框都 expand，而两行的控件数量不同（源目录这行
-        # 多一个"填充路径"按钮），平分下来就一长一短。
+        # 两个路径框都用**同一个固定字符宽**（chars=52，接近本行能容纳的上限）并且不伸缩。
+        # 这样同时满足三件事：两框等长 ✓、两个「浏览…」按钮**上下平齐** ✓（都紧跟在框后面）、
+        # 多出来的空间留在最右边（状态标签之前）。
+        # ⚠ 别改成 expand：两行的控件数量不同（源目录这行多一个"填充路径"按钮），
+        # 平分下来两框就会一长一短、两个浏览按钮也会错开（试过）。
         self.source_entry.pack(side="left", padx=5)
         self.create_tooltip(self.source_status,
                             lambda: getattr(self.source_status, "_tip_text", ""))
@@ -276,7 +278,7 @@ class PathsMixin:
                                      padx=5, pady=5)
         frame_target.pack(fill="x", padx=10, pady=5)
         self.target_entry = RoundedEntry(frame_target, self.theme,
-                                         textvariable=self.target_path, chars=46,
+                                         textvariable=self.target_path, chars=52,
                                          fg_key="data_fg")
         self.target_entry.pack(side="left", padx=5)
         btn_target_browse = create_gradient_button(
@@ -289,8 +291,8 @@ class PathsMixin:
                                       font=("微软雅黑", 11))
         self.target_status._keep_fg = True      # 同上
         self.target_status.pack(side="right", padx=10)
-        # 同上一行：和源目录框保持一样的字符宽度，两行看起来才齐
-        self.target_entry.pack(side="left", padx=5)
+        # ⚠ 这里**不要**再 pack 一次 target_entry：那会把它挪到"占位"控件之后，
+        # 于是输入框缩回固定宽、按钮被推到右边（真踩过）。expand 在它第一次 pack 时就设好了。
         self.create_tooltip(self.target_status,
                             lambda: getattr(self.target_status, "_tip_text", ""))
 
