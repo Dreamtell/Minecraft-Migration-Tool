@@ -237,7 +237,7 @@ class PathsMixin:
         frame_source = tk.LabelFrame(self.root, text="📤 旧版整合包（要迁移出去的源）", padx=5, pady=5)
         frame_source.pack(fill="x", padx=10, pady=5)
         self.source_entry = RoundedEntry(frame_source, self.theme,
-                                         textvariable=self.source_path, chars=32,
+                                         textvariable=self.source_path, chars=46,
                                          fg_key="data_fg")
         # ⚠ 可伸缩：字符数是按中文定的固定宽，英文下会把右边的状态标签挤出容器
         # （英文 `(none selected)` 被裁成 `ne select`）。fill+expand 让它自己让位。
@@ -255,11 +255,12 @@ class PathsMixin:
         self._btn_widgets["copy_target"] = btn_copy
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         # 只显示一个状态图标，细节问悬停（validate_path 每次校验都会刷新 _tip_text）
-        self.source_status = tk.Label(frame_source, text="", fg=self.theme["muted_fg"],
+        self.source_status = tk.Label(frame_source, text="", width=16,
+                                      anchor="w", fg=self.theme["muted_fg"],
                                       font=("微软雅黑", 11))
         self.source_status._keep_fg = True      # 颜色由状态决定，别被主题统一刷掉
         self.source_status.pack(side="right", padx=10)
-        # 两个路径框都用**固定字符宽**（chars=32）并且不 expand —— 这样两行长度一致
+        # 两个路径框都用**固定字符宽**（chars=46）并且不 expand —— 这样两行长度一致
         # （用户要求"统一长度"）。以前两框都 expand，而两行的控件数量不同（源目录这行
         # 多一个"填充路径"按钮），平分下来就一长一短。
         self.source_entry.pack(side="left", padx=5)
@@ -275,7 +276,7 @@ class PathsMixin:
                                      padx=5, pady=5)
         frame_target.pack(fill="x", padx=10, pady=5)
         self.target_entry = RoundedEntry(frame_target, self.theme,
-                                         textvariable=self.target_path, chars=32,
+                                         textvariable=self.target_path, chars=46,
                                          fg_key="data_fg")
         self.target_entry.pack(side="left", padx=5)
         btn_target_browse = create_gradient_button(
@@ -283,7 +284,8 @@ class PathsMixin:
             colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
         btn_target_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_target"] = btn_target_browse
-        self.target_status = tk.Label(frame_target, text="", fg=self.theme["muted_fg"],
+        self.target_status = tk.Label(frame_target, text="", width=16,
+                                      anchor="w", fg=self.theme["muted_fg"],
                                       font=("微软雅黑", 11))
         self.target_status._keep_fg = True      # 同上
         self.target_status.pack(side="right", padx=10)

@@ -155,6 +155,24 @@ class PagesMixin:
 
         # 全部按钮建完，最后按配置摆一遍（显示/隐藏 + 自定义顺序）
         self._apply_button_layout()
+
+        # 窗口最小宽：由"最宽的那一行"决定。这时所有区都建完了，量出来才准。
+        #   · 日志工具栏：英文下四个按钮合计 605px，拉到 640 会互相压掉（用户报过）；
+        #   · 路径区那两行：输入框是**固定字符宽**（两行才等长），窗口太窄会把右边的
+        #     状态标签顶出去（实测 720 时中文只剩「选」、英文剩 `e selec`）。
+        try:
+            需要 = 0
+            条 = getattr(self, "log_toolbar", None)
+            if 条 is not None:
+                需要 = 条.winfo_reqwidth() + 90
+            for 控件 in (getattr(self, "source_entry", None),
+                        getattr(self, "target_entry", None)):
+                行 = getattr(控件, "master", None)
+                if 行 is not None:
+                    需要 = max(需要, 行.winfo_reqwidth() + 60)
+            self.root.minsize(max(720, min(需要, 1400)), 520)
+        except Exception:
+            self.root.minsize(800, 520)
         # 窗口宽度变了要重摆：按钮是 place 出来的，不重算就一直是旧宽度下的一行 ——
         # 英文按钮更宽，拉窄窗口就会溢出（用户报过 config / other files 三处）。
         # 防抖 260ms：拖动窗口时别每一帧都重排。
@@ -655,12 +673,8 @@ class PagesMixin:
         log_toolbar.bind("<Configure>", _fit_hint)
         self.root.after(200, _fit_hint)          # 首帧也判一次（<Configure> 未必触发）
         # 窗口能缩到多窄，由这排按钮决定：主窗口以前**没设过 minsize**，拉到 640 时
-        # 四个按钮（英文下合计 605px）就互相压掉（用户报过 "Open log folder 被裁"）。
-        try:
-            self.root.minsize(max(720, min(self.log_toolbar.winfo_reqwidth() + 90, 1200)),
-                              520)
-        except Exception:
-            self.root.minsize(800, 520)
+        # ⚠ 最小宽度的计算挪到**所有区都建完**之后（见 _apply_button_layout 之前那处）：
+        # 放这里的话路径区还没建，`self.source_entry` 根本不存在，算出来偏小。
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
         self.log_text_box = RoundedTextArea(frame_log, self.theme, height=22,
