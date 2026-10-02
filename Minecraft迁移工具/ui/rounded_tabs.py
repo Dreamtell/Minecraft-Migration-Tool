@@ -52,6 +52,10 @@ class RoundedTabs(tk.Frame):
         self._page_anim = None
         self._sel_item = None
         self._use_images = self._make_photo(20, "normal") is not None
+        # 锁定：迁移/扫描进行中不让切页。切到一个**没建过**的页会当场构建整个列表
+        # （377 个模组就是 377 个卡片控件），主线程会卡好几秒 —— 用户点几下标签就
+        # 弹出"未响应"，就是这么来的（`_refresh_busy_state` 禁用了所有按钮，却漏了标签栏）。
+        self.locked = False
 
         self.bar.bind("<Button-1>", self._on_click)
         self.bar.bind("<Motion>", self._on_motion)
@@ -61,6 +65,23 @@ class RoundedTabs(tk.Frame):
     @property
     def current(self):
         return self._cur
+
+    def set_locked(self, locked):
+        """锁定/解锁切页（迁移期间锁上）。锁上时鼠标也不该给"可点"的反馈。"""
+        self.locked = bool(locked)
+        try:
+            self.bar.configure(cursor="" if self.locked else "hand2")
+        except Exception:
+            pass
+        if self.locked:
+            # 把悬停高亮清掉，免得看着像能点
+            for t in self._tabs:
+                if t.get("hover"):
+                    t["hover"] = False
+            try:
+                self._layout_bar()
+            except Exception:
+                pass
 
     def labels(self):
         return [t["label"] for t in self._tabs]
@@ -321,11 +342,18 @@ class RoundedTabs(tk.Frame):
         return -1
 
     def _on_click(self, event):
+        # 迁移/扫描进行中：切页会当场构建没建过的那一页（377 个模组 = 377 个卡片控件），
+        # 主线程会卡好几秒 —— 直接忽略这次点击。
+        if getattr(self, "locked", False):
+            return
         i = self._hit(event.x)
         if i >= 0:
             self.select(i)
 
     def _on_motion(self, event):
+        if getattr(self, "locked", False):
+            self.bar.configure(cursor="")
+            return
         i = self._hit(event.x)
         self.bar.configure(cursor="hand2" if i >= 0 else "")
         changed = False

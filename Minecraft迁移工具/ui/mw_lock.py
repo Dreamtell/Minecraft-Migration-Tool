@@ -474,6 +474,14 @@ class LockMixin:
         """
         busy = bool(self._busy_task_name()) or bool(getattr(self, "_starting", False))
         state = "disabled" if busy else "normal"
+        # 标签栏**必须一起锁**：切到一个还没建过的页会当场构建整页（377 个模组 =
+        # 377 个卡片控件），主线程卡好几秒 —— 用户"点几下标签就弹未响应"就是这么来的。
+        # 这里不能只靠遮罩：准备阶段（_starting）那几秒遮罩还没盖上，点击照样能落到标签栏。
+        try:
+            self.list_tabs.set_locked(busy)
+        except Exception:
+            pass
+        # 两个复选开关（模拟运行 / 覆盖已存在的模组）由下面的 switch 树兜底处理
         btns = (
             self.start_btn, self.rollback_btn, self.scan_btn,
             self.btn_changelog, self.mod_magnify_btn, self.add_mods_btn,
