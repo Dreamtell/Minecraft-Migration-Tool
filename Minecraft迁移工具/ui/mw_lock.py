@@ -177,11 +177,7 @@ class LockMixin:
             ov.place(x=0, y=0, relwidth=1, relheight=1)
             cv = tk.Canvas(ov, bg="#8e0000", highlightthickness=0, bd=0)
             cv.place(x=0, y=0, relwidth=1, relheight=1)
-            # 给内容框一圈**固定粗细**的发光边：动画只改它的颜色，粗细恒定，
-            # 所以不会推动任何内容（改边距/字号那种做法会把内容挤来挤去）。
-            inner = tk.Frame(ov, bg=bg, highlightthickness=8,
-                             highlightbackground="#8e0000",
-                             highlightcolor="#8e0000")
+            inner = tk.Frame(ov, bg=bg)
             inner.place(x=bw, y=bw, relwidth=1, relheight=1,
                         width=-2 * bw, height=-2 * bw)
 
@@ -289,41 +285,13 @@ class LockMixin:
         def 还轮到我():
             return getattr(self, "_intro_gen", 0) == 我的代
 
-        # 1) 边框"发光"：内容框那圈 8px 的 highlight 在暗红 ↔ 亮红之间走一趟。
-        #    粗细恒定、只换颜色，所以不触碰布局（这一点是逐帧量过的：日志框 y/高差都是 0）。
-        try:
-            底板 = ("#8e0000", "#c62828", "#ff1744", "#ff5252", "#ff1744",
-                    "#c62828", "#8e0000")
-
-            def 发光(i=0):
-                if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
-                        or i >= len(底板)):
-                    return
-                try:
-                    inner.configure(highlightbackground=底板[i],
-                                    highlightcolor=底板[i])
-                except Exception:
-                    return
-                self.root.after(48, lambda: 发光(i + 1))
-            发光()
-        except Exception:
-            pass
-        # 2) 锁图标脉冲：只换颜色（字号固定 28，免得把下面推来推去）
-        try:
-            图标色 = ("#ff1744", "#ff5252", "#ff8a80", "#ff5252", "#ff1744")
-
-            def 脉冲(i=0):
-                if (not 还轮到我() or getattr(self, "_lock_overlay", None) is None
-                        or i >= len(图标色)):
-                    return
-                try:
-                    self._lock_icon.configure(fg=图标色[i])
-                except Exception:
-                    return
-                self.root.after(56, lambda: 脉冲(i + 1))
-            脉冲()
-        except Exception:
-            pass
+        # 入场只做"不动外观"的两件事：流动边先快后慢（见 _flow_boost）、标题逐字浮现。
+        # ⚠ 曾经试过三种更"炫"的做法，全部翻车，别再走回头路：
+        #   · 半透明描边覆盖层 / 扫光层 —— Tk 画布不支持真透明，把内容整个盖住；
+        #   · 改 inner 边距做"边框变粗" —— 内容跟着缩放抖动，日志框 y 差 36px；
+        #   · 改图标字号做脉冲 —— 头部变高，把下面全推下去；
+        #   · 加一圈 8px highlight 做发光 —— 和流动瓦片边重复（看着"边框变粗"），
+        #     而且完成态只把**流动边**渐变到绿色，那圈红边留着不走 → 绿红并存。
         # 3) 标题逐字浮现（比整句"啪"地出现有仪式感；只影响它自己那一行）
         try:
             全 = text or "正在执行迁移任务"
