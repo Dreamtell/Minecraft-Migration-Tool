@@ -154,7 +154,20 @@ def fetch_project_latest(project_id, timeout=12, mc_version="", loader=""):
 
 
 _MC_PREFIX_RE = re.compile(r"^mc[-\s]?\d+(?:\.\d+){0,2}[-_+ ]?", re.I)
-_LOADER_TAIL_RE = re.compile(r"[-_+ ](?:fabric|forge|neoforge|quilt)\b.*$", re.I)
+# ⚠ 这里**不能带 `.*$`**：原来写成 `[-_+ ](?:fabric|forge)\b.*$`，于是
+# "sodium-fabric-0.5.8+mc1.20.1" 会被从 "-fabric" 一路切到末尾 —— 把版本号一起切掉了，
+# 归一化结果只剩 "sodium"，版本比较永远是 None（等于"可更新"标记失效）。
+# 现在只切掉加载器这个词本身，剩下的交给下面的版本号提取。
+_LOADER_TAIL_RE = re.compile(r"[-_+ ](?:fabric|forge|neoforge|quilt)\b", re.I)
+# 方括号/圆括号里的通常是 MC 版本或发布标记（"[1.20.1] AppleSkin 2.5.1"）
+_BRACKET_RE = re.compile(r"[\[(][^\])]*[\])]")
+# 通用版本号片段：CurseForge 的 displayName/fileName 长得像
+#   "AppleSkin 2.5.1+mc1.20.1" / "AppleSkin-2.5.1-forge-1.20.1.jar"
+# 而 Modrinth 是 "mc1.20.1-0.5.13-fabric"。前面那几条正则只认 Modrinth 的写法，
+# 对 CurseForge 的长串提不出干净版本号 —— 归化失败后就永远"可更新"（误报）。
+# 这里兜底：取出第一个像版本号的片段（"2.5.1"）。
+_VER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)+(?:[-_]?(?:pre|beta|alpha|rc|snapshot)[-_.]?\d*)?",
+                           re.I)
 
 
 def normalize_online_version(v):
@@ -168,10 +181,21 @@ def normalize_online_version(v):
     每一行都会被标成"可更新"（等于这个标记没用了）。
     """
     s = str(v or "").strip()
+    s = _BRACKET_RE.sub(" ", s)           # "[1.20.1] AppleSkin 2.5.1" → " AppleSkin 2.5.1"
     s = _MC_PREFIX_RE.sub("", s)          # 去掉开头的 mc1.20.1-
     s = s.split("+", 1)[0]                # 去掉 +1.20.1 这种 MC 标记
-    s = _LOADER_TAIL_RE.sub("", s)        # 去掉结尾的 -fabric / -neoforge
-    return s.strip() or str(v or "").strip()
+    s = _LOADER_TAIL_RE.sub(" ", s)       # 去掉 -fabric / -neoforge 这个词
+    s = s.strip()
+    if not s:
+        return str(v or "").strip()
+    # 兜底：CurseForge 那种长串（"AppleSkin 2.5.1" / "AppleSkin-2.5.1-forge-1.20.1.jar"）
+    # 上面几步都提不干净 —— 直接取第一个像版本号的片段。已经干净的就原样返回
+    # （"0.5.13" 本身就匹配，取到的还是它，不会改坏 Modrinth 那条路）。
+    if not _VER_TOKEN_RE.fullmatch(s):
+        m = _VER_TOKEN_RE.search(s)
+        if m:
+            return m.group(0)
+    return s
 
 
 def format_downloads(n):
