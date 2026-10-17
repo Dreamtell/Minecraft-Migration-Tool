@@ -467,6 +467,13 @@ def main():
         hangwatch.start(root)
     except Exception:
         pass
+    # 本进程的联网流量定期上报（父子进程都要起：Qt 窗口在子进程里发请求，
+    # 主界面在父进程里显示，两者靠 ~/.minecraft_migrate_netio/*.json 汇总）
+    try:
+        from utils import netmeter
+        netmeter.start_publisher()
+    except Exception:
+        pass
     root.mainloop()
 
     # 主循环结束（不管从哪条路退出）：统一收尾

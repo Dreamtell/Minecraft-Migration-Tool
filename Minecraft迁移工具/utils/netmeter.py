@@ -10,6 +10,7 @@
 
 import threading
 import time
+from pathlib import Path
 
 _lock = threading.Lock()
 _state = {"sent": 0, "recv": 0}
@@ -90,3 +91,81 @@ class Sampler:
         self._last_t = 现在
         self._last = (上, 下)
         return 上速, 下速, 上, 下
+
+
+# ---------------- 跨进程汇总 ----------------
+# 项目架构：Qt 窗口跑在**子进程**（app.py --qt-host），网络请求发生在那边。
+# 父进程（主界面）读不到子进程内存里的计数器 —— 所以各自把自己的累计值写到一个
+# 小文件里，谁要显示就汇总读全部。按文件修改时间过滤掉已经退出的进程（不留垃圾）。
+
+import json
+import os
+
+_DIR = Path(os.environ.get("MCTOOL_NETIO_DIR")
+            or (Path.home() / ".minecraft_migrate_netio"))
+_STALE_SEC = 10.0
+
+
+def publish():
+    """把本进程的累计值写到自己 pid 的文件里（建议每 2 秒调一次）。"""
+    try:
+        _DIR.mkdir(parents=True, exist_ok=True)
+        上, 下 = snapshot()
+        (_DIR / ("%d.json" % os.getpid())).write_text(
+            json.dumps({"pid": os.getpid(), "sent": 上, "recv": 下}),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_all():
+    """汇总所有**还活着**的进程上报的 (sent, recv)。
+
+    用修改时间判断存活：超过 10 秒没更新的视为已退出（publish 是每 2 秒一次的）。
+    """
+    总上 = 总下 = 0
+    try:
+        if not _DIR.is_dir():
+            return 0, 0
+        现在 = time.time()
+        for f in _DIR.glob("*.json"):
+            try:
+                if 现在 - f.stat().st_mtime > _STALE_SEC:
+                    continue
+                d = json.loads(f.read_text(encoding="utf-8"))
+                总上 += int(d.get("sent") or 0)
+                总下 += int(d.get("recv") or 0)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 总上, 总下
+
+
+def cleanup():
+    """退出时删掉自己的文件。"""
+    try:
+        (_DIR / ("%d.json" % os.getpid())).unlink()
+    except Exception:
+        pass
+
+
+_pub_stop = None
+
+
+def start_publisher(interval_sec=2.0):
+    """起一个后台线程定期 publish()。
+
+    父子进程**都要起**：Qt 窗口是子进程，请求在那边发生；主界面是父进程，显示在这边。
+    """
+    global _pub_stop
+    if _pub_stop is not None:
+        return
+    _pub_stop = threading.Event()
+
+    def 循环():
+        while not _pub_stop.is_set():
+            publish()
+            _pub_stop.wait(interval_sec)
+
+    threading.Thread(target=循环, name="netio-pub", daemon=True).start()

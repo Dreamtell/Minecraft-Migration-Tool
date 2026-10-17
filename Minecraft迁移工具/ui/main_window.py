@@ -258,10 +258,22 @@ class MigrationGUI(
         except Exception:
             return
         采样 = netmeter.Sampler()
+        上次上 = 上次下 = 0
+        计时 = [time.monotonic()]
 
         def 刷新():
             try:
-                上速, 下速, 上总, 下总 = 采样.tick()
+                # 本进程先把累计值发布出去（Qt 子进程也在发布它自己的），
+                # 然后读**所有进程**的汇总 —— 请求其实发生在 Qt 子进程里，
+                # 只看本进程的话永远是 0（真踩过）。
+                netmeter.publish()
+                上总, 下总 = netmeter.read_all()
+                现在 = time.monotonic()
+                dt = max(0.2, 现在 - 计时[0])
+                上速 = max(0.0, (上总 - 上次上) / dt)
+                下速 = max(0.0, (下总 - 上次下) / dt)
+                计时[0] = 现在
+                上次上, 上次下 = 上总, 下总
                 self.net_traffic.configure(text=trp(
                     "↑ {0}  ↓ {1}  ∑ {2}",
                     netmeter.format_rate(上速), netmeter.format_rate(下速),
