@@ -1143,6 +1143,13 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         search_state["running"] = True
         widen_state["tried"] = False        # 这次搜索允许自动放宽一次
         _set_search_btn(True)
+        # **立刻**给反馈：两个源是串行查的（Modrinth → CurseForge），慢的时候要几秒，
+        # 而"搜索中"这句话原来只在结果回来时才出现 —— 用户会以为程序卡了。
+        set_status("🔍 正在搜索…（Modrinth + CurseForge）", ok)
+        try:
+            win.update_idletasks()          # 把状态刷到屏幕上再开线程
+        except Exception:
+            pass
 
         # 过滤条件**在主线程读好**再传进线程：mc_var/loader_var 是 Tk 变量，
         # 子线程里 .get() 会抛 "main thread is not in main loop"。

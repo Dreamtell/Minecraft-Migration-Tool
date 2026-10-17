@@ -234,6 +234,12 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "❌ 打开配置文件失败：{0}": "❌ Failed to open config file: {0}",
     "← 填充路径": "← Fill",
     "🏷️ 来源": "🏷️ Source",
+    # 搜索刚开始时的即时反馈（两个源串行，慢的时候要几秒）
+    "🔍 正在搜索…（Modrinth + CurseForge）":
+        "🔍 Searching… (Modrinth + CurseForge)",
+    "🔍 正在搜索…（Modrinth + CurseForge%s）":
+        "🔍 Searching… (Modrinth + CurseForge%s)",
+    "，只看 %s": ", filtered to %s",
     "🌐 联网搜索（Modrinth + CurseForge）· %s":
         "🌐 Online search (Modrinth + CurseForge) · %s",
     "🌐 联网搜索（Modrinth + CurseForge）":

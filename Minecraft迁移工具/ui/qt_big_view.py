@@ -2451,9 +2451,16 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.model.filters = (mc, loader)
         self._widen_tried = False       # 这次搜索允许自动放宽一次
         过滤 = self.model.filter_text()
-        self.status.setText(tr("搜索中…（%s首次联网可能要几秒）")
-                            % (tr("只看 %s；") % 过滤 if 过滤 else ""))
+        self.status.setText(tr("🔍 正在搜索…（Modrinth + CurseForge%s）")
+                            % (tr("，只看 %s") % 过滤 if 过滤 else ""))
         self.btn.setEnabled(False)
+        # **先把这句话画到屏幕上**再开线程：QRunnable 里的 urllib 请求会抢 GIL，
+        # 主线程重绘可能被一路推迟到搜索结束 —— 用户看到的就是"点了没反应，过半天
+        # 才蹦出个搜索中"。processEvents 只处理挂起的绘制事件，代价很小。
+        try:
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
         QtCore.QThreadPool.globalInstance().start(
             _SearchTask(q, 8, self._signals, self.modid, q, mc, loader))
 
