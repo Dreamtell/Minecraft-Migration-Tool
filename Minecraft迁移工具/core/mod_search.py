@@ -428,24 +428,40 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
     lid = _CF_LOADER_ID.get(str(loader or "").lower())
     if lid:
         参数["modLoaderType"] = lid
+
+    def _解析(data):
+        结果 = []
+        for m in (data.get("data") or []):
+            slug = str((m.get("links") or {}).get("slug") or "").strip()
+            作者 = (m.get("authors") or [{}])[0].get("name", "")
+            结果.append({
+                "title": m.get("name", ""),
+                "slug": slug or str(m.get("id", "")),
+                "project_id": m.get("id"),
+                "author": 作者,
+                "description": (m.get("summary") or "")[:120],
+                "downloads": m.get("downloadCount", 0),
+                "project_url": _CURSEFORGE_SITE % (slug or m.get("id")),
+                "categories": [c.get("name", "") for c in (m.get("categories") or [])],
+                "latest_version": "",
+                "download_url": "",
+                "source": "curseforge",
+            })
+        return 结果
+
     data = _cf_get("/mods/search", 参数, timeout=timeout)
-    结果 = []
-    for m in (data.get("data") or []):
-        slug = str((m.get("links") or {}).get("slug") or "").strip()
-        作者 = (m.get("authors") or [{}])[0].get("name", "")
-        结果.append({
-            "title": m.get("name", ""),
-            "slug": slug or str(m.get("id", "")),
-            "project_id": m.get("id"),
-            "author": 作者,
-            "description": (m.get("summary") or "")[:120],
-            "downloads": m.get("downloadCount", 0),
-            "project_url": _CURSEFORGE_SITE % (slug or m.get("id")),
-            "categories": [c.get("name", "") for c in (m.get("categories") or [])],
-            "latest_version": "",
-            "download_url": "",
-            "source": "curseforge",
-        })
+    结果 = _解析(data)
+    # 带着版本/加载器过滤一条都没出：CurseForge 那边这两个字段的写法未必和我们传的
+    # 完全一致（"1.20.1" / 加载器 id），宁可去掉过滤再搜一次，也别给用户"0 条"。
+    # 多出来的候选由界面上的"只看"再筛，不损失什么。
+    if not 结果 and ("gameVersion" in 参数 or "modLoaderType" in 参数):
+        参数.pop("gameVersion", None)
+        参数.pop("modLoaderType", None)
+        try:
+            data = _cf_get("/mods/search", 参数, timeout=timeout)
+            结果 = _解析(data)
+        except Exception:
+            pass
     return 结果
 
 
