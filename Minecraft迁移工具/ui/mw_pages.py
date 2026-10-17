@@ -157,9 +157,17 @@ class PagesMixin:
             self.bottom_frame, text="● 正在检测网络…", font=("微软雅黑", 8),
             bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
-        self.net_status.pack(side="left", padx=(2, 8))
+        self.net_status.pack(side="left", padx=(2, 4))
         self.create_tooltip(self.net_status,
                             lambda: getattr(self, "_net_tip", "正在检测网络连通性…"))
+        # 紧挨着再来一个流量标签（上行/下行/累计）。和状态灯分开两个 Label：
+        # 它们是两个不同的更新源（状态 30 秒一次、流量 1 秒一次），共用一个会互相覆盖。
+        self.net_traffic = tk.Label(
+            self.bottom_frame, text="↑ 0 B/s  ↓ 0 B/s  ∑ 0 B", font=("微软雅黑", 8),
+            bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
+        self.net_traffic._keep_fg = True
+        self.net_traffic.pack(side="left", padx=(0, 8))
+        self.create_tooltip(self.net_traffic, "本工具的联网流量（只看自己的请求，不是整机流量）")
         tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
                  font=("微软雅黑", 8)).pack()
 

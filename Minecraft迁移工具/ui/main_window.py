@@ -248,6 +248,32 @@ class MigrationGUI(
             self._net_stop = mw_net.start_polling(self.root, 更新)
         except Exception:
             self._net_stop = None
+        self._start_net_traffic()
+
+    def _start_net_traffic(self):
+        """每秒刷新左下角的流量显示（上行 / 下行 / 累计）。"""
+        try:
+            from utils import netmeter
+            from utils.i18n import trp
+        except Exception:
+            return
+        采样 = netmeter.Sampler()
+
+        def 刷新():
+            try:
+                上速, 下速, 上总, 下总 = 采样.tick()
+                self.net_traffic.configure(text=trp(
+                    "↑ {0}  ↓ {1}  ∑ {2}",
+                    netmeter.format_rate(上速), netmeter.format_rate(下速),
+                    netmeter.format_bytes(上总 + 下总)))
+            except Exception:
+                pass
+            try:
+                self._net_traffic_job = self.root.after(1000, 刷新)
+            except Exception:
+                pass
+
+        刷新()
 
     def _stage(self, text=""):
         """向构建阶段的观察者（启动闪屏）报告进度，并让出一帧。

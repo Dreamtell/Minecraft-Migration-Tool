@@ -35,10 +35,21 @@ MODRINTH_VERSIONS = "https://api.modrinth.com/v2/project/{project_id}/version?li
 
 
 def _json_get(url, timeout=15):
-    """带 UA 的 GET，返回解析后的 JSON。失败时抛异常。"""
+    """带 UA 的 GET，返回解析后的 JSON。失败时抛异常。
+
+    顺带把这趟请求/响应的字节数记到 netmeter（主界面左下角显示流量）。
+    为了让"下行"是真实字节数，这里**先读全再解析**（API 响应都很小，不用担心内存）。
+    """
+    from utils import netmeter
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.load(resp)
+    try:
+        netmeter.add_sent(len(url) + sum(len(k) + len(v) for k, v in req.headers.items()))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            原始 = resp.read()
+        netmeter.add_recv(len(原始))
+        return json.loads(原始.decode("utf-8", errors="replace"))
+    except Exception:
+        raise
 
 
 def _search_url(query, limit, mc_version="", loader=""):
@@ -415,8 +426,15 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
         "User-Agent": USER_AGENT,
     })
     try:
+        # 顺带记流量（上行不含 key 本身：只按头名字长度算，值不参与统计）
+        from utils import netmeter
+        netmeter.add_sent(len(url) + sum(len(kk) + len(str(vv))
+                                        for kk, vv in req.headers.items()
+                                        if kk.lower() != "x-api-key"))
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.load(resp)
+            原始 = resp.read()
+        netmeter.add_recv(len(原始))
+        return json.loads(原始.decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise RuntimeError("CurseForge 拒绝了这个 API Key（HTTP %d）" % e.code)

@@ -247,6 +247,10 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "网络已连接": "Network connected",
     "网络部分不通": "Network partially reachable",
     "网络未连接": "Network offline",
+    # 左下角的流量显示
+    "↑ {0}  ↓ {1}  ∑ {2}": "↑ {0}  ↓ {1}  ∑ {2}",
+    "本工具的联网流量（只看自己的请求，不是整机流量）":
+        "This tool's own network traffic (not the whole machine)",
     # 搜索刚开始时的即时反馈（两个源串行，慢的时候要几秒）
     "🔍 正在搜索…（Modrinth + CurseForge）":
         "🔍 Searching… (Modrinth + CurseForge)",
