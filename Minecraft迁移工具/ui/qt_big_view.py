@@ -2443,6 +2443,11 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     # ---------------- 搜索 ----------------
     def search(self):
+        # 搜索中再点一次直接忽略。**不能靠 setEnabled(False) 防连点**：AnimButton 的
+        # paintEvent 在禁用态会把颜色硬编码成灰色（"#9e9e9e"），橙色"⟳ 搜索中…"根本
+        # 显不出来 —— 用户报"并没有实现"就是这个原因。
+        if getattr(self, "_searching", False):
+            return
         q = self.entry.text().strip()
         if not q:
             self.status.setText(tr("请输入搜索词。"))
@@ -2453,13 +2458,14 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         过滤 = self.model.filter_text()
         self.status.setText(tr("🔍 正在搜索…（Modrinth + CurseForge%s）")
                             % (tr("，只看 %s") % 过滤 if 过滤 else ""))
-        # 按钮本身也换成醒目的"⟳ 搜索中…"（灰色禁用态反而注意不到）
+        # 按钮本身也换成醒目的"⟳ 搜索中…"。
+        # ⚠ **不要 setEnabled(False)**：AnimButton.paintEvent 在禁用态会把颜色硬编码成
+        # 灰色，橙色根本显不出来。改用 _searching 标记挡连点。
         try:
             self.btn.setText(tr("⟳ 搜索中…"))
-            self.btn.setStyleSheet("")
         except Exception:
             pass
-        self.btn.setEnabled(False)
+        self._searching = True
         # **先把这句话画到屏幕上**再开线程：QRunnable 里的 urllib 请求会抢 GIL，
         # 主线程重绘可能被一路推迟到搜索结束 —— 用户看到的就是"点了没反应，过半天
         # 才蹦出个搜索中"。processEvents 只处理挂起的绘制事件，代价很小。
@@ -2471,6 +2477,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             _SearchTask(q, 8, self._signals, self.modid, q, mc, loader))
 
     def _on_results(self, results, modid, name):
+        self._searching = False
         self.btn.setEnabled(True)
         try:
             self.btn.setText(tr("🔍 联网搜索"))
@@ -2511,6 +2518,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                                     r.get("source"), r.get("slug", "")))
 
     def _on_error(self, msg):
+        self._searching = False
         self.btn.setEnabled(True)
         try:
             self.btn.setText(tr("🔍 联网搜索"))
