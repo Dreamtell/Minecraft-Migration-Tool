@@ -374,6 +374,13 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
             raise RuntimeError("CurseForge 拒绝了这个 API Key（HTTP %d）" % e.code)
         if e.code == 404:
             raise RuntimeError("CurseForge 上没有这个项目（HTTP 404）")
+        # 429 单列一条：刚拿到 Key 的人最容易撞的就是限流，看到"请求失败（HTTP 429）"
+        # 会以为 Key 有问题。这里直接说清楚是"请求太频繁/额度用完了"。
+        if e.code == 429:
+            raise RuntimeError("CurseForge 限流了（HTTP 429）：请求太频繁或今日额度用完了，"
+                               "过一会儿再试；批量搜索时把间隔拉长一点")
+        if 500 <= e.code < 600:
+            raise RuntimeError("CurseForge 服务端出错（HTTP %d），稍后重试" % e.code)
         raise RuntimeError("CurseForge 请求失败（HTTP %d）" % e.code)
     except Exception as e:
         raise RuntimeError(secrets.redact_exc(e))

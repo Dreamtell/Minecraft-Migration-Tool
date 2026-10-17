@@ -233,6 +233,13 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "📝 已打开配置文件：{0}": "📝 Opened config file: {0}",
     "❌ 打开配置文件失败：{0}": "❌ Failed to open config file: {0}",
     "← 填充路径": "← Fill",
+    # CurseForge 限流 / 服务端错误的提示（获批后最容易撞 429）
+    "CurseForge 限流了（HTTP 429）：请求太频繁或今日额度用完了，"
+    "过一会儿再试；批量搜索时把间隔拉长一点":
+        "CurseForge rate-limited this request (HTTP 429): too many requests or the "
+        "daily quota is used up. Wait a bit and retry; space out batch searches.",
+    "CurseForge 服务端出错（HTTP {0}），稍后重试":
+        "CurseForge server error (HTTP {0}); try again later.",
     # 本工具的定位：只做迁移，不提供下载（缺失的模组让用户用自己的启动器补）
     "缺失的模组本工具不负责下载，请在你的启动器（如 PCL）里补装。":
         "This tool does not download mods. Install the missing ones in your "
