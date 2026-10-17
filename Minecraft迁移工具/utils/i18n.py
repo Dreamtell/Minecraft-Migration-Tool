@@ -235,6 +235,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "← 填充路径": "← Fill",
     "🏷️ 来源": "🏷️ Source",
     "⟳ 搜索中…": "⟳ Searching…",
+    "⟳ 正在搜索…": "⟳ Searching…",
     # 搜索刚开始时的即时反馈（两个源串行，慢的时候要几秒）
     "🔍 正在搜索…（Modrinth + CurseForge）":
         "🔍 Searching… (Modrinth + CurseForge)",

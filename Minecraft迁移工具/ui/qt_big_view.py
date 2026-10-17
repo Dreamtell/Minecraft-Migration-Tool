@@ -2252,6 +2252,27 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.stack.addWidget(self.cards)
         lay.addWidget(self.stack, 1)
 
+        # 结果区**正中间**的"搜索中"大字：搜索时显示、结果回来就隐藏。
+        # 放在这里而不是状态栏：用户视线在结果区，中间一大块橙色字最不容易错过。
+        # ⚠ 父控件用**对话框自己**、坐标从 stack 映射过来：父设成 QStackedWidget 的话，
+        # 这个标签可能被当成"另一页"，切换表格/卡片时跟着消失。
+        self.busy = QtWidgets.QLabel(tr("⟳ 正在搜索…"), self)
+        self.busy.setAlignment(QtCore.Qt.AlignCenter)
+        self.busy.setStyleSheet(
+            "font-size: 22px; font-weight: bold; color: #ff9800;"
+            " background: rgba(0, 0, 0, 0);")
+        self.busy.hide()
+
+        def _fit_busy(_e=None):
+            try:
+                tl = self.stack.mapTo(self, QtCore.QPoint(0, 0))
+                self.busy.setGeometry(QtCore.QRect(tl, self.stack.size()))
+            except Exception:
+                pass
+
+        _fit_busy()
+        self._fit_busy = _fit_busy
+
         act = QtWidgets.QHBoxLayout()
         act.setSpacing(6)
         self.btn_page = AnimButton(tr("🌍 打开项目页"), "#43a047", "#2e7d32", th)
@@ -2466,6 +2487,14 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._searching = True
+        # 结果区正中显示"⟳ 正在搜索…"（内联，别再定义方法：插在 __init__ 中间会把
+        # 后面的代码吞进去，上次就是这么把 th 弄成未定义的）
+        try:
+            self._fit_busy()
+            self.busy.raise_()
+            self.busy.show()
+        except Exception:
+            pass
         # **先把这句话画到屏幕上**再开线程：QRunnable 里的 urllib 请求会抢 GIL，
         # 主线程重绘可能被一路推迟到搜索结束 —— 用户看到的就是"点了没反应，过半天
         # 才蹦出个搜索中"。processEvents 只处理挂起的绘制事件，代价很小。
@@ -2478,6 +2507,10 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     def _on_results(self, results, modid, name):
         self._searching = False
+        try:
+            self.busy.hide()
+        except Exception:
+            pass
         self.btn.setEnabled(True)
         try:
             self.btn.setText(tr("🔍 联网搜索"))
@@ -2519,6 +2552,10 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     def _on_error(self, msg):
         self._searching = False
+        try:
+            self.busy.hide()
+        except Exception:
+            pass
         self.btn.setEnabled(True)
         try:
             self.btn.setText(tr("🔍 联网搜索"))
