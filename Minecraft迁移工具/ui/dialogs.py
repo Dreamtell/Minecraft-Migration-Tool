@@ -880,8 +880,9 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     def _set_search_btn(running):
         """联网搜索中：按钮变灰禁用并显示状态提示；完成后恢复原样。"""
         if running:
-            search_btn.set_text("联网搜索中…")
-            search_btn.set_gradient("#9e9e9e", "#bdbdbd")
+            # 用醒目的橙色 + ⟳，不要灰 —— 灰色看着像"不可用"，反而注意不到"正在搜"
+            search_btn.set_text("⟳ 搜索中…")
+            search_btn.set_gradient("#ff9800", "#ffc107")
             search_btn.state(tk.DISABLED)
         else:
             search_btn.set_text("🔍 联网搜索")

@@ -2453,6 +2453,12 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         过滤 = self.model.filter_text()
         self.status.setText(tr("🔍 正在搜索…（Modrinth + CurseForge%s）")
                             % (tr("，只看 %s") % 过滤 if 过滤 else ""))
+        # 按钮本身也换成醒目的"⟳ 搜索中…"（灰色禁用态反而注意不到）
+        try:
+            self.btn.setText(tr("⟳ 搜索中…"))
+            self.btn.setStyleSheet("")
+        except Exception:
+            pass
         self.btn.setEnabled(False)
         # **先把这句话画到屏幕上**再开线程：QRunnable 里的 urllib 请求会抢 GIL，
         # 主线程重绘可能被一路推迟到搜索结束 —— 用户看到的就是"点了没反应，过半天
@@ -2466,6 +2472,10 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     def _on_results(self, results, modid, name):
         self.btn.setEnabled(True)
+        try:
+            self.btn.setText(tr("🔍 联网搜索"))
+        except Exception:
+            pass
         mc, loader = self.model.filters
         # 带着**版本**过滤一条都没搜到：先自动放宽版本再搜一次。
         # 探测出来的版本偶尔会错（整合包自己的版本号就可能长得像 MC 版本），
@@ -2502,6 +2512,10 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     def _on_error(self, msg):
         self.btn.setEnabled(True)
+        try:
+            self.btn.setText(tr("🔍 联网搜索"))
+        except Exception:
+            pass
         self.status.setText("❌ %s" % msg)
 
     def _on_version(self, row, vnum, url, status="ok"):
