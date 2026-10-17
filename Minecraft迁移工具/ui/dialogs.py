@@ -1019,7 +1019,17 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             threading.Thread(target=lambda pid=pid, i=pos, f=过滤:
                              _fetch_version_for(pid, i, f), daemon=True).start()
         extra = "★为最相似项，已置顶。" if best >= MIN else "未找到相似度足够的候选。"
+        # 按来源计数：这样"看不到 CurseForge"时能立刻分清是**没查**还是**查了 0 条**
+        # （前者会伴随"部分来源没查成"的提示，后者这里就是 0 条）。
+        _计数 = {"curseforge": 0, "modrinth": 0}
+        for _r in results:
+            _k = _r.get("source") or "modrinth"
+            if _k in _计数:
+                _计数[_k] += 1
+        _分源 = "🟧 CurseForge %d 条 · 🟩 Modrinth %d 条 ｜ " % (
+            _计数["curseforge"], _计数["modrinth"])
         set_status(("%s " % 备注 if 备注 else "")
+                   + _分源
                    + f"找到 {len(results)} 个结果。{extra} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）", ok)
         # 后台并发拉取各候选的最新版本，逐行填充
         for i, r in enumerate(results):
