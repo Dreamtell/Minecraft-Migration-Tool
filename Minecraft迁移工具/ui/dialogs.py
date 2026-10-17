@@ -17,7 +17,7 @@ from core.mod_search import (search_modrinth, fetch_project_latest, format_downl
                              normalize_online_version)
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
 # 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
-from utils.i18n import trp
+from utils.i18n import tr, trp
 
 
 class ProgressWindow:
