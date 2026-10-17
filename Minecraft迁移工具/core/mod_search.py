@@ -91,7 +91,9 @@ def _fetch_latest_version(project_id, timeout=12, mc_version="", loader=""):
     v0 = versions[0]
     files = v0.get("files") or []
     url = files[0].get("url", "") if files else ""
-    return (v0.get("version_number", ""), url, "ok")
+    # **源头就归一化**：界面上直接显示这个值，给原始长串（"mc1.20.1-0.5.13-fabric"）
+    # 既难看也没法比。归一化是幂等的，下面 _is_updatable 再归一次也没事。
+    return (normalize_online_version(v0.get("version_number", "")), url, "ok")
 
 
 def search_modrinth(query, limit=8, mc_version="", loader=""):
@@ -168,6 +170,26 @@ _BRACKET_RE = re.compile(r"[\[(][^\])]*[\])]")
 # 这里兜底：取出第一个像版本号的片段（"2.5.1"）。
 _VER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)+(?:[-_]?(?:pre|beta|alpha|rc|snapshot)[-_.]?\d*)?",
                            re.I)
+# "1.20" / "1.20.1" 这种几乎一定是 **Minecraft 版本**，不是模组版本。
+# 所以挑版本号时要把它排除掉（"AdvancementPlaques-1.20.1-2.2.8.jar" 里第一个匹配是 1.20.1）。
+_MC_VER_ONLY = re.compile(r"^1\.\d{1,2}(?:\.\d{1,2})?$")
+
+
+def _pick_version(s):
+    """从长串里挑出"最像模组版本"的那一段。
+
+    规则：候选里**从后往前**找第一个不像 MC 版本的。
+      "AdvancementPlaques-1.20.1-2.2.8.jar" → 候选 [1.20.1, 2.2.8] → 2.2.8 ✓
+      "AppleSkin-2.5.1-forge-1.20.1.jar"   → 候选 [2.5.1, 1.20.1] → 2.5.1 ✓
+      "AppleSkin 2.5.1"                    → 2.5.1 ✓
+    """
+    候选 = _VER_TOKEN_RE.findall(str(s or ""))
+    if not 候选:
+        return ""
+    for c in reversed(候选):
+        if not _MC_VER_ONLY.match(c):
+            return c
+    return 候选[-1]
 
 
 def normalize_online_version(v):
@@ -192,9 +214,9 @@ def normalize_online_version(v):
     # 上面几步都提不干净 —— 直接取第一个像版本号的片段。已经干净的就原样返回
     # （"0.5.13" 本身就匹配，取到的还是它，不会改坏 Modrinth 那条路）。
     if not _VER_TOKEN_RE.fullmatch(s):
-        m = _VER_TOKEN_RE.search(s)
+        m = _pick_version(s)
         if m:
-            return m.group(0)
+            return m
     return s
 
 
@@ -517,5 +539,8 @@ def fetch_project_latest_curseforge(project_id, timeout=12, mc_version="", loade
     地址 = ""
     if slug:
         地址 = "%s/files/%s" % (_CURSEFORGE_SITE % slug, f0.get("id"))
-    return {"latest_version": f0.get("displayName") or f0.get("fileName") or "",
+    # 同上：displayName / fileName 是长串（"advancementframes-1.20-2.2.8.jar"），
+    # 界面要显示的是干净版本号（"2.2.8"）；原始长串只用来兜底。
+    原始 = f0.get("displayName") or f0.get("fileName") or ""
+    return {"latest_version": normalize_online_version(原始),
             "download_url": 地址, "status": "ok"}
