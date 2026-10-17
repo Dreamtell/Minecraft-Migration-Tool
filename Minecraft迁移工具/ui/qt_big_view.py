@@ -41,7 +41,9 @@ from core.scanner import (get_full_mod_metadata, get_mod_icon,   # noqa: E402
                           guess_tags, split_cn_name,
                           compare_versions, detect_instance_env)
 from core.migrator import _is_safe_path                          # noqa: E402
-from core.mod_search import (fetch_project_latest, format_downloads,   # noqa: E402
+from core.mod_search import (fetch_project_latest,                       # noqa: E402
+                             fetch_project_latest_curseforge,
+                             format_downloads,
                              normalize_online_version, search_modrinth,
                              categories_cn)
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
@@ -1861,16 +1863,24 @@ class _SearchTask(QtCore.QRunnable):
 
 class _VersionTask(QtCore.QRunnable):
     def __init__(self, row: int, project_id: str, signals: _SearchSignals,
-                 mc_version="", loader=""):
+                 mc_version="", loader="", source=None, slug=""):
         super().__init__()
         self.row, self.pid, self.signals = row, project_id, signals
         self.mc_version, self.loader = mc_version, loader
+        self.source, self.slug = source, slug
         self.setAutoDelete(True)
 
     def run(self):
+        # **按来源分发**：CurseForge 的 project_id 只能用它自己的 /mods/{id}/files 取，
+        # 拿 Modrinth 接口去查必然失败 —— 表现就是"CurseForge 的版本全部获取失败"。
         try:
-            d = fetch_project_latest(self.pid, mc_version=self.mc_version,
-                                     loader=self.loader)
+            if getattr(self, "source", None) == "curseforge":
+                d = fetch_project_latest_curseforge(
+                    self.pid, mc_version=self.mc_version, loader=self.loader,
+                    slug=getattr(self, "slug", ""))
+            else:
+                d = fetch_project_latest(self.pid, mc_version=self.mc_version,
+                                         loader=self.loader)
         except Exception:
             d = {"latest_version": "", "download_url": "", "status": "error"}
         try:
@@ -2480,7 +2490,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         pool = QtCore.QThreadPool.globalInstance()
         for i, r in enumerate(self.model.rows):
             if r.get("project_id"):
-                pool.start(_VersionTask(i, r["project_id"], self._signals, mc, loader))
+                pool.start(_VersionTask(i, r["project_id"], self._signals, mc, loader,
+                                    r.get("source"), r.get("slug", "")))
 
     def _on_error(self, msg):
         self.btn.setEnabled(True)

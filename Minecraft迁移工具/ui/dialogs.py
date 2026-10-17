@@ -13,7 +13,8 @@ from utils.helpers import (set_window_icon, create_gradient_button, focus_window
                            LiquidProgress, SwitchRow)
 from core.scanner import (get_full_mod_metadata, split_cn_name, guess_tags,
                           compare_versions, get_mod_icon)
-from core.mod_search import (search_modrinth, fetch_project_latest, format_downloads,
+from core.mod_search import (search_modrinth, fetch_project_latest,
+                             fetch_project_latest_curseforge, format_downloads,
                              normalize_online_version)
 from utils.theme import LIGHT_THEME, apply_theme_to_widget_tree  # 新增导入
 # 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
@@ -1020,8 +1021,9 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         # 后台并发拉取各候选最新版本（使用排序后位置，与 iid 一致）
         for pos, (score, orig_i, r) in enumerate(scored):
             pid = r.get("project_id")
-            threading.Thread(target=lambda pid=pid, i=pos, f=过滤:
-                             _fetch_version_for(pid, i, f), daemon=True).start()
+            threading.Thread(target=lambda pid=pid, i=pos, f=过滤,
+                             src=r.get("source"), sl=r.get("slug", ""):
+                             _fetch_version_for(pid, i, f, src, sl), daemon=True).start()
         extra = "★为最相似项，已置顶。" if best >= MIN else "未找到相似度足够的候选。"
         # 按来源计数：这样"看不到 CurseForge"时能立刻分清是**没查**还是**查了 0 条**
         # （前者会伴随"部分来源没查成"的提示，后者这里就是 0 条）。
@@ -1038,13 +1040,20 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         # 后台并发拉取各候选的最新版本，逐行填充
         for i, r in enumerate(results):
             pid = r.get("project_id")
-            threading.Thread(target=lambda pid=pid, i=i, f=过滤:
-                             _fetch_version_for(pid, i, f), daemon=True).start()
+            threading.Thread(target=lambda pid=pid, i=i, f=过滤,
+                             src=r.get("source"), sl=r.get("slug", ""):
+                             _fetch_version_for(pid, i, f, src, sl), daemon=True).start()
 
-    def _fetch_version_for(pid, i, 过滤=None):
+    def _fetch_version_for(pid, i, 过滤=None, 来源=None, slug=""):
         mc, loader = 过滤 if 过滤 is not None else ("", "")
+        # **按来源分发**：CurseForge 的 project_id 只能用它自己的 /mods/{id}/files 取，
+        # 拿 Modrinth 的接口去查必然 404 → 结果就是"最新版本全部获取失败"（真踩过）。
         try:
-            d = fetch_project_latest(pid, mc_version=mc, loader=loader)
+            if 来源 == "curseforge":
+                d = fetch_project_latest_curseforge(pid, mc_version=mc, loader=loader,
+                                                    slug=slug)
+            else:
+                d = fetch_project_latest(pid, mc_version=mc, loader=loader)
         except Exception:
             d = {"latest_version": "", "download_url": "", "status": "error"}
         msg_queue.put(("version", (i, d["latest_version"], d["download_url"],
