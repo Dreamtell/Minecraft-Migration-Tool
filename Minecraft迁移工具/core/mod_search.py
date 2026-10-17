@@ -505,7 +505,11 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
                 "author": 作者,
                 "description": (m.get("summary") or "")[:120],
                 "downloads": m.get("downloadCount", 0),
-                "project_url": _CURSEFORGE_SITE % (slug or m.get("id")),
+                # ⚠ 用 API 给的 links.websiteUrl（官方页面地址）。之前写成
+            # 站点模板 % (slug or id)，slug 为空时退化成 .../mc-mods/248787 —— 那个
+            # 路径会 404（用户截图证实）。id 只有 /mods/{id}/files 这种 API 端点才认。
+            "project_url": ((m.get("links") or {}).get("websiteUrl")
+                             or (_CURSEFORGE_SITE % slug if slug else "")),
                 "categories": [c.get("name", "") for c in (m.get("categories") or [])],
                 "latest_version": "",
                 "download_url": "",
@@ -530,7 +534,7 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
 
 
 def fetch_project_latest_curseforge(project_id, timeout=12, mc_version="", loader="",
-                                    slug=""):
+                                    slug="", website=""):
     """取 CurseForge 项目的最新文件，返回和 fetch_project_latest 同一个形状
     （latest_version / download_url / status，状态同样叫 ok / no_match / error）。
 
@@ -555,8 +559,10 @@ def fetch_project_latest_curseforge(project_id, timeout=12, mc_version="", loade
         return {"latest_version": "", "download_url": "", "status": "no_match"}
     f0 = files[0]
     地址 = ""
-    if slug:
-        地址 = "%s/files/%s" % (_CURSEFORGE_SITE % slug, f0.get("id"))
+    # 项目页地址优先用 API 的 websiteUrl；有项目页才能拼 "<项目页>/files/<文件id>"
+    项目页 = (website or (("%s" % (_CURSEFORGE_SITE % slug)) if slug else ""))
+    if 项目页:
+        地址 = "%s/files/%s" % (项目页.rstrip("/"), f0.get("id"))
     # 同上：displayName / fileName 是长串（"advancementframes-1.20-2.2.8.jar"），
     # 界面要显示的是干净版本号（"2.2.8"）；原始长串只用来兜底。
     原始 = f0.get("displayName") or f0.get("fileName") or ""

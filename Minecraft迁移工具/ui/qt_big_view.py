@@ -1863,11 +1863,11 @@ class _SearchTask(QtCore.QRunnable):
 
 class _VersionTask(QtCore.QRunnable):
     def __init__(self, row: int, project_id: str, signals: _SearchSignals,
-                 mc_version="", loader="", source=None, slug=""):
+                 mc_version="", loader="", source=None, slug="", website=""):
         super().__init__()
         self.row, self.pid, self.signals = row, project_id, signals
         self.mc_version, self.loader = mc_version, loader
-        self.source, self.slug = source, slug
+        self.source, self.slug, self.website = source, slug, website
         self.setAutoDelete(True)
 
     def run(self):
@@ -1877,7 +1877,8 @@ class _VersionTask(QtCore.QRunnable):
             if getattr(self, "source", None) == "curseforge":
                 d = fetch_project_latest_curseforge(
                     self.pid, mc_version=self.mc_version, loader=self.loader,
-                    slug=getattr(self, "slug", ""))
+                    slug=getattr(self, "slug", ""),
+                    website=getattr(self, "website", ""))
             else:
                 d = fetch_project_latest(self.pid, mc_version=self.mc_version,
                                          loader=self.loader)
@@ -2548,7 +2549,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         for i, r in enumerate(self.model.rows):
             if r.get("project_id"):
                 pool.start(_VersionTask(i, r["project_id"], self._signals, mc, loader,
-                                    r.get("source"), r.get("slug", "")))
+                                    r.get("source"), r.get("slug", ""),
+                                    r.get("project_url", "")))
 
     def _on_error(self, msg):
         self._searching = False
