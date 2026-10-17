@@ -150,13 +150,14 @@ class PagesMixin:
         # 底部声明
         self.bottom_frame = tk.Frame(self.root)
         self.bottom_frame.pack(fill="x", padx=10, pady=5)
-        # 右下角：网络状态灯。**必须先 pack**（pack 是先到先得）：下面那行声明是居中
-        # 占满整行的，后 pack 的话这个灯会被挤出窗口右边（试过，截图里根本看不到）。
+        # 左下角：网络状态**圆点**（不占文字宽度）。**必须先 pack**（pack 先到先得）：
+        # 下面那行声明是居中占满整行的，后 pack 的话这个点会被挤出窗口。
+        # 具体哪个源不通，看悬停提示（tooltip）。
         self.net_status = tk.Label(
-            self.bottom_frame, text="🌐 网络：检测中…", font=("微软雅黑", 8),
+            self.bottom_frame, text="●", font=("微软雅黑", 11),
             bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
-        self.net_status.pack(side="right", padx=(8, 0))
+        self.net_status.pack(side="left", padx=(2, 8))
         self.create_tooltip(self.net_status,
                             lambda: getattr(self, "_net_tip", "正在检测网络连通性…"))
         tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
