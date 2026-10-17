@@ -168,8 +168,13 @@ class PagesMixin:
         self.net_traffic._keep_fg = True
         self.net_traffic.pack(side="left", padx=(0, 8))
         self.create_tooltip(self.net_traffic, "本工具的联网流量（只看自己的请求，不是整机流量）")
-        tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
-                 font=("微软雅黑", 8)).pack()
+        # 声明文字**用 place 居中**：左边已经 pack 了网络灯和流量两个标签，用 pack 的话
+        # 它只能在剩余空间里居中 —— 实际效果是偏右（用户截图证实）。
+        self.bottom_frame.configure(height=22)
+        self.bottom_frame.pack_propagate(False)
+        声明 = tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
+                        font=("微软雅黑", 8))
+        声明.place(relx=0.5, rely=0.5, anchor="center")
 
         # 全部按钮建完，最后按配置摆一遍（显示/隐藏 + 自定义顺序）
         self._apply_button_layout()

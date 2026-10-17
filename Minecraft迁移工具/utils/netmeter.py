@@ -169,3 +169,12 @@ def start_publisher(interval_sec=2.0):
             _pub_stop.wait(interval_sec)
 
     threading.Thread(target=循环, name="netio-pub", daemon=True).start()
+
+
+# 模块被 import 就自动开始上报：app.py 的 --qt-host 分支在文件很上面就 sys.exit()，
+# 后面那些启动期初始化根本不会执行 —— 而子进程正是通过 import 本模块来计数的。
+# 放在这里最保险：父子进程谁 import 谁上报。
+try:
+    start_publisher()
+except Exception:
+    pass
