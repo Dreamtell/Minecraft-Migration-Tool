@@ -464,7 +464,17 @@ class LogMixin:
                     self._mark_failed_from_log(message)
                 except Exception:
                     pass
-            self.root.update_idletasks()
+            # ⚠ 这里**不能每条都 update_idletasks()**：它会立刻把所有挂起的重绘跑一遍，
+            # 而迁移时一秒几百条日志 → 主线程被反复按着重绘，单次能卡 1 秒以上
+            # （看门狗日志抓到的就是这里：mw_log.py:467 → update_idletasks）。
+            # 节流到 100ms 一次，肉眼仍然"实时"。
+            try:
+                现在 = time.monotonic()
+                if 现在 - getattr(self, "_last_pump_t", 0.0) >= 0.1:
+                    self._last_pump_t = 现在
+                    self.root.update_idletasks()
+            except Exception:
+                pass
             # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
             try:
                 self.log_text.event_generate("<<LogChanged>>")

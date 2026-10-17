@@ -6,6 +6,7 @@ import re
 import subprocess
 import difflib
 import threading
+import time
 import queue
 import webbrowser
 from utils.helpers import (set_window_icon, create_gradient_button, focus_window,
@@ -82,7 +83,16 @@ class ProgressWindow:
         self.hint_label.pack(pady=2)
 
         # 居中
-        self.win.update_idletasks()
+        # ⚠ 别每次更新都强制刷新：进度是高频回调，update_idletasks 会把所有挂起的
+        # 重绘立刻跑一遍，单次能卡 1 秒以上（看门狗日志抓到的就是这里）。
+        # 节流到 100ms：进度条看起来一样跟手，主线程不再被反复按着重绘。
+        try:
+            现在 = time.monotonic()
+            if 现在 - getattr(self, "_last_pump_t", 0.0) >= 0.1:
+                self._last_pump_t = 现在
+                self.win.update_idletasks()
+        except Exception:
+            pass
         win_width = self.win.winfo_width()
         win_height = self.win.winfo_height()
         screen_width = self.win.winfo_screenwidth()
@@ -125,7 +135,16 @@ class ProgressWindow:
         self.stats_label.config(
             text=trp("{0} / {1} 个文件  |  {2:.1f} MB / {3:.1f} MB",
                      file_index, self.total_files, copied_mb, total_mb))
-        self.win.update_idletasks()
+        # ⚠ 别每次更新都强制刷新：进度是高频回调，update_idletasks 会把所有挂起的
+        # 重绘立刻跑一遍，单次能卡 1 秒以上（看门狗日志抓到的就是这里）。
+        # 节流到 100ms：进度条看起来一样跟手，主线程不再被反复按着重绘。
+        try:
+            现在 = time.monotonic()
+            if 现在 - getattr(self, "_last_pump_t", 0.0) >= 0.1:
+                self._last_pump_t = 现在
+                self.win.update_idletasks()
+        except Exception:
+            pass
 
     def close(self):
         self.win.destroy()
@@ -164,7 +183,16 @@ class ScanProgressWindow:
                                     bg=self.theme["bg"], fg=self.theme["fg"])
         self.stats_label.pack(fill="x", padx=10, pady=5)
 
-        self.win.update_idletasks()
+        # ⚠ 别每次更新都强制刷新：进度是高频回调，update_idletasks 会把所有挂起的
+        # 重绘立刻跑一遍，单次能卡 1 秒以上（看门狗日志抓到的就是这里）。
+        # 节流到 100ms：进度条看起来一样跟手，主线程不再被反复按着重绘。
+        try:
+            现在 = time.monotonic()
+            if 现在 - getattr(self, "_last_pump_t", 0.0) >= 0.1:
+                self._last_pump_t = 现在
+                self.win.update_idletasks()
+        except Exception:
+            pass
         self.win.tk.eval('tk::PlaceWindow %s center' % self.win.winfo_pathname(self.win.winfo_id()))
         self.win.deiconify()
         focus_window(self.win)
@@ -175,7 +203,16 @@ class ScanProgressWindow:
             percent = (current / self.total_files) * 100
             self.progress.set_fraction(percent / 100.0)
         self.stats_label.config(text=trp("{0} / {1} 个文件", current, self.total_files))
-        self.win.update_idletasks()
+        # ⚠ 别每次更新都强制刷新：进度是高频回调，update_idletasks 会把所有挂起的
+        # 重绘立刻跑一遍，单次能卡 1 秒以上（看门狗日志抓到的就是这里）。
+        # 节流到 100ms：进度条看起来一样跟手，主线程不再被反复按着重绘。
+        try:
+            现在 = time.monotonic()
+            if 现在 - getattr(self, "_last_pump_t", 0.0) >= 0.1:
+                self._last_pump_t = 现在
+                self.win.update_idletasks()
+        except Exception:
+            pass
 
     def close(self):
         if not self.closed:
