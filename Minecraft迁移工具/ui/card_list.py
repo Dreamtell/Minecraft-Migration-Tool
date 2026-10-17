@@ -702,6 +702,17 @@ class ModCardList(tk.Frame):
         title = tr(title) if title else title
         sub = tr(row.get("subtitle")) if row.get("subtitle") else ""
         ver = row.get("version") or ""
+        # 来源徽章：**品牌色实心圆角 + 白字**，放在标题左边 —— 用户要"明显一点"，
+        # 所以不用灰色小字，直接给个色块（CurseForge 橙 / Modrinth 绿）。
+        来源 = row.get("source")
+        if 来源 in ("curseforge", "modrinth"):
+            来源名 = "CurseForge" if 来源 == "curseforge" else "Modrinth"
+            来源色 = "#F16436" if 来源 == "curseforge" else "#12A854"
+            徽宽 = self._font_sub.measure(来源名) + 14
+            self._draw_rounded_rect(c, ctag, x, y0 + 8, 徽宽, 17, 来源色, radius=8)
+            c.create_text(x + 徽宽 // 2, y0 + 16, anchor="center", text=来源名,
+                          fill="#ffffff", font=self._font_sub, tags=ctag)
+            x += 徽宽 + 8
         ver_w = self._font_sub.measure(ver) + 10 if ver else 0
         title_max = max(60, right - x - ver_w - 8)
         t_show = self._elide(title, self._font_title, title_max)

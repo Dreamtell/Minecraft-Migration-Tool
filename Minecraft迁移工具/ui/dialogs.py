@@ -1000,8 +1000,9 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             is_match = (pos == 0 and best >= MIN)
             tag = "match" if is_match else ("odd" if pos % 2 else "")
             title = ("★ " + r["title"]) if is_match else r["title"]
-            # 来源列：告诉用户这条是 CurseForge 还是 Modrinth 来的（品牌名不翻译）
-            来源 = "CurseForge" if r.get("source") == "curseforge" else "Modrinth"
+            # 来源列：Tk 的 Treeview **没法给单格上色**（tag 是整行生效），
+            # 所以用品牌色方块 emoji 打头，一眼能分辨，又不干扰"最相似/可更新"的行底色。
+            来源 = "🟧 CurseForge" if r.get("source") == "curseforge" else "🟩 Modrinth"
             tree.insert("", "end", iid=iid, values=(
                 title, 来源, r["author"], format_downloads(r["downloads"]),
                 "获取中…", r.get("slug", "")), tags=(tag,) if tag else ())

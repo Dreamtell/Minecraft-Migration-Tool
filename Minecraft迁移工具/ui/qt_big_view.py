@@ -1941,7 +1941,7 @@ class SearchModel(QtCore.QAbstractTableModel):
             if key == "author":
                 return r.get("author", "")
             if key == "source":
-                # 品牌名不翻译：用户要认的就是"这条来自哪个平台"
+                # 品牌名不翻译。Qt 这边能**给单格真上色**，所以直接做成实心色块（更明显）
                 return "CurseForge" if r.get("source") == "curseforge" else "Modrinth"
             if key == "downloads":
                 return format_downloads(r.get("downloads", 0))
@@ -1969,10 +1969,12 @@ class SearchModel(QtCore.QAbstractTableModel):
         if role == QtCore.Qt.BackgroundRole:
             th = self.theme
             row = index.row()
-            # 悬停**压过**"最相似（蓝）/可更新（黄）"的底色：鼠标停在哪一行，哪一行就得亮，
-            # 不然这一片的蓝/黄底把悬停色盖掉，鼠标划过去毫无反应 —— 看着就是"选不了"。
-            # 行本身是★还是有⬆，列里都写着，不会因为换了底色认不出来。
-            # （点中的那一行不用模型操心：Qt 自己画的选中高亮压得住这里的底色，实测过）
+            # 来源列：给**这一格**上品牌色实心底（CurseForge 橙 / Modrinth 绿），
+            # 比一行灰字明显得多。悬停/最相似/可更新那些整行底色都不覆盖它 ——
+            # "这条来自哪个平台"是恒定信息，不该被状态色盖住。
+            if key == "source" and r.get("source") in ("curseforge", "modrinth"):
+                return QtGui.QColor("#F16436" if r.get("source") == "curseforge"
+                                    else "#12A854")
             if row == self.hover_row:
                 return QtGui.QColor(th.get("hover_bg", "#eef3f8"))
             if r.get("is_match"):
@@ -1982,6 +1984,9 @@ class SearchModel(QtCore.QAbstractTableModel):
             return None
         if role == QtCore.Qt.ForegroundRole:
             th = self.theme
+            # 来源列那格是品牌色实心底，必须用白字（否则深色主题下糊成一片）
+            if key == "source" and r.get("source") in ("curseforge", "modrinth"):
+                return QtGui.QColor("#ffffff")
             # 文字色得跟着底走：悬停底是深灰（深色主题）时，蓝/黄行原来的那支字色会糊掉
             row = index.row()
             if row == self.hover_row:
