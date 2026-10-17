@@ -125,6 +125,8 @@ def search_modrinth(query, limit=8, mc_version="", loader=""):
             "categories": list(hit.get("categories") or []),
             "latest_version": "",
             "download_url": "",
+            # 来源：界面上要标出来，用户才能分清这条来自 Modrinth 还是 CurseForge
+            "source": "modrinth",
         })
 
     return results
@@ -442,6 +444,7 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
             "categories": [c.get("name", "") for c in (m.get("categories") or [])],
             "latest_version": "",
             "download_url": "",
+            "source": "curseforge",
         })
     return 结果
 

@@ -774,17 +774,19 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         mc = mc_var.get().strip()
         return ("" if mc in ("", "不限") else mc), loader_var.get().strip()
 
-    columns = ("name", "author", "downloads", "version", "slug")
+    columns = ("name", "source", "author", "downloads", "version", "slug")
     # 结果表格放进独立子框并撑满，避免下方"操作行"被横向挤掉
     tree_frame = tk.Frame(search_frame)
     tree_frame.pack(fill="both", expand=True, pady=2)
     tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=7,
                         style="Detail.Treeview")
     tree.configure(selectmode="none")  # 用自定义绿色选中标签，避免 ttk 灰色选中盖掉颜色
-    for col, txt, wd, anc in (("name", "📄 名称", 230, "w"), ("author", "👤 作者", 105, "w"),
+    for col, txt, wd, anc in (("name", "📄 名称", 215, "w"),
+                              ("source", "🏷️ 来源", 95, "w"),
+                              ("author", "👤 作者", 100, "w"),
                               ("downloads", "⬇️ 下载量", 80, "e"),
-                              ("version", "🔖 最新版本", 150, "w"),
-                              ("slug", "🆔 项目ID", 110, "w")):
+                              ("version", "🔖 最新版本", 145, "w"),
+                              ("slug", "🆔 项目ID", 105, "w")):
         tree.heading(col, text=txt)
         tree.column(col, width=wd, anchor=anc)
     tree.tag_configure("match", background=theme.get("highlight_bg", "#cce5ff"),
@@ -998,8 +1000,10 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             is_match = (pos == 0 and best >= MIN)
             tag = "match" if is_match else ("odd" if pos % 2 else "")
             title = ("★ " + r["title"]) if is_match else r["title"]
+            # 来源列：告诉用户这条是 CurseForge 还是 Modrinth 来的（品牌名不翻译）
+            来源 = "CurseForge" if r.get("source") == "curseforge" else "Modrinth"
             tree.insert("", "end", iid=iid, values=(
-                title, r["author"], format_downloads(r["downloads"]),
+                title, 来源, r["author"], format_downloads(r["downloads"]),
                 "获取中…", r.get("slug", "")), tags=(tag,) if tag else ())
             base_tag[iid] = tag
             result_items[iid] = r

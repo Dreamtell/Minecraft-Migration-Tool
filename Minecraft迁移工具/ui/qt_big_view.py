@@ -1859,9 +1859,10 @@ class _VersionTask(QtCore.QRunnable):
 
 class SearchModel(QtCore.QAbstractTableModel):
     """搜索结果表：0 列是名称，最相似项置顶并标绿；本地版本不一致的标黄（可更新）。"""
-    COLS = (("name", tr("📄 名称"), 240), ("author", tr("👤 作者"), 110),
-            ("downloads", tr("⬇️ 下载量"), 90), ("version", tr("🔖 最新版本"), 220),
-            ("slug", tr("🆔 项目ID"), 120))
+    COLS = (("name", tr("📄 名称"), 225), ("source", tr("🏷️ 来源"), 100),
+            ("author", tr("👤 作者"), 105),
+            ("downloads", tr("⬇️ 下载量"), 90), ("version", tr("🔖 最新版本"), 215),
+            ("slug", tr("🆔 项目ID"), 115))
 
     def __init__(self, theme: dict, local_version: str = "", parent=None):
         super().__init__(parent)
@@ -1939,6 +1940,9 @@ class SearchModel(QtCore.QAbstractTableModel):
                 return ("★ " + r.get("title", "")) if r.get("is_match") else r.get("title", "")
             if key == "author":
                 return r.get("author", "")
+            if key == "source":
+                # 品牌名不翻译：用户要认的就是"这条来自哪个平台"
+                return "CurseForge" if r.get("source") == "curseforge" else "Modrinth"
             if key == "downloads":
                 return format_downloads(r.get("downloads", 0))
             if key == "version":
