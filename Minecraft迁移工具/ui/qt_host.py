@@ -46,6 +46,14 @@ import os
 import sys
 from pathlib import Path
 
+# 联网流量计数：Qt 窗口跑在这个子进程里，网络请求都发生在这里。
+# netmeter 是「一被 import 就开始上报」的（模块底部自动起线程），所以这里显式 import
+# 一下即可 —— 否则子进程的流量永远不会被主界面看到（实测上报目录里只有父进程一个文件）。
+try:
+    from utils import netmeter  # noqa: F401
+except Exception:
+    pass
+
 
 def _make_hooks(QtCore):
     """把 Qt 的定时器包装成和主进程一样的 hooks 接口。
