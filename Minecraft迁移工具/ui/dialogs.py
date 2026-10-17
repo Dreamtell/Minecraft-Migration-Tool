@@ -723,7 +723,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     ops_hint.pack(side="left", padx=(10, 0))
 
     # ---- 联网搜索区 ----
-    search_frame = tk.LabelFrame(win, text="🔍 联网搜索模组（Modrinth）", padx=5, pady=5)
+    search_frame = tk.LabelFrame(win, text="🔍 联网搜索模组（Modrinth + CurseForge）",
+                                 padx=5, pady=5)
     search_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
     top = tk.Frame(search_frame)
@@ -1081,12 +1082,23 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         _set_search_btn(False)
         set_status(f"❌ {msg}", fail)
 
+    def show_warn(msg):
+        """某个源没查到（没 Key / 限流）：只在状态行提示一句，结果照常展示。"""
+        try:
+            set_status(tr("⚠ 部分来源没查成：") + str(msg), fail)
+        except Exception:
+            pass
+
     def poll_queue():
         try:
             while True:
                 kind, payload = msg_queue.get_nowait()
                 if kind == "results":
                     show_results(payload)
+                elif kind == "warn":
+                    # 某个源失败了（没 Key / 限流 / 网络），但另一个源有结果 —— 只提示，
+                    # 不打断结果展示（否则用户会以为整个搜索都失败了）
+                    show_warn(payload)
                 elif kind == "error":
                     show_error(payload)
                 elif kind == "version":
@@ -1115,11 +1127,30 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
 
         def worker():
             mc, loader = 搜索过滤
+            results = []
+            错误 = []
+            # 先搜 Modrinth（不需要 Key，永远可用）
             try:
-                results = search_modrinth(q, limit=8, mc_version=mc, loader=loader)
+                results.extend(search_modrinth(q, limit=8, mc_version=mc, loader=loader))
             except Exception as e:
-                msg_queue.put(("error", str(e)))
+                错误.append("Modrinth：%s" % e)
+            # 再搜 CurseForge（只有配了 Key 才搜；没 Key 就静默跳过，不打扰用户）
+            try:
+                from utils import secrets
+                if secrets.get_key():
+                    from core.mod_search import search_curseforge
+                    results.extend(search_curseforge(q, limit=8, mc_version=mc,
+                                                     loader=loader))
+                else:
+                    错误.append("CurseForge：没配置 API Key（可在设置里填）")
+            except Exception as e:
+                错误.append("CurseForge：%s" % e)
+            if not results:
+                msg_queue.put(("error", "；".join(错误) or "没搜到结果"))
                 return
+            # 两个源都有结果时，把两边的提示一起给出去（比如 CurseForge 因限流失败）
+            if 错误:
+                msg_queue.put(("warn", "；".join(错误)))
             msg_queue.put(("results", results))
 
         threading.Thread(target=worker, daemon=True).start()

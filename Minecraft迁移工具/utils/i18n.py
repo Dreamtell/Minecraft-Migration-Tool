@@ -234,6 +234,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "❌ 打开配置文件失败：{0}": "❌ Failed to open config file: {0}",
     "← 填充路径": "← Fill",
     "🏷️ 来源": "🏷️ Source",
+    "🔍 联网搜索模组（Modrinth + CurseForge）":
+        "🔍 Search online (Modrinth + CurseForge)",
+    "⚠ 部分来源没查成：": "⚠ Some sources could not be queried: ",
+    "CurseForge：没配置 API Key（可在设置里填）":
+        "CurseForge: no API key configured (fill it in Settings)",
     # CurseForge 限流 / 服务端错误的提示（获批后最容易撞 429）
     "CurseForge 限流了（HTTP 429）：请求太频繁或今日额度用完了，"
     "过一会儿再试；批量搜索时把间隔拉长一点":
@@ -854,7 +859,6 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "该行没有可查看的模组文件。": "That row has no mod file to view.",
     "执行日志 - 放大查看": "Execution log - Big view",
     "ℹ 查看详情": "ℹ View details",
-    "🔍 联网搜索模组（Modrinth）": "🔍 Search on Modrinth",
     "📂 在文件夹中定位": "📂 Show in folder",
     "📝 描述": "📝 Description",
     "🔄 反选": "🔄 Invert",
