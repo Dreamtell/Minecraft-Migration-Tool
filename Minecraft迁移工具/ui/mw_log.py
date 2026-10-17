@@ -420,13 +420,7 @@ class LogMixin:
             # ⚠ 而且**节流**：迁移时一秒几百条，每条都 see 会不断触发滚动（配合平滑滚动
             #   就是一条永不结束的动画链）。80ms 一次足够跟手，肉眼看不出来。
             if getattr(self, "_log_follow", True):
-                try:
-                    现在 = time.monotonic()
-                    if 现在 - getattr(self, "_last_see_t", 0.0) >= 0.08:
-                        self._last_see_t = 现在
-                        self.log_text.see(tk.END)
-                except Exception:
-                    self.log_text.see(tk.END)
+                self.log_text.see(tk.END)
             self.log_text.configure(state="disabled")
             # 锁屏里那份日志是"第二个视图"：主日志照常记，这里同步追加一份
             lock_log = getattr(self, "_lock_log_text", None)
@@ -468,13 +462,8 @@ class LogMixin:
             # 而迁移时一秒几百条日志 → 主线程被反复按着重绘，单次能卡 1 秒以上
             # （看门狗日志抓到的就是这里：mw_log.py:467 → update_idletasks）。
             # 节流到 100ms 一次，肉眼仍然"实时"。
-            try:
-                现在 = time.monotonic()
-                if 现在 - getattr(self, "_last_pump_t", 0.0) >= 0.1:
-                    self._last_pump_t = 现在
-                    self.root.update_idletasks()
-            except Exception:
-                pass
+            # 每条都刷：节流会把几百个挂起的重绘攒成一大批，一次跑完更卡（试过，更糟）。
+            self.root.update_idletasks()
             # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
             try:
                 self.log_text.event_generate("<<LogChanged>>")
