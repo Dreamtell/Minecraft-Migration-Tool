@@ -236,6 +236,12 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "🏷️ 来源": "🏷️ Source",
     "⟳ 搜索中…": "⟳ Searching…",
     "⟳ 正在搜索…": "⟳ Searching…",
+    # 右下角的网络状态灯
+    "🌐 网络：检测中…": "🌐 Network: checking…",
+    "🌐 网络：通畅": "🌐 Network: OK",
+    "🌐 网络：%s 不通": "🌐 Network: %s unreachable",
+    "🌐 网络：不通": "🌐 Network: offline",
+    "🌐 网络：检测失败": "🌐 Network: check failed",
     # 搜索刚开始时的即时反馈（两个源串行，慢的时候要几秒）
     "🔍 正在搜索…（Modrinth + CurseForge）":
         "🔍 Searching… (Modrinth + CurseForge)",

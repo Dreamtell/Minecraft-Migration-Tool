@@ -221,6 +221,29 @@ class MigrationGUI(
         self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
         self._last_log_key = None
         self._stage("就绪")
+        self._start_net_status()
+
+    def _start_net_status(self):
+        """右下角的网络状态灯：子线程探测，结果回主线程改字。"""
+        try:
+            from ui import mw_net
+        except Exception:
+            return
+
+        def 更新(文字, 档位, 明细):
+            try:
+                色 = {"ok": "#2e7d32", "warn": "#e65100", "fail": "#c62828"}.get(
+                    档位, self.theme.get("muted_fg", "#888888"))
+                self.net_status.configure(text=文字, fg=色)
+                self._net_tip = "｜".join(
+                    "%s：%s" % (k, "通" if v else "不通") for k, v in 明细.items())
+            except Exception:
+                pass
+
+        try:
+            self._net_stop = mw_net.start_polling(self.root, 更新)
+        except Exception:
+            self._net_stop = None
 
     def _stage(self, text=""):
         """向构建阶段的观察者（启动闪屏）报告进度，并让出一帧。
