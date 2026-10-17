@@ -242,6 +242,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "🌐 网络：%s 不通": "🌐 Network: %s unreachable",
     "🌐 网络：不通": "🌐 Network: offline",
     "🌐 网络：检测失败": "🌐 Network: check failed",
+    # 左下角的网络状态（圆点 + 文字）
+    "正在检测网络…": "Checking network…",
+    "网络已连接": "Network connected",
+    "网络部分不通": "Network partially reachable",
+    "网络未连接": "Network offline",
     # 搜索刚开始时的即时反馈（两个源串行，慢的时候要几秒）
     "🔍 正在搜索…（Modrinth + CurseForge）":
         "🔍 Searching… (Modrinth + CurseForge)",

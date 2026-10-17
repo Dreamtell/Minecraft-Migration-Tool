@@ -234,8 +234,10 @@ class MigrationGUI(
             try:
                 色 = {"ok": "#2e7d32", "warn": "#e65100", "fail": "#c62828"}.get(
                     档位, self.theme.get("muted_fg", "#888888"))
-                # 只显示一个圆点（用户要的）：颜色表示状态，具体见悬停提示
-                self.net_status.configure(fg=色)
+                # 圆点 + 文字：光一个点用户看不懂，必须有字说明状态
+                文案 = {"ok": "网络已连接", "warn": "网络部分不通",
+                        "fail": "网络未连接"}.get(档位, "正在检测网络…")
+                self.net_status.configure(text="● " + i18n.tr(文案), fg=色)
                 明细文字 = "｜".join(
                     "%s：%s" % (k, "通" if v else "不通") for k, v in 明细.items())
                 self._net_tip = ("网络通畅\n" if 档位 == "ok" else 文字 + "\n") + 明细文字

@@ -150,11 +150,11 @@ class PagesMixin:
         # 底部声明
         self.bottom_frame = tk.Frame(self.root)
         self.bottom_frame.pack(fill="x", padx=10, pady=5)
-        # 左下角：网络状态**圆点**（不占文字宽度）。**必须先 pack**（pack 先到先得）：
-        # 下面那行声明是居中占满整行的，后 pack 的话这个点会被挤出窗口。
-        # 具体哪个源不通，看悬停提示（tooltip）。
+        # 左下角：网络状态**圆点 + 文字**。光一个点用户看不懂，得有字。
+        # **必须先 pack**（pack 先到先得）：下面那行声明是居中占满整行的，
+        # 后 pack 的话这一块会被挤出窗口。
         self.net_status = tk.Label(
-            self.bottom_frame, text="●", font=("微软雅黑", 11),
+            self.bottom_frame, text="● 正在检测网络…", font=("微软雅黑", 8),
             bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
         self.net_status.pack(side="left", padx=(2, 8))
