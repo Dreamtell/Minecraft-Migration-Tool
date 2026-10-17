@@ -508,8 +508,9 @@ def update_mod_detail_theme(win, theme):
                              foreground=theme.get("warn_fg", "#000000"))
             st.tag_configure("odd", background=theme.get("neutral_bg", "#f8f9fa"),
                              foreground=theme.get("neutral_fg", "#000000"))
-            st.tag_configure("sel", background=theme.get("sel_bg", "#a5d6a7"),
-                             foreground=theme.get("sel_fg", "#000000"))
+            # 选中态和搜索结果表保持同一套：亮绿 + 白字 + 加粗（必须压过蓝/黄底色）
+            st.tag_configure("sel", background="#43a047", foreground="#ffffff",
+                             font=("微软雅黑", 9, "bold"))
         # 恢复在线搜索区里"特意设置了颜色"的提示标签（apply_theme_to_widget_tree 会把它们改成 label_fg）
         if hasattr(win, '_search_muted_hint'):
             win._search_muted_hint.config(fg=theme.get("muted_fg", "gray"))
@@ -790,14 +791,17 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
                               ("slug", "🆔 项目ID", 105, "w")):
         tree.heading(col, text=txt)
         tree.column(col, width=wd, anchor=anc)
+    # 选中态要**最显眼**：用户点中的那行必须压过"最相似（蓝）/可更新（黄）"的底色。
+    # 深色主题下主题给的 sel_bg 偏暗，蓝色反而更抢眼（用户反馈"第一列最显眼"），
+    # 所以这里用固定亮绿 + 深色字 + **加粗**，三重区分。
+    tree.tag_configure("sel", background="#43a047", foreground="#ffffff",
+                       font=("微软雅黑", 9, "bold"))
     tree.tag_configure("match", background=theme.get("highlight_bg", "#cce5ff"),
                        foreground=theme.get("highlight_fg", "#000000"))
     tree.tag_configure("update", background=theme.get("warn_bg", "#ffeaa7"),
                        foreground=theme.get("warn_fg", "#000000"))
     tree.tag_configure("odd", background=theme.get("neutral_bg", "#f8f9fa"),
                        foreground=theme.get("neutral_fg", "#000000"))
-    tree.tag_configure("sel", background=theme.get("sel_bg", "#a5d6a7"),
-                       foreground=theme.get("sel_fg", "#000000"))
     # 鼠标划过的行：给个浅底，让人知道"这行是能点的"
     tree.tag_configure("hover", background=theme.get("hover_bg", "#e9eef5"),
                        foreground=theme.get("hover_fg", "#000000"))
