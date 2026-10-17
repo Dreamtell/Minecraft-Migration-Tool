@@ -1759,7 +1759,7 @@ class DetailDialog(QtWidgets.QDialog):
 
 
 # --------------------------------------------------------------------------- #
-# 联网搜索（Modrinth）—— 和 Tk 版详情窗口同一套打分/置顶逻辑
+# 联网搜索（Modrinth + CurseForge）—— 和 Tk 版详情窗口同一套打分/置顶逻辑
 # --------------------------------------------------------------------------- #
 def _norm(s) -> str:
     """归一化：小写、去括号内容、非字母数字合并为空格，便于相似度比较。"""
@@ -1809,6 +1809,7 @@ def guess_query(it: Entry) -> str:
 class _SearchSignals(QtCore.QObject):
     results = QtCore.Signal(object, str, str)      # 结果列表, modid, 名称（用于打分）
     error = QtCore.Signal(str)
+    info = QtCore.Signal(str)                      # 非致命的提示（某个源没查成）
     version = QtCore.Signal(int, str, str, str)    # 行号, 最新版本, 下载链接, 状态
 
 
@@ -1823,16 +1824,39 @@ class _SearchTask(QtCore.QRunnable):
         self.setAutoDelete(True)
 
     def run(self):                                  # 工作线程：只做网络，不碰界面
+        res = []
+        错误 = []
+        # 先搜 Modrinth（不需要 Key）
         try:
-            res = search_modrinth(self.query, limit=self.limit,
-                                  mc_version=self.mc_version, loader=self.loader)
+            res.extend(search_modrinth(self.query, limit=self.limit,
+                                       mc_version=self.mc_version, loader=self.loader))
         except Exception as e:
-            self.signals.error.emit(str(e))
+            错误.append("Modrinth：%s" % e)
+        # 再搜 CurseForge（配了 Key 才搜；没 Key 记一条提示，让用户知道为什么少了半边）
+        try:
+            from utils import secrets
+            if secrets.get_key():
+                from core.mod_search import search_curseforge
+                res.extend(search_curseforge(self.query, limit=self.limit,
+                                             mc_version=self.mc_version,
+                                             loader=self.loader))
+            else:
+                错误.append("CurseForge：没配置 API Key（可在设置里填）")
+        except Exception as e:
+            错误.append("CurseForge：%s" % e)
+        if not res:
+            self.signals.error.emit("；".join(错误) or "没搜到结果")
             return
         try:
             self.signals.results.emit(res, self.modid, self.name)
         except RuntimeError:
             pass
+        # 部分来源失败时补一条提示（结果已经发出去了，不打断展示）
+        if 错误:
+            try:
+                self.signals.info.emit("⚠ " + "；".join(错误))
+            except Exception:
+                pass
 
 
 class _VersionTask(QtCore.QRunnable):
@@ -2112,6 +2136,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self._signals = _SearchSignals()
         self._signals.results.connect(self._on_results)
         self._signals.error.connect(self._on_error)
+        self._signals.info.connect(lambda m: self.status.setText(m))
         self._signals.version.connect(self._on_version)
         self._build(title, query, local_version)
 
@@ -2122,7 +2147,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(8)
 
-        head = QtWidgets.QLabel(tr("🌐 联网搜索（Modrinth）· %s") % title)
+        head = QtWidgets.QLabel(tr("🌐 联网搜索（Modrinth + CurseForge）· %s") % title)
         f = head.font()
         f.setPointSize(11)
         f.setBold(True)
@@ -2468,9 +2493,18 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         total = sum(1 for r in self.model.rows if r.get("project_id"))
         if total and self._versions_done >= total:
             过滤 = self.model.filter_text()
-            self.status.setText(tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。")
-                                % (len(self.model.rows),
-                                   tr("，按 %s 过滤") % 过滤 if 过滤 else ""))
+            # 按来源计数：一眼看清两个源各出了几条（用户要"分清哪个是 CurseForge"）
+            计数 = {"curseforge": 0, "modrinth": 0}
+            for r in self.model.rows:
+                k = r.get("source") or "modrinth"
+                if k in 计数:
+                    计数[k] += 1
+            self.status.setText(
+                tr("🟧 CurseForge %d 条 · 🟩 Modrinth %d 条 ｜ ") % (
+                    计数["curseforge"], 计数["modrinth"])
+                + tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。")
+                % (len(self.model.rows),
+                   tr("，按 %s 过滤") % 过滤 if 过滤 else ""))
 
     # ---------------- 动作 ----------------
     def _card_mode(self) -> bool:
@@ -3005,7 +3039,7 @@ class QtBigView(QtWidgets.QWidget):
         menu.addAction(tr("☐ 取消选中") if it_here.checked else tr("☑ 选中")).setData("toggle")
         if self.store.is_mod:
             menu.addSeparator()
-            menu.addAction(tr("🌐 联网搜索（Modrinth）")).setData("online")
+            menu.addAction(tr("🌐 联网搜索（Modrinth + CurseForge）")).setData("online")
 
         def _picked(pick):
             if pick is not None:
