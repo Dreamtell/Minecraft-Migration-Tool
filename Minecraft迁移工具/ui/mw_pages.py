@@ -813,7 +813,7 @@ class PagesMixin:
                     y = h - 2 - (h - 4) * (v / 最大)
                     坐标.append((x, y))
                 色 = "#81c784" if 点[-1][2] > 0 else "#c62828"
-                c.create_line(*[v for xy in 坐标 for v in xy], fill=色, width=1)
+                c.create_line(*[v for xy in 坐标 for v in xy], fill=色, width=1, smooth=True)
                 c.create_oval(坐标[-1][0] - 1.5, 坐标[-1][1] - 1.5,
                               坐标[-1][0] + 1.5, 坐标[-1][1] + 1.5,
                               fill=色, outline="")
@@ -833,9 +833,26 @@ class PagesMixin:
             历史 = []
         顶 = tk.Toplevel(self.root)
         顶.title("📈 网络延迟（最近 %d 次探测）" % len(历史))
-        顶.geometry("560x300")
+        # 居中于主窗口（原来只给了尺寸，系统会把它丢在屏幕左上角附近）
+        try:
+            根x = self.root.winfo_rootx(); 根y = self.root.winfo_rooty()
+            根w = self.root.winfo_width(); 根h = self.root.winfo_height()
+            x = max(0, 根x + (根w - 560) // 2)
+            y = max(0, 根y + (根h - 300) // 3)
+            顶.geometry("560x300+%d+%d" % (x, y))
+        except Exception:
+            顶.geometry("560x300")
         顶.configure(bg=self.theme["bg"])
         顶.transient(self.root)
+        # 图标：Toplevel 默认是 Tk 的羽毛图标，看起来就像"异常"
+        try:
+            set_window_icon(顶)
+        except Exception:
+            try:
+                from utils.helpers import set_window_icon as _swi
+                _swi(顶)
+            except Exception:
+                pass
         画 = tk.Canvas(顶, bg=self.theme["bg"], highlightthickness=0)
         画.pack(fill="both", expand=True, padx=10, pady=(10, 4))
         信息 = tk.Label(顶, bg=self.theme["bg"],
@@ -872,7 +889,7 @@ class PagesMixin:
                 坐标.append((x, y))
             if len(坐标) >= 2:
                 画.create_line(*[v for xy in 坐标 for v in xy],
-                               fill="#64b5f6", width=2)
+                               fill="#64b5f6", width=2, smooth=True)
             for x, y in 坐标:
                 画.create_oval(x - 2, y - 2, x + 2, y + 2,
                                fill="#64b5f6", outline="")
