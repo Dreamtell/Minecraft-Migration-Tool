@@ -22,7 +22,7 @@ except Exception:                                    # pragma: no cover
     psutil = None
 
 _lock = threading.Lock()
-_state = {"sent": 0, "recv": 0}
+_state = {"sent": 0, "recv": 0, "requests": 0}
 
 
 def available():
@@ -58,6 +58,18 @@ def own_snapshot():
     """本进程自己发起的 HTTP 字节数 (sent, recv)（只算走 mod_search 的那些）。"""
     with _lock:
         return _state["sent"], _state["recv"]
+
+
+def add_request():
+    """记一次 HTTP 请求（不管成功失败都算一次尝试）。"""
+    with _lock:
+        _state["requests"] += 1
+
+
+def own_requests():
+    """本进程自己发起的 HTTP 请求次数。"""
+    with _lock:
+        return _state["requests"]
 
 
 # ---------- 整机流量（界面显示用的就是这个） ----------

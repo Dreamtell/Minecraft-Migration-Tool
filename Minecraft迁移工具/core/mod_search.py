@@ -41,6 +41,7 @@ def _json_get(url, timeout=15):
     为了让"下行"是真实字节数，这里**先读全再解析**（API 响应都很小，不用担心内存）。
     """
     from utils import netmeter
+    netmeter.add_request()
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         netmeter.add_sent(len(url) + sum(len(k) + len(v) for k, v in req.headers.items()))
@@ -428,6 +429,7 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
     try:
         # 顺带记流量（上行不含 key 本身：只按头名字长度算，值不参与统计）
         from utils import netmeter
+        netmeter.add_request()
         netmeter.add_sent(len(url) + sum(len(kk) + len(str(vv))
                                         for kk, vv in req.headers.items()
                                         if kk.lower() != "x-api-key"))

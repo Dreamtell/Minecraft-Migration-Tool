@@ -2494,6 +2494,14 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._searching = True
+        # 记下这次搜索开始时的"本进程请求数 / 字节数"，结果出来时算差值显示
+        try:
+            from utils import netmeter
+            self._net_base = netmeter.own_snapshot()
+            self._net_req_base = netmeter.own_requests()
+        except Exception:
+            self._net_base = None
+            self._net_req_base = 0
         # 结果区正中显示"⟳ 正在搜索…"（内联，别再定义方法：插在 __init__ 中间会把
         # 后面的代码吞进去，上次就是这么把 th 弄成未定义的）
         try:
@@ -2587,9 +2595,28 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             self.status.setText(
                 tr("🟧 CurseForge %d 条 · 🟩 Modrinth %d 条 ｜ ") % (
                     计数["curseforge"], 计数["modrinth"])
-                + tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。")
+                + tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）")
                 % (len(self.model.rows),
-                   tr("，按 %s 过滤") % 过滤 if 过滤 else ""))
+                   tr("，按 %s 过滤") % 过滤 if 过滤 else "")
+                + self._net_usage_text())
+
+    def _net_usage_text(self):
+        """本次查询用掉的请求数和流量（子进程自己算的，精确）。
+
+        用户会关心"查一次花多少"——一次搜索大概 10 KB，一个整合包扫完几百 KB，
+        比看"整机流量"有意义得多（整机那 10KB 根本看不出来）。
+        """
+        try:
+            from utils import netmeter
+            if self._net_base is None:
+                return ""
+            上, 下 = netmeter.own_snapshot()
+            请求 = netmeter.own_requests() - self._net_req_base
+            字节 = (上 + 下) - (self._net_base[0] + self._net_base[1])
+            return " ｜ " + tr("%d 个请求 / %s") % (
+                请求, netmeter.format_bytes(字节))
+        except Exception:
+            return ""
 
     # ---------------- 动作 ----------------
     def _card_mode(self) -> bool:
