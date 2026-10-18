@@ -4,6 +4,7 @@
 拆自 ui/main_window.py（2026-10 拆分），方法原样搬移、未改逻辑；
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
+import time
 import tkinter as tk
 from tkinter import messagebox
 from ui.mw_common import _ICON_BTN, _grad_width, WrapRow
@@ -791,36 +792,52 @@ class PagesMixin:
 
     # ---------------- 网络延迟迷你图 / 完整版 ----------------
     def _draw_net_spark(self):
-        """把最近几十次探测的延迟画成一条迷你折线（每 2 秒重画一次）。"""
+        """左下角的迷你延迟曲线。
+
+        要点（前一版为什么一段一段）：
+          · x 原来是按第几个点排 → 新点一出现，所有点整体位移一格，看起来在跳；
+          · 而且每 2 秒才重画一次。
+        现在改成：**x 用真实时间** + 每 200ms 重画 → 曲线本身连续左移、新点从右边滑入，
+        视觉上是实时滚动；相邻点之间再插几个过渡点，线也就是顺的。
+        """
         try:
             from ui import mw_net
-            历史 = mw_net.rtt_history()
             c = self.net_spark
-            c.delete("all")
             w = int(c.cget("width"))
             h = int(c.cget("height"))
-            点 = 历史[-42:]
-            if len(点) < 2:
+            现在 = time.time()
+            窗口秒 = 60.0
+            原始 = [(x[0], x[1]) for x in mw_net.rtt_history() if 现在 - x[0] <= 窗口秒]
+            c.delete("all")
+            if len(原始) < 2:
                 c.create_text(w // 2, h // 2, text="…", fill="#888888",
                               font=("微软雅黑", 8))
             else:
-                值 = [x[1] for x in 点]
-                最大 = max(1, max(值))
-                n = len(值)
+                最大 = max(1, max(v for _, v in 原始))
+                # 采样点 → 屏幕坐标（x 由还剩多少秒决定，所以会随时间连续左移）
                 坐标 = []
-                for i, v in enumerate(值):
-                    x = 1 + (w - 2) * i / (n - 1)
+                for ts, v in 原始:
+                    x = w - 1 - (w - 2) * ((现在 - ts) / 窗口秒)
                     y = h - 2 - (h - 4) * (v / 最大)
                     坐标.append((x, y))
-                色 = "#81c784" if 点[-1][2] > 0 else "#c62828"
-                c.create_line(*[v for xy in 坐标 for v in xy], fill=色, width=1, smooth=True)
-                c.create_oval(坐标[-1][0] - 1.5, 坐标[-1][1] - 1.5,
-                              坐标[-1][0] + 1.5, 坐标[-1][1] + 1.5,
-                              fill=色, outline="")
+                # 相邻点之间插值补点：点少的时候也不显得是折线
+                平滑 = []
+                for i in range(len(坐标) - 1):
+                    (x1, y1), (x2, y2) = 坐标[i], 坐标[i + 1]
+                    for k in range(8):
+                        f = k / 8.0
+                        平滑.append((x1 + (x2 - x1) * f, y1 + (y2 - y1) * f))
+                平滑.append(坐标[-1])
+                通 = mw_net.rtt_history()[-1][2] > 0
+                色 = "#81c784" if 通 else "#c62828"
+                c.create_line(*[v for xy in 平滑 for v in xy], fill=色, width=1,
+                              smooth=True)
+                lx, ly = 坐标[-1]
+                c.create_oval(lx - 1.5, ly - 1.5, lx + 1.5, ly + 1.5, fill=色, outline="")
         except Exception:
             pass
         try:
-            self._net_spark_job = self.root.after(2000, self._draw_net_spark)
+            self._net_spark_job = self.root.after(200, self._draw_net_spark)
         except Exception:
             pass
 
@@ -882,10 +899,17 @@ class PagesMixin:
             画.create_text(左 + 4, 上 - 4, anchor="w", text="ms",
                            fill="#8a8a8a", font=("微软雅黑", 8))
             n = len(值)
+            # x 按真实时间排，并且用**固定的 60 秒滚动窗口**：这样点会随时间连续左移、
+            # 新点从右边滑入。若用历史首尾当坐标范围，每来一个新点整排都会跳一下。
+            现在t = time.time()
+            窗口 = 60.0
+            时刻 = [x[0] for x in 历史]
             坐标 = []
-            for i, v in enumerate(值):
-                x = 左 + 宽 * (i / max(1, n - 1))
+            for (ts, v) in zip(时刻, 值):
+                x = 左 + 宽 * (1.0 - (现在t - ts) / 窗口)
                 y = 上 + 高 * (1.0 - v / 最大)
+                if x < 左 - 4:
+                    continue
                 坐标.append((x, y))
             if len(坐标) >= 2:
                 画.create_line(*[v for xy in 坐标 for v in xy],
@@ -907,7 +931,7 @@ class PagesMixin:
                 历史.clear()
                 历史.extend(mw_net.rtt_history())
                 重画()
-                顶.after(2000, 定时)
+                顶.after(200, 定时)
             except Exception:
                 pass
 
