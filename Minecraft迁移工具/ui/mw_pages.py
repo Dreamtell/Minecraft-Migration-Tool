@@ -157,9 +157,20 @@ class PagesMixin:
             self.bottom_frame, text="● 正在检测网络…", font=("微软雅黑", 8),
             bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
-        self.net_status.pack(side="left", padx=(2, 8))
+        self.net_status.pack(side="left", padx=(2, 4))
         self.create_tooltip(self.net_status,
                             lambda: getattr(self, "_net_tip", "正在检测网络连通性…"))
+        # 迷你折线图：最近几十次探测的连接延迟。**双击**打开完整版。
+        # 数据在父进程（网络灯本来就在这边探测），所以不需要跨进程 —— 而流量数字在
+        # Qt 子进程里，父进程读不到，所以这里画的是延迟而不是流量。
+        self.net_spark = tk.Canvas(
+            self.bottom_frame, width=84, height=16, bg=self.theme["bg"],
+            highlightthickness=0, bd=0, cursor="hand2")
+        self.net_spark.pack(side="left", padx=(0, 8))
+        self.net_spark.bind("<Double-Button-1>",
+                            lambda e: self.show_net_chart())
+        self.create_tooltip(self.net_spark, "最近几次探测的连接延迟（双击看完整折线图）")
+        self._draw_net_spark()
         # （左下角原来还有一个"整机流量"标签，已去掉：本工具一次搜索才 10KB，
         #   整机流量计按用户的实际用法永远看不出变化，留着反而像坏了。
         #   每次查询的请求数/流量改在搜索结果的状态行显示，那个才是精确且有意义的。）
@@ -776,3 +787,112 @@ class PagesMixin:
                  self.theme.get("warn_fg", "#000000"))
         except Exception:
             pass
+
+
+    # ---------------- 网络延迟迷你图 / 完整版 ----------------
+    def _draw_net_spark(self):
+        """把最近几十次探测的延迟画成一条迷你折线（每 2 秒重画一次）。"""
+        try:
+            from ui import mw_net
+            历史 = mw_net.rtt_history()
+            c = self.net_spark
+            c.delete("all")
+            w = int(c.cget("width"))
+            h = int(c.cget("height"))
+            点 = 历史[-42:]
+            if len(点) < 2:
+                c.create_text(w // 2, h // 2, text="…", fill="#888888",
+                              font=("微软雅黑", 8))
+            else:
+                值 = [x[1] for x in 点]
+                最大 = max(1, max(值))
+                n = len(值)
+                坐标 = []
+                for i, v in enumerate(值):
+                    x = 1 + (w - 2) * i / (n - 1)
+                    y = h - 2 - (h - 4) * (v / 最大)
+                    坐标.append((x, y))
+                色 = "#81c784" if 点[-1][2] > 0 else "#c62828"
+                c.create_line(*[v for xy in 坐标 for v in xy], fill=色, width=1)
+                c.create_oval(坐标[-1][0] - 1.5, 坐标[-1][1] - 1.5,
+                              坐标[-1][0] + 1.5, 坐标[-1][1] + 1.5,
+                              fill=色, outline="")
+        except Exception:
+            pass
+        try:
+            self._net_spark_job = self.root.after(2000, self._draw_net_spark)
+        except Exception:
+            pass
+
+    def show_net_chart(self):
+        """完整版：最近探测延迟的折线图 + 统计（双击迷你图打开）。"""
+        try:
+            from ui import mw_net
+            历史 = list(mw_net.rtt_history())
+        except Exception:
+            历史 = []
+        顶 = tk.Toplevel(self.root)
+        顶.title("📈 网络延迟（最近 %d 次探测）" % len(历史))
+        顶.geometry("560x300")
+        顶.configure(bg=self.theme["bg"])
+        顶.transient(self.root)
+        画 = tk.Canvas(顶, bg=self.theme["bg"], highlightthickness=0)
+        画.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        信息 = tk.Label(顶, bg=self.theme["bg"],
+                        fg=self.theme.get("muted_fg", "#888888"),
+                        font=("微软雅黑", 9), anchor="w", justify="left")
+        信息.pack(fill="x", padx=12, pady=(0, 8))
+
+        def 重画(_e=None):
+            画.delete("all")
+            W = max(200, 画.winfo_width()); H = max(120, 画.winfo_height())
+            左, 右, 上, 下 = 48, 12, 14, 26
+            宽 = W - 左 - 右; 高 = H - 上 - 下
+            if not 历史:
+                画.create_text(W // 2, H // 2, text="还没有探测数据（等几秒）",
+                               fill="#888888")
+                信息.configure(text="")
+                return
+            值 = [x[1] for x in 历史]
+            最大 = max(1, max(值))
+            for k in range(5):
+                y = 上 + 高 * k / 4.0
+                画.create_line(左, y, 左 + 宽, y,
+                               fill=self.theme.get("border", "#3a3a3a"))
+                画.create_text(左 - 6, y, anchor="e",
+                               text="%d" % round(最大 * (4 - k) / 4.0),
+                               fill="#8a8a8a", font=("微软雅黑", 8))
+            画.create_text(左 + 4, 上 - 4, anchor="w", text="ms",
+                           fill="#8a8a8a", font=("微软雅黑", 8))
+            n = len(值)
+            坐标 = []
+            for i, v in enumerate(值):
+                x = 左 + 宽 * (i / max(1, n - 1))
+                y = 上 + 高 * (1.0 - v / 最大)
+                坐标.append((x, y))
+            if len(坐标) >= 2:
+                画.create_line(*[v for xy in 坐标 for v in xy],
+                               fill="#64b5f6", width=2)
+            for x, y in 坐标:
+                画.create_oval(x - 2, y - 2, x + 2, y + 2,
+                               fill="#64b5f6", outline="")
+            信息.configure(text="最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms"
+                           % (n, 值[-1], sum(值) / n, max(值)))
+
+        画.bind("<Configure>", 重画)
+        重画()
+
+        def 定时():
+            try:
+                if not 顶.winfo_exists():
+                    return
+                from ui import mw_net
+                历史.clear()
+                历史.extend(mw_net.rtt_history())
+                重画()
+                顶.after(2000, 定时)
+            except Exception:
+                pass
+
+        定时()
+        create_gradient_button(顶, "关闭", lambda: 顶.destroy()).pack(pady=(0, 10))

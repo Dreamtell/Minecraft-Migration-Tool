@@ -7,9 +7,11 @@
 检测在**子线程**里跑（DNS + 连接可能要几秒），结果回到主线程只改一行字 —— 绝不阻塞界面。
 """
 
+import collections
 import queue
 import socket
 import threading
+import time
 
 # 两个数据源的主机名
 _HOSTS = (("Modrinth", "api.modrinth.com"),
@@ -17,7 +19,30 @@ _HOSTS = (("Modrinth", "api.modrinth.com"),
 
 _TIMEOUT = 3.0
 # 检测间隔：别太勤（用户可能挂着窗口不动），也别太懒（断网了要能看出来）
-INTERVAL_MS = 30000
+# 5 秒一次：左下角那个迷你折线图要实时，30 秒一个点根本看不出在动。
+# 代价只是每 5 秒两次 TCP 连接（不发请求、不消耗 API 配额），可以接受。
+INTERVAL_MS = 5000
+
+
+# ---------------- 探测延迟历史（给左下角迷你折线图用） ----------------
+# 只记连通与否和连接耗时(ms)。放在父进程里 —— 网络灯本来就在这边跑，
+# 所以迷你图不需要跨进程拿数据（流量数字在 Qt 子进程里，父进程读不到）。
+
+_rtt = collections.deque(maxlen=120)          # 最近 120 次探测（每 30 秒一次 ≈ 1 小时）
+
+
+def record(结果, 耗时_ms):
+    """记一次探测结果：{'Modrinth': True, ...} + 整体耗时。"""
+    try:
+        通 = sum(1 for v in 结果.values() if v)
+        _rtt.append((time.time(), int(耗时_ms), 通, len(结果)))
+    except Exception:
+        pass
+
+
+def rtt_history():
+    """最近若干次的 [(时间戳, 耗时ms, 连通源数, 源总数), ...]。"""
+    return list(_rtt)
 
 
 def probe(timeout=_TIMEOUT):
@@ -59,7 +84,10 @@ def start_polling(root, on_result, interval_ms=INTERVAL_MS):
     def 循环():
         while not 停止.is_set():
             try:
+                t0 = time.monotonic()
                 r = probe()
+                耗时 = (time.monotonic() - t0) * 1000.0
+                record(r, 耗时)
                 文字, 档位 = summary(r)
             except Exception:
                 r, 文字, 档位 = {}, "🌐 网络：检测失败", "warn"
