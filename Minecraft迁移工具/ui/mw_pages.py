@@ -167,7 +167,30 @@ class PagesMixin:
             bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_traffic._keep_fg = True
         self.net_traffic.pack(side="left", padx=(0, 8))
-        self.create_tooltip(self.net_traffic, "本工具的联网流量（只看自己的请求，不是整机流量）")
+        # 悬停里带上**自诊断信息**：本进程 pid + 上报目录里各文件的内容。
+        # 流量一直不动时，看一眼就知道是"没上报"还是"上报了没汇总"。
+        def _net_debug():
+            try:
+                from utils import netmeter
+                import os as _os
+                行 = ["本工具的联网流量（只看自己的请求，不是整机流量）",
+                      "本进程 pid：%d" % _os.getpid(),
+                      "上报目录：%s" % netmeter._DIR]
+                files = sorted(netmeter._DIR.glob("*.json")) if netmeter._DIR.is_dir() else []
+                行.append("上报文件：%d 个" % len(files))
+                for f in files[:6]:
+                    try:
+                        行.append("  " + f.name + " → "
+                                 + f.read_text(encoding="utf-8"))
+                    except Exception:
+                        行.append("  " + f.name + " → 读取失败")
+                if not files:
+                    行.append("  （目录不存在或为空 —— publish() 没跑起来）")
+                return "\n".join(行)
+            except Exception as e:
+                return "流量调试信息读取失败：%r" % (e,)
+
+        self.create_tooltip(self.net_traffic, _net_debug)
         # 声明文字**用 place 居中**：左边已经 pack 了网络灯和流量两个标签，用 pack 的话
         # 它只能在剩余空间里居中 —— 实际效果是偏右（用户截图证实）。
         self.bottom_frame.configure(height=22)

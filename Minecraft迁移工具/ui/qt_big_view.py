@@ -46,6 +46,12 @@ from core.mod_search import (fetch_project_latest,                       # noqa:
                              format_downloads,
                              normalize_online_version, search_modrinth,
                              categories_cn)
+# 联网流量：本模块跑在 Qt **子进程**里，请求都发生在这里。
+# 显式 import 一次 —— netmeter 被 import 就会起上报线程，否则主界面看不到这边的流量。
+try:
+    from utils import netmeter  # noqa: F401
+except Exception:
+    pass
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
                            get_icon_path, style_window_hwnd, text_delta,
                            trace_exc, trace_line)
