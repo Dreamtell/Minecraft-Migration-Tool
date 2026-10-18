@@ -278,6 +278,12 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "现在": "now",
     "↓ 下行": "↓ Down",
     "↑ 上行": "↑ Up",
+    "最近几次探测的连接延迟（双击看完整折线图）":
+        "Connection latency of recent probes (double-click for the full chart)",
+    "📈 网络延迟（最近 %d 次探测）": "📈 Network latency (last %d probes)",
+    "最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms":
+        "Last %d probes | now %d ms | avg %.0f ms | max %d ms",
+    "还没有探测数据（等几秒）": "No probe data yet (wait a few seconds)",
     "⚠ 部分来源没查成：": "⚠ Some sources could not be queried: ",
     "CurseForge：没配置 API Key（可在设置里填）":
         "CurseForge: no API key configured (fill it in Settings)",
