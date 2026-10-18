@@ -2595,7 +2595,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             self.status.setText(
                 tr("🟧 CurseForge %d 条 · 🟩 Modrinth %d 条 ｜ ") % (
                     计数["curseforge"], 计数["modrinth"])
-                + tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）")
+                + tr("找到 %d 个结果。版本/下载链接已全部就绪%s（⬆ = 比本地新）。")
                 % (len(self.model.rows),
                    tr("，按 %s 过滤") % 过滤 if 过滤 else "")
                 + self._net_usage_text())
