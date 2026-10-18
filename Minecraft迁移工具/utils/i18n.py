@@ -266,6 +266,18 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "🟧 CurseForge %d · 🟩 Modrinth %d ｜ ",
     "🔍 联网搜索模组（Modrinth + CurseForge）":
         "🔍 Search online (Modrinth + CurseForge)",
+    # 网络用量折线图
+    "📈 用量": "📈 Usage",
+    "本工具的网络用量（最近 60 秒折线图）":
+        "Network usage of this tool (last 60s)",
+    "📈 网络用量（本工具）": "📈 Network usage (this tool)",
+    "只统计本工具自己的请求（搜索 / 取版本），不含系统其他程序。":
+        "Counts only requests made by this tool (search / version lookups).",
+    "当前累计：": "Total: ",
+    "60 秒前": "60s ago",
+    "现在": "now",
+    "↓ 下行": "↓ Down",
+    "↑ 上行": "↑ Up",
     "⚠ 部分来源没查成：": "⚠ Some sources could not be queried: ",
     "CurseForge：没配置 API Key（可在设置里填）":
         "CurseForge: no API key configured (fill it in Settings)",

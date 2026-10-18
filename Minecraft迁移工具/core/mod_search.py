@@ -48,6 +48,7 @@ def _json_get(url, timeout=15):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             原始 = resp.read()
         netmeter.add_recv(len(原始))
+        netmeter.add_event(len(url), len(原始))
         return json.loads(原始.decode("utf-8", errors="replace"))
     except Exception:
         raise
@@ -436,6 +437,7 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             原始 = resp.read()
         netmeter.add_recv(len(原始))
+        netmeter.add_event(上, len(原始))
         return json.loads(原始.decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):

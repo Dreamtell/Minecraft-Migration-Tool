@@ -126,3 +126,45 @@ class Sampler:
         下速 = max(0.0, (当前[1] - self._last[1]) / dt)
         self._last = 当前
         return 上速, 下速, 当前[0], 当前[1]
+
+
+# ---------------- 历史事件（给折线图用） ----------------
+# 每次 HTTP 请求都记一条 (时间戳, 上行字节, 下行字节)。总量很小（一次搜索才 1 条、
+# 几十字节的元信息），保留最近 500 条够画很久了。
+import collections
+
+_events = collections.deque(maxlen=500)
+
+
+def add_event(sent, recv):
+    try:
+        _events.append((time.time(), int(sent or 0), int(recv or 0)))
+    except Exception:
+        pass
+
+
+def events():
+    """最近的事件列表 [(t, sent, recv), ...]（时间升序）。"""
+    with _lock:
+        return list(_events)
+
+
+def buckets(window_sec=60.0, bucket_sec=2.0):
+    """把最近 window_sec 秒的流量按 bucket_sec 分桶。
+
+    返回 (labels, sent_list, recv_list)：每个桶的距现在多少秒和该桶的上/下行字节。
+    没有事件时返回等长的全零 —— 这样折线图能画出一条贴着底的线，而不是空图。
+    """
+    现在 = time.time()
+    起 = 现在 - window_sec
+    桶数 = max(1, int(round(window_sec / bucket_sec)))
+    上 = [0] * 桶数
+    下 = [0] * 桶数
+    with _lock:
+        for t, s, r in _events:
+            if t < 起:
+                continue
+            位 = min(桶数 - 1, int((t - 起) / bucket_sec))
+            上[位] += s
+            下[位] += r
+    return list(range(桶数)), 上, 下

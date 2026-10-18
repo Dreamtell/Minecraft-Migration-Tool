@@ -668,6 +668,72 @@ def _header_qss(th: dict) -> str:
                th.get("hover_bg")))
 
 
+class NetUsageChart(QtWidgets.QWidget):
+    """本工具网络用量的折线图（最近 60 秒，每 2 秒一个桶）。
+
+    数据来自 utils.netmeter 的事件记录 —— 它只记**我们自己**的 HTTP 请求，
+    所以图上一点点流量都看得见（不像整机流量计，10KB 淹没在 GB 级基数里）。
+    """
+
+    def __init__(self, theme: dict, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.setMinimumHeight(150)
+
+    def paintEvent(self, _ev):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        try:
+            from utils import netmeter
+            标, 上, 下 = netmeter.buckets(window_sec=60.0, bucket_sec=2.0)
+        except Exception:
+            return
+        W, H = self.width(), self.height()
+        左, 右, 上边, 下边 = 44, 10, 12, 22
+        图宽 = max(1, W - 左 - 右)
+        图高 = max(1, H - 上边 - 下边)
+        bg = self.theme.get("bg", "#2e2e2e")
+        p.fillRect(self.rect(), QtGui.QColor(bg))
+        最大 = max(1, max(上 + 下))
+        # 网格 + 底部时间轴
+        p.setPen(QtGui.QPen(QtGui.QColor(self.theme.get("border", "#3a3a3a")), 1))
+        for k in range(5):
+            y = 上边 + 图高 * k / 4.0
+            p.drawLine(左, int(y), 左 + 图宽, int(y))
+        p.setPen(QtGui.QColor(self.theme.get("muted_fg", "#9a9a9a")))
+        p.setFont(QtGui.QFont("微软雅黑", 8))
+        p.drawText(QtCore.QRectF(0, 上边 - 6, 左 - 4, 14),
+                   int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter),
+                   netmeter.format_bytes(最大))
+        p.drawText(QtCore.QRectF(0, 上边 + 图高 - 6, 左 - 4, 14),
+                   int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter), "0")
+        p.drawText(QtCore.QRectF(左, H - 18, 图宽, 14),
+                   int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), tr("60 秒前"))
+        p.drawText(QtCore.QRectF(左, H - 18, 图宽, 14),
+                   int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter), tr("现在"))
+        # 两条折线：下行（绿）/ 上行（橙）
+        n = len(标)
+        for 数据, 色 in ((下, "#66bb6a"), (上, "#ffb74d")):
+            路径 = QtGui.QPainterPath()
+            for i, v in enumerate(数据):
+                x = 左 + 图宽 * (i / max(1, n - 1))
+                y = 上边 + 图高 * (1.0 - v / 最大)
+                if i == 0:
+                    路径.moveTo(x, y)
+                else:
+                    路径.lineTo(x, y)
+            p.setPen(QtGui.QPen(QtGui.QColor(色), 2))
+            p.drawPath(路径)
+        # 图例
+        p.setFont(QtGui.QFont("微软雅黑", 8))
+        p.setPen(QtGui.QColor("#66bb6a"))
+        p.drawText(QtCore.QRectF(左, 上边 - 2, 60, 14),
+                   int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), tr("↓ 下行"))
+        p.setPen(QtGui.QColor("#ffb74d"))
+        p.drawText(QtCore.QRectF(左 + 66, 上边 - 2, 60, 14),
+                   int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), tr("↑ 上行"))
+
+
 class AnimButton(QtWidgets.QPushButton):
     """自绘渐变按钮：悬停会浮起来 + 扫过一道光，按下会沉下去、松手弹回来。
 
@@ -2352,6 +2418,12 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.btn_view = AnimButton(tr("🗂 卡片视图"), "#607d8b", "#90a4ae", th)
         self.btn_view.setFixedWidth(120)
         行.addWidget(self.btn_view)
+        # 本工具的网络用量折线图（只统计我们自己的请求，数据在 utils.netmeter 里）
+        self.btn_net = AnimButton(tr("📈 用量"), "#8e6bd8", "#6f4fbd", th)
+        self.btn_net.setFixedWidth(84)
+        self.btn_net.setToolTip(tr("本工具的网络用量（最近 60 秒折线图）"))
+        self.btn_net.clicked.connect(self._show_net_usage)
+        行.addWidget(self.btn_net)
         lay.addLayout(行)
 
         # 连接放在最后：上面 setCurrentIndex 会触发 currentIndexChanged，
@@ -2414,6 +2486,33 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.cards.viewport().update()
 
     # ---------------- 表格 / 卡片切换 ----------------
+    def _show_net_usage(self):
+        """弹一个「网络用量」窗口：最近 60 秒的上下行折线图。"""
+        try:
+            from utils import netmeter
+        except Exception:
+            return
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(tr("📈 网络用量（本工具）"))
+        dlg.resize(620, 300)
+        布局 = QtWidgets.QVBoxLayout(dlg)
+        图 = NetUsageChart(self.theme, dlg)
+        布局.addWidget(图, 1)
+        说明 = QtWidgets.QLabel(
+            tr("只统计本工具自己的请求（搜索 / 取版本），不含系统其他程序。")
+            + "  " + tr("当前累计：")
+            + netmeter.format_bytes(sum(netmeter.own_snapshot())), dlg)
+        说明.setStyleSheet("color:#9a9a9a; font-size:12px;")
+        布局.addWidget(说明)
+        关 = AnimButton(tr("关闭"), "#607d8b", "#4b5563", self.theme, dlg)
+        关.setFixedWidth(96)
+        关.clicked.connect(dlg.accept)
+        底 = QtWidgets.QHBoxLayout()
+        底.addStretch(1)
+        底.addWidget(关)
+        布局.addLayout(底)
+        dlg.exec()
+
     def _toggle_view(self):
         """表格 ↔ 卡片（和放大查看/差异窗口同一套按钮语义）。"""
         to_cards = self.stack.currentIndex() == 0
