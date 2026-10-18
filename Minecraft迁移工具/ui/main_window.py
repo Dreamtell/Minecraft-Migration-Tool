@@ -232,7 +232,7 @@ class MigrationGUI(
 
         def 更新(文字, 档位, 明细):
             try:
-                色 = {"ok": "#2e7d32", "warn": "#e65100", "fail": "#c62828"}.get(
+                色 = {"ok": "#81c784", "warn": "#e65100", "fail": "#c62828"}.get(
                     档位, self.theme.get("muted_fg", "#888888"))
                 # 圆点 + 文字：光一个点用户看不懂，必须有字说明状态
                 文案 = {"ok": "网络已连接", "warn": "网络部分不通",
@@ -248,38 +248,6 @@ class MigrationGUI(
             self._net_stop = mw_net.start_polling(self.root, 更新)
         except Exception:
             self._net_stop = None
-        self._start_net_traffic()
-
-    def _start_net_traffic(self):
-        """每秒刷新左下角的流量显示（上行 / 下行 / 累计）。"""
-        try:
-            from utils import netmeter
-            from utils.i18n import trp
-        except Exception:
-            return
-        采样 = netmeter.Sampler()
-
-        def 刷新():
-            try:
-                # psutil 不可用时不显示流量（而不是显示一堆 0 让人以为坏了）
-                if not netmeter.available():
-                    self.net_traffic.configure(text="↑ --  ↓ --  ∑ --")
-                else:
-                    r = 采样.tick()
-                    if r is not None:
-                        上速, 下速, 上总, 下总 = r
-                        self.net_traffic.configure(text=trp(
-                            "↑ {0}  ↓ {1}  ∑ {2}",
-                            netmeter.format_rate(上速), netmeter.format_rate(下速),
-                            netmeter.format_bytes(上总 + 下总)))
-            except Exception:
-                pass
-            try:
-                self._net_traffic_job = self.root.after(1000, 刷新)
-            except Exception:
-                pass
-
-        刷新()
 
     def _stage(self, text=""):
         """向构建阶段的观察者（启动闪屏）报告进度，并让出一帧。

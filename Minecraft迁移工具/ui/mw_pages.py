@@ -157,36 +157,14 @@ class PagesMixin:
             self.bottom_frame, text="● 正在检测网络…", font=("微软雅黑", 8),
             bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
-        self.net_status.pack(side="left", padx=(2, 4))
+        self.net_status.pack(side="left", padx=(2, 8))
         self.create_tooltip(self.net_status,
                             lambda: getattr(self, "_net_tip", "正在检测网络连通性…"))
-        # 紧挨着再来一个流量标签（上行/下行/累计）。和状态灯分开两个 Label：
-        # 它们是两个不同的更新源（状态 30 秒一次、流量 1 秒一次），共用一个会互相覆盖。
-        self.net_traffic = tk.Label(
-            self.bottom_frame, text="↑ 0 B/s  ↓ 0 B/s  ∑ 0 B", font=("微软雅黑", 8),
-            bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]))
-        self.net_traffic._keep_fg = True
-        self.net_traffic.pack(side="left", padx=(0, 8))
-        # 悬停里说明范围（这是**整机**流量，不是本工具自己的）。
-        def _net_debug():
-            try:
-                from utils import netmeter
-                行 = ["网络流量：整机（所有程序合计），数据来自 psutil"]
-                if not netmeter.available():
-                    行.append("psutil 不可用 —— 流量显示不出来")
-                else:
-                    n = netmeter.snapshot()
-                    if n:
-                        行.append("累计 上行 %s ｜ 下行 %s"
-                                 % (netmeter.format_bytes(n[0]),
-                                    netmeter.format_bytes(n[1])))
-                return "\n".join(行)
-            except Exception as e:
-                return "流量信息读取失败：%r" % (e,)
-
-        self.create_tooltip(self.net_traffic, _net_debug)
-        # 声明文字**用 place 居中**：左边已经 pack 了网络灯和流量两个标签，用 pack 的话
-        # 它只能在剩余空间里居中 —— 实际效果是偏右（用户截图证实）。
+        # （左下角原来还有一个"整机流量"标签，已去掉：本工具一次搜索才 10KB，
+        #   整机流量计按用户的实际用法永远看不出变化，留着反而像坏了。
+        #   每次查询的请求数/流量改在搜索结果的状态行显示，那个才是精确且有意义的。）
+        # 声明文字**用 place 居中**：左边 pack 了网络灯，用 pack 的话它只能在"剩余空间"里
+        # 居中 —— 实际效果是偏右（用户截图证实）。
         self.bottom_frame.configure(height=22)
         self.bottom_frame.pack_propagate(False)
         声明 = tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
