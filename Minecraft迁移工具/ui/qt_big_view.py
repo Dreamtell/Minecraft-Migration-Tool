@@ -2504,7 +2504,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             + netmeter.format_bytes(sum(netmeter.own_snapshot())), dlg)
         说明.setStyleSheet("color:#9a9a9a; font-size:12px;")
         布局.addWidget(说明)
-        关 = AnimButton(tr("关闭"), "#607d8b", "#4b5563", self.theme, dlg)
+        关 = AnimButton(tr("关闭"), "#607d8b", "#4b5563", self.theme, parent=dlg)
         关.setFixedWidth(96)
         关.clicked.connect(dlg.accept)
         底 = QtWidgets.QHBoxLayout()
