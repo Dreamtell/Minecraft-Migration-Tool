@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import messagebox
 from ui.mw_common import _ICON_BTN, _grad_width, WrapRow
 from ui.rounded_tabs import RoundedTabs
+from utils.dpi import UI_SCALE, px, window_geometry
 from utils.helpers import (
     LiquidProgress, RoundedTextArea, SegmentedControl, SmoothScroller, SwitchRow,
     bind_text_scroll, create_gradient_button, is_dark_theme, style_window,
@@ -164,8 +165,10 @@ class PagesMixin:
         # 迷你折线图：最近几十次探测的连接延迟。**双击**打开完整版。
         # 数据在父进程（网络灯本来就在这边探测），所以不需要跨进程 —— 而流量数字在
         # Qt 子进程里，父进程读不到，所以这里画的是延迟而不是流量。
+        # 尺寸必须走 px()：画布写死 84x16 的话，高 DPI 下字号放大了、图还是原尺寸，
+        # 看起来就是「一条贴在右边的小斜线」。
         self.net_spark = tk.Canvas(
-            self.bottom_frame, width=84, height=16, bg=self.theme["bg"],
+            self.bottom_frame, width=px(84), height=px(16), bg=self.theme["bg"],
             highlightthickness=0, bd=0, cursor="hand2")
         self.net_spark.pack(side="left", padx=(0, 8))
         self.net_spark.bind("<Double-Button-1>",
@@ -177,7 +180,7 @@ class PagesMixin:
         #   每次查询的请求数/流量改在搜索结果的状态行显示，那个才是精确且有意义的。）
         # 声明文字**用 place 居中**：左边 pack 了网络灯，用 pack 的话它只能在"剩余空间"里
         # 居中 —— 实际效果是偏右（用户截图证实）。
-        self.bottom_frame.configure(height=22)
+        self.bottom_frame.configure(height=px(22))
         self.bottom_frame.pack_propagate(False)
         声明 = tk.Label(self.bottom_frame, text="本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。",
                         font=("微软雅黑", 8))
@@ -792,76 +795,105 @@ class PagesMixin:
 
     # ---------------- 网络延迟迷你图 / 完整版 ----------------
     def _draw_net_spark(self):
-        """左下角的迷你延迟曲线。
+        """左下角的迷你延迟曲线（Pillow 3 倍超采样绘制）。
 
-        要点（前一版为什么一段一段）：
-          · x 原来是按第几个点排 → 新点一出现，所有点整体位移一格，看起来在跳；
-          · 而且每 2 秒才重画一次。
-        现在改成：**x 用真实时间** + 每 200ms 重画 → 曲线本身连续左移、新点从右边滑入，
-        视觉上是实时滚动；相邻点之间再插几个过渡点，线也就是顺的。
+        为什么不再用 canvas 原生折线：
+          · Tk 的坐标是**整数像素**，105px 宽要装 60 秒 → 1px ≈ 0.57s，
+            曲线只能「每半秒跳一格」，帧率再高也没用（这就是「不流畅」的真因）；
+          · 原生折线没有抗锯齿，1px 的线在高 DPI 屏上看着发毛。
+        改成在 3 倍画布上用 Pillow 画、再 LANCZOS 缩回来：亚像素平滑 + 抗锯齿。
+        每帧约 0.9ms（20fps 下可忽略），而且**线端点和圆点在同一次绘制里**，
+        位置天然对齐（以前圆点画在顶点上、线是 B 样条，会看见它"脱开"）。
+
+        数据仍然按**真实时间**映射（第几个点排会整体跳动），1px 级别的位置由
+        超采样负责平滑，不再受 canvas 整数坐标限制。
         """
         try:
             from ui import mw_net
+            from PIL import Image, ImageDraw, ImageTk
             c = self.net_spark
             w = int(c.cget("width"))
             h = int(c.cget("height"))
             现在 = time.time()
             窗口秒 = 60.0
-            原始 = [(x[0], x[1]) for x in mw_net.rtt_history() if 现在 - x[0] <= 窗口秒]
-            c.delete("all")
+            历史 = mw_net.rtt_history()
+            原始 = [(x[0], x[1]) for x in 历史 if 现在 - x[0] <= 窗口秒]
+
             if len(原始) < 2:
+                c.delete("all")
                 c.create_text(w // 2, h // 2, text="…", fill="#888888",
                               font=("微软雅黑", 8))
             else:
                 最大 = max(1, max(v for _, v in 原始))
-                # 采样点 → 屏幕坐标（x 由还剩多少秒决定，所以会随时间连续左移）
+                # 上限带 15% 余量 + **缓降**：否则每来一个新峰值，整条曲线会重新
+                # 缩放一次，视觉上就是"猛地一跳"。涨的时候立刻跟上，落的时候慢慢降。
+                目标 = max(50.0, 最大 * 1.15)
+                旧 = getattr(self, "_net_y_max", None)
+                if 旧 is None or 目标 > 旧:
+                    上限 = 目标
+                else:
+                    上限 = 旧 * 0.9 + 目标 * 0.1
+                self._net_y_max = 上限
+
+                S = 3                       # 超采样倍数
+                边 = max(2, px(2))          # 留边，端点圆点不贴边
+                可用宽 = max(1, w - 2 * 边)
+                可用高 = max(1, h - 2 * 边)
                 坐标 = []
                 for ts, v in 原始:
-                    x = w - 1 - (w - 2) * ((现在 - ts) / 窗口秒)
-                    y = h - 2 - (h - 4) * (v / 最大)
-                    坐标.append((x, y))
-                # 相邻点之间插值补点：点少的时候也不显得是折线
-                平滑 = []
-                for i in range(len(坐标) - 1):
-                    (x1, y1), (x2, y2) = 坐标[i], 坐标[i + 1]
-                    for k in range(8):
-                        f = k / 8.0
-                        平滑.append((x1 + (x2 - x1) * f, y1 + (y2 - y1) * f))
-                平滑.append(坐标[-1])
-                通 = mw_net.rtt_history()[-1][2] > 0
-                色 = "#81c784" if 通 else "#c62828"
-                c.create_line(*[v for xy in 平滑 for v in xy], fill=色, width=1,
-                              smooth=True)
+                    frac = min(1.0, max(0.0, (现在 - ts) / 窗口秒))
+                    x = 边 + 可用宽 * (1.0 - frac)
+                    y = h - 边 - 可用高 * min(1.0, v / 上限)
+                    坐标.append((x * S, y * S))
+
+                通 = 历史[-1][2] > 0
+                色 = (129, 199, 132, 255) if 通 else (198, 40, 40, 255)
+
+                img = Image.new("RGBA", (w * S, h * S), self.theme["bg"])
+                d = ImageDraw.Draw(img)
+                d.line(坐标, fill=色, width=max(2, int(round(1.4 * S))), joint="curve")
                 lx, ly = 坐标[-1]
-                c.create_oval(lx - 1.5, ly - 1.5, lx + 1.5, ly + 1.5, fill=色, outline="")
+                r = max(1.6, 1.2 * UI_SCALE) * S
+                d.ellipse([lx - r, ly - r, lx + r, ly + r], fill=色)
+                img = img.resize((w, h), Image.LANCZOS)
+
+                photo = ImageTk.PhotoImage(img)
+                c.delete("all")
+                c.create_image(0, 0, anchor="nw", image=photo)
+                self._net_spark_photo = photo      # 必须留引用，否则会被回收成空白
         except Exception:
             pass
         try:
-            self._net_spark_job = self.root.after(200, self._draw_net_spark)
+            # 50ms（20fps）：Pillow 每帧 ~0.9ms，够便宜；再快肉眼也分不出来
+            self._net_spark_job = self.root.after(50, self._draw_net_spark)
         except Exception:
             pass
 
     def show_net_chart(self):
-        """完整版：最近探测延迟的折线图 + 统计（双击迷你图打开）。"""
+        """完整版：最近探测延迟的折线图 + 统计（双击迷你图打开）。
+
+        改用 **matplotlib**（TkAgg 后端）绘制，不再手写 canvas 折线：
+          · 抗锯齿、坐标轴、刻度、自动缩放都由库负责，高 DPI 下不会被整数像素卡住；
+          · TkAgg 是嵌在 Tk 里的，不引入 Qt，和「Qt 只在子进程跑」的架构不冲突。
+        代价：matplotlib 依赖 numpy —— 打包脚本里 `--exclude-module numpy` 要去掉，
+        产物会大 20MB 左右（已经改好 打包_命令行.bat）。
+        """
         try:
             from ui import mw_net
             历史 = list(mw_net.rtt_history())
         except Exception:
             历史 = []
+
         顶 = tk.Toplevel(self.root)
         顶.title("📈 网络延迟（最近 %d 次探测）" % len(历史))
-        # 居中于主窗口（原来只给了尺寸，系统会把它丢在屏幕左上角附近）
+        # 居中于主窗口；尺寸按 DPI 缩放并保证不出屏
         try:
-            根x = self.root.winfo_rootx(); 根y = self.root.winfo_rooty()
-            根w = self.root.winfo_width(); 根h = self.root.winfo_height()
-            x = max(0, 根x + (根w - 560) // 2)
-            y = max(0, 根y + (根h - 300) // 3)
-            顶.geometry("560x300+%d+%d" % (x, y))
+            顶.geometry(window_geometry(顶, 760, 420))
         except Exception:
-            顶.geometry("560x300")
+            顶.geometry("%dx%d" % (px(760), px(420)))
+        顶.minsize(px(520), px(300))
         顶.configure(bg=self.theme["bg"])
         顶.transient(self.root)
-        # 图标：Toplevel 默认是 Tk 的羽毛图标，看起来就像"异常"
         try:
             set_window_icon(顶)
         except Exception:
@@ -870,57 +902,91 @@ class PagesMixin:
                 _swi(顶)
             except Exception:
                 pass
-        画 = tk.Canvas(顶, bg=self.theme["bg"], highlightthickness=0)
-        画.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg")
+            # matplotlib 默认字体没有中文，坐标轴上的「秒前」会变成方块
+            matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei",
+                                                      "DejaVu Sans"]
+            matplotlib.rcParams["axes.unicode_minus"] = False
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as _e:
+            tk.Label(顶, text="绘图需要 matplotlib：\n\npip install matplotlib\n\n(%s)" % _e,
+                     bg=self.theme["bg"], fg="#c62828", justify="left",
+                     font=("微软雅黑", 10)).pack(padx=px(16), pady=px(16))
+            create_gradient_button(顶, "关闭", lambda: 顶.destroy()).pack(pady=(0, px(10)))
+            return
+
+        深色 = is_dark_theme(self.theme)
+        底色 = self.theme["bg"]
+        前景 = "#c8c8c8" if 深色 else "#444444"
+        网格色 = "#3f3f3f" if 深色 else "#e3e3e3"
+
+        # 先把底部两根（信息行、关闭按钮）用 side="bottom" 占住位置，
+        # 最后再 pack 画布 —— 否则 expand=True 的画布会把它们挤出窗口。
         信息 = tk.Label(顶, bg=self.theme["bg"],
                         fg=self.theme.get("muted_fg", "#888888"),
                         font=("微软雅黑", 9), anchor="w", justify="left")
-        信息.pack(fill="x", padx=12, pady=(0, 8))
+        信息.pack(side="bottom", fill="x", padx=px(12), pady=(0, px(8)))
+        关闭钮 = create_gradient_button(顶, "关闭", lambda: 顶.destroy())
+        关闭钮.pack(side="bottom", pady=(0, px(10)))
 
-        def 重画(_e=None):
-            画.delete("all")
-            W = max(200, 画.winfo_width()); H = max(120, 画.winfo_height())
-            左, 右, 上, 下 = 48, 12, 14, 26
-            宽 = W - 左 - 右; 高 = H - 上 - 下
-            if not 历史:
-                画.create_text(W // 2, H // 2, text="还没有探测数据（等几秒）",
-                               fill="#888888")
-                信息.configure(text="")
-                return
-            值 = [x[1] for x in 历史]
-            最大 = max(1, max(值))
-            for k in range(5):
-                y = 上 + 高 * k / 4.0
-                画.create_line(左, y, 左 + 宽, y,
-                               fill=self.theme.get("border", "#3a3a3a"))
-                画.create_text(左 - 6, y, anchor="e",
-                               text="%d" % round(最大 * (4 - k) / 4.0),
-                               fill="#8a8a8a", font=("微软雅黑", 8))
-            画.create_text(左 + 4, 上 - 4, anchor="w", text="ms",
-                           fill="#8a8a8a", font=("微软雅黑", 8))
-            n = len(值)
-            # x 按真实时间排，并且用**固定的 60 秒滚动窗口**：这样点会随时间连续左移、
-            # 新点从右边滑入。若用历史首尾当坐标范围，每来一个新点整排都会跳一下。
-            现在t = time.time()
-            窗口 = 60.0
-            时刻 = [x[0] for x in 历史]
-            坐标 = []
-            for (ts, v) in zip(时刻, 值):
-                x = 左 + 宽 * (1.0 - (现在t - ts) / 窗口)
-                y = 上 + 高 * (1.0 - v / 最大)
-                if x < 左 - 4:
-                    continue
-                坐标.append((x, y))
-            if len(坐标) >= 2:
-                画.create_line(*[v for xy in 坐标 for v in xy],
-                               fill="#64b5f6", width=2, smooth=True)
-            for x, y in 坐标:
-                画.create_oval(x - 2, y - 2, x + 2, y + 2,
-                               fill="#64b5f6", outline="")
-            信息.configure(text="最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms"
-                           % (n, 值[-1], sum(值) / n, max(值)))
+        图 = Figure(figsize=(px(760) / 100.0, px(380) / 100.0), dpi=100, facecolor=底色)
+        轴 = 图.add_subplot(111, facecolor=底色)
+        画布 = FigureCanvasTkAgg(图, master=顶)
+        画布.get_tk_widget().pack(side="top", fill="both", expand=True,
+                                  padx=px(10), pady=(px(10), px(4)))
 
-        画.bind("<Configure>", 重画)
+        def 重画():
+            try:
+                轴.clear()
+                轴.set_facecolor(底色)
+                for s in 轴.spines.values():
+                    s.set_color(网格色)
+                轴.tick_params(colors=前景, labelsize=9)
+                轴.grid(True, color=网格色, linewidth=0.8)
+                轴.set_ylabel("ms", color=前景, fontsize=9)
+                轴.set_xlabel("秒前", color=前景, fontsize=9)
+
+                if not 历史:
+                    轴.text(0.5, 0.5, "还没有探测数据（等几秒）", ha="center", va="center",
+                            color=前景, fontsize=10, transform=轴.transAxes)
+                    轴.set_xticks([])
+                    轴.set_yticks([])
+                    画布.draw_idle()
+                    信息.configure(text="")
+                    return
+
+                值 = [x[1] for x in 历史]
+                最大 = max(1, max(值))
+                # 上限留 15% 余量 + 50ms 下限：否则延迟稳定时线贴着顶边
+                上限 = max(50.0, 最大 * 1.15)
+                现在t = time.time()
+                时刻 = [x[0] for x in 历史]
+                # 时间窗跟随已有数据的跨度（10~120 秒）：刚启动两个点也能铺满
+                跨度 = max(0.0, 现在t - 时刻[0]) if 时刻 else 60.0
+                窗口 = max(10.0, min(120.0, 跨度)) if 跨度 > 0 else 60.0
+                xs, ys = [], []
+                for ts, v in zip(时刻, 值):
+                    if (现在t - ts) > 窗口:
+                        continue
+                    xs.append(ts - 现在t)          # 负数：越靠右越新
+                    ys.append(v)
+                if xs:
+                    轴.plot(xs, ys, color="#1e88e5", linewidth=1.6, antialiased=True)
+                    if len(xs) <= 40:
+                        轴.plot(xs, ys, "o", color="#64b5f6", markersize=3.2)
+                    轴.plot([xs[-1]], [ys[-1]], "o", color="#0d47a1", markersize=6.5)
+                轴.set_xlim(-窗口, 0)
+                轴.set_ylim(0, 上限)
+                画布.draw_idle()
+                信息.configure(text="最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms"
+                               % (len(值), 值[-1], sum(值) / len(值), max(值)))
+            except Exception:
+                pass
+
         重画()
 
         def 定时():
@@ -931,9 +997,8 @@ class PagesMixin:
                 历史.clear()
                 历史.extend(mw_net.rtt_history())
                 重画()
-                顶.after(200, 定时)
+                顶.after(1000, 定时)      # matplotlib 重绘 ~30ms，1 秒一次足够
             except Exception:
                 pass
 
         定时()
-        create_gradient_button(顶, "关闭", lambda: 顶.destroy()).pack(pady=(0, 10))

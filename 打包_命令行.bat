@@ -68,13 +68,16 @@ if defined KEYONLY (
 )
 
 cd /d "%PROJ%"
+rem 网络延迟图改用 matplotlib（TkAgg 后端），它依赖 numpy —— 不能再排除 numpy，
+rem 否则打包后的 exe 里图表会 import 失败；代价是产物大约多 20MB。
+rem TkAgg 是运行时动态 import 的，PyInstaller 的钩子不一定能扫到，显式加上。
 py -3.12 -m PyInstaller --noconfirm --onedir --windowed --uac-admin ^
   --icon "%PROJ%\1.ico" ^
   --add-data "%PROJ%\1.ico;." ^
   --additional-hooks-dir "%PROJ%" ^
   --hidden-import tkinterdnd2 ^
   --hidden-import psutil ^
-  --exclude-module numpy ^
+  --hidden-import matplotlib.backends.backend_tkagg ^
   --exclude-module cv2 ^
   --paths "%ROOT%_qt" ^
   --distpath "%ROOT%dist" ^
