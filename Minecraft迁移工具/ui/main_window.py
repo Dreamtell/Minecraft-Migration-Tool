@@ -11,6 +11,7 @@
 """
 from ui.mw_common import *          # noqa: F401,F403 —— 见上面 docstring
 from utils import i18n
+from utils.dpi import window_geometry
 from ui.mw_log import LogMixin
 from ui.mw_theme import ThemeMixin
 from ui.mw_buttons import ButtonsMixin
@@ -50,7 +51,9 @@ class MigrationGUI(
         self.root = root
         self._on_stage = on_stage
         self.root.title("Minecraft 整合包迁移工具 - 增强版 v4")
-        self.root.geometry("1000x1080")
+        # 尺寸/位置统一走 utils.dpi：DPI 感知之后写死 1000x1080 会被缩放后的字撑爆，
+        # 而 1080 * 1.5 又比屏幕高，需要一起适配（见 utils/dpi.py）。
+        self.root.geometry(window_geometry(self.root, 1000, 1080))
 
         self.config = self.load_config()
         self.edit_mode = tk.BooleanVar(value=self.config.get("edit_enabled", False))

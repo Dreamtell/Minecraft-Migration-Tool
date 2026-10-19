@@ -7,6 +7,13 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 
+
+# ---- 高 DPI ----
+# 必须赶在建任何窗口之前（--splash-child / --qt-host 子进程也算）：
+# 导入 utils.dpi 时就会声明 DPI 感知并算出 UI_SCALE，详见该模块顶部说明。
+from utils.dpi import UI_SCALE, window_geometry  # noqa: E402
+
+
 # ---- 独立进程闪屏的子进程入口 ----
 # 必须放在所有重活之前：子进程只负责画闪屏，绝不碰 Tk/单实例锁/托盘。
 if "--splash-child" in sys.argv:
@@ -127,7 +134,12 @@ def main():
         root = tk.Tk()
     root.withdraw()
     root.title("Minecraft 整合包迁移工具 - 增强版 v4")
-    root.geometry("1000x1080")
+    # 字号跟着 UI_SCALE 走（Tk 的 scaling 是"每磅多少像素"，96dpi 基准 = 4/3）
+    try:
+        root.tk.call("tk", "scaling", 4.0 / 3.0 * UI_SCALE)
+    except Exception:
+        pass
+    root.geometry(f"{int(1000 * UI_SCALE)}x{int(1080 * UI_SCALE)}")
 
     # 设置图标
     icon_path = get_icon_path()
@@ -212,10 +224,8 @@ def main():
     # 主窗口的位置先算好，但**不显示**——构建期间窗口保持隐藏，等闪屏收走了
     # 再让 Tk/Windows 原生显示出来。不提前映射、不预画、不做显形动画。
     root.update_idletasks()
-    width, height = 1000, 1080
-    x = (root.winfo_screenwidth() - width) // 2
-    y = (root.winfo_screenheight() - height) // 2
-    root.geometry(f"{width}x{height}+{x}+{y}")
+    # 尺寸/位置统一走 utils/dpi（含高 DPI 缩放 + 不超出屏幕），别再写死 1000x1080
+    root.geometry(window_geometry(root, 1000, 1080))
 
     # 创建主界面实例（此时窗口仍隐藏）
     # on_stage：构建途中被回调，用来让出一帧，否则主线程被占满，闪屏动画会停住。
