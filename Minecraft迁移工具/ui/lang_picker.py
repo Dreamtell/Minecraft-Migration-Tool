@@ -80,11 +80,15 @@ def ask_language(parent=None, icon_path=None):
     宽, 高 = 窗.winfo_reqwidth(), 窗.winfo_reqheight()
     屏宽, 屏高 = 窗.winfo_screenwidth(), 窗.winfo_screenheight()
     窗.geometry("%dx%d+%d+%d" % (宽, 高, (屏宽 - 宽) // 2, max(0, (屏高 - 高) // 2 - 60)))
-    窗.deiconify()
+    # ⚠ transient() 必须在 deiconify() **之前**：父窗口（root）这时还是 withdraw 状态，
+    #   对已显示的窗口再设 transient 会让它被重新 withdraw —— 表现是窗口闪一下就消失、
+    #   而 wait_window() 仍在等一个看不见的窗口，进程活着但永远没有界面。
+    #   （首次启动才会走到这里：老用户配置里有 language，不弹这个框。）
     try:
         窗.transient(根)
     except Exception:
         pass
+    窗.deiconify()
     窗.grab_set()
     窗.lift()
     try:
