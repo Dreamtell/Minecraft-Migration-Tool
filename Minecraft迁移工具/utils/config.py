@@ -34,8 +34,19 @@ def save_raw_config(data):
     try:
         merged = load_raw_config()
         merged.update(dict(data or {}))
-        CONFIG_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
-                               encoding="utf-8")
+        # 原子写：直接 write_text 的话，写一半崩溃会留下坏 JSON，
+        # 而 load_raw_config 对坏文件是静默返回 {} —— 用户的全部设置就这么"没了"。
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".mctmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
         return True
     except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
         return False

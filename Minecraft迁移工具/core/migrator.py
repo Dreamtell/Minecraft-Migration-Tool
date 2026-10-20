@@ -1,7 +1,10 @@
 # core/migrator.py
-import shutil
-import time
 import json
+import os
+import shutil
+import stat
+import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -10,10 +13,165 @@ from utils.i18n import trp
 
 
 # ---------- 工具函数 ----------
+# Windows 保留设备名：把它们当文件名写入会落到设备上（比如 "nul" 直接吞掉数据），
+# 而不是在目标目录里生成一个文件。
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL",
+                   *("COM%d" % i for i in range(1, 10)),
+                   *("LPT%d" % i for i in range(1, 10))}
+
+
 def _is_safe_path(rel_path):
-    """检查相对路径是否包含 .. 或绝对路径，防止越界"""
-    parts = Path(rel_path).parts
-    return not any(p == '..' for p in parts) and not Path(rel_path).is_absolute()
+    """判断一条「相对目标实例根目录」的路径能不能安全地拼进去。
+
+    以前只查了 `..` 和 `is_absolute()`，在 Windows 上有三个洞（实测）：
+      · "C:foo"      —— 驱动器相对路径，is_absolute() 是 False，但
+                        Path("D:/target") / "C:foo" 的结果直接变成 "C:foo"，
+                        写出去就跑到 C 盘的当前目录了；
+      · "/abs"       —— 没有盘符的根路径，is_absolute() 也是 False，
+                        Path("D:/target") / "/abs" → "D:/abs"（跑到盘根）；
+      · "nul" 这类保留名 —— 写进去等于写设备，文件不会出现。
+    这个程序是提权运行的（打包带 --uac-admin），越界写等于以管理员身份写任意位置，
+    所以这里必须卡死：只允许「纯相对、无盘符、无根、无 ..、无 ADS、非保留名」。
+    """
+    p = str(rel_path or "").strip()
+    if not p:
+        return False
+    if p[0] in ("/", "\\"):                     # 根路径（含 UNC 的 \\\\）
+        return False
+    if len(p) >= 2 and p[1] == ":":             # 盘符，含 C: 这种 drive-relative
+        return False
+    try:
+        path = Path(p)
+    except Exception:
+        return False
+    if path.is_absolute() or path.drive:
+        return False
+    for part in path.parts:
+        if part in (".", "..") or not part.strip():
+            return False
+        if ":" in part:                         # NTFS 备用数据流 file.txt:stream
+            return False
+        if part.split(".")[0].strip().upper() in _RESERVED_NAMES:
+            return False
+        if part != part.rstrip(" ."):           # 结尾空格/点会被 Windows 悄悄剥掉
+            return False
+    return True
+
+
+def _rmtree(path):
+    """删目录，遇到只读文件先去掉只读属性再删。
+
+    实测：Windows 上 shutil.rmtree 碰到只读文件直接 PermissionError。
+    而 shutil.copy2 会**保留只读属性** —— 备份/回滚时很容易踩到，
+    结果就是「回滚到一半失败，目标目录留在删了一半的状态」。
+    """
+    p = Path(path)
+    if not p.exists():
+        return
+    if not p.is_dir() or p.is_symlink():
+        p.unlink()
+        return
+
+    def _onexc(func, target, exc):
+        try:
+            os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            func(target)
+        except Exception:
+            raise exc
+
+    def _onerror(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            func(target)
+        except Exception:
+            raise exc_info[1]
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(p, onexc=_onexc)
+    else:
+        shutil.rmtree(p, onerror=_onerror)
+
+
+def _unlink(path):
+    """删单个文件，只读的先解锁（理由同上）。"""
+    p = Path(path)
+    try:
+        p.unlink()
+    except PermissionError:
+        os.chmod(p, stat.S_IWRITE | stat.S_IREAD)
+        p.unlink()
+
+
+def _atomic_copy_file(src, dst):
+    """把文件复制到 dst：先写同目录的临时名，成功后再原子替换。
+
+    以前直接 shutil.copy2(src, dst)：目标是已存在的文件时，copy2 会先把它截断，
+    中途断电/磁盘满/被占用就留下一个**半截文件**，而原内容已经没了。
+    改成临时文件 + os.replace 之后，失败时目标文件保持原样。
+    """
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".mctmp")
+    try:
+        if tmp.exists():
+            _unlink(tmp)
+        shutil.copy2(src, tmp)
+        # Windows 上目标只读会让 os.replace 失败，先解锁
+        if dst.exists():
+            try:
+                os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
+            except Exception:
+                pass
+        os.replace(tmp, dst)
+    except Exception:
+        try:
+            if tmp.exists():
+                _unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def _atomic_write_json(path, data):
+    """写 JSON：临时文件 + 原子替换，避免写一半留下坏文件。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".mctmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            if tmp.exists():
+                _unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def _replace_tree_by_copy(src, target):
+    """用 src（备份里的目录）替换 target：先把旧的改名保底，复制成功后才删。
+
+    以前是「rmtree(target) 然后 copytree」—— 复制一旦失败，用户的目标目录
+    已经没了，只剩 .migrate_backup 里那份要人工去捞。现在旧目录先改名成
+    <name>.mctold 留着，复制失败就把它改回去。
+    """
+    src, target = Path(src), Path(target)
+    old = target.with_name(target.name + ".mctold")
+    _rmtree(old)
+    if target.exists():
+        target.rename(old)
+    try:
+        shutil.copytree(src, target)
+    except Exception:
+        _rmtree(target)
+        if old.exists():
+            old.rename(target)
+        raise
+    _rmtree(old)
 
 
 def match_mod(item, source_files, name_map):
@@ -49,7 +207,7 @@ def safe_copy(src, dst, dry_run, overwrite, is_file=True):
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if is_file:
-            shutil.copy2(src, dst)
+            _atomic_copy_file(src, dst)      # 临时文件 + 原子替换，失败不留半截文件
         else:
             shutil.copytree(src, dst, dirs_exist_ok=True)
         return True, "复制成功"
@@ -104,10 +262,11 @@ def load_history(target_path):
 def save_history(target_path, history):
     hist_path = get_history_path(target_path)
     try:
-        with open(hist_path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-    except:
-        pass
+        # 原子写：崩在半路也不会留下坏 JSON（坏文件会让 load_history 直接当空历史）
+        _atomic_write_json(hist_path, history)
+        return True
+    except Exception:
+        return False
 
 
 def add_history_entry(target_path, src_path, modlist, configlist, extralist=None):
@@ -186,10 +345,11 @@ def _write_manifest(backup_root, exists_dirs, exists_files, exists_extras=None):
         "extras": {k: bool(v) for k, v in (exists_extras or {}).items()},
     }
     try:
-        with open(backup_root / _BACKUP_MANIFEST, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(backup_root / _BACKUP_MANIFEST, data)
     except Exception:
-        pass
+        # 清单写不进去 = 回滚时无法判断"哪些是迁移新建的"，等于回滚能力残缺。
+        # 以前这里静默 pass，现在必须让上层的备份流程失败。
+        raise
     return data
 
 
@@ -208,81 +368,102 @@ def do_backup(target_path, log_func=None, extra_entries=None):
 
     `extra_entries`：这次迁移的「其它文件」清单（相对整合包根目录，文件或目录都行）。
     必须传进来 —— 迁移会覆盖/新建它们，备份漏了的话，"覆盖（先备份）"这句承诺对
-    options.txt 之外的东西就是空话，回滚也还原不了。
+    options.txt 之外的东西就是空话、回滚也还原不了。
+
+    写入顺序：先完整备份到 .migrate_backup.tmp，**成功之后**才用它替换旧备份。
+    以前是先 rmtree 旧备份再建新的 —— 新备份一旦失败（空间不足/权限），
+    用户连上一次的回滚点都没了。
     """
     target_path = Path(target_path)
     backup_root = get_backup_path(target_path)
     if log_func:
         log_func("📦 开始备份目标实例...", "INFO")
 
+    staging = backup_root.with_name(backup_root.name + ".tmp")
+    _rmtree(staging)
+    staging.mkdir(parents=True)
+
+    try:
+        backed = []
+        exists_dirs = {}
+        for folder in _BACKUP_DIRS:
+            src = target_path / folder
+            exists_dirs[folder] = src.exists()
+            if src.exists():
+                if log_func:
+                    log_func(f"📂 备份 {folder} → {backup_root / folder}", "INFO")
+                shutil.copytree(src, staging / folder)
+                backed.append(folder)
+            else:
+                if log_func:
+                    log_func(f"ℹ️ {folder} 不存在，跳过备份"
+                             f"（回滚时会删掉迁移新建的同名目录）", "INFO")
+
+        # 根级文件（options.txt 等）：迁移也会覆盖它们，漏了就不是真回滚
+        files_root = staging / _BACKUP_FILES_SUBDIR
+        exists_files = {}
+        backed_files = []
+        for name in _BACKUP_ROOT_FILES:
+            src = target_path / name
+            exists_files[name] = src.exists()
+            if src.is_file():
+                files_root.mkdir(parents=True, exist_ok=True)
+                if log_func:
+                    log_func(f"📂 备份 {name} → {backup_root / _BACKUP_FILES_SUBDIR / name}",
+                             "INFO")
+                _atomic_copy_file(src, files_root / name)
+                backed_files.append(name)
+
+        # 「其它文件」清单里的每一条（用户自己选的）：迁移会覆盖/新建它们，
+        # 所以也要"存在性 + 内容"一起记下来，回滚才能既还原旧内容、又删掉迁移新建的。
+        extras_root = staging / _BACKUP_EXTRAS_SUBDIR
+        exists_extras = {}
+        backed_extras = []
+        for raw in (extra_entries or []):
+            rel = _norm_rel(raw)
+            if not rel or rel in exists_extras:
+                continue
+            src = target_path / rel
+            exists_extras[rel] = src.exists()
+            if not src.exists():
+                if log_func:
+                    log_func(f"ℹ️ {rel} 目标里不存在，跳过备份"
+                             f"（回滚时会删掉迁移新建的同名条目）", "INFO")
+                continue
+            dst = extras_root / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if src.is_dir():
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    _atomic_copy_file(src, dst)
+                backed_extras.append(rel)
+                if log_func:
+                    log_func(f"📂 备份清单条目 {rel} → {backup_root / _BACKUP_EXTRAS_SUBDIR / rel}",
+                             "INFO")
+            except Exception as e:
+                # 备份不到就不能装作没事：宁可整个备份失败（调用方会拦下迁移）
+                raise RuntimeError(f"备份「其它文件」条目 {rel} 失败：{e}")
+
+        _write_manifest(staging, exists_dirs, exists_files, exists_extras)
+    except Exception:
+        _rmtree(staging)                 # 失败的半成品不能留着冒充"备份"
+        raise
+
+    # 新备份完整了，这时候才动旧备份；换名的过程也是可回退的
+    old = backup_root.with_name(backup_root.name + ".old")
+    _rmtree(old)
     if backup_root.exists():
         if log_func:
-            log_func(f"🗑️ 删除旧备份：{backup_root}", "INFO")
-        shutil.rmtree(backup_root)
-    backup_root.mkdir(parents=True)
-
-    backed = []
-    exists_dirs = {}
-    for folder in _BACKUP_DIRS:
-        src = target_path / folder
-        exists_dirs[folder] = src.exists()
-        if src.exists():
-            dst = backup_root / folder
-            if log_func:
-                log_func(f"📂 备份 {folder} → {dst}", "INFO")
-            shutil.copytree(src, dst)
-            backed.append(folder)
-        else:
-            if log_func:
-                log_func(f"ℹ️ {folder} 不存在，跳过备份"
-                         f"（回滚时会删掉迁移新建的同名目录）", "INFO")
-
-    # 根级文件（options.txt 等）：迁移也会覆盖它们，漏了就不是真回滚
-    files_root = backup_root / _BACKUP_FILES_SUBDIR
-    exists_files = {}
-    backed_files = []
-    for name in _BACKUP_ROOT_FILES:
-        src = target_path / name
-        exists_files[name] = src.exists()
-        if src.is_file():
-            files_root.mkdir(parents=True, exist_ok=True)
-            dst = files_root / name
-            if log_func:
-                log_func(f"📂 备份 {name} → {dst}", "INFO")
-            shutil.copy2(src, dst)
-            backed_files.append(name)
-
-    # 「其它文件」清单里的每一条（用户自己选的）：迁移会覆盖/新建它们，
-    # 所以也要"存在性 + 内容"一起记下来，回滚才能既还原旧内容、又删掉迁移新建的。
-    extras_root = backup_root / _BACKUP_EXTRAS_SUBDIR
-    exists_extras = {}
-    backed_extras = []
-    for raw in (extra_entries or []):
-        rel = _norm_rel(raw)
-        if not rel or rel in exists_extras:
-            continue
-        src = target_path / rel
-        exists_extras[rel] = src.exists()
-        if not src.exists():
-            if log_func:
-                log_func(f"ℹ️ {rel} 目标里不存在，跳过备份"
-                         f"（回滚时会删掉迁移新建的同名条目）", "INFO")
-            continue
-        dst = extras_root / rel
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if src.is_dir():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            else:
-                shutil.copy2(src, dst)
-            backed_extras.append(rel)
-            if log_func:
-                log_func(f"📂 备份清单条目 {rel} → {dst}", "INFO")
-        except Exception as e:
-            # 备份不到就不能装作没事：宁可整个备份失败（调用方会拦下迁移）
-            raise RuntimeError(f"备份「其它文件」条目 {rel} 失败：{e}")
-
-    _write_manifest(backup_root, exists_dirs, exists_files, exists_extras)
+            log_func("🗑️ 替换旧备份（新备份已完整写入）", "INFO")
+        backup_root.rename(old)
+    try:
+        staging.rename(backup_root)
+    except Exception:
+        if old.exists() and not backup_root.exists():
+            old.rename(backup_root)      # 换名失败就把旧备份放回去
+        raise
+    _rmtree(old)
 
     if log_func:
         done = ", ".join(backed + backed_files + backed_extras)
@@ -299,9 +480,15 @@ def do_restore(target_path, log_func=None):
     2. 迁移前不存在的目录/文件，回滚时会被清掉，否则全新实例回滚完仍是迁移产物的堆；
     3. 任何一项出错都返回 False，不再"什么都没恢复却报成功"。
 
-    现在再加上：「其它文件」清单里的条目（用户自己加的那些）也一并还原/清理 ——
+    再加上：「其它文件」清单里的条目（用户自己加的那些）也一并还原/清理 ——
     迁移会覆盖它们，只恢复固定三目录的话，用户清单里的东西被盖了就回不来。
     旧备份（没有 extras 清单）照样能恢复，只是按老范围来。
+
+    安全性（这轮加固）：
+      · 恢复目录不再「先 rmtree 再 copytree」——目标目录先改名保底，复制成功才删；
+        复制失败会把旧目录改回来，不会出现"目录没了备份也没恢复上"；
+      · 删目录/删文件都先摘掉只读属性（copy2 会保留只读，Windows 上直接删会失败）；
+      · 单文件恢复走原子替换，失败不会留下半截文件。
     """
     target_path = Path(target_path)
     backup_root = get_backup_path(target_path)
@@ -324,21 +511,23 @@ def do_restore(target_path, log_func=None):
         backup_folder = backup_root / folder
         try:
             if backup_folder.is_dir():
-                if target_folder.exists():
-                    if log_func:
-                        log_func(f"🗑️ 删除现有目录：{target_folder}", "INFO")
-                    shutil.rmtree(target_folder)
                 if log_func:
                     log_func(f"📂 恢复备份：{backup_folder} → {target_folder}", "INFO")
-                shutil.copytree(backup_folder, target_folder)
+                # 旧目录先改名保底，复制成功后再删（失败会自己改回来）
+                _replace_tree_by_copy(backup_folder, target_folder)
                 restored.append(folder + "/")
             elif manifest is not None and not manifest.get("dirs", {}).get(folder, True):
                 # 迁移前本来没这个目录 → 现在还留着，说明是迁移建的
                 if target_folder.exists():
                     if log_func:
                         log_func(f"🗑️ 迁移新建的 {folder}/，按回滚要求删除", "INFO")
-                    shutil.rmtree(target_folder)
+                    _rmtree(target_folder)
                     cleaned.append(folder + "/")
+            elif manifest is not None and manifest.get("dirs", {}).get(folder, True):
+                # 清单说"迁移前有"，备份里却没有 → 这份备份不完整，不能默默跳过
+                failed.append(f"{folder}: 备份不完整（清单说存在，备份里没有）")
+                if log_func:
+                    log_func(f"❌ {folder}/ 在清单里标记为存在，但备份里找不到", "ERROR")
             else:
                 if log_func:
                     log_func(f"ℹ️ 备份中不存在 {folder}，跳过", "INFO")
@@ -355,14 +544,18 @@ def do_restore(target_path, log_func=None):
             if backup_file.is_file():
                 if log_func:
                     log_func(f"📂 恢复文件：{name} → {target_file}", "INFO")
-                shutil.copy2(backup_file, target_file)
+                _atomic_copy_file(backup_file, target_file)
                 restored.append(name)
             elif manifest is not None and not manifest.get("files", {}).get(name, True):
                 if target_file.exists():
                     if log_func:
                         log_func(f"🗑️ 迁移新建的 {name}，按回滚要求删除", "INFO")
-                    target_file.unlink()
+                    _unlink(target_file)
                     cleaned.append(name)
+            elif manifest is not None:
+                failed.append(f"{name}: 备份不完整（清单说存在，备份里没有）")
+                if log_func:
+                    log_func(f"❌ {name} 在清单里标记为存在，但备份里找不到", "ERROR")
         except Exception as e:
             failed.append(f"{name}: {e}")
             if log_func:
@@ -379,15 +572,10 @@ def do_restore(target_path, log_func=None):
         backup_item = extras_root / rel
         try:
             if 原来有 and backup_item.exists():
-                if target_item.is_dir():
-                    shutil.rmtree(target_item)
-                elif target_item.exists():
-                    target_item.unlink()
-                target_item.parent.mkdir(parents=True, exist_ok=True)
                 if backup_item.is_dir():
-                    shutil.copytree(backup_item, target_item, dirs_exist_ok=True)
+                    _replace_tree_by_copy(backup_item, target_item)
                 else:
-                    shutil.copy2(backup_item, target_item)
+                    _atomic_copy_file(backup_item, target_item)
                 restored.append(rel)
                 if log_func:
                     log_func(f"📂 恢复清单条目：{rel} → {target_item}", "INFO")
@@ -395,13 +583,18 @@ def do_restore(target_path, log_func=None):
                 if target_item.is_dir():
                     if log_func:
                         log_func(f"🗑️ 迁移新建的清单条目 {rel}/，按回滚要求删除", "INFO")
-                    shutil.rmtree(target_item)
+                    _rmtree(target_item)
                     cleaned.append(rel + "/")
                 elif target_item.exists():
                     if log_func:
                         log_func(f"🗑️ 迁移新建的清单条目 {rel}，按回滚要求删除", "INFO")
-                    target_item.unlink()
+                    _unlink(target_item)
                     cleaned.append(rel)
+            else:
+                # 清单说迁移前有、备份里却没有 → 这份备份不完整
+                failed.append(f"{rel}: 备份不完整（清单说存在，备份里没有）")
+                if log_func:
+                    log_func(f"❌ 清单条目 {rel} 标记为存在，但备份里找不到", "ERROR")
         except Exception as e:
             failed.append(f"{rel}: {e}")
             if log_func:
@@ -418,7 +611,6 @@ def do_restore(target_path, log_func=None):
                  + (f"，清理迁移新建的 {len(cleaned)} 项" if cleaned else "")
                  + detail, "SUCCESS")
     return True
-
 
 # ---------- 更新模组时的旧版本清理 ----------
 # 迁移是"按文件名复制"的：更新版文件名不同（create-6.0.8.jar → create-6.0.9.jar），
@@ -481,8 +673,7 @@ def _record_removed(target_path, modid, moved_names, replaced_by):
             "removed": list(moved_names),
             "replaced_by": replaced_by,
         })
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(path, data)
     except Exception:
         pass
 

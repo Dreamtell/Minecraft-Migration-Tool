@@ -4,6 +4,7 @@
 拆自 ui/main_window.py（2026-10 拆分），方法原样搬移、未改逻辑；
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
+import os
 import queue
 import shutil
 import threading
@@ -685,13 +686,20 @@ class MigrationMixin:
         return total_files, total_size
 
     def _dir_size(self, path):
-        """递归计算目录下所有文件大小。"""
+        """递归计算目录下所有文件大小（跳过迁移备份目录和符号链接，避免虚高/死循环）。
+
+        以前用 rglob 把 .migrate_backup 也算进来：上一次迁移留下的备份可能比实例还大，
+        于是 needed 虚高，明明空间够也会被判"空间不足"而拒绝执行。
+        """
         total = 0
         try:
-            for f in Path(path).rglob("*"):
-                if f.is_file():
+            for dirpath, dirnames, filenames in os.walk(Path(path)):
+                dirnames[:] = [d for d in dirnames
+                               if d not in (".migrate_backup", ".migrate_backup.tmp",
+                                            ".migrate_backup.old", ".git")]
+                for name in filenames:
                     try:
-                        total += f.stat().st_size
+                        total += os.path.getsize(os.path.join(dirpath, name))
                     except OSError:
                         pass
         except Exception:
