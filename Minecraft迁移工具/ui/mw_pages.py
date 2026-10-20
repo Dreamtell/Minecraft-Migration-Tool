@@ -4,6 +4,8 @@
 拆自 ui/main_window.py（2026-10 拆分），方法原样搬移、未改逻辑；
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
+import ctypes
+import math
 import time
 import tkinter as tk
 from tkinter import messagebox
@@ -175,6 +177,17 @@ class PagesMixin:
                             lambda e: self.show_net_chart())
         self.create_tooltip(self.net_spark, "最近几次探测的连接延迟（双击看完整折线图）")
         self._draw_net_spark()
+        # 浮标按钮：把延迟曲线浮到桌面（无边框、置顶、可拖动）
+        try:
+            self.net_float_btn = create_gradient_button(
+                self.bottom_frame, "📌", lambda: self.toggle_net_float(),
+                colors=("#90a4ae", "#607d8b"), width=px(30), height=px(20),
+                font=("微软雅黑", 8))
+            self.net_float_btn.pack(side="left", padx=(0, 6))
+            self.create_tooltip(self.net_float_btn,
+                                "在桌面显示延迟浮标（点浮标打开曲线图，可拖动）")
+        except Exception:
+            self.net_float_btn = None
         # （左下角原来还有一个"整机流量"标签，已去掉：本工具一次搜索才 10KB，
         #   整机流量计按用户的实际用法永远看不出变化，留着反而像坏了。
         #   每次查询的请求数/流量改在搜索结果的状态行显示，那个才是精确且有意义的。）
@@ -870,13 +883,18 @@ class PagesMixin:
             pass
 
     def show_net_chart(self):
-        """完整版：最近探测延迟的折线图 + 统计（双击迷你图打开）。
+        """完整版：最近探测延迟的曲线图 + 统计（双击迷你图打开）。
 
-        改用 **matplotlib**（TkAgg 后端）绘制，不再手写 canvas 折线：
-          · 抗锯齿、坐标轴、刻度、自动缩放都由库负责，高 DPI 下不会被整数像素卡住；
-          · TkAgg 是嵌在 Tk 里的，不引入 Qt，和「Qt 只在子进程跑」的架构不冲突。
-        代价：matplotlib 依赖 numpy —— 打包脚本里 `--exclude-module numpy` 要去掉，
-        产物会大 20MB 左右（已经改好 打包_命令行.bat）。
+        三个要点：
+        1. **平滑曲线**：采样点之间用 PCHIP（单调三次 Hermite）插值，不是直线段。
+           PCHIP 不会像普通样条那样在峰谷之间乱冲，延迟数据不会画出负值。
+        2. **连续滑动**：曲线只在"数据变了"时重算一次（有缓存的密集采样点），
+           之后每帧只把 x 平移 (now - t_base) —— 纯减法，60fps 也扛得住。
+        3. **blitting**：坐标轴/网格画一次缓存成位图，每帧只 restore + 重画曲线。
+           注意时间窗必须**量化**（10/15/20/30/45/60 秒跳档），否则窗口每帧都在变，
+           背景每帧重建（20ms+），帧率立刻掉到 20 多。
+
+        悬停：鼠标移上去吸附最近采样点，竖线 + 提示框显示「时间 · 延迟」。
         """
         try:
             from ui import mw_net
@@ -886,7 +904,6 @@ class PagesMixin:
 
         顶 = tk.Toplevel(self.root)
         顶.title("📈 网络延迟（最近 %d 次探测）" % len(历史))
-        # 居中于主窗口；尺寸按 DPI 缩放并保证不出屏
         try:
             顶.geometry(window_geometry(顶, 760, 420))
         except Exception:
@@ -906,10 +923,10 @@ class PagesMixin:
         try:
             import matplotlib
             matplotlib.use("TkAgg")
-            # matplotlib 默认字体没有中文，坐标轴上的「秒前」会变成方块
             matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei",
                                                       "DejaVu Sans"]
             matplotlib.rcParams["axes.unicode_minus"] = False
+            import numpy as np
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         except Exception as _e:
@@ -923,14 +940,18 @@ class PagesMixin:
         底色 = self.theme["bg"]
         前景 = "#c8c8c8" if 深色 else "#444444"
         网格色 = "#3f3f3f" if 深色 else "#e3e3e3"
+        提示底色 = "#2b2b2b" if 深色 else "#ffffff"
+        线色 = "#42a5f5"
+        点色 = "#90caf9"
+        尾色 = "#bbdefb" if 深色 else "#0d47a1"
 
-        # 先把底部两根（信息行、关闭按钮）用 side="bottom" 占住位置，
-        # 最后再 pack 画布 —— 否则 expand=True 的画布会把它们挤出窗口。
         信息 = tk.Label(顶, bg=self.theme["bg"],
                         fg=self.theme.get("muted_fg", "#888888"),
                         font=("微软雅黑", 9), anchor="w", justify="left")
         信息.pack(side="bottom", fill="x", padx=px(12), pady=(0, px(8)))
-        关闭钮 = create_gradient_button(顶, "关闭", lambda: 顶.destroy())
+        # lambda 里引用后面才定义的 _关闭：点击时才解析名字，所以这样写没问题，
+        # 而且能保证关窗时还原定时器精度（timeEndPeriod）。
+        关闭钮 = create_gradient_button(顶, "关闭", lambda: _关闭())
         关闭钮.pack(side="bottom", pady=(0, px(10)))
 
         图 = Figure(figsize=(px(760) / 100.0, px(380) / 100.0), dpi=100, facecolor=底色)
@@ -939,66 +960,388 @@ class PagesMixin:
         画布.get_tk_widget().pack(side="top", fill="both", expand=True,
                                   padx=px(10), pady=(px(10), px(4)))
 
-        def 重画():
-            try:
-                轴.clear()
-                轴.set_facecolor(底色)
-                for s in 轴.spines.values():
-                    s.set_color(网格色)
-                轴.tick_params(colors=前景, labelsize=9)
-                轴.grid(True, color=网格色, linewidth=0.8)
-                轴.set_ylabel("ms", color=前景, fontsize=9)
-                轴.set_xlabel("秒前", color=前景, fontsize=9)
+        # ---- 静态样式 ----
+        轴.set_facecolor(底色)
+        for s in 轴.spines.values():
+            s.set_color(网格色)
+        轴.tick_params(colors=前景, labelsize=9)
+        轴.grid(True, color=网格色, linewidth=0.8)
+        轴.set_ylabel("ms", color=前景, fontsize=9)
+        try:
+            图.subplots_adjust(left=0.11, right=0.98, top=0.97, bottom=0.16)
+        except Exception:
+            pass
+        轴.set_xlabel("秒（右端 = 现在）", color=前景, fontsize=9)
 
-                if not 历史:
-                    轴.text(0.5, 0.5, "还没有探测数据（等几秒）", ha="center", va="center",
-                            color=前景, fontsize=10, transform=轴.transAxes)
-                    轴.set_xticks([])
-                    轴.set_yticks([])
-                    画布.draw_idle()
-                    信息.configure(text="")
-                    return
+        # ---- 持久图元 ----
+        线, = 轴.plot([], [], color=线色, linewidth=1.8,
+                      solid_capstyle="round", solid_joinstyle="round",
+                      antialiased=True, zorder=3)
+        点, = 轴.plot([], [], "o", color=点色, markersize=3.2, zorder=4)
+        尾点, = 轴.plot([], [], "o", color=尾色, markersize=6.5, zorder=5)
+        空提示 = 轴.text(0.5, 0.5, "还没有探测数据（等几秒）", ha="center", va="center",
+                        color=前景, fontsize=10, transform=轴.transAxes,
+                        zorder=2, visible=False)
+        十字 = 轴.axvline(0, color=前景, linewidth=0.8, alpha=0.55,
+                          zorder=6, visible=False)
+        # 用普通 Text 而不是 Annotation：Annotation 在 textcoords="offset points" 下
+        # 每帧改 .xy 的定位不可靠（实测会跑到图顶并被 blit 区域裁掉）。
+        提示 = 轴.text(0, 0, "", color=前景, fontsize=9, zorder=10, visible=False,
+                      ha="left", va="bottom", clip_on=False,
+                      bbox=dict(boxstyle="round,pad=0.35", fc=提示底色,
+                                ec=网格色, lw=0.8, alpha=0.96))
 
-                值 = [x[1] for x in 历史]
-                最大 = max(1, max(值))
-                # 上限留 15% 余量 + 50ms 下限：否则延迟稳定时线贴着顶边
-                上限 = max(50.0, 最大 * 1.15)
-                现在t = time.time()
-                时刻 = [x[0] for x in 历史]
-                # 时间窗跟随已有数据的跨度（10~120 秒）：刚启动两个点也能铺满
-                跨度 = max(0.0, 现在t - 时刻[0]) if 时刻 else 60.0
-                窗口 = max(10.0, min(120.0, 跨度)) if 跨度 > 0 else 60.0
-                xs, ys = [], []
-                for ts, v in zip(时刻, 值):
-                    if (现在t - ts) > 窗口:
-                        continue
-                    xs.append(ts - 现在t)          # 负数：越靠右越新
-                    ys.append(v)
-                if xs:
-                    轴.plot(xs, ys, color="#1e88e5", linewidth=1.6, antialiased=True)
-                    if len(xs) <= 40:
-                        轴.plot(xs, ys, "o", color="#64b5f6", markersize=3.2)
-                    轴.plot([xs[-1]], [ys[-1]], "o", color="#0d47a1", markersize=6.5)
-                轴.set_xlim(-窗口, 0)
-                轴.set_ylim(0, 上限)
-                画布.draw_idle()
-                信息.configure(text="最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms"
-                               % (len(值), 值[-1], sum(值) / len(值), max(值)))
-            except Exception:
-                pass
+        动态 = (线, 点, 尾点, 空提示, 十字, 提示)
+        数据 = {"ts": [], "span": 60.0, "hover_ts": None,
+                "dx": None, "dy": None, "t_base": 0.0, "sig": None,
+                "end_y": None, "end_from": 0.0, "end_target": 0.0, "end_t0": None}
+        过渡秒 = 0.35      # 新采样点到达时，末端值用这么久缓动过去
+        状态 = {"bg": None, "span": None, "ylim": None, "stop": False}
+        帧间隔 = 10          # 目标 60fps（每帧开销 ~4ms，10ms 间隔 + 调度抖动 ≈ 16ms/帧）
 
-        重画()
+        # Windows 默认定时器精度 15.6ms：after(16) 实际会落到 ~31ms（测出来就是 32fps）。
+        # 临时提到 1ms，帧才能真正跑满 —— 关窗时再还原，避免长期影响系统功耗。
+        _定时器 = {"on": False}
+        try:
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            _定时器["on"] = True
+        except Exception:
+            pass
 
-        def 定时():
+        窗口固定 = 60.0     # 标准监控图：右端永远是"现在"，整条曲线持续左流
+
+        def _窗口(跨度):
+            """固定 60 秒 —— 窗口不变，背景缓存就永远不失效，滚动最稳。"""
+            return 窗口固定
+
+        def _取数据():
+            """(xs, ys, ts, 窗口, 现在t, 基准)。
+
+            x 轴固定 0..窗口，**右端 = 现在**：
+              · 新点从右边(x≈窗口)进入，随时间整体向左流动；
+              · 左端(x=0)是 60 秒前的数据，流出去就丢弃。
+            """
+            现在t = time.time()
+            时刻 = [h[0] for h in 历史]
+            跨度 = max(0.0, 现在t - 时刻[0]) if 时刻 else 0.0
+            窗口 = _窗口(跨度) if 跨度 > 0 else 10.0
+            基准 = 窗口
+            xs, ys, ts = [], [], []
+            for t0, v in zip(时刻, [h[1] for h in 历史]):
+                if (现在t - t0) > 窗口:
+                    continue
+                xs.append(基准 - (现在t - t0))
+                ys.append(v)
+                ts.append(t0)
+            return xs, ys, ts, 窗口, 现在t, 基准
+
+        def _整数档(ys):
+            """把上限取整到 500 的档位，避免几十毫秒的波动就触发重绘/重缩放。"""
+            m = max(ys) if ys else 1
+            return max(500.0, math.ceil(m * 1.2 / 500.0) * 500.0)
+
+        def _上限(ys):
+            """带滞回：涨了立刻跟上，只有掉到当前档位的 60% 以下才缩回去。"""
+            目标 = _整数档(ys)
+            当前 = 状态.get("cap")
+            if 当前 is None or 目标 > 当前:
+                当前 = 目标
+            elif 目标 < 当前 * 0.6:
+                当前 = 目标
+            状态["cap"] = 当前
+            return 当前
+
+        def _pchip(x, y):
+            """单调三次 Hermite 插值（Fritsch–Carlson）。返回密集的 (x, y)。"""
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            m = len(x)
+            if m < 3:
+                return x, y
+            h = np.diff(x)
+            if np.any(h <= 0):
+                return x, y                       # 时间戳非严格递增就不插值，宁可直接画
+            d = np.diff(y) / h
+            g = np.zeros(m)
+            g[0], g[-1] = d[0], d[-1]
+            for i in range(1, m - 1):
+                if d[i - 1] * d[i] <= 0:
+                    g[i] = 0.0                    # 极值点处切线归零，避免过冲
+                else:
+                    w1, w2 = 2 * h[i] + h[i - 1], h[i] + 2 * h[i - 1]
+                    g[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i])
+            t = np.linspace(0.0, 1.0, 8, endpoint=False)
+            h00 = 2 * t ** 3 - 3 * t ** 2 + 1
+            h10 = t ** 3 - 2 * t ** 2 + t
+            h01 = -2 * t ** 3 + 3 * t ** 2
+            h11 = t ** 3 - t ** 2
+            xs, ys = [], []
+            for i in range(m - 1):
+                xs.append(x[i] + t * h[i])
+                ys.append(h00 * y[i] + h10 * h[i] * g[i]
+                          + h01 * y[i + 1] + h11 * h[i] * g[i + 1])
+            xs.append(x[-1:])
+            ys.append(y[-1:])
+            return np.concatenate(xs), np.concatenate(ys)
+
+        def 缓存背景(xs, ys, 窗口, 上限):
+            轴.set_xlim(0, 窗口)
+            轴.set_ylim(0, 上限)
+            for a in 动态:
+                a.set_visible(False)
+            画布.draw()
+            # 缓存**整张图**而不只是坐标轴：提示框允许画到轴外（clip_on=False），
+            # 只恢复轴区域的话，画到外面的那部分会永远留在画布上（残影）。
+            状态["bg"] = 画布.copy_from_bbox(图.bbox)
+            状态["span"], 状态["ylim"] = 窗口, 上限
+            for a in (线, 点, 尾点):
+                a.set_visible(True)
+
+        def _藏提示():
+            数据["hover_ts"] = None
+            if 十字.get_visible() or 提示.get_visible():
+                十字.set_visible(False)
+                提示.set_visible(False)
+
+        def 帧():
+            if 状态["stop"]:
+                return
             try:
                 if not 顶.winfo_exists():
                     return
                 from ui import mw_net
                 历史.clear()
                 历史.extend(mw_net.rtt_history())
-                重画()
-                顶.after(1000, 定时)      # matplotlib 重绘 ~30ms，1 秒一次足够
+
+                xs, ys, ts, 窗口, 现在t, 基准 = _取数据()
+                数据.update(ts=ts, span=窗口, base=基准)
+                上限 = _上限(ys)
+
+                # ---- 新数据到达：记下"从哪过渡到哪"，末端值用缓动追上去 ----
+                sig = (len(ys), ts[-1] if ts else 0.0)
+                过渡中 = False
+                if 数据["sig"] != sig or 数据["dx"] is None:
+                    旧值 = 数据["end_y"] if 数据["end_y"] is not None else (ys[-1] if ys else 0.0)
+                    数据["end_from"] = 旧值
+                    数据["end_target"] = ys[-1] if ys else 0.0
+                    数据["end_t0"] = 现在t
+                    数据["sig"] = sig
+                    if len(xs) >= 3:
+                        数据["dx"], 数据["dy"] = _pchip(xs, ys)
+                    else:
+                        数据["dx"] = np.asarray(xs, dtype=float)
+                        数据["dy"] = np.asarray(ys, dtype=float)
+                    数据["t_base"] = 现在t
+                    数据["base_base"] = 基准
+
+                # 过渡进度（easeOutCubic）：末端值从旧值滑到新值，
+                # 这样 5 秒一次的新采样不会让曲线"啪"地变形。
+                p = 1.0
+                if 数据["end_t0"] is not None and 数据["end_target"] is not None:
+                    p = min(1.0, (现在t - 数据["end_t0"]) / 过渡秒)
+                if p < 1.0 and len(xs) >= 2:
+                    缓 = 1.0 - (1.0 - p) ** 3
+                    y末 = 数据["end_from"] + (数据["end_target"] - 数据["end_from"]) * 缓
+                    ys2 = list(ys)
+                    ys2[-1] = y末
+                    if len(xs) >= 3:
+                        dx, dy = _pchip(xs, ys2)
+                    else:
+                        dx, dy = np.asarray(xs, dtype=float), np.asarray(ys2, dtype=float)
+                    数据["dx_t"], 数据["dy_t"] = dx, dy
+                    数据["t_base_t"] = 现在t
+                    数据["end_y"] = y末
+                    过渡中 = True
+                else:
+                    数据["end_y"] = 数据["end_target"] if 数据["end_target"] is not None else \
+                        (ys[-1] if ys else 0.0)
+
+                if (状态["bg"] is None or 窗口 != 状态["span"]
+                        or abs(上限 - (状态["ylim"] or 0)) > 1e-9):
+                    缓存背景(xs, ys, 窗口, 上限)
+
+                # 每帧只做一次减法：曲线整体左移 (现在 - t_base)
+                if 过渡中:
+                    基线, 平移 = 数据["t_base_t"], 0.0
+                    tx = 数据["dx_t"] - 平移
+                    ty = 数据["dy_t"]
+                else:
+                    # 时间流逝让曲线左移；基准（还没填满时=跨度）增长让它右移
+                    tx = (数据["dx"] - (现在t - 数据["t_base"])
+                          + (基准 - 数据.get("base_base", 基准)))
+                    ty = 数据["dy"]
+                if len(tx):
+                    # 末端补一段到"现在"的位置，表示当前值，看着不断流
+                    tx = np.append(tx, 基准)
+                    ty = np.append(ty, ty[-1])
+                线.set_data(tx, ty)
+
+                # 采样点也跟着平移
+                mx = np.asarray(数据["ts"], dtype=float) - 现在t
+                if len(mx) and len(mx) <= 40:
+                    点.set_data(mx, np.asarray(ys, dtype=float))
+                else:
+                    点.set_data([], [])
+                if len(mx):
+                    尾点.set_data([mx[-1:], [数据["end_y"]]])
+                else:
+                    尾点.set_data([], [])
+                空提示.set_visible(not len(mx))
+
+                画布.restore_region(状态["bg"])
+                轴.draw_artist(线)
+                轴.draw_artist(点)
+                轴.draw_artist(尾点)
+                if not len(mx):
+                    轴.draw_artist(空提示)
+
+                # 悬停提示：按"悬停的那个时间戳"每帧重新定位
+                hts = 数据.get("hover_ts")
+                j = None
+                if hts is not None:
+                    try:
+                        j = 数据["ts"].index(hts)
+                    except ValueError:
+                        j = None
+                if j is not None and 0 <= j < len(ys):
+                    # 新坐标系：x = 基准 - 数据年龄（0..窗口，从左往右）
+                    hx = 基准 - (现在t - 数据["ts"][j])
+                    十字.set_xdata([hx, hx])
+                    十字.set_visible(True)
+                    # 摆在点的右上方，并夹在绘图区内（blit 只更新坐标轴区域，
+                    # 画到区外的部分会被切掉）
+                    px_off = 数据["span"] * 0.012
+                    py_off = (状态["ylim"] or 上限) * 0.05
+                    # 夹在绘图区内：右边界要留出提示框自身的宽度
+                    提示.set_position((max(0.0, min(hx + px_off,
+                                                    数据["span"] * 0.72)),
+                                      min(ys[j] + py_off, (状态["ylim"] or 上限) * 0.93)))
+                    提示.set_text("%s  ·  %d ms" % (
+                        time.strftime("%H:%M:%S", time.localtime(hts)), ys[j]))
+                    提示.set_visible(True)
+                    轴.draw_artist(十字)
+                    轴.draw_artist(提示)
+                else:
+                    十字.set_visible(False)
+                    提示.set_visible(False)
+                画布.blit(图.bbox)
+
+                # ⚠ 别每帧都改 Label：Tk 换文字会重新布局 + 重绘，一次好几毫秒，
+                # 60fps 的预算就这么没了。只在数据真的变了的时候刷新。
+                if 数据.get("sig_text") != sig:
+                    数据["sig_text"] = sig
+                    if ys:
+                        值 = [h[1] for h in 历史]
+                        信息.configure(
+                            text="最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms"
+                                 % (len(值), 值[-1], sum(值) / max(1, len(值)), max(值)))
+                    else:
+                        信息.configure(text="")
+            except Exception:
+                pass
+            顶.after(帧间隔, 帧)
+
+        def _鼠标移动(ev):
+            try:
+                if ev.inaxes is not 轴 or not 数据["ts"] or ev.xdata is None:
+                    _藏提示()
+                    return
+                现在t = time.time()
+                时刻 = 数据["ts"]
+                基准 = 数据.get("base", 0.0)
+                xs = [基准 - (现在t - t0) for t0 in 时刻]
+                import bisect
+                i = bisect.bisect_left(xs, ev.xdata)
+                候选 = [j for j in (i - 1, i) if 0 <= j < len(xs)]
+                if not 候选:
+                    _藏提示()
+                    return
+                j = min(候选, key=lambda k: abs(xs[k] - ev.xdata))
+                if abs(xs[j] - ev.xdata) > max(1.0, 数据["span"] * 0.06):
+                    _藏提示()
+                    return
+                数据["hover_ts"] = 时刻[j]
             except Exception:
                 pass
 
-        定时()
+        画布.mpl_connect("motion_notify_event", _鼠标移动)
+        画布.mpl_connect("axes_leave_event", lambda _e: _藏提示())
+        画布.get_tk_widget().bind("<Configure>", lambda _e: 状态.update(bg=None), add="+")
+
+        def _关闭():
+            状态["stop"] = True
+            if _定时器["on"]:
+                try:
+                    ctypes.windll.winmm.timeEndPeriod(1)
+                except Exception:
+                    pass
+                _定时器["on"] = False
+            try:
+                顶.destroy()
+            except Exception:
+                pass
+
+        顶.protocol("WM_DELETE_WINDOW", _关闭)
+
+        try:
+            缓存背景([], [], 10.0, 50.0)
+        except Exception:
+            pass
+        帧()
+
+    # ---------------- 桌面浮标（网络延迟小窗） ----------------
+    def toggle_net_float(self):
+        """开 / 关桌面浮标。"""
+        try:
+            if self._net_float is not None and self._net_float.alive():
+                self._net_float.close()
+            else:
+                self.open_net_float()
+        except Exception:
+            pass
+
+    def open_net_float(self):
+        """把延迟曲线浮到桌面：无边框、置顶、可拖、位置记忆。"""
+        try:
+            from ui.net_float import NetFloat
+        except Exception:
+            return
+        if self._net_float is not None and self._net_float.alive():
+            return
+        x = getattr(self, "net_float_x", None)
+        y = getattr(self, "net_float_y", None)
+        try:
+            if x is not None and int(x) < 0:
+                x = None
+            if y is not None and int(y) < 0:
+                y = None
+        except Exception:
+            x = y = None
+
+        def 历史():
+            from ui import mw_net
+            return mw_net.rtt_history()
+
+        self._net_float = NetFloat(self.root, 历史, self.show_net_chart,
+                                   on_close=self._on_net_float_event, x=x, y=y)
+        self.net_float_on = True
+        try:
+            self.save_config()
+        except Exception:
+            pass
+
+    def _on_net_float_event(self, flt, closed):
+        """浮标关闭 / 拖动结束时调用：记住位置和开关状态。"""
+        try:
+            pos = flt.position()
+            if pos:
+                self.net_float_x, self.net_float_y = int(pos[0]), int(pos[1])
+        except Exception:
+            pass
+        self.net_float_on = not closed
+        if closed:
+            self._net_float = None
+        try:
+            self.save_config()
+        except Exception:
+            pass

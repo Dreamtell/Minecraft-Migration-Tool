@@ -10,6 +10,8 @@
 `MW.do_backup`…，这个 star 导入把拆分前的老接口面原样搬回来，脚本一行不用改。
 """
 from ui.mw_common import *          # noqa: F401,F403 —— 见上面 docstring
+import json
+import os
 from utils import i18n
 from utils.dpi import window_geometry
 from ui.mw_log import LogMixin
@@ -223,8 +225,18 @@ class MigrationGUI(
         self._saved_logs = []
         self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
         self._last_log_key = None
+        # 桌面浮标（网络延迟小窗）：状态与位置都记在配置里，下次启动回到原处
+        self._net_float = None
+        self.net_float_on = bool(self.config.get("net_float_on", False))
+        self.net_float_x = self.config.get("net_float_x")
+        self.net_float_y = self.config.get("net_float_y")
         self._stage("就绪")
         self._start_net_status()
+        if self.net_float_on:
+            try:
+                self.open_net_float()
+            except Exception:
+                pass
 
     def _start_net_status(self):
         """右下角的网络状态灯：子线程探测，结果回主线程改字。"""
@@ -379,10 +391,24 @@ class MigrationGUI(
             # 实时读盘：不要用启动时的缓存值，否则外部改过的窗口会被这里覆盖回去
             "double_click_sec": float(_dc_now()[0]),
             "double_click_auto": bool(_dc_now()[1]),
+            # 桌面浮标：开关 + 上次位置（-1 表示没记过，用默认右下角）
+            "net_float_on": bool(getattr(self, "net_float_on", False)),
+            "net_float_x": int(getattr(self, "net_float_x", -1) or -1),
+            "net_float_y": int(getattr(self, "net_float_y", -1) or -1),
         }
         try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            # 原子写：直接 "w" 打开会先截断原文件，写到一半崩溃/断电就只剩半个 JSON，
+            # 而 load_config 对坏文件是静默回退默认值 —— 用户的清单/路径/设置全没。
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".mctmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4)
-        except:
-            pass
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, CONFIG_FILE)
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
         self._check_overflow()
