@@ -296,7 +296,7 @@ class NetFloat:
         from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
         cw, ch = self._cur_size()
-        S = 4
+        S = 6
         W, H = cw * S, ch * S
 
         try:
@@ -325,13 +325,17 @@ class NetFloat:
             img = Image.alpha_composite(img, sh.filter(ImageFilter.GaussianBlur(2.2 * S)))
 
         dr = ImageDraw.Draw(img)
-        radius = min(W, H) * 0.5
-        try:
-            dr.rounded_rectangle(box, radius=radius, fill=_TILE)
-            dr.rounded_rectangle(box, radius=radius, outline=环 + (255,),
-                                 width=max(2 * S, int(min(W, H) * 0.055)))
-        except Exception:
+        ring = max(2 * S, int(min(W, H) * 0.055))
+        if abs(cw - ch) <= 1:
+            # 正圆必须用 ellipse：`rounded_rectangle(radius=半边长)` 在 Pillow 里
+            # 是四段圆弧拼出来的，边缘会有细微的棱/毛刺，看起来像手画的。
             dr.ellipse(box, fill=_TILE)
+            dr.ellipse(box, outline=环 + (255,), width=ring)
+        else:
+            # 收纳成小标签（细长胶囊）才用圆角矩形
+            radius = min(W, H) * 0.5
+            dr.rounded_rectangle(box, radius=radius, fill=_TILE)
+            dr.rounded_rectangle(box, radius=radius, outline=环 + (255,), width=ring)
 
         # 收纳成小标签（22px 宽）时放不下数字，只留色条
         if cw >= ch * 0.7:
