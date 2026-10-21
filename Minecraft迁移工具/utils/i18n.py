@@ -178,6 +178,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "中": "Medium",
     "大": "Large",
     "🔎 延迟浮标大小已设为 {0} px": "🔎 Float size set to {0} px",
+    "浮标带阴影": "Float drop shadow",
+    "贴边时收纳浮标（只露一条边，鼠标移上去展开）":
+        "Dock the float at the window edge (leaves a sliver; hover to expand)",
+    "🖼️ 浮标阴影已{0}": "🖼️ Float shadow {0}",
+    "📌 贴边收纳已{0}": "📌 Edge docking {0}",
     "启用 PySide6 窗口": "Enable PySide6 windows",
     "关掉 = 纯 Tk 模式：主进程不再加载 Qt（重启后生效）":
         "Off = pure Tk mode: the main process stops loading Qt (after a restart)",

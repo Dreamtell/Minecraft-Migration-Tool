@@ -28,7 +28,7 @@ INTERVAL_MS = 5000
 # 只记连通与否和连接耗时(ms)。放在父进程里 —— 网络灯本来就在这边跑，
 # 所以迷你图不需要跨进程拿数据（流量数字在 Qt 子进程里，父进程读不到）。
 
-_rtt = collections.deque(maxlen=120)          # 最近 120 次探测（每 30 秒一次 ≈ 1 小时）
+_rtt = collections.deque(maxlen=24)           # 只留 2 分钟（5 秒一次 → 24 条）
 
 
 def record(结果, 耗时_ms):

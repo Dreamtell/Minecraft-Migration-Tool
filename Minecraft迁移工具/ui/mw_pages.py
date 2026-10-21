@@ -185,7 +185,7 @@ class PagesMixin:
                 font=("微软雅黑", 8))
             self.net_float_btn.pack(side="left", padx=(0, 6))
             self.create_tooltip(self.net_float_btn,
-                                "在桌面显示延迟浮标（点浮标打开曲线图，可拖动）")
+                                "在主窗口内显示延迟浮标（点浮标打开曲线图，可拖动）")
         except Exception:
             self.net_float_btn = None
         # （左下角原来还有一个"整机流量"标签，已去掉：本工具一次搜索才 10KB，
@@ -828,7 +828,7 @@ class PagesMixin:
             w = int(c.cget("width"))
             h = int(c.cget("height"))
             现在 = time.time()
-            窗口秒 = 60.0
+            窗口秒 = 120.0
             历史 = mw_net.rtt_history()
             原始 = [(x[0], x[1]) for x in 历史 if 现在 - x[0] <= 窗口秒]
 
@@ -1008,7 +1008,7 @@ class PagesMixin:
         except Exception:
             pass
 
-        窗口固定 = 60.0     # 标准监控图：右端永远是"现在"，整条曲线持续左流
+        窗口固定 = 120.0    # 只保留 2 分钟数据：右端永远是"现在"，曲线持续左流
 
         def _窗口(跨度):
             """固定 60 秒 —— 窗口不变，背景缓存就永远不失效，滚动最稳。"""
@@ -1322,9 +1322,13 @@ class PagesMixin:
             from ui import mw_net
             return mw_net.rtt_history()
 
-        self._net_float = NetFloat(self.root, 历史, self.show_net_chart,
-                                   on_close=self._on_net_float_event, x=x, y=y,
-                                   size=getattr(self, "net_float_size", 56))
+        self._net_float = NetFloat(
+            self.root, 历史, self.show_net_chart,
+            on_close=self._on_net_float_event, x=x, y=y,
+            size=getattr(self, "net_float_size", 56),
+            shadow=getattr(self, "net_float_shadow", True),
+            dock=getattr(self, "net_float_dock", True),
+            bg=self.theme.get("bg", "#f0f0f0"))
         self.net_float_on = True
         try:
             self.save_config()

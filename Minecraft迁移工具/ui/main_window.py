@@ -234,6 +234,8 @@ class MigrationGUI(
             self.net_float_size = max(40, min(96, int(self.config.get("net_float_size", 56))))
         except Exception:
             self.net_float_size = 56
+        self.net_float_shadow = bool(self.config.get("net_float_shadow", True))
+        self.net_float_dock = bool(self.config.get("net_float_dock", True))
         self._stage("就绪")
         self._start_net_status()
         if self.net_float_on:
@@ -401,6 +403,8 @@ class MigrationGUI(
             "net_float_y": int(getattr(self, "net_float_y", -1) or -1),
             # 浮标直径（设计像素，40~96）；界面里按 DPI 再乘一次
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
+            "net_float_shadow": bool(getattr(self, "net_float_shadow", True)),
+            "net_float_dock": bool(getattr(self, "net_float_dock", True)),
         }
         try:
             # 原子写：直接 "w" 打开会先截断原文件，写到一半崩溃/断电就只剩半个 JSON，

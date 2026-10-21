@@ -277,6 +277,17 @@ class SettingsMixin:
              (("44", "小"), ("56", "中"), ("72", "大")),
              lambda v: self._set_float_size(v), 名="floatsize")
 
+        self.settings_float_shadow_var = tk.BooleanVar(
+            value=bool(getattr(self, "net_float_shadow", True)))
+        开关(box1, "浮标带阴影", self.settings_float_shadow_var,
+             self._toggle_float_shadow, 名="floatshadow").pack(fill="x", pady=(6, 0))
+
+        self.settings_float_dock_var = tk.BooleanVar(
+            value=bool(getattr(self, "net_float_dock", True)))
+        开关(box1, "贴边时收纳浮标（只露一条边，鼠标移上去展开）",
+             self.settings_float_dock_var, self._toggle_float_dock,
+             名="floatdock").pack(fill="x", pady=(6, 0))
+
         # 配置文件是这个程序唯一的"数据文件"（语言 / 主题 / 各种偏好都在里面），
         # 给个一键用系统默认程序打开；改完要重启才生效，所以顺手写在旁边。
         row_cfg = tk.Frame(box1, bg=self.theme["bg"])
@@ -763,6 +774,34 @@ class SettingsMixin:
                      i18n.tr('启用' if self.splash_enabled else '关闭')),
                  level="INFO", save=False)
 
+    def _refresh_net_float(self):
+        """浮标参数变了：就地重建一个（位置保持不变）。"""
+        try:
+            flt = getattr(self, "_net_float", None)
+            if flt is None or not flt.alive():
+                return
+            pos = flt.position()
+            flt.close()                     # 触发 on_close，把开关置回 False
+            if pos:
+                self.net_float_x, self.net_float_y = int(pos[0]), int(pos[1])
+            self.open_net_float()
+        except Exception:
+            pass
+
+    def _toggle_float_shadow(self):
+        self.net_float_shadow = bool(self.settings_float_shadow_var.get())
+        self.save_config()
+        self._refresh_net_float()
+        self.log(trp("🖼️ 浮标阴影已{0}", i18n.tr("开启" if self.net_float_shadow else "关闭")),
+                 level="INFO", save=False)
+
+    def _toggle_float_dock(self):
+        self.net_float_dock = bool(self.settings_float_dock_var.get())
+        self.save_config()
+        self._refresh_net_float()
+        self.log(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
+                 level="INFO", save=False)
+
     def _set_float_size(self, 值):
         """延迟浮标的大小（40~96 设计像素，界面里再乘 DPI）。
 
@@ -779,16 +818,7 @@ class SettingsMixin:
             self.save_config()
         except Exception:
             pass
-        try:
-            flt = getattr(self, "_net_float", None)
-            if flt is not None and flt.alive():
-                pos = flt.position()
-                flt.close()                      # 会触发 on_close，把开关置回 False
-                if pos:
-                    self.net_float_x, self.net_float_y = int(pos[0]), int(pos[1])
-                self.open_net_float()
-        except Exception:
-            pass
+        self._refresh_net_float()
         self.log(trp("🔎 延迟浮标大小已设为 {0} px", n), level="INFO", save=False)
 
     # ---------- 迁移标记 ----------

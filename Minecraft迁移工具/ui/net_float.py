@@ -1,276 +1,232 @@
 # ui/net_float.py
-"""桌面浮标：一个圆形小图标，点一下打开网络延迟曲线窗口。
+"""主窗口内的悬浮图标（不是桌面挂件）。
 
-为什么用「分层窗口」而不是 Tk 的 `-transparentcolor`：
-  · 色键（`-transparentcolor`）只能整像素透明，抗锯齿的半透明边缘会
-    和键色混出一圈彩边（品红边），所以那一版只能画硬边，圆看着有锯齿；
-  · `UpdateLayeredWindow` 支持**逐像素 alpha**：圆边可以做抗锯齿，
-    外层背景真正透明，不会有彩边。
-
-实现方式：仍然用 Tk 建窗口（这样鼠标事件、右键菜单、DPI 都是现成的），
-但**不用 Canvas 绘制**，而是把 Pillow 画好的 RGBA 图通过 ULW 贴到窗口上。
-窗口设成 WS_EX_LAYERED 之后，Tk 自己的绘制不会显示，正好由 ULW 接管。
+为什么是窗口内的控件，而不是独立的置顶窗口：
+  · 需求是「和主界面同一层、只能在本窗口范围内移动」——用 Toplevel + topmost
+    就必然浮在别的程序上面，也没法限制在主窗口内；
+  · 做成 root 的 Canvas 子控件之后，父窗口一裁剪它就出不去，主窗口最小化/收起
+    它也自动跟着走，层叠关系天然正确；
+  · 抗锯齿也不需要分层窗口了：Tk 8.6 的 canvas 会把带 alpha 的 PhotoImage 和
+    画布背景正确混合（实测半透明圆叠在 #2e2e2e 上得到 50% 混色），所以直接在
+    Pillow 里画好、贴上去就是平滑的。
 
 交互：
-  · 左键点击 → 打开完整曲线图；左键拖动 → 换位置（松开才存）；
-  · 右键 → 菜单（打开曲线图 / 复位位置 / 隐藏浮标）；
-  · 圆环颜色表示连通状态（绿=通、红=不通），中央数字是当前延迟。
+  · 左键点击 → 打开延迟曲线窗口；拖动 → 在窗口内移动（自动夹在边界内）；
+  · 贴边松手 → 吸附到边；开启「贴边收纳」时还会滑出去一半，鼠标移上去再滑回来；
+  · 右键 → 菜单（打开曲线图 / 复位位置 / 隐藏浮标）。
 """
 
-import ctypes
 import time
 import tkinter as tk
-from ctypes import wintypes
 
 from utils.dpi import px
 
-_TILE = (38, 50, 56)          # 圆的底色 #263238
+_TILE = (38, 50, 56, 255)      # 圆的底色 #263238
 _FG = "#ffffff"
 _MUTED = "#b0bec5"
 _GOOD = (46, 125, 50)
 _BAD = (198, 40, 40)
 _GOOD_HOVER = (76, 175, 80)
 _BAD_HOVER = (239, 83, 80)
-_KEY = "#ff00ff"              # 仅在没有分层窗口时兜底用
-
-_GWL_EXSTYLE = -20
-_WS_EX_LAYERED = 0x00080000
-_WS_EX_TOOLWINDOW = 0x00000080
-_ULW_ALPHA = 0x00000002
-_AC_SRC_OVER = 0x00
-_AC_SRC_ALPHA = 0x01
-_SWP_NOSIZE = 0x0001
-_SWP_NOACTIVATE = 0x0010
-
-
-class _BLENDFUNCTION(ctypes.Structure):
-    _fields_ = [("BlendOp", ctypes.c_ubyte),
-                ("BlendFlags", ctypes.c_ubyte),
-                ("SourceConstantAlpha", ctypes.c_ubyte),
-                ("AlphaFormat", ctypes.c_ubyte)]
-
-
-class _BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
-                ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
-                ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
-                ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
-                ("biClrImportant", wintypes.DWORD)]
-
-
-class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+_SNAP = 12                     # 离边缘多近就吸附（设计像素）
 
 
 class NetFloat:
     """`get_history()` 返回 [(时间戳, 毫秒, 连通源数, 源总数), ...]。"""
 
-    D = 56                # 默认直径（设计像素，会乘 UI_SCALE）
-    MIN_D = 40            # 设置里能调到的最小/最大（再小数字就糊了，再大挡视野）
+    D = 56
+    MIN_D = 40
     MAX_D = 96
 
-    def __init__(self, parent, get_history, on_open_chart, on_close=None,
-                 x=None, y=None, size=None):
-        self.parent = parent
+    def __init__(self, root, get_history, on_open_chart, on_close=None,
+                 size=None, shadow=True, dock=True, bg="#f0f0f0",
+                 x=None, y=None):
+        self.root = root
         self.get_history = get_history
         self.on_open_chart = on_open_chart
         self.on_close = on_close
+        self.shadow = bool(shadow)
+        self.dock_enabled = bool(dock)
+        self.bg = bg or "#f0f0f0"
 
-        # 限制在 MIN_D..MAX_D：太小数字放不下，太大挡住桌面
         try:
             self.D = max(self.MIN_D, min(self.MAX_D, int(size or self.D)))
         except Exception:
             self.D = 56
         self.d = px(self.D)
-        self._pos = [0, 0]
+
         self._drag = {"dx": 0, "dy": 0, "on": False, "moved": False}
         self._job = None
         self._photo = None
-        self._stop = False
         self._hover = False
-        self._layered = False
-        self.hwnd = 0
-        self._dib = None
+        self._peek = False          # 收纳状态下鼠标悬停时是否临时展开
+        self._docked = None         # None / "left" / "right" / "top" / "bottom"
+        self._place_xy = [0, 0]
 
-        self.win = tk.Toplevel(parent)
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.configure(bg="#263238")
-        self._place(x, y)
-        self.win.update_idletasks()
-
-        self._setup_layered()
-        if not self._layered:                 # 兜底：退回色键方案
-            try:
-                self.win.attributes("-transparentcolor", _KEY)
-                self.win.configure(bg=_KEY)
-            except Exception:
-                pass
-            self.canvas = tk.Canvas(self.win, width=self.d, height=self.d,
-                                    bg=_KEY if not self._layered else "#263238",
-                                    highlightthickness=0, bd=0, cursor="hand2")
-            self.canvas.pack()
-
+        self.canvas = tk.Canvas(root, width=self.d, height=self.d, bg=self.bg,
+                                highlightthickness=0, bd=0, cursor="hand2")
         self._bind()
         self._menu()
+        self._restore(x, y)
         self._redraw()
         self._tick()
 
-    # ---------------- 分层窗口 ----------------
-    def _setup_layered(self):
-        try:
-            self.hwnd = int(self.win.wm_frame(), 16)
-            u = ctypes.windll.user32
-            ex = u.GetWindowLongW(self.hwnd, _GWL_EXSTYLE)
-            u.SetWindowLongW(self.hwnd, _GWL_EXSTYLE,
-                             ex | _WS_EX_LAYERED | _WS_EX_TOOLWINDOW)
-            self._layered = True
-        except Exception:
-            self._layered = False
-
-    def _upload(self, img):
-        """把 RGBA 图上传成分层窗口的位图（只在画面变化时调用）。
-
-        位图缓存下来：拖动时只需要 UpdateLayeredWindow 换个位置，
-        不用每帧重建 DIB，也不用 SetWindowPos 反复重排 z 序 ——
-        那两个正是之前拖动卡顿的原因。
-        """
-        from PIL import Image
-        img = img.convert("RGBA")
-        w, h = img.size
-
-        # 预乘 alpha（ULW 要求 AC_SRC_ALPHA + premultiplied BGRA）
-        src = img.tobytes("raw", "BGRA")
-        buf = bytearray(src)
-        for i in range(0, len(buf), 4):
-            a = buf[i + 3]
-            if a != 255:
-                buf[i] = buf[i] * a // 255
-                buf[i + 1] = buf[i + 1] * a // 255
-                buf[i + 2] = buf[i + 2] * a // 255
-
-        u = ctypes.windll.user32
-        g = ctypes.windll.gdi32
-        hdc_screen = u.GetDC(0)
-        hdc_mem = g.CreateCompatibleDC(hdc_screen)
-        bmi = _BITMAPINFO()
-        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = w
-        bmi.bmiHeader.biHeight = -h        # 负数 = 自上而下
-        bmi.bmiHeader.biPlanes = 1
-        bmi.bmiHeader.biBitCount = 32
-        bmi.bmiHeader.biCompression = 0
-        bits = ctypes.c_void_p()
-        hbmp = g.CreateDIBSection(hdc_mem, ctypes.byref(bmi), 0,
-                                  ctypes.byref(bits), None, 0)
-        ctypes.memmove(bits, bytes(buf), len(buf))
-        g.SelectObject(hdc_mem, hbmp)
-        u.ReleaseDC(0, hdc_screen)
-
-        # 换掉旧位图
-        self._free_dib()
-        self._dib = (hbmp, hdc_mem, w, h)
-        self._apply_pos()
-
-    def _free_dib(self):
-        dib = getattr(self, "_dib", None)
-        hbmp, hdc_mem = (dib[0], dib[1]) if dib else (None, None)
-        if hbmp:
-            try:
-                ctypes.windll.gdi32.DeleteObject(hbmp)
-            except Exception:
-                pass
-        if hdc_mem:
-            try:
-                ctypes.windll.gdi32.DeleteDC(hdc_mem)
-            except Exception:
-                pass
-        self._dib = None
-
-    def _apply_pos(self):
-        """用缓存的位图 + 新坐标调用 ULW（不重建位图，也不改 z 序）。"""
-        if not (self._layered and self.hwnd and self._dib):
-            try:
-                self.win.geometry("+%d+%d" % (self._pos[0], self._pos[1]))
-            except Exception:
-                pass
-            return
-        hbmp, hdc_mem, w, h = self._dib
-        u = ctypes.windll.user32
-        hdc_screen = u.GetDC(0)
-        pt_dst = wintypes.POINT(self._pos[0], self._pos[1])
-        pt_src = wintypes.POINT(0, 0)
-        size = wintypes.SIZE(w, h)
-        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
-        u.UpdateLayeredWindow(self.hwnd, hdc_screen, ctypes.byref(pt_dst),
-                              ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
-                              0, ctypes.byref(blend), _ULW_ALPHA)
-        u.ReleaseDC(0, hdc_screen)
-
     # ---------------- 位置 ----------------
-    def _place(self, x=None, y=None):
-        if x is None or y is None:
-            sw = self.win.winfo_screenwidth()
-            sh = self.win.winfo_screenheight()
-            x = sw - self.d - px(28)
-            y = sh - self.d - px(96)
-        self._pos = [int(x), int(y)]
-        self.win.geometry("%dx%d+%d+%d" % (self.d, self.d, self._pos[0], self._pos[1]))
+    def _bounds(self):
+        try:
+            w = max(self.d, self.root.winfo_width())
+            h = max(self.d, self.root.winfo_height())
+        except Exception:
+            return 0, 0, self.d, self.d
+        return 0, 0, w, h
 
-    def _move(self, x, y):
-        self._pos = [int(x), int(y)]
-        self._apply_pos()
+    def _clamp(self, x, y):
+        _, _, w, h = self._bounds()
+        return max(0, min(int(x), w - self.d)), max(0, min(int(y), h - self.d))
+
+    def _restore(self, x, y):
+        try:
+            x, y = int(x), int(y)
+        except Exception:
+            x = y = -1
+        if x < 0 or y < 0:
+            _, _, w, h = self._bounds()
+            x, y = w - self.d - px(18), h - self.d - px(64)     # 默认右下角偏上
+        self.canvas.place(x=0, y=0, width=self.d, height=self.d)
+        self._place(*self._clamp(x, y))
+
+    def _place(self, x, y):
+        self._place_xy = [int(x), int(y)]
+        try:
+            self.canvas.place(x=int(x), y=int(y), width=self.d, height=self.d)
+        except Exception:
+            pass
 
     def position(self):
-        return tuple(self._pos)
+        return tuple(self._place_xy)
+
+    def _apply_dock(self, edge):
+        """贴边：吸附到边上；开着收纳时再滑出去一半（只露一条边）。"""
+        self._docked = edge
+        _, _, w, h = self._bounds()
+        x, y = self._place_xy
+        if edge == "left":
+            x = 0
+            if self.dock_enabled and not self._peek:
+                x = -int(self.d * 0.55)
+        elif edge == "right":
+            x = w - self.d
+            if self.dock_enabled and not self._peek:
+                x = w - self.d + int(self.d * 0.55)
+        elif edge == "top":
+            y = 0
+            if self.dock_enabled and not self._peek:
+                y = -int(self.d * 0.55)
+        elif edge == "bottom":
+            y = h - self.d
+            if self.dock_enabled and not self._peek:
+                y = h - self.d + int(self.d * 0.55)
+        self._place(x, y)
+
+    def _detect_edge(self):
+        """松手时判断有没有贴到边。返回 None / 边名。"""
+        _, _, w, h = self._bounds()
+        x, y = self._place_xy
+        近 = px(_SNAP)
+        左 = x <= 近
+        右 = (w - self.d - x) <= 近
+        上 = y <= 近
+        下 = (h - self.d - y) <= 近
+        if 左 and not 右:
+            return "left"
+        if 右 and not 左:
+            return "right"
+        if 上 and not 下:
+            return "top"
+        if 下 and not 上:
+            return "bottom"
+        return None
+
+    def _undock(self):
+        self._peek = True
+        if self._docked:
+            self._apply_dock(self._docked)
+
+    def _redock(self):
+        self._peek = False
+        if self._docked:
+            self._apply_dock(self._docked)
 
     # ---------------- 交互 ----------------
-    def _target(self):
-        return self.win if self._layered else self.canvas
-
     def _bind(self):
-        w = self._target()
-        w.bind("<Button-1>", self._on_press)
-        w.bind("<B1-Motion>", self._on_drag)
-        w.bind("<ButtonRelease-1>", self._on_release)
-        w.bind("<Button-3>", self._popup)
-        w.bind("<Enter>", self._on_enter)
-        w.bind("<Leave>", self._on_leave)
+        c = self.canvas
+        c.bind("<Button-1>", self._on_press)
+        c.bind("<B1-Motion>", self._on_drag)
+        c.bind("<ButtonRelease-1>", self._on_release)
+        c.bind("<Button-3>", self._popup)
+        c.bind("<Enter>", self._on_enter)
+        c.bind("<Leave>", self._on_leave)
+        try:
+            self.root.bind("<Configure>", self._on_root_configure, add="+")
+        except Exception:
+            pass
+
+    def _on_root_configure(self, ev):
+        try:
+            if ev.widget is not self.root:
+                return
+        except Exception:
+            pass
+        if self._docked:
+            self._apply_dock(self._docked)
+        else:
+            self._place(*self._clamp(*self._place_xy))
 
     def _on_press(self, e):
-        self._drag.update(dx=e.x_root - self._pos[0],
-                          dy=e.y_root - self._pos[1],
+        self._drag.update(dx=e.x_root - self.canvas.winfo_rootx(),
+                          dy=e.y_root - self.canvas.winfo_rooty(),
                           on=True, moved=False)
 
     def _on_drag(self, e):
         if not self._drag["on"]:
             return
-        nx, ny = e.x_root - self._drag["dx"], e.y_root - self._drag["dy"]
-        if abs(nx - self._pos[0]) > 2 or abs(ny - self._pos[1]) > 2:
+        nx = e.x_root - self.canvas.winfo_rootx() - self._drag["dx"]
+        ny = e.y_root - self.canvas.winfo_rooty() - self._drag["dy"]
+        if abs(nx - self._place_xy[0]) > 1 or abs(ny - self._place_xy[1]) > 1:
             self._drag["moved"] = True
-        self._move(nx, ny)
+        self._docked = None
+        self._place(nx, ny)
 
     def _on_release(self, _e):
         if not self._drag["on"]:
             return
         self._drag["on"] = False
         if self._drag["moved"]:
+            edge = self._detect_edge()
+            if edge:
+                self._apply_dock(edge)
+            else:
+                self._docked = None
+                self._place(*self._clamp(*self._place_xy))
             if self.on_close:
-                self.on_close(self, False)
+                self.on_close(self, False)     # 借回调存位置
         else:
             self._open_chart()
 
     def _on_enter(self, _e):
         self._hover = True
+        if self._docked and self.dock_enabled:
+            self._undock()
         self._redraw()
 
     def _on_leave(self, _e):
         self._hover = False
+        if self._docked and self.dock_enabled:
+            self._redock()
         self._redraw()
 
     def _menu(self):
-        self.menu = tk.Menu(self.win, tearoff=0)
+        self.menu = tk.Menu(self.canvas, tearoff=0)
         self.menu.add_command(label="打开曲线图", command=self._open_chart)
         self.menu.add_command(label="复位位置", command=self._reset_pos)
         self.menu.add_separator()
@@ -289,30 +245,31 @@ class NetFloat:
             pass
 
     def _reset_pos(self):
-        self._place(None, None)
+        self._docked = None
+        self._restore(-1, -1)
         self._redraw()
         if self.on_close:
             self.on_close(self, False)
 
     # ---------------- 绘制 ----------------
     def _tick(self):
-        if self._stop:
+        if not self.alive():
             return
         try:
-            if not self._drag["on"]:      # 拖动中不重建图像，避免打断手感
+            if not self._drag["on"]:
                 self._redraw()
         except Exception:
             pass
         try:
-            self._job = self.win.after(1000, self._tick)
+            self._job = self.root.after(1000, self._tick)
         except Exception:
             pass
 
     def _image(self):
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
         d = self.d
-        S = 4                       # 超采样，缩回来就是抗锯齿
+        S = 4
         D = d * S
         try:
             历史 = list(self.get_history() or [])
@@ -323,7 +280,7 @@ class NetFloat:
         当前 = None
         if 历史:
             t0, v, 通源, 总源 = 历史[-1][:4]
-            if (time.time() - t0) <= 120:
+            if (time.time() - t0) <= 150:
                 当前 = int(v)
                 通 = 通源 > 0
 
@@ -331,9 +288,16 @@ class NetFloat:
              (_BAD_HOVER if self._hover else _BAD)
 
         img = Image.new("RGBA", (D, D), (0, 0, 0, 0))
+        pad = int(D * 0.06) if self.shadow else 0
+        if self.shadow:
+            sh = Image.new("RGBA", (D, D), (0, 0, 0, 0))
+            ImageDraw.Draw(sh).ellipse(
+                [pad + S * 1.5, pad + S * 2.5, D - 1 - pad + S * 1.5, D - 1 - pad + S * 2.5],
+                fill=(0, 0, 0, 70))
+            img = Image.alpha_composite(img, sh.filter(ImageFilter.GaussianBlur(2.2 * S)))
+
         dr = ImageDraw.Draw(img)
-        pad = int(D * 0.02)
-        dr.ellipse([pad, pad, D - 1 - pad, D - 1 - pad], fill=_TILE + (255,))
+        dr.ellipse([pad, pad, D - 1 - pad, D - 1 - pad], fill=_TILE)
         ring = max(2 * S, int(round(D * 0.055)))
         dr.ellipse([pad, pad, D - 1 - pad, D - 1 - pad], outline=环 + (255,), width=ring)
 
@@ -353,11 +317,10 @@ class NetFloat:
         f2 = 字体(max(8 * S, int(D * 0.16)))
         try:
             bb = dr.textbbox((0, 0), 数字, font=f1)
-            tw = bb[2] - bb[0]
-            base_y = D * 0.30 - bb[1]
+            tw, ty = bb[2] - bb[0], D * 0.30 - bb[1]
         except Exception:
-            tw, base_y = len(数字) * 字号 // 2, D * 0.22
-        dr.text(((D - tw) / 2, base_y), 数字, font=f1, fill=_FG)
+            tw, ty = len(数字) * 字号 // 2, D * 0.22
+        dr.text(((D - tw) / 2, ty), 数字, font=f1, fill=_FG)
         try:
             w2 = dr.textlength("ms", font=f2)
         except Exception:
@@ -367,36 +330,28 @@ class NetFloat:
         return img.resize((d, d), Image.LANCZOS)
 
     def _redraw(self):
+        from PIL import ImageTk
         img = self._image()
-        if self._layered:
-            self._upload(img)
-        else:
-            from PIL import ImageTk
-            self._photo = ImageTk.PhotoImage(img)
-            self.canvas.delete("all")
-            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        self._photo = ImageTk.PhotoImage(img)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
 
     # ---------------- 生命周期 ----------------
-    def close(self):
-        self._stop = True
+    def alive(self):
         try:
-            self._free_dib()
+            return bool(self.canvas.winfo_exists())
         except Exception:
-            pass
+            return False
+
+    def close(self):
         try:
             if self._job:
-                self.win.after_cancel(self._job)
+                self.root.after_cancel(self._job)
         except Exception:
             pass
         try:
-            self.win.destroy()
+            self.canvas.destroy()
         except Exception:
             pass
         if self.on_close:
             self.on_close(self, True)
-
-    def alive(self):
-        try:
-            return bool(self.win.winfo_exists())
-        except Exception:
-            return False
