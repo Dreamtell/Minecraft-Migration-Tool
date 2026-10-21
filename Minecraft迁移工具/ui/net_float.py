@@ -66,15 +66,22 @@ class _BITMAPINFO(ctypes.Structure):
 class NetFloat:
     """`get_history()` 返回 [(时间戳, 毫秒, 连通源数, 源总数), ...]。"""
 
-    D = 56                # 设计直径（会乘 UI_SCALE）
+    D = 56                # 默认直径（设计像素，会乘 UI_SCALE）
+    MIN_D = 40            # 设置里能调到的最小/最大（再小数字就糊了，再大挡视野）
+    MAX_D = 96
 
     def __init__(self, parent, get_history, on_open_chart, on_close=None,
-                 x=None, y=None):
+                 x=None, y=None, size=None):
         self.parent = parent
         self.get_history = get_history
         self.on_open_chart = on_open_chart
         self.on_close = on_close
 
+        # 限制在 MIN_D..MAX_D：太小数字放不下，太大挡住桌面
+        try:
+            self.D = max(self.MIN_D, min(self.MAX_D, int(size or self.D)))
+        except Exception:
+            self.D = 56
         self.d = px(self.D)
         self._pos = [0, 0]
         self._drag = {"dx": 0, "dy": 0, "on": False, "moved": False}

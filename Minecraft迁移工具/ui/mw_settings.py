@@ -265,6 +265,18 @@ class SettingsMixin:
         开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
              self._toggle_splash, 名="splash").pack(fill="x", pady=(6, 0))
 
+        # 桌面浮标的大小：只给三档。太小数字放不下，太大挡住桌面；
+        # 40~96 px 的硬限制在 _set_float_size 里还会再夹一次（防手改配置）。
+        self.settings_float_size_var = tk.StringVar(
+            value=str(int(getattr(self, "net_float_size", 56))))
+        row_float = tk.Frame(box1, bg=self.theme["bg"])
+        row_float.pack(fill="x", pady=(10, 0))
+        tk.Label(row_float, text="延迟浮标大小：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        分段(row_float, self.settings_float_size_var,
+             (("44", "小"), ("56", "中"), ("72", "大")),
+             lambda v: self._set_float_size(v), 名="floatsize")
+
         # 配置文件是这个程序唯一的"数据文件"（语言 / 主题 / 各种偏好都在里面），
         # 给个一键用系统默认程序打开；改完要重启才生效，所以顺手写在旁边。
         row_cfg = tk.Frame(box1, bg=self.theme["bg"])
@@ -750,6 +762,34 @@ class SettingsMixin:
         self.log(trp("🎬 启动动画已{0}（下次启动程序生效）",
                      i18n.tr('启用' if self.splash_enabled else '关闭')),
                  level="INFO", save=False)
+
+    def _set_float_size(self, 值):
+        """延迟浮标的大小（40~96 设计像素，界面里再乘 DPI）。
+
+        浮标开着的话**就地重建**：尺寸变了必须重画位图，而位置保持不变，
+        用户不会被跳走。
+        """
+        try:
+            n = int(值)
+        except Exception:
+            n = 56
+        n = max(40, min(96, n))
+        self.net_float_size = n
+        try:
+            self.save_config()
+        except Exception:
+            pass
+        try:
+            flt = getattr(self, "_net_float", None)
+            if flt is not None and flt.alive():
+                pos = flt.position()
+                flt.close()                      # 会触发 on_close，把开关置回 False
+                if pos:
+                    self.net_float_x, self.net_float_y = int(pos[0]), int(pos[1])
+                self.open_net_float()
+        except Exception:
+            pass
+        self.log(trp("🔎 延迟浮标大小已设为 {0} px", n), level="INFO", save=False)
 
     # ---------- 迁移标记 ----------
     def _toggle_rename_marker(self):

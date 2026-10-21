@@ -1323,7 +1323,8 @@ class PagesMixin:
             return mw_net.rtt_history()
 
         self._net_float = NetFloat(self.root, 历史, self.show_net_chart,
-                                   on_close=self._on_net_float_event, x=x, y=y)
+                                   on_close=self._on_net_float_event, x=x, y=y,
+                                   size=getattr(self, "net_float_size", 56))
         self.net_float_on = True
         try:
             self.save_config()

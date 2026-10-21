@@ -173,6 +173,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
 
     # ---------- 设置页：自绘开关 / 分段选择 ----------
     "启用启动动画（下次启动程序生效）": "Enable splash screen (applies on next launch)",
+    "延迟浮标大小：": "Float size:",
+    "小": "Small",
+    "中": "Medium",
+    "大": "Large",
+    "🔎 延迟浮标大小已设为 {0} px": "🔎 Float size set to {0} px",
     "启用 PySide6 窗口": "Enable PySide6 windows",
     "关掉 = 纯 Tk 模式：主进程不再加载 Qt（重启后生效）":
         "Off = pure Tk mode: the main process stops loading Qt (after a restart)",
