@@ -103,6 +103,7 @@ class NetFloat:
         self._photo = None
         self._stop = False
         self._dib = None
+        self._shown = True
         self._layered = False
         self._hwnd = 0
 
@@ -308,6 +309,62 @@ class NetFloat:
         c.bind("<Leave>", self._on_leave)
         try:
             self.root.bind("<Configure>", self._on_root_configure, add="+")
+            # 跟着主窗口显示/隐藏：最小化、收进托盘时浮标也必须消失，
+            # 否则它会孤零零留在桌面上（"不同图层"最明显的毛病）。
+            self.root.bind("<Map>", self._on_root_map, add="+")
+            self.root.bind("<Unmap>", self._on_root_unmap, add="+")
+            self.root.bind("<FocusIn>", self._on_root_focus_in, add="+")
+            self.root.bind("<FocusOut>", self._on_root_focus_out, add="+")
+        except Exception:
+            pass
+
+    def _on_root_map(self, ev):
+        if getattr(ev, "widget", None) is not self.root:
+            return
+        try:
+            if self.root.state() == "iconic":
+                return
+        except Exception:
+            pass
+        self._show()
+
+    def _on_root_unmap(self, ev):
+        if getattr(ev, "widget", None) is not self.root:
+            return
+        self._hide()
+
+    def _on_root_focus_in(self, ev):
+        """主窗口回到前台：浮标重新置顶并重画（隐藏过之后 ULW 内容要重传）。"""
+        if getattr(ev, "widget", None) is not self.root:
+            return
+        try:
+            self.win.attributes("-topmost", True)
+        except Exception:
+            pass
+        self._show()
+
+    def _on_root_focus_out(self, ev):
+        """主窗口失去焦点：取消置顶，免得它压在其他程序上面。"""
+        if getattr(ev, "widget", None) is not self.root:
+            return
+        try:
+            self.win.attributes("-topmost", False)
+        except Exception:
+            pass
+
+    def _show(self):
+        self._shown = True
+        try:
+            if self.win.state() == "withdrawn":
+                self.win.deiconify()
+        except Exception:
+            pass
+        self._redraw()
+
+    def _hide(self):
+        self._shown = False
+        try:
+            self.win.withdraw()
         except Exception:
             pass
 
@@ -399,11 +456,34 @@ class NetFloat:
             self.on_close(self, False)
 
     # ---------------- 绘制 ----------------
+    def _root_should_show(self):
+        """主窗口是不是「可见」：既没最小化、也没 withdraw（收托盘）。"""
+        try:
+            if self.root.state() != "normal":
+                return False
+            return bool(self.root.winfo_viewable())
+        except Exception:
+            return True
+
+    def _sync_visibility(self):
+        """轮询兜底：withdraw()（收托盘）不一定触发 <Unmap>，光靠事件会漏。"""
+        want = self._root_should_show()
+        if want and not self._shown:
+            self._shown = True
+            self._show()
+        elif not want and self._shown:
+            self._shown = False
+            self._hide()
+
     def _tick(self):
         if self._stop:
             return
         try:
-            if not self._drag["on"] and not (self._docked and not self._peek):
+            self._sync_visibility()
+        except Exception:
+            pass
+        try:
+            if self._shown and not self._drag["on"] and not (self._docked and not self._peek):
                 self._redraw()
         except Exception:
             pass
