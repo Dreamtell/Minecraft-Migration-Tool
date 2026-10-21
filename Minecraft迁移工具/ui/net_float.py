@@ -74,7 +74,7 @@ class NetFloat:
     MIN_D = 40
     MAX_D = 96
     TAB_W = 22          # 收纳成小标签时的宽度（设计像素）
-    SNAP = 14           # 离边多近算贴边
+    SNAP = 8            # 离边多近算贴边（设计像素；14 太灵敏，一靠近就吸）
 
     def __init__(self, root, get_history, on_open_chart, on_close=None,
                  size=None, shadow=True, dock=True, bg="#f0f0f0",
@@ -168,7 +168,9 @@ class NetFloat:
 
     def _cur_size(self):
         if self._docked and self.dock_enabled and not self._peek:
-            return (self.tab_w, self.d)
+            if self._docked in ("left", "right"):
+                return (self.tab_w, self.d)        # 竖条
+            return (self.d, self.tab_w)            # 横条（贴上下边时）
         return (self.d, self.d)
 
     def _clamp(self, x, y):
@@ -263,12 +265,13 @@ class NetFloat:
     # ---------------- 贴边 ----------------
     def _detect_edge(self):
         w, h = self._parent_size()
+        cw, ch = self._cur_size()
         x, y = self._rel
         近 = px(self.SNAP)
         左 = x <= 近
-        右 = (w - self.d - x) <= 近
+        右 = (w - cw - x) <= 近
         上 = y <= 近
-        下 = (h - self.d - y) <= 近
+        下 = (h - ch - y) <= 近
         if 左 and not 右:
             return "left"
         if 右 and not 左:
@@ -393,7 +396,8 @@ class NetFloat:
             self._docked = None
             self._peek = False
             self._redraw()
-        self._rel = [int(nx), int(ny)]
+        # 拖动过程中就夹在主窗口内：以前只在松手时夹，中途可以拖到窗口外面去
+        self._rel = list(self._clamp(nx, ny))
         self._apply()
 
     def _on_release(self, _e):
