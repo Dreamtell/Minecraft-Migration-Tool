@@ -1,28 +1,35 @@
 # ui/net_float.py
 """主窗口旁的悬浮图标：点一下打开网络延迟曲线窗口。
 
-为什么用「透明色键 = 主窗口背景色」而不是分层窗口：
-  · 分层窗口（UpdateLayeredWindow）理论上能逐像素透明，但在这个程序里实测
-    画不出来 —— `wm_frame()` 拿到的是 Tk 内部子窗口，把 WS_EX_LAYERED 和 ULW
-    作用上去之后内容会被父窗口裁掉，窗口"存在且 visible"但屏幕上是空的；
-  · Tk 自带的 `-transparentcolor` 稳定可用。把键色设成**主窗口的背景色**，
-    圆外的整块背景就透明了，圆边的抗锯齿像素是"环色→背景色"的渐变，
-    和主窗口背景本来就一致，所以既不会有方块、也不会有彩边。
+实现要点（每一条都是踩过坑的）：
 
-移动范围限制在主窗口客户区：位置存的是**相对主窗口左上角的偏移**，
-主窗口一移动它就跟着移动，拖到边界外会被夹回来。
+1. **真透明靠分层窗口（UpdateLayeredWindow），不用 -transparentcolor。**
+   色键在部分机器上不生效，会留下一块方形底色；而且它的抗锯齿边缘会和键色
+   混出一圈彩边。
 
-贴边收纳：不靠"滑出窗口"（那样会被桌面看见），而是**缩小成贴边的小标签**
-（只占 22px 宽），鼠标移上去恢复成完整的圆。
+2. **分层窗口里不能有子控件。** Tk 的 Canvas 会用自己的底色把 ULW 画的内容
+   整块盖住 —— 表现就是「圆外面多出一块方块」。所以分层模式下不建 Canvas，
+   只有退回色键方案时才建。
 
-拖动公式固定为：`指针屏幕坐标 - 主窗口屏幕坐标 - 指针在控件内的偏移`。
-（之前按下时记的是"指针在控件里的位置"，拖动时又减了一次控件当前的位置，
-而它自己也在动，等于把位移算了两遍，所以会瞬移、不跟手。）
+3. **必须置顶。** 无边框弹出窗口不置顶的话会被自己的主窗口盖住（实测把主窗口
+   置前之后浮标直接消失）。Tk/Win32 没有「只压在主窗口之上、又低于其它程序」
+   这种中间层级可用。
+
+4. **拖动公式**：`指针屏幕坐标 - 主窗口屏幕坐标 - 指针在控件内的偏移`。
+   不要用「控件当前位置」参与运算 —— 它在拖动过程中一直在变，会算两遍位移，
+   表现为瞬移、不跟手。
+
+5. **限制在主窗口范围内**：位置存的是相对主窗口左上角的偏移，主窗口移动时
+   跟着走，拖到边界外会被夹回来。
+
+6. **贴边收纳**：缩成一个 22px 宽的小标签（不能"滑出窗外"——弹出窗口不会被
+   别的窗口裁剪），鼠标移上去展开成完整的圆。
 """
 
 import ctypes
 import time
 import tkinter as tk
+from ctypes import wintypes
 
 from utils.dpi import px
 
@@ -33,6 +40,31 @@ _GOOD = (46, 125, 50)
 _BAD = (198, 40, 40)
 _GOOD_HOVER = (76, 175, 80)
 _BAD_HOVER = (239, 83, 80)
+
+_GWL_EXSTYLE = -20
+_WS_EX_LAYERED = 0x00080000
+_WS_EX_TOOLWINDOW = 0x00000080
+_ULW_ALPHA = 0x00000002
+_AC_SRC_OVER = 0x00
+_AC_SRC_ALPHA = 0x01
+
+
+class _BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte), ("AlphaFormat", ctypes.c_ubyte)]
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD)]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
 
 
 class NetFloat:
@@ -70,9 +102,19 @@ class NetFloat:
         self._job = None
         self._photo = None
         self._stop = False
+        self._dib = None
+        self._layered = False
+        self._hwnd = 0
 
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
+        # 必须置顶：无边框弹出窗口如果不置顶，就会被自己的主窗口盖住（实测把主窗口
+        # 置前之后浮标就消失了）。Tk/Win32 没有「只压在主窗口之上、又低于其它程序」
+        # 这种中间层级可用。
+        try:
+            self.win.attributes("-topmost", True)
+        except Exception:
+            pass
         # ⚠ 不能用 tk 的 transient()：它会让 Tk 把这个窗口变成**子窗口**（实测
         # style 里 WS_CHILD 置位），子窗口被父窗口裁剪、坐标也变成客户区相对，
         # 于是 geometry 按屏幕坐标摆位就永远画不出来。
@@ -82,15 +124,32 @@ class NetFloat:
         # 窗口就再也不显示了（可能拿到了非顶层句柄）。这里先只保证显示，
         # 同层/跟随最小化交给 Tk 的 transient 之外的机制（见 README 说明）。
         pass
+        # 逐像素透明：Tk 的 -transparentcolor 在部分机器上不生效（会留下一块
+        # 方形底色），所以优先用分层窗口 + UpdateLayeredWindow。
         try:
-            self.win.attributes("-transparentcolor", self.bg)
+            self.win.update_idletasks()
+            self._hwnd = int(self.win.wm_frame(), 16)
+            u = ctypes.windll.user32
+            ex = u.GetWindowLongW(self._hwnd, _GWL_EXSTYLE)
+            u.SetWindowLongW(self._hwnd, _GWL_EXSTYLE,
+                             ex | _WS_EX_LAYERED | _WS_EX_TOOLWINDOW)
+            self._layered = True
         except Exception:
-            pass
+            self._layered = False
+        if not self._layered:
+            try:
+                self.win.attributes("-transparentcolor", self.bg)
+            except Exception:
+                pass
         self.win.configure(bg=self.bg)
 
-        self.canvas = tk.Canvas(self.win, bg=self.bg, highlightthickness=0, bd=0,
-                                cursor="hand2")
-        self.canvas.pack(fill="both", expand=True)
+        # ⚠ 分层窗口里**不能有子控件**：Canvas 会用自己的底色盖掉 ULW 画的内容
+        # （表现就是圆外面多出一块纯色方块）。所以只有退回色键方案时才建 Canvas。
+        self.canvas = None
+        if not self._layered:
+            self.canvas = tk.Canvas(self.win, bg=self.bg, highlightthickness=0, bd=0,
+                                    cursor="hand2")
+            self.canvas.pack(fill="both", expand=True)
 
         self._bind()
         self._menu()
@@ -127,17 +186,75 @@ class NetFloat:
         self._rel = list(self._clamp(x, y))
         self._apply()
 
-    def _apply(self):
-        cw, ch = self._cur_size()
+    def _abs_pos(self):
         try:
-            ax = self.root.winfo_rootx() + self._rel[0]
-            ay = self.root.winfo_rooty() + self._rel[1]
+            return (self.root.winfo_rootx() + self._rel[0],
+                    self.root.winfo_rooty() + self._rel[1])
         except Exception:
-            ax, ay = self._rel
+            return self._rel[0], self._rel[1]
+
+    def _apply(self):
+        ax, ay = self._abs_pos()
+        if self._layered and self._dib:
+            self._blit(self._dib, ax, ay)
+            return
+        cw, ch = self._cur_size()
         try:
             self.win.geometry("%dx%d+%d+%d" % (cw, ch, int(ax), int(ay)))
         except Exception:
             pass
+
+    # ---------------- 分层窗口位图 ----------------
+    def _blit(self, dib, x, y):
+        hbmp, hdc_mem, w, h = dib
+        u = ctypes.windll.user32
+        hdc_screen = u.GetDC(0)
+        pt_dst = wintypes.POINT(int(x), int(y))
+        pt_src = wintypes.POINT(0, 0)
+        size = wintypes.SIZE(w, h)
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
+        u.UpdateLayeredWindow(self._hwnd, hdc_screen, ctypes.byref(pt_dst),
+                              ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
+                              0, ctypes.byref(blend), _ULW_ALPHA)
+        u.ReleaseDC(0, hdc_screen)
+
+    def _upload(self, img):
+        from PIL import Image
+        img = img.convert("RGBA")
+        w, h = img.size
+        buf = bytearray(img.tobytes("raw", "BGRA"))
+        for i in range(0, len(buf), 4):          # 预乘 alpha
+            a = buf[i + 3]
+            if a != 255:
+                buf[i] = buf[i] * a // 255
+                buf[i + 1] = buf[i + 1] * a // 255
+                buf[i + 2] = buf[i + 2] * a // 255
+        u = ctypes.windll.user32
+        g = ctypes.windll.gdi32
+        hdc_screen = u.GetDC(0)
+        hdc_mem = g.CreateCompatibleDC(hdc_screen)
+        bmi = _BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = w
+        bmi.bmiHeader.biHeight = -h
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bits = ctypes.c_void_p()
+        hbmp = g.CreateDIBSection(hdc_mem, ctypes.byref(bmi), 0,
+                                  ctypes.byref(bits), None, 0)
+        ctypes.memmove(bits, bytes(buf), len(buf))
+        g.SelectObject(hdc_mem, hbmp)
+        u.ReleaseDC(0, hdc_screen)
+        old = self._dib
+        self._dib = (hbmp, hdc_mem, w, h)
+        ax, ay = self._abs_pos()
+        self._blit(self._dib, ax, ay)
+        if old:                                  # 换掉旧位图
+            try:
+                g.DeleteObject(old[0])
+                g.DeleteDC(old[1])
+            except Exception:
+                pass
 
     def position(self):
         return tuple(self._rel)
@@ -178,8 +295,11 @@ class NetFloat:
         self._apply()
 
     # ---------------- 交互 ----------------
+    def _target(self):
+        return self.canvas if self.canvas is not None else self.win
+
     def _bind(self):
-        c = self.canvas
+        c = self._target()
         c.bind("<Button-1>", self._on_press)
         c.bind("<B1-Motion>", self._on_drag)
         c.bind("<ButtonRelease-1>", self._on_release)
@@ -253,7 +373,7 @@ class NetFloat:
         self._redraw()
 
     def _menu(self):
-        self.menu = tk.Menu(self.canvas, tearoff=0)
+        self.menu = tk.Menu(self._target(), tearoff=0)
         self.menu.add_command(label="打开曲线图", command=self._open_chart)
         self.menu.add_command(label="复位位置", command=self._reset_pos)
         self.menu.add_separator()
@@ -368,9 +488,12 @@ class NetFloat:
         return img.resize((cw, ch), Image.LANCZOS)
 
     def _redraw(self):
+        img = self._image()
+        if self._layered:
+            self._upload(img)
+            return
         from PIL import ImageTk
         cw, ch = self._cur_size()
-        img = self._image()
         self._photo = ImageTk.PhotoImage(img)
         try:
             self.canvas.configure(width=cw, height=ch)
