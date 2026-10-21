@@ -84,6 +84,7 @@ class NetFloat:
         self._hover = False
         self._layered = False
         self.hwnd = 0
+        self._dib = None
 
         self.win = tk.Toplevel(parent)
         self.win.overrideredirect(True)
@@ -121,8 +122,13 @@ class NetFloat:
         except Exception:
             self._layered = False
 
-    def _blit(self, img):
-        """把 RGBA 图贴到分层窗口上（逐像素 alpha）。"""
+    def _upload(self, img):
+        """把 RGBA 图上传成分层窗口的位图（只在画面变化时调用）。
+
+        位图缓存下来：拖动时只需要 UpdateLayeredWindow 换个位置，
+        不用每帧重建 DIB，也不用 SetWindowPos 反复重排 z 序 ——
+        那两个正是之前拖动卡顿的原因。
+        """
         from PIL import Image
         img = img.convert("RGBA")
         w, h = img.size
@@ -153,7 +159,39 @@ class NetFloat:
                                   ctypes.byref(bits), None, 0)
         ctypes.memmove(bits, bytes(buf), len(buf))
         g.SelectObject(hdc_mem, hbmp)
+        u.ReleaseDC(0, hdc_screen)
 
+        # 换掉旧位图
+        self._free_dib()
+        self._dib = (hbmp, hdc_mem, w, h)
+        self._apply_pos()
+
+    def _free_dib(self):
+        dib = getattr(self, "_dib", None)
+        hbmp, hdc_mem = (dib[0], dib[1]) if dib else (None, None)
+        if hbmp:
+            try:
+                ctypes.windll.gdi32.DeleteObject(hbmp)
+            except Exception:
+                pass
+        if hdc_mem:
+            try:
+                ctypes.windll.gdi32.DeleteDC(hdc_mem)
+            except Exception:
+                pass
+        self._dib = None
+
+    def _apply_pos(self):
+        """用缓存的位图 + 新坐标调用 ULW（不重建位图，也不改 z 序）。"""
+        if not (self._layered and self.hwnd and self._dib):
+            try:
+                self.win.geometry("+%d+%d" % (self._pos[0], self._pos[1]))
+            except Exception:
+                pass
+            return
+        hbmp, hdc_mem, w, h = self._dib
+        u = ctypes.windll.user32
+        hdc_screen = u.GetDC(0)
         pt_dst = wintypes.POINT(self._pos[0], self._pos[1])
         pt_src = wintypes.POINT(0, 0)
         size = wintypes.SIZE(w, h)
@@ -161,8 +199,6 @@ class NetFloat:
         u.UpdateLayeredWindow(self.hwnd, hdc_screen, ctypes.byref(pt_dst),
                               ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
                               0, ctypes.byref(blend), _ULW_ALPHA)
-        g.DeleteObject(hbmp)
-        g.DeleteDC(hdc_mem)
         u.ReleaseDC(0, hdc_screen)
 
     # ---------------- 位置 ----------------
@@ -177,11 +213,7 @@ class NetFloat:
 
     def _move(self, x, y):
         self._pos = [int(x), int(y)]
-        if self._layered and self.hwnd:
-            ctypes.windll.user32.SetWindowPos(self.hwnd, -1, self._pos[0], self._pos[1],
-                                              0, 0, _SWP_NOSIZE | _SWP_NOACTIVATE)
-        else:
-            self.win.geometry("+%d+%d" % (self._pos[0], self._pos[1]))
+        self._apply_pos()
 
     def position(self):
         return tuple(self._pos)
@@ -260,7 +292,8 @@ class NetFloat:
         if self._stop:
             return
         try:
-            self._redraw()
+            if not self._drag["on"]:      # 拖动中不重建图像，避免打断手感
+                self._redraw()
         except Exception:
             pass
         try:
@@ -329,7 +362,7 @@ class NetFloat:
     def _redraw(self):
         img = self._image()
         if self._layered:
-            self._blit(img)
+            self._upload(img)
         else:
             from PIL import ImageTk
             self._photo = ImageTk.PhotoImage(img)
@@ -339,6 +372,10 @@ class NetFloat:
     # ---------------- 生命周期 ----------------
     def close(self):
         self._stop = True
+        try:
+            self._free_dib()
+        except Exception:
+            pass
         try:
             if self._job:
                 self.win.after_cancel(self._job)
