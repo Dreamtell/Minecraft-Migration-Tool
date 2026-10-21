@@ -883,19 +883,35 @@ class PagesMixin:
             pass
 
     def show_net_chart(self):
-        """完整版：最近探测延迟的曲线图 + 统计（双击迷你图打开）。
+        """完整版：最近探测延迟的曲线图 + 统计（双击迷你图 / 点浮标打开）。
 
-        三个要点：
-        1. **平滑曲线**：采样点之间用 PCHIP（单调三次 Hermite）插值，不是直线段。
-           PCHIP 不会像普通样条那样在峰谷之间乱冲，延迟数据不会画出负值。
-        2. **连续滑动**：曲线只在"数据变了"时重算一次（有缓存的密集采样点），
-           之后每帧只把 x 平移 (now - t_base) —— 纯减法，60fps 也扛得住。
-        3. **blitting**：坐标轴/网格画一次缓存成位图，每帧只 restore + 重画曲线。
-           注意时间窗必须**量化**（10/15/20/30/45/60 秒跳档），否则窗口每帧都在变，
-           背景每帧重建（20ms+），帧率立刻掉到 20 多。
-
-        悬停：鼠标移上去吸附最近采样点，竖线 + 提示框显示「时间 · 延迟」。
+        再点一次不是"又开一个"，而是三态切换：
+          · 没开 → 打开；
+          · 开着但在后面 → 提到最前（不重建，避免闪一下）；
+          · 已经在前台 → 关掉（这样连点两次就是开关，不会堆出很多窗口）。
         """
+        try:
+            win = getattr(self, "_net_chart_win", None)
+            if win is not None and win.winfo_exists():
+                fg = int(ctypes.windll.user32.GetForegroundWindow())
+                try:
+                    mine = int(win.wm_frame(), 16)
+                except Exception:
+                    mine = 0
+                if mine and fg == mine:
+                    win.destroy()
+                    self._net_chart_win = None
+                else:
+                    win.deiconify()
+                    win.lift()
+                    try:
+                        win.focus_force()
+                    except Exception:
+                        pass
+                return
+        except Exception:
+            pass
+
         try:
             from ui import mw_net
             历史 = list(mw_net.rtt_history())
@@ -903,6 +919,14 @@ class PagesMixin:
             历史 = []
 
         顶 = tk.Toplevel(self.root)
+        self._net_chart_win = 顶
+        try:
+            def _清掉引用(e=None):
+                if e is None or getattr(e, "widget", None) is 顶:
+                    self._net_chart_win = None
+            顶.bind("<Destroy>", _清掉引用, add="+")
+        except Exception:
+            pass
         顶.title("📈 网络延迟（最近 %d 次探测）" % len(历史))
         try:
             顶.geometry(window_geometry(顶, 760, 420))

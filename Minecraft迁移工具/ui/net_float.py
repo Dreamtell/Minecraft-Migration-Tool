@@ -27,6 +27,7 @@
 """
 
 import ctypes
+import os
 import time
 import tkinter as tk
 from ctypes import wintypes
@@ -347,9 +348,21 @@ class NetFloat:
         self._show()
 
     def _on_root_focus_out(self, ev):
-        """主窗口失去焦点：取消置顶，免得它压在其他程序上面。"""
+        """主窗口失去焦点：取消置顶，免得它压在其他程序上面。
+
+        ⚠ 如果焦点只是转到了**本程序自己的另一个窗口**（比如刚打开的曲线图），
+        就不能降级 —— 否则点一下浮标打开图，浮标自己就沉到图后面"消失"了。
+        """
         if getattr(ev, "widget", None) is not self.root:
             return
+        try:
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            pid = wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+            if pid.value == os.getpid():
+                return
+        except Exception:
+            pass
         try:
             self.win.attributes("-topmost", False)
         except Exception:
