@@ -34,13 +34,18 @@ from ctypes import wintypes
 
 from utils.dpi import px
 
-_TILE = (38, 50, 56, 255)
+# 联网正常 → 绿色主题；探测不通 → 红色主题（整个浮标跟着变色，不只是环）
+_TILE = (38, 50, 56, 255)          # 无数据时的中性底色（一般用不到）
 _FG = "#ffffff"
 _MUTED = "#b0bec5"
-_GOOD = (46, 125, 50)
-_BAD = (198, 40, 40)
-_GOOD_HOVER = (76, 175, 80)
+_GOOD_TILE = (24, 55, 32)
+_GOOD = (67, 160, 71)
+_GOOD_HOVER = (102, 187, 106)
+_GOOD_MUTED = "#a5d6a7"
+_BAD_TILE = (58, 24, 24)
+_BAD = (229, 57, 53)
 _BAD_HOVER = (239, 83, 80)
+_BAD_MUTED = "#ef9a9a"
 
 _GWL_EXSTYLE = -20
 _WS_EX_LAYERED = 0x00080000
@@ -600,10 +605,16 @@ class NetFloat:
         if 历史:
             t0, v, 通源, 总源 = 历史[-1][:4]
             if (time.time() - t0) <= 150:
-                当前 = int(v)
                 通 = 通源 > 0
-        环 = (_GOOD_HOVER if self._hover else _GOOD) if 通 else \
-             (_BAD_HOVER if self._hover else _BAD)
+                当前 = int(v) if 通 else None      # 不通时显示「—」，别显示 0ms
+        if 通:
+            底 = _GOOD_TILE
+            环 = _GOOD_HOVER if self._hover else _GOOD
+            副 = _GOOD_MUTED
+        else:
+            底 = _BAD_TILE
+            环 = _BAD_HOVER if self._hover else _BAD
+            副 = _BAD_MUTED
 
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         pad = int(min(W, H) * 0.06) if self.shadow else 0
@@ -621,12 +632,12 @@ class NetFloat:
         if abs(cw - ch) <= 1:
             # 正圆必须用 ellipse：`rounded_rectangle(radius=半边长)` 在 Pillow 里
             # 是四段圆弧拼出来的，边缘会有细微的棱/毛刺，看起来像手画的。
-            dr.ellipse(box, fill=_TILE)
+            dr.ellipse(box, fill=底 + (255,))
             dr.ellipse(box, outline=环 + (255,), width=ring)
         else:
             # 收纳成小标签（细长胶囊）才用圆角矩形
             radius = min(W, H) * 0.5
-            dr.rounded_rectangle(box, radius=radius, fill=_TILE)
+            dr.rounded_rectangle(box, radius=radius, fill=底 + (255,))
             dr.rounded_rectangle(box, radius=radius, outline=环 + (255,), width=ring)
 
         # 收纳成小标签（22px 宽）时放不下数字，只留色条
@@ -655,7 +666,7 @@ class NetFloat:
                 w2 = dr.textlength("ms", font=f2)
             except Exception:
                 w2 = 12 * S
-            dr.text(((W - w2) / 2, H * 0.63), "ms", font=f2, fill=_MUTED)
+            dr.text(((W - w2) / 2, H * 0.63), "ms", font=f2, fill=副)
 
         return img.resize((cw, ch), Image.LANCZOS)
 
