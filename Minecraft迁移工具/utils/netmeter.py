@@ -1,35 +1,29 @@
 # utils/netmeter.py
-"""网络流量统计（上行 / 下行 / 累计），给主界面左下角用。
+"""本工具**自己**的 HTTP 用量统计（请求次数 / 上行字节 / 下行字节）。
 
-**这是整机的网络流量**，不是"本工具自己"的 —— 原因有三：
-  · 本工具的网络请求发生在 **Qt 子进程**里，父进程读不到它的内存计数；
-  · 想在两个进程之间汇总只能写文件，实测很难稳定（改了几版都没跑通）；
-  · `psutil` 从 6.0 起**移除了按进程的网络统计**（`Process.net_io_counters` 已删除）。
+只统计 `core/mod_search.py` 真正发出的请求 —— 不统计整机流量。
+整机那套（`psutil.net_io_counters()`）已经删掉了，原因：
+  · 显示的是浏览器、系统更新、其它程序的流量，跟本工具没关系，纯误导；
+  · 每次搜索才 ~12 KB，看在"整机流量"里根本分辨不出来；
+  · 还得多带一个 psutil 编译依赖进打包。
 
-所以用 `psutil.net_io_counters()`（系统级），效果和任务管理器 / 那些网络监控小工具一致，
-"网络有没有在跑、跑了多少"这个目的完全满足。tooltip 里写明了范围。
+现在能回答的问题是"这个工具自己用了多少"，而且问得有意义：
+  · 搜索窗状态行：「本次查询 3 次请求 / 36 KB」；
+  · Qt 大视图：「网络用量（本工具）」折线图。
 
-psutil 不可用时 `snapshot()` 返回 None，界面就不显示流量 —— 而不是显示一堆 0 让人
-以为坏了。计数本身仍在 `add_sent/add_recv` 里做（保留给需要的调用方，不影响显示）。
+一次搜索的真实量级（实测）：Modrinth 8 条结果 ≈ 12.4 KB，
+单个项目详情 ≈ 1.2 KB，分类查询 ≈ 7–9 KB 且**有磁盘缓存**。
 """
 
+import collections
 import threading
 import time
-
-try:
-    import psutil
-except Exception:                                    # pragma: no cover
-    psutil = None
 
 _lock = threading.Lock()
 _state = {"sent": 0, "recv": 0, "requests": 0}
 
 
-def available():
-    return psutil is not None
-
-
-# ---------- 本进程的 HTTP 计数（保留：某些地方想知道"我们发了多少"） ----------
+# ---------- 计数 ----------
 def add_sent(n):
     """记一次上行字节数（请求行 + 请求头 + 请求体）。"""
     try:
@@ -54,16 +48,16 @@ def add_recv(n):
         _state["recv"] += n
 
 
-def own_snapshot():
-    """本进程自己发起的 HTTP 字节数 (sent, recv)（只算走 mod_search 的那些）。"""
-    with _lock:
-        return _state["sent"], _state["recv"]
-
-
 def add_request():
     """记一次 HTTP 请求（不管成功失败都算一次尝试）。"""
     with _lock:
         _state["requests"] += 1
+
+
+def own_snapshot():
+    """本进程自己发起的 HTTP 字节数 (sent, recv)。"""
+    with _lock:
+        return _state["sent"], _state["recv"]
 
 
 def own_requests():
@@ -72,18 +66,7 @@ def own_requests():
         return _state["requests"]
 
 
-# ---------- 整机流量（界面显示用的就是这个） ----------
-def snapshot():
-    """当前累计 (sent, recv) 字节；psutil 不可用时返回 None。"""
-    if psutil is None:
-        return None
-    try:
-        n = psutil.net_io_counters()
-        return int(n.bytes_sent), int(n.bytes_recv)
-    except Exception:
-        return None
-
-
+# ---------- 格式化 ----------
 def format_bytes(n):
     """1.2 KB / 3.4 MB 这种可读写法。"""
     try:
@@ -104,35 +87,8 @@ def format_rate(bps):
     return format_bytes(bps) + "/s"
 
 
-class Sampler:
-    """按固定间隔采样，算出当前速率。"""
-
-    def __init__(self):
-        self._last_t = time.monotonic()
-        self._last = snapshot()
-
-    def tick(self):
-        """返回 (上行速率, 下行速率, 累计上行, 累计下行)；psutil 不可用时返回 None。"""
-        现在 = time.monotonic()
-        dt = max(0.001, 现在 - self._last_t)
-        当前 = snapshot()
-        self._last_t = 现在
-        if 当前 is None:
-            return None
-        if self._last is None:
-            self._last = 当前
-            return 0.0, 0.0, 当前[0], 当前[1]
-        上速 = max(0.0, (当前[0] - self._last[0]) / dt)
-        下速 = max(0.0, (当前[1] - self._last[1]) / dt)
-        self._last = 当前
-        return 上速, 下速, 当前[0], 当前[1]
-
-
 # ---------------- 历史事件（给折线图用） ----------------
-# 每次 HTTP 请求都记一条 (时间戳, 上行字节, 下行字节)。总量很小（一次搜索才 1 条、
-# 几十字节的元信息），保留最近 500 条够画很久了。
-import collections
-
+# 每次 HTTP 请求记一条 (时间戳, 上行字节, 下行字节)。请求很少，500 条够画很久。
 _events = collections.deque(maxlen=500)
 
 
