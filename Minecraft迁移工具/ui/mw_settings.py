@@ -357,6 +357,10 @@ class SettingsMixin:
         create_gradient_button(row_hist, "－", lambda: self._bump_history_limit(-1),
                                width=px(46), height=px(26)).pack(side="right", padx=(0, px(6)))
 
+        self.settings_pack_warn_var = tk.BooleanVar(value=getattr(self, "pack_warning", True))
+        开关(box_m, "显示「整合包更新提醒」（模组可能被作者删除/替换）",
+             self.settings_pack_warn_var, self._toggle_pack_warning, 名="packwarn").pack(fill="x")
+
         # ---------- 模组分类标签 ----------
         box_t = section("tags", page_mig)
         self.settings_tags_var = tk.BooleanVar(value=getattr(self, "online_tags", False))
@@ -820,6 +824,21 @@ class SettingsMixin:
         self._refresh_net_float()
         self.log(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
                  level="INFO", save=False)
+
+    def _toggle_pack_warning(self):
+        """开关：主界面的「整合包更新提醒」是否显示（立即生效）。"""
+        try:
+            开 = bool(self.settings_pack_warn_var.get())
+        except Exception:
+            开 = True
+        try:
+            self.set_pack_warning(开)
+        except Exception:
+            self.pack_warning = 开
+            try:
+                self.save_config()
+            except Exception:
+                pass
 
     def _bump_history_limit(self, 增量):
         """迁移历史保存上限：1~15，超出后删最旧的档案。"""

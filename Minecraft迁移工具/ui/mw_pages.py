@@ -281,6 +281,112 @@ class PagesMixin:
                 pass
         self._refresh_list_badges()
 
+    # ---------- 整合包更新提醒 ----------
+    def _build_pack_warning(self):
+        """在模组清单上方显示一条提醒：整合包更新可能删/换模组，差异扫描靠不住。
+
+        为什么值得单独提醒：「扫描差异」比的是**清单里的文件名和目标目录里的文件**，
+        作者在更新整合包时如果悄悄删掉某个模组，我们的清单里根本不会有它 —— 扫出来是
+        "没有差异"，实际却少了东西。所以这里让用户务必核对更新日志，并提供一键复制
+        一段"让 AI 分析更新日志"的提示词。
+        """
+        父 = getattr(self, "_pack_warning_parent", None)
+        if 父 is None or not getattr(self, "pack_warning", True):
+            return
+        旧 = getattr(self, "_pack_warning_frame", None)
+        if 旧 is not None:
+            try:
+                旧.destroy()
+            except Exception:
+                pass
+            self._pack_warning_frame = None
+
+        深 = self.theme.get("bg", "#ffffff").lower() in (
+            "#2e2e2e", "#1e1e1e", "#252525", "#202020", "#2b2b2b")
+        底 = "#3a3020" if 深 else "#fff8e1"
+        边 = "#8a6d1f" if 深 else "#e0a800"
+        字 = "#e8d9a8" if 深 else "#5c4400"
+        主 = self.theme.get("data_fg", "#1565c0") if not 深 else "#79b8ff"
+
+        框 = tk.Frame(父, bg=底, highlightthickness=1, highlightbackground=边)
+        框.pack(fill="x", padx=5, pady=(4, 2))
+        self._pack_warning_frame = 框
+
+        tk.Label(框, text="⚠️", font=("微软雅黑", 13), bg=底, fg=边).pack(
+            side="left", padx=(10, 8), anchor="n")
+
+        文本 = ("整合包更新时，作者可能会删除或替换模组 —— 这种情况下「扫描差异」只能比出"
+              "文件名和版本的不同，被作者删掉的模组是发现不了的。\n"
+              "请务必核对更新日志里的模组变更；也可以把更新日志交给 AI 帮你逐条分析。")
+        tk.Label(框, text=文本, justify="left", anchor="w", bg=底, fg=字,
+                 font=("微软雅黑", 9), wraplength=px(560)).pack(
+            side="left", fill="x", expand=True, pady=8)
+
+        右 = tk.Frame(框, bg=底)
+        右.pack(side="right", padx=(8, 10))
+
+        def _链接(文字, 命令):
+            标 = tk.Label(右, text=文字, bg=底, fg=主, cursor="hand2",
+                         font=("微软雅黑", 9, "underline"))
+            标.pack(side="left", padx=(0, 12))
+            标.bind("<Button-1>", lambda e: 命令())
+            return 标
+
+        def _复制提示词():
+            源 = self.source_path.get().strip() or "（未选择）"
+            标 = self.target_path.get().strip() or "（未选择）"
+            名 = 源.replace("\\", "/").rstrip("/").split("/")[-1] or "整合包"
+            提示 = (
+                "我在把一个 Minecraft 整合包从旧版本迁移到新版本，需要你帮我从下面的"
+                "更新日志里找出【与模组相关的变更】。\n\n"
+                "整合包：%s\n旧实例目录：%s\n新实例目录：%s\n\n"
+                "请按这个格式输出：\n"
+                "1. 新增的模组（尽量给出 modid 或中文名）\n"
+                "2. 移除的模组\n"
+                "3. 被替换/合并的模组（A 换成了 B）\n"
+                "4. 依赖或前置发生变化的模组\n"
+                "5. 需要我手动处理的注意点（配置重置、存档兼容性、存档版本）\n\n"
+                "更新日志如下：\n（把更新日志粘贴在这里）\n" % (名, 源, 标))
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(提示)
+                self.root.update_idletasks()
+                _链接反馈()
+            except Exception:
+                pass
+
+        def _链接反馈():
+            try:
+                复制标.config(text="已复制 ✓", fg=self.theme.get("ok_fg", "#2e7d32"))
+                self.root.after(1600, lambda: 复制标.config(text="复制 AI 提示词", fg=主))
+            except Exception:
+                pass
+
+        复制标 = _链接("复制 AI 提示词", _复制提示词)
+
+        def _不再提示():
+            self.pack_warning = False
+            try:
+                self.save_config()
+            except Exception:
+                pass
+            try:
+                框.destroy()
+            except Exception:
+                pass
+            self._pack_warning_frame = None
+
+        _链接("不再提示", _不再提示)
+
+    def set_pack_warning(self, 开):
+        """设置里开关：重新显示 / 隐藏这条提醒（立即生效）。"""
+        self.pack_warning = bool(开)
+        try:
+            self.save_config()
+        except Exception:
+            pass
+        self._build_pack_warning()
+
     def _create_modlist_page(self, parent):
         """模组清单页：每行一个 .jar 文件名。"""
         tk.Label(parent,
@@ -288,6 +394,10 @@ class PagesMixin:
                        "同名匹配不区分大小写，改过名的也能对上。"),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
+        self._pack_warning_parent = parent
+        self._pack_warning_frame = None
+        self._build_pack_warning()
+
         self.mod_text_box = RoundedTextArea(parent, self.theme, height=8,
                                             wrap=tk.NONE, undo=True,
                                             font=("微软雅黑 Light", 10))
