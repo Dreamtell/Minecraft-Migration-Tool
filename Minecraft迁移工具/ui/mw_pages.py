@@ -882,8 +882,9 @@ class PagesMixin:
         except Exception:
             pass
         try:
-            # 50ms（20fps）：Pillow 每帧 ~0.9ms，够便宜；再快肉眼也分不出来
-            self._net_spark_job = self.root.after(50, self._draw_net_spark)
+            # 250ms（4fps）：曲线满窗后大约每秒左移 1px，一帧只动 0.25px，
+            # 4fps 完全看不出跳；原来 50ms(20fps) 实测白吃 ~4.8% CPU
+            self._net_spark_job = self.root.after(250, self._draw_net_spark)
         except Exception:
             pass
 
@@ -1296,7 +1297,15 @@ class PagesMixin:
                         信息.configure(text="")
             except Exception:
                 pass
-            顶.after(帧间隔, 帧)
+            # 窗口不在前台（被别的程序挡住 / 用户去看别的地方了）时降到 30fps：
+            # 曲线本身每秒只移动 ~1px，30fps 根本看不出差别，CPU 却省一半。
+            间隔 = 帧间隔
+            try:
+                if int(ctypes.windll.user32.GetForegroundWindow()) != int(顶.wm_frame(), 16):
+                    间隔 = 33
+            except Exception:
+                pass
+            顶.after(间隔, 帧)
 
         def _鼠标移动(ev):
             try:
