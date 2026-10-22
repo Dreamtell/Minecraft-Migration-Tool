@@ -5,6 +5,7 @@
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
 import ctypes
+from ctypes import wintypes
 import math
 import time
 import tkinter as tk
@@ -886,23 +887,48 @@ class PagesMixin:
         except Exception:
             pass
 
+    @staticmethod
+    def _window_in_front(win):
+        """这个窗口此刻是不是"露在最上面"：取它中心点，看那一层的顶层窗口是不是它。
+
+        和焦点无关，所以点浮标（把焦点抢走）也不影响判断。
+        """
+        try:
+            u = ctypes.windll.user32
+            hwnd = int(win.wm_frame(), 16)
+            r = wintypes.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(r))
+            if r.right <= r.left or r.bottom <= r.top:
+                return False
+            if not u.IsWindowVisible(hwnd):
+                return False
+            x = (r.left + r.right) // 2
+            y = (r.top + r.bottom) // 2
+            at = u.WindowFromPoint(wintypes.POINT(x, y))
+            if not at:
+                return False
+            top = u.GetAncestor(at, 2)      # GA_ROOT
+            return int(top) == hwnd
+        except Exception:
+            return False
+
     def show_net_chart(self):
         """完整版：最近探测延迟的曲线图 + 统计（双击迷你图 / 点浮标打开）。
 
         再点一次不是"又开一个"，而是三态切换：
           · 没开 → 打开；
-          · 开着但在后面 → 提到最前（不重建，避免闪一下）；
-          · 已经在前台 → 关掉（这样连点两次就是开关，不会堆出很多窗口）。
+          · 开着但被挡住 → 提到最前（不重建，不闪）；
+          · 已经在最上面 → 关掉（连点两次就是开关，不会堆窗口）。
+
+        ⚠ 判断"是否在最上面"**不能用 GetForegroundWindow()**：你点浮标的那一刻，
+        浮标自己变成了前台窗口，图永远被判成"不在前台"，于是第二次点只会反复
+        把它提起来、永远关不掉。这里改成"图窗口中心点那个位置，最上层窗口是不是
+        它"（WindowFromPoint + GetAncestor），跟焦点无关。
         """
         try:
             win = getattr(self, "_net_chart_win", None)
             if win is not None and win.winfo_exists():
-                fg = int(ctypes.windll.user32.GetForegroundWindow())
-                try:
-                    mine = int(win.wm_frame(), 16)
-                except Exception:
-                    mine = 0
-                if mine and fg == mine:
+                if self._window_in_front(win):
                     win.destroy()
                     self._net_chart_win = None
                 else:
