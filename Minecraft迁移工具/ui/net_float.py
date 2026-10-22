@@ -96,7 +96,8 @@ class NetFloat:
         self.tab_w = px(self.TAB_W)
 
         self._rel = [0, 0]            # 相对主窗口客户区左上角
-        self._drag = {"dx": 0, "dy": 0, "on": False, "moved": False}
+        self._drag = {"dx": 0, "dy": 0, "on": False, "moved": False,
+                      "job": None, "pending": False}
         self._hover = False
         self._peek = False
         self._docked = None
@@ -435,15 +436,37 @@ class NetFloat:
             pass
 
     def _on_press(self, e):
-        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False)
+        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, pending=False)
 
     def _on_drag(self, e):
+        """拖动事件只做标记，真正的移动交给 _flush_drag 按帧合并。
+
+        高速拖动时 Windows 会把 <B1-Motion> 合并/丢弃，一个事件重绘一次的话
+        浮标会越拖越落后（就是"卡"的感觉）。这里改成固定 8ms 一次（≈125fps），
+        并且**用系统光标的最新位置**，不依赖事件里那个已经过期的坐标。
+        """
         if not self._drag["on"]:
             return
-        nx = e.x_root - self.root.winfo_rootx() - self._drag["dx"]
-        ny = e.y_root - self.root.winfo_rooty() - self._drag["dy"]
-        if abs(nx - self._rel[0]) > 1 or abs(ny - self._rel[1]) > 1:
-            self._drag["moved"] = True
+        self._drag["moved"] = True
+        self._drag["pending"] = True
+        if self._drag.get("job") is None:
+            try:
+                self._drag["job"] = self.root.after(8, self._flush_drag)
+            except Exception:
+                self._flush_drag()
+
+    def _flush_drag(self):
+        self._drag["job"] = None
+        if not self._drag["on"]:
+            return
+        pt = wintypes.POINT()
+        try:
+            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                return
+        except Exception:
+            return
+        nx = pt.x - self.root.winfo_rootx() - self._drag["dx"]
+        ny = pt.y - self.root.winfo_rooty() - self._drag["dy"]
         if self._docked:                     # 拖出来就取消收纳
             self._docked = None
             self._peek = False
@@ -451,10 +474,23 @@ class NetFloat:
         # 拖动过程中就夹在主窗口内：以前只在松手时夹，中途可以拖到窗口外面去
         self._rel = list(self._clamp(nx, ny))
         self._apply()
+        if self._drag["pending"]:
+            self._drag["pending"] = False
+            try:
+                self._drag["job"] = self.root.after(8, self._flush_drag)
+            except Exception:
+                pass
 
     def _on_release(self, _e):
         if not self._drag["on"]:
             return
+        try:
+            if self._drag.get("job"):
+                self.root.after_cancel(self._drag["job"])
+        except Exception:
+            pass
+        self._drag["job"] = None
+        self._flush_drag()          # 松手前先把最后一帧补上，避免停在旧位置
         self._drag["on"] = False
         if self._drag["moved"]:
             edge = self._detect_edge()
