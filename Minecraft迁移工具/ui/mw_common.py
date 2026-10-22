@@ -142,7 +142,7 @@ _BUTTON_LABELS = {
     "add_extra_file": "📄 浏览添加文件（其它文件）",
     "clear_extra": "🗑️ 清空其它文件清单",
     "check_extra": "🔎 检查其它文件是否存在",
-    "history": "📋 查看历史",
+    "history": "📦 迁移历史",
     "rollback": "⚠️ 回滚",
     "start": "🚀 开始迁移",
     "log_big": "📂 放大查看（日志）",

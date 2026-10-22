@@ -19,6 +19,7 @@ from ui.mw_common import (
 )
 from utils import i18n
 from utils import secrets
+from utils.dpi import px
 from utils.helpers import (
     DataText, OptionCards, RoundedEntry, SegmentedControl, SmoothScroller, SwitchRow,
     center_window, create_gradient_button, focus_window, set_window_icon,
@@ -337,6 +338,24 @@ class SettingsMixin:
             command=self._toggle_confirm_migrate, compact=True, accent="switch_on")
         self.settings_confirm_sw.pack(fill="x", pady=(10, 0))
         self.settings_confirm_sw.set(self.confirm_migrate.get())
+
+        # ---------- 迁移历史保存上限 ----------
+        row_hist = tk.Frame(box_m, bg=self.theme["bg"])
+        row_hist.pack(fill="x", pady=(10, 0))
+        tk.Label(row_hist, text="迁移历史最多保存", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        self.history_limit_lbl = tk.Label(
+            row_hist, text=str(getattr(self, "history_limit", 10)),
+            bg=self.theme["bg"], fg=self.theme.get("data_num_fg", "#1565c0"),
+            font=("微软雅黑", 11, "bold"), width=3)
+        self.history_limit_lbl.pack(side="left", padx=(px(8), px(2)))
+        tk.Label(row_hist, text="份（1–15，超出的删最旧）", bg=self.theme["bg"],
+                 fg=self.theme.get("muted_fg", "#888888"),
+                 font=("微软雅黑", 8)).pack(side="left")
+        create_gradient_button(row_hist, "＋", lambda: self._bump_history_limit(1),
+                               width=px(46), height=px(26)).pack(side="right")
+        create_gradient_button(row_hist, "－", lambda: self._bump_history_limit(-1),
+                               width=px(46), height=px(26)).pack(side="right", padx=(0, px(6)))
 
         # ---------- 模组分类标签 ----------
         box_t = section("tags", page_mig)
@@ -801,6 +820,24 @@ class SettingsMixin:
         self._refresh_net_float()
         self.log(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
                  level="INFO", save=False)
+
+    def _bump_history_limit(self, 增量):
+        """迁移历史保存上限：1~15，超出后删最旧的档案。"""
+        try:
+            from utils import history_store
+        except Exception:
+            return
+        当前 = int(getattr(self, "history_limit", 10) or 10)
+        新 = history_store.set_limit(max(1, min(15, 当前 + int(增量))))
+        self.history_limit = 新
+        try:
+            self.history_limit_lbl.config(text=str(新))
+        except Exception:
+            pass
+        try:
+            self.save_config()
+        except Exception:
+            pass
 
     def _set_float_size(self, 值):
         """延迟浮标的大小（40~96 设计像素，界面里再乘 DPI）。

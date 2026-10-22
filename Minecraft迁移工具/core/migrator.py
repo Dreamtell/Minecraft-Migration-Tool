@@ -775,7 +775,18 @@ def run_migration(
         if local_log:
             local_log(f"🏷️ 已启用迁移标记：复制过去的模组会加前缀「{marker.strip()} 」", "INFO")
 
+    _开始 = time.time()
+    _日志 = []
+    汇总 = {"mods": {"success": 0, "skipped": 0, "failed": 0},
+            "config": {"success": 0, "skipped": 0, "failed": 0},
+            "extra": {"success": 0, "skipped": 0, "failed": 0}}
+    失败明细 = []
+
     def log(msg, level="INFO"):
+        try:
+            _日志.append(str(msg))
+        except Exception:
+            pass
         if log_callback:
             log_callback(msg, level)
 
@@ -864,6 +875,8 @@ def run_migration(
                     failed.append((item, msg))
                     log(trp("❌ 复制失败 {0}: {1}", matched, msg), "ERROR")
             log(trp("模组复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success, skipped, len(failed)), "INFO")
+            汇总["mods"] = {"success": success, "skipped": skipped, "failed": len(failed)}
+            失败明细.extend(("mods/%s" % str(x[0]), str(x[1])) for x in failed[:50])
             if removed_old:
                 log(trp("🧹 已移除 {0} 个同 modid 的旧版本（移入 .migrate_backup/removed_mods，回滚时会自动恢复）", removed_old), "SUCCESS")
 
@@ -1001,6 +1014,8 @@ def run_migration(
                     log(trp("⚠️ config 条目 {0} 非文件非目录，跳过", entry), "WARNING")
 
             log(trp("config 复制完成: 成功 {0} 个, 失败 {1} 个", success_cfg, len(failed_cfg)), "INFO")
+            汇总["config"] = {"success": success_cfg, "skipped": 0, "failed": len(failed_cfg)}
+            失败明细.extend(("config/%s" % str(x[0]), str(x[1])) for x in failed_cfg[:50])
 
         # -------- 其它文件（路径相对整合包根目录） --------
         # 带走 mods / config / saves 之外的东西：shaderpacks/、resourcepacks/、
@@ -1107,6 +1122,9 @@ def run_migration(
                     log(trp("⚠️ 条目 {0} 非文件非目录，跳过", entry), "WARNING")
 
             log(trp("其它文件复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success_extra, skipped_extra, len(failed_extra)), "INFO")
+            汇总["extra"] = {"success": success_extra, "skipped": skipped_extra,
+                             "failed": len(failed_extra)}
+            失败明细.extend(("其它/%s" % str(x[0]), str(x[1])) for x in failed_extra[:50])
 
         # -------- 记录历史 --------
         if not dry_run and add_history:
@@ -1123,6 +1141,34 @@ def run_migration(
 
         if progress_callback:
             progress_callback(None, None, None)
+
+        # -------- 迁移档案（真实运行和模拟运行都存） --------
+        if add_history:
+            try:
+                from utils import history_store
+                失败总数 = sum(v["failed"] for v in 汇总.values())
+                结果 = "模拟运行" if dry_run else ("有失败" if 失败总数 else "成功")
+                档案 = {
+                    "mode": "dry" if dry_run else "real",
+                    "result": 结果,
+                    "source": str(src_path),
+                    "target": str(tgt_path),
+                    "world": world_name or "",
+                    "duration": round(time.time() - _开始, 1),
+                    "stats": 汇总,
+                    "lists": {
+                        "mods": list(modlist or [])[:history_store.LIST_MAX],
+                        "configs": list(configlist or [])[:history_store.LIST_MAX],
+                        "extras": list(extralist or [])[:history_store.LIST_MAX],
+                        "failed": 失败明细[:100],
+                    },
+                    "log": "\n".join(_日志),
+                }
+                rid = history_store.save_record(档案)
+                if rid:
+                    log(trp("🗂️ 已保存迁移档案: {0}", rid), "INFO")
+            except Exception as e:
+                log(trp("⚠️ 保存迁移档案失败: {0}", e), "WARNING")
 
         return True
 

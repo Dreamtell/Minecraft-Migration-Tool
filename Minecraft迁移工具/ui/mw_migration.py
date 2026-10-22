@@ -22,6 +22,7 @@ from ui.mw_common import (
     _SCAN_DONE, _UI_PUMP_MS, _center_window, _file_task_lock, _grad_width,
 )
 from ui.virtual_table import VirtualTable
+from utils.dpi import px, window_geometry
 from utils.helpers import DataText, create_gradient_button, focus_window, set_window_icon
 from utils.theme import apply_theme_to_widget_tree
 
@@ -43,21 +44,113 @@ def _打桩优先(名字, 默认):
     return getattr(_mw, 名字, 默认)
 
 
+class _ArchiveList(tk.Frame):
+    """左侧档案卡列表：一次迁移一张卡（时间/模式/路径/统计），点选看详情。"""
+
+    CARD_H = 92
+    GAP = 8
+
+    def __init__(self, master, theme, records, on_select):
+        super().__init__(master, bg=theme["bg"])
+        self.theme = theme
+        self.records = records
+        self.on_select = on_select
+        self.sel = 0
+        self.offset = 0
+        self.canvas = tk.Canvas(self, bg=theme["bg"], highlightthickness=0, bd=0,
+                                cursor="hand2")
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Button-1>", self._click)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Configure>", lambda e: self.redraw())
+        self.redraw()
+
+    def _top(self, i):
+        return px(4) + i * (px(self.CARD_H) + px(self.GAP)) - self.offset
+
+    def _hit(self, y):
+        step = px(self.CARD_H) + px(self.GAP)
+        i = int((y + self.offset - px(4)) // step)
+        return i if 0 <= i < len(self.records) else -1
+
+    def _click(self, e):
+        i = self._hit(e.y)
+        if i >= 0:
+            self.sel = i
+            self.redraw()
+            self.on_select(i)
+
+    def _wheel(self, e):
+        total = len(self.records) * (px(self.CARD_H) + px(self.GAP)) + px(8)
+        max_off = max(0, total - (self.canvas.winfo_height() or 0))
+        self.offset = max(0, min(max_off, self.offset - int(e.delta / 120) * px(40)))
+        self.redraw()
+
+    def redraw(self):
+        c = self.canvas
+        c.delete("all")
+        w = c.winfo_width() or px(360)
+        h = c.winfo_height() or px(400)
+        面板色 = self.theme.get("panel_bg", self.theme.get("bg", "#ffffff"))
+        弱色 = self.theme.get("muted_fg", "#888888")
+        for i, rec in enumerate(self.records):
+            y0 = self._top(i)
+            y1 = y0 + px(self.CARD_H)
+            if y1 < 0 or y0 > h:
+                continue
+            选中 = (i == self.sel)
+            边 = self.theme.get("accent", "#1e88e5") if 选中 else self.theme.get("border", "#cccccc")
+            c.create_rectangle(px(4), y0, w - px(8), y1, fill=面板色, outline=边,
+                               width=2 if 选中 else 1)
+            模式 = rec.get("mode")
+            结果 = rec.get("result") or ""
+            if 模式 == "dry":
+                条 = self.theme.get("log_warning_fg", "#e65100")
+            elif 结果 == "成功":
+                条 = self.theme.get("ok_fg", "#2e7d32")
+            else:
+                条 = self.theme.get("err_fg", "#c62828")
+            c.create_rectangle(px(4), y0, px(8), y1, fill=条, outline="")
+            c.create_text(px(20), y0 + px(16), anchor="w", text=rec.get("time", "?"),
+                          fill=self.theme["fg"], font=("微软雅黑", 10, "bold"))
+            c.create_text(w - px(18), y0 + px(16), anchor="e",
+                          text=("模拟" if 模式 == "dry" else "实际"),
+                          fill=条, font=("微软雅黑", 9, "bold"))
+            def _名(pth):
+                段 = str(pth or "").replace("\\", "/").rstrip("/").split("/")
+                return 段[-1] if 段 else "?"
+            c.create_text(px(20), y0 + px(38), anchor="w",
+                          text="%s → %s" % (_名(rec.get("source")), _名(rec.get("target"))),
+                          fill=弱色, font=("微软雅黑", 9))
+            统 = rec.get("stats") or {}
+            m = (统.get("mods") or {}).get("success", 0)
+            cf = (统.get("config") or {}).get("success", 0)
+            ex = (统.get("extra") or {}).get("success", 0)
+            c.create_text(px(20), y0 + px(60), anchor="w",
+                          text="模组 %d　·　config %d　·　其它 %d" % (m, cf, ex),
+                          fill=弱色, font=("微软雅黑", 9))
+            c.create_text(px(20), y0 + px(78), anchor="w",
+                          text="耗时 %s 秒　·　%s" % (rec.get("duration", "?"), 结果 or "—"),
+                          fill=弱色, font=("微软雅黑", 8))
+        total = len(self.records) * (px(self.CARD_H) + px(self.GAP)) + px(8)
+        if total > h:
+            bar = max(px(24), int(h * h / total))
+            top = int((h - bar) * (self.offset / max(1, total - h)))
+            c.create_rectangle(w - px(5), top, w - px(2), top + bar,
+                               fill=self.theme.get("muted_fg", "#888888"), outline="")
+
+
 class MigrationMixin:
     """迁移流程：统计、磁盘检查、后台线程、进度、历史与回滚、差异扫描。"""
 
     # ---------- 历史记录 ----------
+    # ---------- 迁移历史（档案形式） ----------
     def action_show_history(self):
-        tgt = self.target_path.get().strip()
-        if not tgt:
-            messagebox.showwarning("提示", "请先选择目标实例根目录")
-            return
-        target_path = Path(tgt)
-        history = load_history(target_path)
-        if not history:
-            messagebox.showinfo("提示", "当前目标实例没有迁移记录。")
-            return
+        """迁移历史：一次迁移 = 一份档案，按时间倒序排列，可看统计/清单/完整日志。
 
+        档案由 `core/migrator.run_migration` 在收尾时写入 `utils/history_store`
+        （真实迁移和模拟运行都会写），这里只负责读取和展示。
+        """
         existing = getattr(self, "_history_win", None)
         if existing is not None:
             try:
@@ -66,111 +159,196 @@ class MigrationMixin:
                     return
             except Exception:
                 pass
-        hist_win = tk.Toplevel(self.root)
-        self._history_win = hist_win
-        hist_win.withdraw()     # 构建完居中后再显示，避免"闪现-跳到中间"
-        hist_win.title("迁移历史记录")
-        hist_win.geometry("900x500")
-        hist_win.transient(self.root)
-        set_window_icon(hist_win)
-        # ---- 头部：图标 + 标题 + 目标实例（和模组详情窗口同一套排法） ----
-        head = tk.Frame(hist_win, bg=self.theme["bg"])
-        head.pack(fill="x", padx=16, pady=(14, 2))
-        tk.Label(head, text="🕒", font=("微软雅黑", 20), bg=self.theme["bg"],
-                 fg=self.theme.get("data_fg", "#1565c0")).pack(side="left",
-                                                               padx=(0, 12), anchor="n")
-        head_box = tk.Frame(head, bg=self.theme["bg"])
-        head_box.pack(side="left", fill="x", expand=True)
-        tk.Label(head_box, text="迁移历史记录", font=("微软雅黑", 14, "bold"),
+
+        from utils import history_store
+        记录 = history_store.list_records()
+        上限 = history_store.get_limit()
+
+        顶 = tk.Toplevel(self.root)
+        self._history_win = 顶
+        顶.withdraw()      # 构建完居中后再显示，避免"闪现-跳到中间"
+        顶.title("迁移历史")
+        try:
+            顶.geometry(window_geometry(顶, 1040, 660))
+        except Exception:
+            顶.geometry("%dx%d" % (px(1040), px(660)))
+        顶.minsize(px(880), px(520))
+        顶.configure(bg=self.theme["bg"])
+        顶.transient(self.root)
+        try:
+            set_window_icon(顶)
+        except Exception:
+            pass
+
+        面板色 = self.theme.get("panel_bg", self.theme.get("bg", "#ffffff"))
+        深色系 = self.theme.get("bg", "#ffffff").lower() in ("#2e2e2e", "#1e1e1e", "#252525", "#202020")
+        边框色 = self.theme.get("border") or ("#3a3a3a" if 深色系 else "#d0d0d0")
+        弱色 = self.theme.get("muted_fg", "#888888")
+        主色 = self.theme.get("accent", "#1e88e5")
+        好色 = self.theme.get("ok_fg", "#2e7d32")
+        警色 = self.theme.get("log_warning_fg", "#e65100")
+        坏色 = self.theme.get("fail_fg") or self.theme.get("err_fg", "#c62828")
+
+        # ---- 头部 ----
+        头 = tk.Frame(顶, bg=self.theme["bg"])
+        头.pack(fill="x", padx=px(18), pady=(px(14), px(6)))
+        tk.Label(头, text="🗂️", font=("微软雅黑", 20), bg=self.theme["bg"],
+                 fg=主色).pack(side="left", padx=(0, px(12)), anchor="n")
+        标题框 = tk.Frame(头, bg=self.theme["bg"])
+        标题框.pack(side="left", fill="x", expand=True)
+        tk.Label(标题框, text="迁移历史", font=("微软雅黑", 15, "bold"),
                  bg=self.theme["bg"], fg=self.theme["fg"], anchor="w").pack(fill="x")
-        DataText(head_box, self.theme,
-                 [("目标实例：", "muted_fg"), (str(target_path), "data_fg")],
-                 font=("微软雅黑", 9)).pack(anchor="w", pady=(3, 0))
+        tk.Label(标题框, text="共 %d 份档案　·　最多保存 %d 份（可在设置里调整）　·　%s"
+                 % (len(记录), 上限, history_store._root()),
+                 font=("微软雅黑", 9), bg=self.theme["bg"], fg=弱色,
+                 anchor="w").pack(fill="x", pady=(px(3), 0))
 
-        # ---- 汇总一行：共几次、回滚几次（数字用数据色） ----
-        回滚数 = sum(1 for e in history if e.get("rolled_back", False))
-        DataText(hist_win, self.theme,
-                 [("共 ", "muted_fg"), (str(len(history)), "data_num_fg"),
-                  (" 次迁移", "muted_fg"), ("　·　", "muted_fg"),
-                  ("回滚 ", "muted_fg"), (str(回滚数), "data_num_fg"),
-                  (" 次", "muted_fg")],
-                 font=("微软雅黑", 9)).pack(anchor="w", padx=18, pady=(4, 6))
+        # ---- 主体：左档案卡列表 / 右详情 ----
+        主体 = tk.Frame(顶, bg=self.theme["bg"])
+        主体.pack(fill="both", expand=True, padx=px(16), pady=(px(4), px(4)))
 
-        # ---- 表格：自绘的 VirtualTable（和"放大查看"窗口同一套，不再是 ttk.Treeview）----
-        # Treeview 是系统方角样式、改一行颜色要重绘整屏；换成自绘表后表头/行高/悬停/
-        # 彩色状态圆点都跟界面其它地方统一。最新一次迁移放最上面。
-        rows = list(reversed(history))
-        columns = (("status", "🔵 状态", 104, "w"),
-                   ("time", "🕒 迁移时间", 168, "w"),
-                   ("source", "📁 来源路径", 400, "w"),
-                   ("mods", "🧩 模组数", 92, "center"),
-                   ("configs", "⚙️ Config数", 104, "center"),
-                   ("extras", "📦 其它文件", 104, "center"))
+        左 = tk.Frame(主体, bg=self.theme["bg"], width=px(380))
+        左.pack(side="left", fill="y")
+        左.pack_propagate(False)
 
-        def _h_cell(row, key):
-            e = rows[row] if 0 <= row < len(rows) else {}
-            if key == "time":
-                return str(e.get("timestamp", "?"))
-            if key == "source":
-                return str(e.get("source", "?"))
-            if key == "mods":
-                return str(e.get("mod_count", 0))
-            if key == "configs":
-                return str(e.get("config_count", 0))
-            if key == "extras":
-                return str(e.get("extra_count", 0))
-            return ""            # 状态列的文字由 dot() 画，单元格文本留空
+        右 = tk.Frame(主体, bg=面板色, highlightthickness=1,
+                      highlightbackground=边框色)
+        右.pack(side="left", fill="both", expand=True, padx=(px(12), 0))
 
-        def _h_dot(row):
-            """状态列的 (圆点颜色, 文字)：绿=正常，橙=已回滚。"""
-            e = rows[row] if 0 <= row < len(rows) else {}
-            if e.get("rolled_back", False):
-                return self.theme.get("log_warning_fg", "#e65100"), "已回滚"
-            return self.theme.get("ok_fg", "#2e7d32"), "正常"
+        列表 = _ArchiveList(左, self.theme, 记录, lambda i: 选中(i))
+        列表.pack(fill="both", expand=True)
 
-        def _h_tags(row):
-            e = rows[row] if 0 <= row < len(rows) else {}
-            return ("rolled_back",) if e.get("rolled_back", False) else ("normal",)
+        # ---- 右侧详情 ----
+        详情 = {}
 
-        class _HistModel:
-            row_count = staticmethod(lambda: len(rows))
-            cell = staticmethod(_h_cell)
-            dot = staticmethod(_h_dot)
-            tags = staticmethod(_h_tags)
+        def _行(父, 名, 值, 值色=None):
+            行 = tk.Frame(父, bg=面板色)
+            行.pack(fill="x", pady=(0, px(3)))
+            tk.Label(行, text=名, font=("微软雅黑", 9), bg=面板色, fg=弱色,
+                     width=8, anchor="w").pack(side="left")
+            lbl = tk.Label(行, text=值, font=("微软雅黑", 9), bg=面板色,
+                           fg=值色 or self.theme["fg"], anchor="w", justify="left")
+            lbl.pack(side="left", fill="x", expand=True)
+            return lbl
 
-        table = VirtualTable(
-            hist_win, columns, self.theme,
-            font=("微软雅黑", 10), row_height=26, header_height=30,
-            tag_styles={
-                "rolled_back": (self.theme.get("badge_rollback_bg", "#ffdddd"),
-                                self.theme.get("fg", "#000000")),
-                "normal": (self.theme.get("badge_normal_bg", "#ffffff"),
-                           self.theme.get("ttk_fg", "#000000")),
-            })
-        table.set_model(_HistModel())
-        table.pack(fill="both", expand=True, padx=14, pady=(0, 6))
-        self._hist_table = table          # 主题切换时 apply_theme 会喂新配色
+        顶条 = tk.Frame(右, bg=面板色)
+        顶条.pack(fill="x", padx=px(14), pady=(px(12), px(6)))
+        详情["标题"] = tk.Label(顶条, text="", font=("微软雅黑", 13, "bold"),
+                                bg=面板色, fg=self.theme["fg"], anchor="w")
+        详情["标题"].pack(fill="x")
+        详情["副标题"] = tk.Label(顶条, text="", font=("微软雅黑", 9), bg=面板色,
+                                  fg=弱色, anchor="w")
+        详情["副标题"].pack(fill="x", pady=(px(2), 0))
 
-        # ---- 底部：说明 + 关闭 ----
-        bottom = tk.Frame(hist_win, bg=self.theme["bg"])
-        bottom.pack(fill="x", padx=14, pady=(0, 12))
-        tk.Label(bottom, text="越靠上越新 · 滚轮翻阅", font=("微软雅黑", 8),
-                 bg=self.theme["bg"],
-                 fg=self.theme.get("muted_fg", "#808080")).pack(side="left")
-        btn_close_hist = create_gradient_button(
-            bottom, "✖ 关闭", hist_win.destroy,
-            colors=("#e53935", "#c62828"),
-            width=_grad_width("✖ 关闭"), height=30, font=("微软雅黑", 9, "bold"))
-        btn_close_hist.pack(side="right")
-        apply_theme_to_widget_tree(hist_win, self.theme)
-        hist_win.update_idletasks()
-        table.fit_now()                   # 显示前先把列宽排好，避免二次闪烁
-        _center_window(hist_win, 900, 500)
-        hist_win.deiconify()
-        focus_window(hist_win)
+        概览 = tk.Frame(右, bg=面板色)
+        概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)))
+        详情["源"] = _行(概览, "源目录", "")
+        详情["目标"] = _行(概览, "目标目录", "")
+        详情["统计"] = _行(概览, "统计", "")
+        详情["耗时"] = _行(概览, "耗时", "")
+        详情["失败"] = _行(概览, "失败", "")
 
-    # ---------- 回滚 ----------
-    @_file_task_lock("备份回滚")
+        日志标题 = tk.Frame(右, bg=面板色)
+        日志标题.pack(fill="x", padx=px(14), pady=(px(10), px(2)))
+        tk.Label(日志标题, text="执行日志", font=("微软雅黑", 9, "bold"),
+                 bg=面板色, fg=self.theme["fg"], anchor="w").pack(side="left")
+        详情["日志计数"] = tk.Label(日志标题, text="", font=("微软雅黑", 8),
+                                    bg=面板色, fg=弱色, anchor="e")
+        详情["日志计数"].pack(side="right")
+
+        日志框 = tk.Frame(右, bg=面板色)
+        日志框.pack(fill="both", expand=True, padx=px(14), pady=(0, px(12)))
+        详情["日志"] = tk.Text(日志框, wrap="word", bd=0, highlightthickness=1,
+                               highlightbackground=边框色, bg=面板色,
+                               fg=self.theme["fg"], font=("Consolas", 9),
+                               padx=px(8), pady=px(6), spacing1=1, spacing3=1)
+        详情["日志"].pack(side="left", fill="both", expand=True)
+        滚 = tk.Scrollbar(日志框, command=详情["日志"].yview, width=px(10))
+        滚.pack(side="right", fill="y")
+        详情["日志"].config(yscrollcommand=滚.set, state="disabled")
+
+        def 选中(i):
+            列表.sel = i
+            列表.redraw()
+            显示(记录[i] if 0 <= i < len(记录) else None)
+
+        def 显示(rec):
+            if not rec:
+                详情["标题"].config(text="没有档案")
+                详情["副标题"].config(text="")
+                for k in ("源", "目标", "统计", "耗时", "失败"):
+                    详情[k].config(text="—")
+                详情["日志"].config(state="normal")
+                详情["日志"].delete("1.0", "end")
+                详情["日志"].config(state="disabled")
+                return
+            模式 = "模拟运行" if rec.get("mode") == "dry" else "实际迁移"
+            结果 = rec.get("result") or ""
+            色 = 好色 if 结果 == "成功" else (警色 if 结果 == "模拟运行" else 坏色)
+            详情["标题"].config(text="%s　·　%s" % (rec.get("time", "?"), 模式))
+            详情["副标题"].config(text=结果, fg=色)
+            详情["源"].config(text=rec.get("source", "—"))
+            详情["目标"].config(text=rec.get("target", "—"))
+            统计 = rec.get("stats") or {}
+            m = 统计.get("mods") or {}
+            c = 统计.get("config") or {}
+            e = 统计.get("extra") or {}
+            详情["统计"].config(text="模组 %d（跳过 %d，失败 %d）　·　config %d（失败 %d）　·　其它 %d（跳过 %d，失败 %d）"
+                                % (m.get("success", 0), m.get("skipped", 0), m.get("failed", 0),
+                                   c.get("success", 0), c.get("failed", 0),
+                                   e.get("success", 0), e.get("skipped", 0), e.get("failed", 0)))
+            详情["耗时"].config(text="%s 秒" % rec.get("duration", "—"))
+            失败 = (rec.get("lists") or {}).get("failed") or []
+            if 失败:
+                详情["失败"].config(text="%d 条（详见日志）" % len(失败), fg=坏色)
+            else:
+                详情["失败"].config(text="无", fg=好色)
+            full = history_store.load_record(rec.get("id") or "") or rec
+            日志 = full.get("log") or "（这份档案没有日志）"
+            详情["日志"].config(state="normal")
+            详情["日志"].delete("1.0", "end")
+            详情["日志"].insert("1.0", 日志)
+            详情["日志"].config(state="disabled")
+            详情["日志计数"].config(text="%d 行" % (日志.count("\n") + 1))
+
+        # ---- 底部按钮 ----
+        底 = tk.Frame(顶, bg=self.theme["bg"])
+        底.pack(fill="x", padx=px(18), pady=(0, px(12)))
+
+        def 删当前():
+            i = 列表.sel
+            if not (0 <= i < len(记录)):
+                return
+            rec = 记录[i]
+            if not messagebox.askyesno("删除档案",
+                                       "确定删除 %s 这份档案吗？\n（只删记录，不影响任何游戏文件）"
+                                       % rec.get("time", ""), parent=顶):
+                return
+            history_store.delete_record(rec.get("id") or "")
+            记录.pop(i)
+            列表.records = 记录
+            列表.sel = min(i, max(0, len(记录) - 1))
+            列表.redraw()
+            显示(记录[列表.sel] if 记录 else None)
+            详情["副标题"].config(text="已删除")
+
+        删钮 = create_gradient_button(底, "删除这份档案", 删当前, colors=("#e53935", "#b71c1c"))
+        删钮.pack(side="left")
+        create_gradient_button(底, "关闭", lambda: 顶.destroy()).pack(side="right")
+
+        if 记录:
+            选中(0)
+        else:
+            显示(None)
+
+        顶.protocol("WM_DELETE_WINDOW", 顶.destroy)
+        try:
+            apply_theme_to_widget_tree(顶, self.theme)
+        except Exception:
+            pass
+        _center_window(顶, px(1040), px(660))
+        顶.deiconify()
+
     def action_rollback(self):
         if self._migration_running:
             messagebox.showwarning("提示", "迁移正在进行中，暂不能回滚。")

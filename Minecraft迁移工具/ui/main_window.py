@@ -227,13 +227,23 @@ class MigrationGUI(
         self._last_log_key = None
         # 桌面浮标（网络延迟小窗）：状态与位置都记在配置里，下次启动回到原处
         self._net_float = None
+        try:                      # 启动时按当前上限裁剪一次档案
+            from utils import history_store
+            history_store.prune(getattr(self, "history_limit", 10))
+        except Exception:
+            pass
         self.net_float_on = bool(self.config.get("net_float_on", False))
         self.net_float_x = self.config.get("net_float_x")
         self.net_float_y = self.config.get("net_float_y")
         try:
             self.net_float_size = max(40, min(96, int(self.config.get("net_float_size", 56))))
+            try:
+                self.history_limit = max(1, min(15, int(self.config.get("history_limit", 10))))
+            except Exception:
+                self.history_limit = 10
         except Exception:
             self.net_float_size = 56
+            self.history_limit = 10
         self.net_float_shadow = bool(self.config.get("net_float_shadow", True))
         self.net_float_dock = bool(self.config.get("net_float_dock", True))
         self._stage("就绪")
@@ -403,6 +413,7 @@ class MigrationGUI(
             "net_float_y": int(getattr(self, "net_float_y", -1) or -1),
             # 浮标直径（设计像素，40~96）；界面里按 DPI 再乘一次
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
+            "history_limit": int(getattr(self, "history_limit", 10) or 10),
             "net_float_shadow": bool(getattr(self, "net_float_shadow", True)),
             "net_float_dock": bool(getattr(self, "net_float_dock", True)),
         }
