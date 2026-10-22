@@ -44,6 +44,63 @@ def _打桩优先(名字, 默认):
     return getattr(_mw, 名字, 默认)
 
 
+class _SmoothText(tk.Text):
+    """日志框：滚轮走缓动，而不是一格一格地跳。
+
+    Tk 的 Text 没有像素滚动（`yview units` 的单位就是"行"），所以这里按**行**
+    做缓动：滚轮只改目标行号，然后每帧朝目标走一小段，看起来就是滑过去。
+    目标按"当前顶部行"重新算，所以拖滚动条/按 PageDown 之后也不会漂。
+    """
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        self._job = None
+        self._target = 1
+        self.bind("<MouseWheel>", self._on_wheel, add="+")
+        self.bind("<Button-4>", lambda e: (self._scroll(-3), "break")[-1], add="+")
+        self.bind("<Button-5>", lambda e: (self._scroll(3), "break")[-1], add="+")
+
+    def _top(self):
+        try:
+            return int(float(self.index("@0,0")))
+        except Exception:
+            return 1
+
+    def _on_wheel(self, e):
+        步 = int(e.delta / 120) or (1 if e.delta > 0 else -1)
+        self._scroll(-步 * 3)
+        return "break"      # ⚠ 必须拦住 Text 的默认类绑定，否则它自己一次跳 3 行
+
+    def _scroll(self, 行):
+        if self._job is None:
+            self._target = self._top()
+        总 = 1
+        try:
+            总 = max(1, int(float(self.index("end-1c"))))
+        except Exception:
+            pass
+        self._target = max(1, min(总, self._target + 行))
+        self._anim()
+
+    def _anim(self):
+        if self._job:
+            try:
+                self.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+
+        def 帧():
+            剩 = self._target - self._top()
+            if abs(剩) <= 0:
+                self._job = None
+                return
+            self.yview_scroll(1 if 剩 > 0 else -1, "units")
+            self._job = self.after(16, 帧)
+
+        帧()
+
+
 def _hex_rgb(v, 默认=(128, 128, 128)):
     """'#rrggbb' / 'rrggbb' / '#rgb' → (r, g, b)。"""
     v = str(v or "").lstrip("#")
@@ -397,7 +454,7 @@ class MigrationMixin:
 
         日志框 = tk.Frame(内容, bg=面板色)
         日志框.pack(fill="both", expand=True, padx=px(14), pady=(0, px(12)))
-        详情["日志"] = tk.Text(日志框, wrap="word", bd=0, highlightthickness=1,
+        详情["日志"] = _SmoothText(日志框, wrap="word", bd=0, highlightthickness=1,
                                highlightbackground=边框色, bg=面板色,
                                fg=self.theme["fg"], font=("Consolas", 9),
                                padx=px(8), pady=px(6), spacing1=1, spacing3=1)
