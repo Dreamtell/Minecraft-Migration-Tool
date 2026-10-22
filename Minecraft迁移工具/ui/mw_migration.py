@@ -135,24 +135,36 @@ class _ArchiveList(tk.Frame):
             self.redraw()
 
     def _wheel(self, e):
-        self.target = max(0.0, min(self._max_off(),
-                                   self.target - int(e.delta / 120) * px(56)))
+        # 触控板/滚轮都给一个"步数"，然后交给缓动去追
+        步 = int(e.delta / 120) or (1 if e.delta > 0 else -1)
+        self.target = max(0.0, min(self._max_off(), self.target - 步 * px(56)))
         self._anim()
 
     def _anim(self):
-        """滚动缓动：每帧走剩余距离的 35%，到位就停（不空转）。"""
-        差 = self.target - self.offset
-        if abs(差) < 0.5:
-            self.offset = self.target
-            self._job = None
+        """滚动缓动：固定时长 220ms、easeOutCubic，跟手指"甩一下"的手感更接近。
+
+        以前是"每帧走剩余距离的 35%"，滚动量大时会显得越滚越慢、拖尾很长；
+        改成按时间插值后，无论滚多远都是同一个时长，停下来就停（不空转）。
+        """
+        起 = self.offset
+        终 = self.target
+        总 = px(220)
+
+        def 帧(k):
+            缓 = 1 - (1 - k) ** 3
+            self.offset = 起 + (终 - 起) * 缓
             self.redraw()
-            return
-        self.offset += 差 * 0.35
-        self.redraw()
-        try:
-            self._job = self.after(16, self._anim)
-        except Exception:
-            self._job = None
+            if k < 1.0:
+                try:
+                    self._job = self.after(16, lambda: 帧(min(1.0, k + 16.0 / 总)))
+                except Exception:
+                    self._job = None
+            else:
+                self.offset = 终
+                self.redraw()
+                self._job = None
+
+        帧(0.0)
 
     # ---------- 绘制 ----------
     def _card_img(self, w, h, 状态, 条色="#2e7d32"):
@@ -394,10 +406,49 @@ class MigrationMixin:
         滚.pack(side="right", fill="y")
         详情["日志"].config(yscrollcommand=滚.set, state="disabled")
 
+        _滑动 = {"job": None, "当前": -1}
+
+        def _滑入():
+            """切换档案时让详情内容从右边滑进来。
+
+            Tk 没有真透明，做不了淡入淡出；滑动是唯一看起来"有过渡"又不失真的做法。
+            内容是 Canvas 里的一个 window item，只要改它的 x 坐标即可，没有重排开销。
+            """
+            try:
+                if _滑动["job"]:
+                    顶.after_cancel(_滑动["job"])
+            except Exception:
+                pass
+
+            def 帧(k):
+                缓 = 1 - (1 - k) ** 3
+                dx = int(px(30) * (1 - 缓))
+                try:
+                    右.coords(_内窗, px(1) + dx, px(1))
+                except Exception:
+                    return
+                if k < 1.0:
+                    try:
+                        _滑动["job"] = 顶.after(16, lambda: 帧(min(1.0, k + 16.0 / 170)))
+                    except Exception:
+                        _滑动["job"] = None
+                else:
+                    try:
+                        右.coords(_内窗, px(1), px(1))
+                    except Exception:
+                        pass
+                    _滑动["job"] = None
+
+            帧(0.0)
+
         def 选中(i):
+            变了 = (i != _滑动["当前"])
             列表.sel = i
             列表.redraw()
             显示(记录[i] if 0 <= i < len(记录) else None)
+            if 变了:
+                _滑动["当前"] = i
+                _滑入()
 
         def 显示(rec):
             if not rec:
