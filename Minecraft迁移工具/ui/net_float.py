@@ -105,6 +105,8 @@ class NetFloat:
         self._stop = False
         self._dib = None
         self._shown = True
+        self._last_geom = None
+        self._follow_job = None
         self._layered = False
         self._hwnd = 0
 
@@ -158,6 +160,12 @@ class NetFloat:
         self._restore(x, y)
         self._redraw()
         self._tick()          # ⚠ 必须启动刷新循环，否则数字会停在初始化那一刻
+        try:
+            self._last_geom = (root.winfo_rootx(), root.winfo_rooty(),
+                               root.winfo_width(), root.winfo_height())
+            self._follow_job = root.after(100, self._follow_tick)
+        except Exception:
+            pass
 
     # ---------------- 坐标 ----------------
     def _parent_size(self):
@@ -390,10 +398,41 @@ class NetFloat:
                 return
         except Exception:
             pass
+        self._sync_geometry()
+
+    def _sync_geometry(self):
+        """窗口移动/缩放后让浮标跟上。
+
+        · 移动：位置存的是相对偏移，重算绝对坐标即可；
+        · 缩放：先把偏移夹回新的客户区（否则窗口变小后浮标会留在外面），
+          再按贴边状态重新吸附 —— 收纳成小标签时也要贴着新的边。
+        """
+        try:
+            self._last_geom = (self.root.winfo_rootx(), self.root.winfo_rooty(),
+                               self.root.winfo_width(), self.root.winfo_height())
+        except Exception:
+            pass
+        self._rel = list(self._clamp(*self._rel))
         if self._docked:
             self._snap(self._docked)
         else:
             self._apply()
+
+    def _follow_tick(self):
+        """100ms 看门狗：<Configure> 在拖动窗口时可能被合并/延迟，这里兜底。"""
+        if self._stop:
+            return
+        try:
+            geom = (self.root.winfo_rootx(), self.root.winfo_rooty(),
+                    self.root.winfo_width(), self.root.winfo_height())
+            if geom != self._last_geom:
+                self._sync_geometry()
+        except Exception:
+            pass
+        try:
+            self._follow_job = self.root.after(100, self._follow_tick)
+        except Exception:
+            pass
 
     def _on_press(self, e):
         self._drag.update(dx=e.x, dy=e.y, on=True, moved=False)
@@ -609,11 +648,12 @@ class NetFloat:
 
     def close(self):
         self._stop = True
-        try:
-            if self._job:
-                self.root.after_cancel(self._job)
-        except Exception:
-            pass
+        for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None)):
+            try:
+                if j:
+                    self.root.after_cancel(j)
+            except Exception:
+                pass
         try:
             self.win.destroy()
         except Exception:
