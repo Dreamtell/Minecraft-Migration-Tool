@@ -914,18 +914,24 @@ class PagesMixin:
             return False
 
     def show_net_chart(self):
-        """完整版：最近探测延迟的曲线图 + 统计（双击迷你图 / 点浮标打开）。
+        """网络延迟曲线：**Modrinth 和 CurseForge 各画一条线**。
 
         再点一次不是"又开一个"，而是三态切换：
           · 没开 → 打开；
           · 开着但被挡住 → 提到最前（不重建，不闪）；
           · 已经在最上面 → 关掉（连点两次就是开关，不会堆窗口）。
 
-        ⚠ 判断"是否在最上面"**不能用 GetForegroundWindow()**：你点浮标的那一刻，
-        浮标自己变成了前台窗口，图永远被判成"不在前台"，于是第二次点只会反复
-        把它提起来、永远关不掉。这里改成"图窗口中心点那个位置，最上层窗口是不是
-        它"（WindowFromPoint + GetAncestor），跟焦点无关。
+        ⚠ 判断"是否在最上面"不能用 GetForegroundWindow()：点浮标的那一刻，浮标
+        自己变成了前台窗口，图永远被判成"不在前台"，于是第二次点只会反复把它提
+        起来、永远关不掉。这里用"图中心点上最上层的窗口是不是它"来判断。
+
+        绘制要点：
+          · 两个平台各一条线，各自 PCHIP 插值 + 末端缓动，互不影响；
+          · 时间基准（x 轴）**两条线共用**，否则采样时刻对不齐；
+          · x 轴先填满再滚动：数据不够一个窗口时左端固定在起点，攒满后整体左移；
+          · 坐标轴/网格/图例画一次缓存成位图，每帧只 restore + 重画曲线。
         """
+        # ---- 三态切换 ----
         try:
             win = getattr(self, "_net_chart_win", None)
             if win is not None and win.winfo_exists():
@@ -943,12 +949,6 @@ class PagesMixin:
         except Exception:
             pass
 
-        try:
-            from ui import mw_net
-            历史 = list(mw_net.rtt_history())
-        except Exception:
-            历史 = []
-
         顶 = tk.Toplevel(self.root)
         self._net_chart_win = 顶
         try:
@@ -958,11 +958,18 @@ class PagesMixin:
             顶.bind("<Destroy>", _清掉引用, add="+")
         except Exception:
             pass
-        顶.title("📈 网络延迟（最近 %d 次探测）" % len(历史))
+
         try:
-            顶.geometry(window_geometry(顶, 760, 420))
+            from ui import mw_net
+            平台 = list(mw_net.hosts())
         except Exception:
-            顶.geometry("%dx%d" % (px(760), px(420)))
+            平台 = ["Modrinth", "CurseForge"]
+
+        顶.title("📈 网络延迟（Modrinth / CurseForge 分开统计）")
+        try:
+            顶.geometry(window_geometry(顶, 760, 430))
+        except Exception:
+            顶.geometry("%dx%d" % (px(760), px(430)))
         顶.minsize(px(520), px(300))
         顶.configure(bg=self.theme["bg"])
         顶.transient(self.root)
@@ -996,26 +1003,22 @@ class PagesMixin:
         前景 = "#c8c8c8" if 深色 else "#444444"
         网格色 = "#3f3f3f" if 深色 else "#e3e3e3"
         提示底色 = "#2b2b2b" if 深色 else "#ffffff"
-        线色 = "#42a5f5"
-        点色 = "#90caf9"
-        尾色 = "#bbdefb" if 深色 else "#0d47a1"
+        # (浅色主题, 深色主题) 各一套：绿 = Modrinth，橙 = CurseForge
+        配色 = (("#2e7d32", "#66bb6a"), ("#ef6c00", "#ffb74d"))
 
         信息 = tk.Label(顶, bg=self.theme["bg"],
                         fg=self.theme.get("muted_fg", "#888888"),
                         font=("微软雅黑", 9), anchor="w", justify="left")
         信息.pack(side="bottom", fill="x", padx=px(12), pady=(0, px(8)))
-        # lambda 里引用后面才定义的 _关闭：点击时才解析名字，所以这样写没问题，
-        # 而且能保证关窗时还原定时器精度（timeEndPeriod）。
         关闭钮 = create_gradient_button(顶, "关闭", lambda: _关闭())
         关闭钮.pack(side="bottom", pady=(0, px(10)))
 
-        图 = Figure(figsize=(px(760) / 100.0, px(380) / 100.0), dpi=100, facecolor=底色)
+        图 = Figure(figsize=(px(760) / 100.0, px(390) / 100.0), dpi=100, facecolor=底色)
         轴 = 图.add_subplot(111, facecolor=底色)
         画布 = FigureCanvasTkAgg(图, master=顶)
         画布.get_tk_widget().pack(side="top", fill="both", expand=True,
                                   padx=px(10), pady=(px(10), px(4)))
 
-        # ---- 静态样式 ----
         轴.set_facecolor(底色)
         for s in 轴.spines.values():
             s.set_color(网格色)
@@ -1023,84 +1026,64 @@ class PagesMixin:
         轴.grid(True, color=网格色, linewidth=0.8)
         轴.set_ylabel("ms", color=前景, fontsize=9)
         try:
-            图.subplots_adjust(left=0.11, right=0.98, top=0.97, bottom=0.16)
+            图.subplots_adjust(left=0.11, right=0.98, top=0.95, bottom=0.16)
         except Exception:
             pass
         轴.set_xlabel("秒（先填满，再滚动）", color=前景, fontsize=9)
 
-        # ---- 持久图元 ----
-        线, = 轴.plot([], [], color=线色, linewidth=1.8,
-                      solid_capstyle="round", solid_joinstyle="round",
-                      antialiased=True, zorder=3)
-        点, = 轴.plot([], [], "o", color=点色, markersize=3.2, zorder=4)
-        尾点, = 轴.plot([], [], "o", color=尾色, markersize=6.5, zorder=5)
+        # ---- 每个平台一条线 ----
+        系列 = []
+        for i, 名 in enumerate(平台):
+            色 = 配色[i % len(配色)][1 if 深色 else 0]
+            系列.append({
+                "名": 名, "色": 色,
+                "线": 轴.plot([], [], color=色, linewidth=1.8, label=名,
+                              solid_capstyle="round", solid_joinstyle="round",
+                              antialiased=True, zorder=3)[0],
+                "点": 轴.plot([], [], "o", color=色, markersize=3.0, zorder=4)[0],
+                "尾点": 轴.plot([], [], "o", color=色, markersize=6.0, zorder=5)[0],
+                "dx": None, "dy": None, "t_base": 0.0, "base_base": 0.0,
+                "dx_t": None, "dy_t": None, "t_base_t": 0.0,
+                "sig": None, "end_y": None, "end_from": 0.0, "end_target": None,
+                "end_t0": None, "ts": [], "ys": [],
+            })
+        try:
+            轴.legend(loc="upper left", fontsize=8, frameon=False,
+                      labelcolor=前景, handlelength=1.8, borderaxespad=0.4)
+        except Exception:
+            pass
+
         空提示 = 轴.text(0.5, 0.5, "还没有探测数据（等几秒）", ha="center", va="center",
                         color=前景, fontsize=10, transform=轴.transAxes,
                         zorder=2, visible=False)
         十字 = 轴.axvline(0, color=前景, linewidth=0.8, alpha=0.55,
                           zorder=6, visible=False)
-        # 用普通 Text 而不是 Annotation：Annotation 在 textcoords="offset points" 下
-        # 每帧改 .xy 的定位不可靠（实测会跑到图顶并被 blit 区域裁掉）。
         提示 = 轴.text(0, 0, "", color=前景, fontsize=9, zorder=10, visible=False,
-                      ha="left", va="bottom", clip_on=False,
+                      ha="left", va="top", clip_on=False, linespacing=1.5,
                       bbox=dict(boxstyle="round,pad=0.35", fc=提示底色,
                                 ec=网格色, lw=0.8, alpha=0.96))
 
-        动态 = (线, 点, 尾点, 空提示, 十字, 提示)
-        数据 = {"ts": [], "span": 60.0, "hover_ts": None,
-                "dx": None, "dy": None, "t_base": 0.0, "sig": None,
-                "end_y": None, "end_from": 0.0, "end_target": 0.0, "end_t0": None}
-        过渡秒 = 0.35      # 新采样点到达时，末端值用这么久缓动过去
-        状态 = {"bg": None, "span": None, "ylim": None, "stop": False}
-        帧间隔 = 10          # 目标 60fps（每帧开销 ~4ms，10ms 间隔 + 调度抖动 ≈ 16ms/帧）
-
-        # Windows 默认定时器精度 15.6ms：after(16) 实际会落到 ~31ms（测出来就是 32fps）。
-        # 临时提到 1ms，帧才能真正跑满 —— 关窗时再还原，避免长期影响系统功耗。
+        动态 = tuple(a for s in 系列 for a in (s["线"], s["点"], s["尾点"])) + \
+            (空提示, 十字, 提示)
+        过渡秒 = 0.35
+        状态 = {"bg": None, "span": None, "ylim": None, "stop": False,
+                "cap": None, "hover_x": None}
+        帧间隔 = 10
         _定时器 = {"on": False}
         try:
             ctypes.windll.winmm.timeBeginPeriod(1)
             _定时器["on"] = True
         except Exception:
             pass
+        窗口固定 = 120.0
 
-        窗口固定 = 120.0    # 最多保留 2 分钟数据
-
-        def _窗口(跨度):
-            """固定 60 秒 —— 窗口不变，背景缓存就永远不失效，滚动最稳。"""
-            return 窗口固定
-
-        def _取数据():
-            """(xs, ys, ts, 窗口, 现在t, 基准)。
-
-            x 轴固定 0..窗口，**先填满、再滚动**：
-              · 数据还没攒够一个窗口时：第一个点钉在 x=0（左边是起点），
-                曲线往右长，右边留白；
-              · 攒满之后：整体左移（滚动），右端始终是"现在"。
-            """
-            现在t = time.time()
-            时刻 = [h[0] for h in 历史]
-            跨度 = max(0.0, 现在t - 时刻[0]) if 时刻 else 0.0
-            窗口 = _窗口(跨度) if 跨度 > 0 else 10.0
-            # 还没攒满 → 基准=跨度（左边固定在起点，曲线往右长）；
-            # 攒满之后 → 基准=窗口（开始滚动）
-            基准 = min(跨度, 窗口)
-            xs, ys, ts = [], [], []
-            for t0, v in zip(时刻, [h[1] for h in 历史]):
-                if (现在t - t0) > 窗口:
-                    continue
-                xs.append(基准 - (现在t - t0))
-                ys.append(v)
-                ts.append(t0)
-            return xs, ys, ts, 窗口, 现在t, 基准
-
-        def _整数档(ys):
-            """把上限取整到 500 的档位，避免几十毫秒的波动就触发重绘/重缩放。"""
-            m = max(ys) if ys else 1
+        def _整数档(值们):
+            m = max(值们) if 值们 else 1
             return max(500.0, math.ceil(m * 1.2 / 500.0) * 500.0)
 
-        def _上限(ys):
-            """带滞回：涨了立刻跟上，只有掉到当前档位的 60% 以下才缩回去。"""
-            目标 = _整数档(ys)
+        def _上限(值们):
+            """带滞回：涨了立刻跟上，只有掉到当前档位 60% 以下才缩回去。"""
+            目标 = _整数档(值们)
             当前 = 状态.get("cap")
             if 当前 is None or 目标 > 当前:
                 当前 = 目标
@@ -1110,7 +1093,7 @@ class PagesMixin:
             return 当前
 
         def _pchip(x, y):
-            """单调三次 Hermite 插值（Fritsch–Carlson）。返回密集的 (x, y)。"""
+            """单调三次 Hermite 插值（Fritsch–Carlson）。"""
             x = np.asarray(x, dtype=float)
             y = np.asarray(y, dtype=float)
             m = len(x)
@@ -1118,13 +1101,13 @@ class PagesMixin:
                 return x, y
             h = np.diff(x)
             if np.any(h <= 0):
-                return x, y                       # 时间戳非严格递增就不插值，宁可直接画
+                return x, y
             d = np.diff(y) / h
             g = np.zeros(m)
             g[0], g[-1] = d[0], d[-1]
             for i in range(1, m - 1):
                 if d[i - 1] * d[i] <= 0:
-                    g[i] = 0.0                    # 极值点处切线归零，避免过冲
+                    g[i] = 0.0
                 else:
                     w1, w2 = 2 * h[i] + h[i - 1], h[i] + 2 * h[i - 1]
                     g[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i])
@@ -1142,24 +1125,23 @@ class PagesMixin:
             ys.append(y[-1:])
             return np.concatenate(xs), np.concatenate(ys)
 
-        def 缓存背景(xs, ys, 窗口, 上限):
+        def 缓存背景(窗口, 上限):
             轴.set_xlim(0, 窗口)
             轴.set_ylim(0, 上限)
             for a in 动态:
                 a.set_visible(False)
             画布.draw()
-            # 缓存**整张图**而不只是坐标轴：提示框允许画到轴外（clip_on=False），
-            # 只恢复轴区域的话，画到外面的那部分会永远留在画布上（残影）。
+            # 缓存整张图（提示框允许画到轴外，只恢复轴区域会留残影）
             状态["bg"] = 画布.copy_from_bbox(图.bbox)
             状态["span"], 状态["ylim"] = 窗口, 上限
-            for a in (线, 点, 尾点):
-                a.set_visible(True)
+            for a in 动态:
+                a.set_visible(False)
+            for s in 系列:
+                for k in ("线", "点", "尾点"):
+                    s[k].set_visible(True)
 
         def _藏提示():
-            数据["hover_ts"] = None
-            if 十字.get_visible() or 提示.get_visible():
-                十字.set_visible(False)
-                提示.set_visible(False)
+            状态["hover_x"] = None
 
         def 帧():
             if 状态["stop"]:
@@ -1168,171 +1150,178 @@ class PagesMixin:
                 if not 顶.winfo_exists():
                     return
                 from ui import mw_net
-                历史.clear()
-                历史.extend(mw_net.rtt_history())
+                现在t = time.time()
+                表 = mw_net.rtt_series()
 
-                xs, ys, ts, 窗口, 现在t, 基准 = _取数据()
-                数据.update(ts=ts, span=窗口, base=基准)
-                上限 = _上限(ys)
+                # 公共时间基准：所有平台里最早的那个样本，保证两条线时刻对齐
+                最早 = None
+                for s in 系列:
+                    样本 = 表.get(s["名"]) or []
+                    s["样本"] = 样本
+                    if 样本:
+                        最早 = 样本[0][0] if 最早 is None else min(最早, 样本[0][0])
+                跨度 = (现在t - 最早) if 最早 is not None else 0.0
+                基准 = min(跨度, 窗口固定)
 
-                # ---- 新数据到达：记下"从哪过渡到哪"，末端值用缓动追上去 ----
-                sig = (len(ys), ts[-1] if ts else 0.0)
-                过渡中 = False
-                if 数据["sig"] != sig or 数据["dx"] is None:
-                    旧值 = 数据["end_y"] if 数据["end_y"] is not None else (ys[-1] if ys else 0.0)
-                    数据["end_from"] = 旧值
-                    数据["end_target"] = ys[-1] if ys else 0.0
-                    数据["end_t0"] = 现在t
-                    数据["sig"] = sig
-                    if len(xs) >= 3:
-                        数据["dx"], 数据["dy"] = _pchip(xs, ys)
-                    else:
-                        数据["dx"] = np.asarray(xs, dtype=float)
-                        数据["dy"] = np.asarray(ys, dtype=float)
-                    数据["t_base"] = 现在t
-                    数据["base_base"] = 基准
+                所有y = []
+                for s in 系列:
+                    xs, ys, ts = [], [], []
+                    for t0, v in s["样本"]:
+                        if 现在t - t0 > 窗口固定:
+                            continue
+                        xs.append(基准 - (现在t - t0))
+                        ys.append(v)
+                        ts.append(t0)
+                    s["ts"], s["ys"] = ts, ys
+                    if ys:
+                        所有y.extend(ys)
+                    sig = (len(ys), ts[-1] if ts else 0.0)
+                    if ys and (s["sig"] != sig or s["dx"] is None):
+                        s["end_from"] = s["end_y"] if s["end_y"] is not None else ys[-1]
+                        s["end_target"] = ys[-1]
+                        s["end_t0"] = 现在t
+                        s["sig"] = sig
+                        if len(xs) >= 3:
+                            s["dx"], s["dy"] = _pchip(xs, ys)
+                        else:
+                            s["dx"] = np.asarray(xs, dtype=float)
+                            s["dy"] = np.asarray(ys, dtype=float)
+                        s["t_base"], s["base_base"] = 现在t, 基准
 
-                # 过渡进度（easeOutCubic）：末端值从旧值滑到新值，
-                # 这样 5 秒一次的新采样不会让曲线"啪"地变形。
-                p = 1.0
-                if 数据["end_t0"] is not None and 数据["end_target"] is not None:
-                    p = min(1.0, (现在t - 数据["end_t0"]) / 过渡秒)
-                if p < 1.0 and len(xs) >= 2:
-                    缓 = 1.0 - (1.0 - p) ** 3
-                    y末 = 数据["end_from"] + (数据["end_target"] - 数据["end_from"]) * 缓
-                    ys2 = list(ys)
-                    ys2[-1] = y末
-                    if len(xs) >= 3:
-                        dx, dy = _pchip(xs, ys2)
-                    else:
-                        dx, dy = np.asarray(xs, dtype=float), np.asarray(ys2, dtype=float)
-                    数据["dx_t"], 数据["dy_t"] = dx, dy
-                    数据["t_base_t"] = 现在t
-                    数据["end_y"] = y末
-                    过渡中 = True
-                else:
-                    数据["end_y"] = 数据["end_target"] if 数据["end_target"] is not None else \
-                        (ys[-1] if ys else 0.0)
-
-                if (状态["bg"] is None or 窗口 != 状态["span"]
-                        or abs(上限 - (状态["ylim"] or 0)) > 1e-9):
-                    缓存背景(xs, ys, 窗口, 上限)
-
-                # 每帧只做一次减法：曲线整体左移 (现在 - t_base)
-                if 过渡中:
-                    基线, 平移 = 数据["t_base_t"], 0.0
-                    tx = 数据["dx_t"] - 平移
-                    ty = 数据["dy_t"]
-                else:
-                    # 时间流逝让曲线左移；基准（还没填满时=跨度）增长让它右移
-                    tx = (数据["dx"] - (现在t - 数据["t_base"])
-                          + (基准 - 数据.get("base_base", 基准)))
-                    ty = 数据["dy"]
-                if len(tx):
-                    # 末端补一段到"现在"的位置，表示当前值，看着不断流
-                    tx = np.append(tx, 基准)
-                    ty = np.append(ty, ty[-1])
-                线.set_data(tx, ty)
-
-                # 采样点也跟着平移
-                mx = np.asarray(数据["ts"], dtype=float) - 现在t
-                if len(mx) and len(mx) <= 40:
-                    点.set_data(mx, np.asarray(ys, dtype=float))
-                else:
-                    点.set_data([], [])
-                if len(mx):
-                    尾点.set_data([mx[-1:], [数据["end_y"]]])
-                else:
-                    尾点.set_data([], [])
-                空提示.set_visible(not len(mx))
+                if (状态["bg"] is None or 窗口固定 != 状态["span"]
+                        or abs(上限_now() - (状态["ylim"] or 0)) > 1e-9):
+                    缓存背景(窗口固定, 上限_now())
 
                 画布.restore_region(状态["bg"])
-                轴.draw_artist(线)
-                轴.draw_artist(点)
-                轴.draw_artist(尾点)
-                if not len(mx):
+                有数据 = False
+                for s in 系列:
+                    ys, ts = s["ys"], s["ts"]
+                    if not ys:
+                        s["线"].set_data([], [])
+                        s["点"].set_data([], [])
+                        s["尾点"].set_data([], [])
+                        continue
+                    有数据 = True
+                    p = 1.0 if s["end_t0"] is None else min(
+                        1.0, (现在t - s["end_t0"]) / 过渡秒)
+                    过渡中 = p < 1.0 and len(ts) >= 2
+                    if 过渡中:
+                        缓 = 1.0 - (1.0 - p) ** 3
+                        y末 = s["end_from"] + (s["end_target"] - s["end_from"]) * 缓
+                        ys2 = list(ys)
+                        ys2[-1] = y末
+                        xs2 = [基准 - (现在t - t0) for t0 in ts]
+                        if len(xs2) >= 3:
+                            s["dx_t"], s["dy_t"] = _pchip(xs2, ys2)
+                        else:
+                            s["dx_t"] = np.asarray(xs2, dtype=float)
+                            s["dy_t"] = np.asarray(ys2, dtype=float)
+                        s["end_y"] = y末
+                    else:
+                        s["end_y"] = s["end_target"] if s["end_target"] is not None else ys[-1]
+
+                    if 过渡中:
+                        tx, ty = s["dx_t"], s["dy_t"]
+                    else:
+                        tx = (s["dx"] - (现在t - s["t_base"])
+                              + (基准 - s.get("base_base", 基准)))
+                        ty = s["dy"]
+                    if len(tx):
+                        tx = np.append(tx, 基准)
+                        ty = np.append(ty, ty[-1])
+                    s["线"].set_data(tx, ty)
+
+                    mx = np.asarray(ts, dtype=float) - 现在t
+                    if len(mx) <= 40:
+                        s["点"].set_data(mx, np.asarray(ys, dtype=float))
+                    else:
+                        s["点"].set_data([], [])
+                    if len(mx):
+                        s["尾点"].set_data([mx[-1:], [s["end_y"]]])
+                    else:
+                        s["尾点"].set_data([], [])
+
+                    轴.draw_artist(s["线"])
+                    轴.draw_artist(s["点"])
+                    轴.draw_artist(s["尾点"])
+
+                空提示.set_visible(not 有数据)
+                if not 有数据:
                     轴.draw_artist(空提示)
 
-                # 悬停提示：按"悬停的那个时间戳"每帧重新定位
-                hts = 数据.get("hover_ts")
-                j = None
-                if hts is not None:
-                    try:
-                        j = 数据["ts"].index(hts)
-                    except ValueError:
-                        j = None
-                if j is not None and 0 <= j < len(ys):
-                    # 新坐标系：x = 基准 - 数据年龄（0..窗口，从左往右）
-                    hx = 基准 - (现在t - 数据["ts"][j])
+                # ---- 悬停：竖线 + 两个平台的当前值 ----
+                hx = 状态.get("hover_x")
+                if hx is not None and 有数据:
+                    时刻 = 现在t - (基准 - hx)
+                    行 = []
+                    for s in 系列:
+                        ts, ys = s["ts"], s["ys"]
+                        if not ts:
+                            continue
+                        j = min(range(len(ts)), key=lambda i: abs(ts[i] - 时刻))
+                        if abs(ts[j] - 时刻) <= 4.0:
+                            行.append("%s  %d ms" % (s["名"], int(ys[j])))
                     十字.set_xdata([hx, hx])
                     十字.set_visible(True)
-                    # 摆在点的右上方，并夹在绘图区内（blit 只更新坐标轴区域，
-                    # 画到区外的部分会被切掉）
-                    px_off = 数据["span"] * 0.012
-                    py_off = (状态["ylim"] or 上限) * 0.05
-                    # 夹在绘图区内：右边界要留出提示框自身的宽度
-                    提示.set_position((max(0.0, min(hx + px_off,
-                                                    数据["span"] * 0.72)),
-                                      min(ys[j] + py_off, (状态["ylim"] or 上限) * 0.93)))
-                    提示.set_text("%s  ·  %d ms" % (
-                        time.strftime("%H:%M:%S", time.localtime(hts)), ys[j]))
-                    提示.set_visible(True)
                     轴.draw_artist(十字)
-                    轴.draw_artist(提示)
+                    if 行:
+                        提示.set_text(time.strftime("%H:%M:%S", time.localtime(时刻))
+                                     + "\n" + "\n".join(行))
+                        提示.set_position((min(hx + 窗口固定 * 0.012, 窗口固定 * 0.60),
+                                          (状态["ylim"] or 500.0) * 0.95))
+                        提示.set_visible(True)
+                        轴.draw_artist(提示)
+                    else:
+                        提示.set_visible(False)
                 else:
                     十字.set_visible(False)
                     提示.set_visible(False)
+
                 画布.blit(图.bbox)
 
-                # ⚠ 别每帧都改 Label：Tk 换文字会重新布局 + 重绘，一次好几毫秒，
-                # 60fps 的预算就这么没了。只在数据真的变了的时候刷新。
-                if 数据.get("sig_text") != sig:
-                    数据["sig_text"] = sig
-                    if ys:
-                        值 = [h[1] for h in 历史]
-                        信息.configure(
-                            text="最近 %d 次探测 ｜ 当前 %d ms ｜ 平均 %.0f ms ｜ 最高 %d ms"
-                                 % (len(值), 值[-1], sum(值) / max(1, len(值)), max(值)))
-                    else:
-                        信息.configure(text="")
-            except Exception:
-                pass
-            # 窗口不在前台（被别的程序挡住 / 用户去看别的地方了）时降到 30fps：
-            # 曲线本身每秒只移动 ~1px，30fps 根本看不出差别，CPU 却省一半。
-            间隔 = 帧间隔
-            try:
-                if int(ctypes.windll.user32.GetForegroundWindow()) != int(顶.wm_frame(), 16):
-                    间隔 = 33
-            except Exception:
-                pass
-            顶.after(间隔, 帧)
+                # 统计行：只在数据变了的时候刷新（每帧改 Label 要几毫秒）
+                sig_text = tuple((s["名"], s["ys"][-1] if s["ys"] else -1) for s in 系列)
+                if 状态.get("sig_text") != sig_text:
+                    状态["sig_text"] = sig_text
+                    段 = []
+                    for s in 系列:
+                        ys = s["ys"]
+                        if not ys:
+                            段.append("%s 无数据" % s["名"])
+                        elif len(ys) < 2:
+                            段.append("%s 当前 %d ms" % (s["名"], int(ys[-1])))
+                        else:
+                            段.append("%s 当前 %d · 平均 %d · 最高 %d" % (
+                                s["名"], int(ys[-1]),
+                                int(sum(ys) / len(ys)), int(max(ys))))
+                    信息.config(text="    ｜    ".join(段))
 
-        def _鼠标移动(ev):
-            try:
-                if ev.inaxes is not 轴 or not 数据["ts"] or ev.xdata is None:
-                    _藏提示()
-                    return
-                现在t = time.time()
-                时刻 = 数据["ts"]
-                基准 = 数据.get("base", 0.0)
-                xs = [基准 - (现在t - t0) for t0 in 时刻]
-                import bisect
-                i = bisect.bisect_left(xs, ev.xdata)
-                候选 = [j for j in (i - 1, i) if 0 <= j < len(xs)]
-                if not 候选:
-                    _藏提示()
-                    return
-                j = min(候选, key=lambda k: abs(xs[k] - ev.xdata))
-                if abs(xs[j] - ev.xdata) > max(1.0, 数据["span"] * 0.06):
-                    _藏提示()
-                    return
-                数据["hover_ts"] = 时刻[j]
+                间隔 = 帧间隔
+                try:
+                    if int(ctypes.windll.user32.GetForegroundWindow()) != int(顶.wm_frame(), 16):
+                        间隔 = 33      # 不在前台时 30fps，省一半 CPU
+                except Exception:
+                    pass
+                顶.after(间隔, 帧)
             except Exception:
-                pass
+                try:
+                    顶.after(200, 帧)
+                except Exception:
+                    pass
 
-        画布.mpl_connect("motion_notify_event", _鼠标移动)
-        画布.mpl_connect("axes_leave_event", lambda _e: _藏提示())
-        画布.get_tk_widget().bind("<Configure>", lambda _e: 状态.update(bg=None), add="+")
+        def 上限_now():
+            """当前应有的 y 上限（带滞回），同时更新状态。"""
+            值们 = [v for s in 系列 for v in s["ys"]]
+            return _上限(值们) if 值们 else 500.0
+
+        def _鼠标移动(e):
+            try:
+                if e.inaxes is not 轴 or e.xdata is None:
+                    _藏提示()
+                    return
+                状态["hover_x"] = max(0.0, min(窗口固定, float(e.xdata)))
+            except Exception:
+                _藏提示()
 
         def _关闭():
             状态["stop"] = True
@@ -1347,10 +1336,13 @@ class PagesMixin:
             except Exception:
                 pass
 
+        画布.mpl_connect("motion_notify_event", _鼠标移动)
+        画布.mpl_connect("axes_leave_event", lambda _e: _藏提示())
+        画布.get_tk_widget().bind("<Configure>", lambda _e: 状态.update(bg=None), add="+")
         顶.protocol("WM_DELETE_WINDOW", _关闭)
 
         try:
-            缓存背景([], [], 10.0, 50.0)
+            缓存背景(窗口固定, 500.0)
         except Exception:
             pass
         帧()

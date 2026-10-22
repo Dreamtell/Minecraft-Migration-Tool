@@ -28,32 +28,59 @@ INTERVAL_MS = 5000
 # 只记连通与否和连接耗时(ms)。放在父进程里 —— 网络灯本来就在这边跑，
 # 所以迷你图不需要跨进程拿数据（流量数字在 Qt 子进程里，父进程读不到）。
 
-_rtt = collections.deque(maxlen=24)           # 只留 2 分钟（5 秒一次 → 24 条）
+# 只留 2 分钟（5 秒一次 → 24 条）。每条形如 (时间戳, {"Modrinth": 45 或 None, ...})
+# —— **按平台分开存**，曲线图才能给两个平台各画一条线。
+_rtt = collections.deque(maxlen=24)
 
 
-def record(结果, 耗时_ms):
-    """记一次探测结果：{'Modrinth': True, ...} + 整体耗时。"""
+def hosts():
+    """平台名列表，顺序固定（决定曲线图里线/颜色的顺序）。"""
+    return tuple(名 for 名, _ in _HOSTS)
+
+
+def record(结果):
+    """记一次探测：{'Modrinth': 45, 'CurseForge': None, ...}（None = 这次没连上）。"""
     try:
-        通 = sum(1 for v in 结果.values() if v)
-        _rtt.append((time.time(), int(耗时_ms), 通, len(结果)))
+        _rtt.append((time.time(), dict(结果)))
     except Exception:
         pass
 
 
 def rtt_history():
-    """最近若干次的 [(时间戳, 耗时ms, 连通源数, 源总数), ...]。"""
-    return list(_rtt)
+    """兼容旧接口：[(时间戳, 最慢的那个平台的耗时, 连通数, 总数), ...]。
+
+    浮标和左下角迷你图用的就是这个"整体"口径。
+    """
+    出 = []
+    for t, d in _rtt:
+        值 = [v for v in d.values() if v is not None]
+        出.append((t, max(值) if 值 else 0, len(值), len(d)))
+    return 出
+
+
+def rtt_series():
+    """按平台分开的样本：{平台名: [(时间戳, 耗时ms), ...]}，只含连上的那些。"""
+    出 = {名: [] for 名, _ in _HOSTS}
+    for t, d in _rtt:
+        for 名, v in d.items():
+            if v is not None:
+                出.setdefault(名, []).append((t, v))
+    return 出
 
 
 def probe(timeout=_TIMEOUT):
-    """返回 {主机名: 是否连通}。纯 TCP 连接测试，不发送任何请求。"""
+    """返回 {主机名: 连接耗时ms 或 None}。纯 TCP 连接测试，不发送任何请求。
+
+    **每个平台单独计时**（以前记的是两次连接的合计），这样两条线才有意义。
+    """
     结果 = {}
     for 名, 主机 in _HOSTS:
+        t0 = time.perf_counter()
         try:
             with socket.create_connection((主机, 443), timeout=timeout):
-                结果[名] = True
+                结果[名] = max(1, int((time.perf_counter() - t0) * 1000))
         except Exception:
-            结果[名] = False
+            结果[名] = None
     return 结果
 
 
@@ -84,10 +111,8 @@ def start_polling(root, on_result, interval_ms=INTERVAL_MS):
     def 循环():
         while not 停止.is_set():
             try:
-                t0 = time.monotonic()
                 r = probe()
-                耗时 = (time.monotonic() - t0) * 1000.0
-                record(r, 耗时)
+                record(r)
                 文字, 档位 = summary(r)
             except Exception:
                 r, 文字, 档位 = {}, "🌐 网络：检测失败", "warn"
