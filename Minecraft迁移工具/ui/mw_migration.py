@@ -44,11 +44,40 @@ def _打桩优先(名字, 默认):
     return getattr(_mw, 名字, 默认)
 
 
+def _hex_rgb(v, 默认=(128, 128, 128)):
+    """'#rrggbb' / 'rrggbb' / '#rgb' → (r, g, b)。"""
+    v = str(v or "").lstrip("#")
+    if len(v) == 3:
+        v = "".join(c * 2 for c in v)
+    try:
+        return (int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16))
+    except Exception:
+        return 默认
+
+
+def _palette(theme):
+    """按主题亮度给自绘卡片取一套颜色：(面板, 边框, 主色, 是否深色)。"""
+    底 = _hex_rgb(theme.get("bg"), (255, 255, 255))
+    深 = (0.299 * 底[0] + 0.587 * 底[1] + 0.114 * 底[2]) < 128
+    面板 = _hex_rgb(theme.get("panel_bg") or ("#333333" if 深 else "#fafafa"))
+    边框 = _hex_rgb(theme.get("border") or ("#3f3f3f" if 深 else "#d6d6d6"))
+    主色 = _hex_rgb(theme.get("accent") or ("#64b5f6" if 深 else "#1e88e5"))
+    return 面板, 边框, 主色, 深
+
+
 class _ArchiveList(tk.Frame):
-    """左侧档案卡列表：一次迁移一张卡（时间/模式/路径/统计），点选看详情。"""
+    """左侧档案卡列表：圆角卡片 + 悬停高亮 + 平滑滚动。
+
+    卡片用 Pillow 画（3 倍超采样再缩小），圆角是抗锯齿的 —— Tk 自己的
+    create_rectangle 是硬边，做不出圆角，create_polygon(smooth=1) 又会在
+    直边处鼓出来，所以这里走位图。
+    每张卡按「普通 / 悬停 / 选中」三种状态各缓存一张图，滚动或悬停时只换图，
+    不重新渲染（否则 60fps 会卡）。
+    """
 
     CARD_H = 92
     GAP = 8
+    RADIUS = 10
 
     def __init__(self, master, theme, records, on_select):
         super().__init__(master, bg=theme["bg"])
@@ -56,15 +85,22 @@ class _ArchiveList(tk.Frame):
         self.records = records
         self.on_select = on_select
         self.sel = 0
-        self.offset = 0
+        self.hover = -1
+        self.offset = 0.0
+        self.target = 0.0
+        self._job = None
+        self._imgs = {}
         self.canvas = tk.Canvas(self, bg=theme["bg"], highlightthickness=0, bd=0,
                                 cursor="hand2")
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._click)
+        self.canvas.bind("<Motion>", self._motion)
+        self.canvas.bind("<Leave>", self._leave)
         self.canvas.bind("<MouseWheel>", self._wheel)
         self.canvas.bind("<Configure>", lambda e: self.redraw())
         self.redraw()
 
+    # ---------- 几何 ----------
     def _top(self, i):
         return px(4) + i * (px(self.CARD_H) + px(self.GAP)) - self.offset
 
@@ -73,6 +109,13 @@ class _ArchiveList(tk.Frame):
         i = int((y + self.offset - px(4)) // step)
         return i if 0 <= i < len(self.records) else -1
 
+    def _total(self):
+        return len(self.records) * (px(self.CARD_H) + px(self.GAP)) + px(8)
+
+    def _max_off(self):
+        return max(0.0, self._total() - (self.canvas.winfo_height() or 0))
+
+    # ---------- 交互 ----------
     def _click(self, e):
         i = self._hit(e.y)
         if i >= 0:
@@ -80,28 +123,80 @@ class _ArchiveList(tk.Frame):
             self.redraw()
             self.on_select(i)
 
+    def _motion(self, e):
+        i = self._hit(e.y)
+        if i != self.hover:
+            self.hover = i
+            self.redraw()
+
+    def _leave(self, _e):
+        if self.hover != -1:
+            self.hover = -1
+            self.redraw()
+
     def _wheel(self, e):
-        total = len(self.records) * (px(self.CARD_H) + px(self.GAP)) + px(8)
-        max_off = max(0, total - (self.canvas.winfo_height() or 0))
-        self.offset = max(0, min(max_off, self.offset - int(e.delta / 120) * px(40)))
+        self.target = max(0.0, min(self._max_off(),
+                                   self.target - int(e.delta / 120) * px(56)))
+        self._anim()
+
+    def _anim(self):
+        """滚动缓动：每帧走剩余距离的 35%，到位就停（不空转）。"""
+        差 = self.target - self.offset
+        if abs(差) < 0.5:
+            self.offset = self.target
+            self._job = None
+            self.redraw()
+            return
+        self.offset += 差 * 0.35
         self.redraw()
+        try:
+            self._job = self.after(16, self._anim)
+        except Exception:
+            self._job = None
+
+    # ---------- 绘制 ----------
+    def _card_img(self, w, h, 状态, 条色="#2e7d32"):
+        key = (w, h, 状态, 条色)
+        图 = self._imgs.get(key)
+        if 图 is not None:
+            return 图
+        from PIL import Image, ImageDraw, ImageTk
+
+        面板, 边, 主, _深 = _palette(self.theme)
+        if 状态 == "s":
+            填充 = tuple(min(255, int(c + (主[k] - c) * 0.10)) for k, c in enumerate(面板))
+            描边, 粗 = 主, 2
+        elif 状态 == "h":
+            填充 = tuple(min(255, int(c + (主[k] - c) * 0.05)) for k, c in enumerate(面板))
+            描边, 粗 = tuple(int(边[k] * 0.6 + 主[k] * 0.4) for k in range(3)), 1
+        else:
+            填充, 描边, 粗 = 面板, 边, 1
+
+        S = 3
+        img = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        r = px(self.RADIUS) * S
+        框 = [0, 0, w * S - 1, h * S - 1]
+        d.rounded_rectangle(框, radius=r, fill=填充 + (255,))
+        # 左侧色条：先铺满整块圆角，再用面板色盖掉右边，只留 5px 宽
+        d.rounded_rectangle(框, radius=r, fill=_hex_rgb(条色, (46, 125, 50)) + (255,))
+        d.rectangle([px(5) * S, 0, w * S, h * S], fill=填充 + (255,))
+        d.rounded_rectangle(框, radius=r, outline=描边 + (255,), width=粗 * S)
+        图 = ImageTk.PhotoImage(img.resize((w, h), Image.LANCZOS))
+        self._imgs[key] = 图
+        return 图
 
     def redraw(self):
         c = self.canvas
         c.delete("all")
         w = c.winfo_width() or px(360)
         h = c.winfo_height() or px(400)
-        面板色 = self.theme.get("panel_bg", self.theme.get("bg", "#ffffff"))
         弱色 = self.theme.get("muted_fg", "#888888")
         for i, rec in enumerate(self.records):
             y0 = self._top(i)
             y1 = y0 + px(self.CARD_H)
             if y1 < 0 or y0 > h:
                 continue
-            选中 = (i == self.sel)
-            边 = self.theme.get("accent", "#1e88e5") if 选中 else self.theme.get("border", "#cccccc")
-            c.create_rectangle(px(4), y0, w - px(8), y1, fill=面板色, outline=边,
-                               width=2 if 选中 else 1)
             模式 = rec.get("mode")
             结果 = rec.get("result") or ""
             if 模式 == "dry":
@@ -109,13 +204,16 @@ class _ArchiveList(tk.Frame):
             elif 结果 == "成功":
                 条 = self.theme.get("ok_fg", "#2e7d32")
             else:
-                条 = self.theme.get("err_fg", "#c62828")
-            c.create_rectangle(px(4), y0, px(8), y1, fill=条, outline="")
+                条 = self.theme.get("fail_fg", "#c62828")
+            状态 = "s" if i == self.sel else ("h" if i == self.hover else "n")
+            img = self._card_img(w - px(14), px(self.CARD_H), 状态, 条)
+            c.create_image(px(4), int(y0), anchor="nw", image=img)
             c.create_text(px(20), y0 + px(16), anchor="w", text=rec.get("time", "?"),
                           fill=self.theme["fg"], font=("微软雅黑", 10, "bold"))
-            c.create_text(w - px(18), y0 + px(16), anchor="e",
+            c.create_text(w - px(24), y0 + px(16), anchor="e",
                           text=("模拟" if 模式 == "dry" else "实际"),
                           fill=条, font=("微软雅黑", 9, "bold"))
+
             def _名(pth):
                 段 = str(pth or "").replace("\\", "/").rstrip("/").split("/")
                 return 段[-1] if 段 else "?"
@@ -132,11 +230,12 @@ class _ArchiveList(tk.Frame):
             c.create_text(px(20), y0 + px(78), anchor="w",
                           text="耗时 %s 秒　·　%s" % (rec.get("duration", "?"), 结果 or "—"),
                           fill=弱色, font=("微软雅黑", 8))
-        total = len(self.records) * (px(self.CARD_H) + px(self.GAP)) + px(8)
-        if total > h:
-            bar = max(px(24), int(h * h / total))
-            top = int((h - bar) * (self.offset / max(1, total - h)))
-            c.create_rectangle(w - px(5), top, w - px(2), top + bar,
+
+        total, hh = self._total(), h
+        if total > hh:
+            bar = max(px(24), int(hh * hh / total))
+            top = int((hh - bar) * (self.offset / max(1.0, total - hh)))
+            c.create_rectangle(w - px(6), top, w - px(3), top + bar,
                                fill=self.theme.get("muted_fg", "#888888"), outline="")
 
 
@@ -211,9 +310,37 @@ class MigrationMixin:
         左.pack(side="left", fill="y")
         左.pack_propagate(False)
 
-        右 = tk.Frame(主体, bg=面板色, highlightthickness=1,
-                      highlightbackground=边框色)
+        # 右侧详情：用 Canvas 画圆角背景，内容放在它上面的一个 Frame 里
+        右 = tk.Canvas(主体, bg=self.theme["bg"], highlightthickness=0, bd=0)
         右.pack(side="left", fill="both", expand=True, padx=(px(12), 0))
+        内容 = tk.Frame(右, bg=面板色)
+        _内窗 = 右.create_window(0, 0, window=内容, anchor="nw")
+        _背景 = {"img": None}
+
+        def _画圆角背景(_e=None):
+            from PIL import Image, ImageDraw, ImageTk
+
+            _面板, _边框, _主, _ = _palette(self.theme)
+
+            w = max(2, 右.winfo_width())
+            h = max(2, 右.winfo_height())
+            S = 3
+            半径 = px(14) * S
+            img = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.rounded_rectangle([0, 0, w * S - 1, h * S - 1], radius=半径,
+                                fill=_面板 + (255,),
+                                outline=_边框 + (255,),
+                                width=S)
+            背景图 = ImageTk.PhotoImage(img.resize((w, h), Image.LANCZOS))
+            _背景["img"] = 背景图
+            右.delete("bg")
+            右.create_image(0, 0, anchor="nw", image=背景图, tags="bg")
+            右.tag_lower("bg")
+            右.coords(_内窗, px(1), px(1))
+            右.itemconfig(_内窗, width=w - px(2), height=h - px(2))
+
+        右.bind("<Configure>", _画圆角背景)
 
         列表 = _ArchiveList(左, self.theme, 记录, lambda i: 选中(i))
         列表.pack(fill="both", expand=True)
@@ -231,7 +358,7 @@ class MigrationMixin:
             lbl.pack(side="left", fill="x", expand=True)
             return lbl
 
-        顶条 = tk.Frame(右, bg=面板色)
+        顶条 = tk.Frame(内容, bg=面板色)
         顶条.pack(fill="x", padx=px(14), pady=(px(12), px(6)))
         详情["标题"] = tk.Label(顶条, text="", font=("微软雅黑", 13, "bold"),
                                 bg=面板色, fg=self.theme["fg"], anchor="w")
@@ -240,7 +367,7 @@ class MigrationMixin:
                                   fg=弱色, anchor="w")
         详情["副标题"].pack(fill="x", pady=(px(2), 0))
 
-        概览 = tk.Frame(右, bg=面板色)
+        概览 = tk.Frame(内容, bg=面板色)
         概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)))
         详情["源"] = _行(概览, "源目录", "")
         详情["目标"] = _行(概览, "目标目录", "")
@@ -248,7 +375,7 @@ class MigrationMixin:
         详情["耗时"] = _行(概览, "耗时", "")
         详情["失败"] = _行(概览, "失败", "")
 
-        日志标题 = tk.Frame(右, bg=面板色)
+        日志标题 = tk.Frame(内容, bg=面板色)
         日志标题.pack(fill="x", padx=px(14), pady=(px(10), px(2)))
         tk.Label(日志标题, text="执行日志", font=("微软雅黑", 9, "bold"),
                  bg=面板色, fg=self.theme["fg"], anchor="w").pack(side="left")
@@ -256,7 +383,7 @@ class MigrationMixin:
                                     bg=面板色, fg=弱色, anchor="e")
         详情["日志计数"].pack(side="right")
 
-        日志框 = tk.Frame(右, bg=面板色)
+        日志框 = tk.Frame(内容, bg=面板色)
         日志框.pack(fill="both", expand=True, padx=px(14), pady=(0, px(12)))
         详情["日志"] = tk.Text(日志框, wrap="word", bd=0, highlightthickness=1,
                                highlightbackground=边框色, bg=面板色,
