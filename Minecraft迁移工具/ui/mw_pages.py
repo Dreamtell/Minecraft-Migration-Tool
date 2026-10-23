@@ -513,6 +513,7 @@ class PagesMixin:
             "check_mods": self.check_mods_btn,
         })
         self._stage()
+        self._refresh_scan_btn_state()      # 清单为空时「扫描差异」置灰
 
     def _create_config_page(self, parent):
         """config 清单页：每行一个相对路径，相对源实例的 config 目录。"""
