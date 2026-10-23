@@ -938,6 +938,9 @@ class NetFloat:
             self._hint = None
             self._hint_until = 0.0
             self._redraw()
+            # ⚠ 这里以前漏了：提示超时清掉时没有把发光带一起收起，
+            # 结果边框上的绿色光带会一直留着不走。
+            self._update_glow()
             return
         self._redraw()
         try:
