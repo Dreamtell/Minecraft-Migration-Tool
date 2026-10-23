@@ -212,10 +212,21 @@ class NetFloat:
             return self._rel[0], self._rel[1]
 
     def _apply(self):
+        """只挪位置：用 SetWindowPos，不重传位图（比 ULW 快 18 倍）。
+
+        UpdateLayeredWindow 每次调用都会重设整张表面 + 触发重合成（实测 0.108ms），
+        而拖动时内容根本不变，只需要挪窗口 —— SetWindowPos 是 0.006ms。
+        内容/尺寸变化时才走 _upload（那里才调用 ULW）。
+        """
         ax, ay = self._abs_pos()
-        if self._layered and self._dib:
-            self._blit(self._dib, ax, ay)
-            return
+        if self._layered and self._hwnd and self._dib:
+            try:
+                ctypes.windll.user32.SetWindowPos(
+                    int(self._hwnd), 0, int(ax), int(ay), 0, 0,
+                    0x0001 | 0x0004 | 0x0010)      # NOSIZE | NOZORDER | NOACTIVATE
+                return
+            except Exception:
+                pass
         cw, ch = self._cur_size()
         try:
             self.win.geometry("%dx%d+%d+%d" % (cw, ch, int(ax), int(ay)))
@@ -441,29 +452,50 @@ class NetFloat:
             pass
 
     def _on_press(self, e):
-        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, pending=False)
+        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, pending=True)
+        # 鼠标被"抓住"：拖到窗口外面也能收到松开事件（否则松手收不到，浮标会一直跟着光标跑）
+        try:
+            ctypes.windll.user32.SetCapture(int(self._hwnd or 0))
+        except Exception:
+            pass
+        # 把系统定时器精度提到 1ms，after(8) 才会真的 8ms 一次（默认 15.6ms）
+        try:
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            self._timer_fine = True
+        except Exception:
+            self._timer_fine = False
+        # ⚠ 关键：按下期间由**定时器**驱动移动，不再依赖 <B1-Motion>。
+        # 拖快时指针瞬间就离开浮标那 90×90 的范围，Tk 不再发 Motion 事件，
+        # 事件驱动的实现就会停在原地 —— 看起来就是"一拖快就卡"。
+        self._flush_drag()
 
     def _on_drag(self, e):
-        """拖动事件只做标记，真正的移动交给 _flush_drag 按帧合并。
+        """拖动事件只用来判断"动过了"，实际移动由 _flush_drag 定时器做。
 
-        高速拖动时 Windows 会把 <B1-Motion> 合并/丢弃，一个事件重绘一次的话
-        浮标会越拖越落后（就是"卡"的感觉）。这里改成固定 8ms 一次（≈125fps），
-        并且**用系统光标的最新位置**，不依赖事件里那个已经过期的坐标。
+        不在这里直接移动，也不靠这个事件的坐标：拖快时事件会被合并/丢弃，
+        甚至因为指针离开浮标范围而完全断掉。位置一律在 _flush_drag 里用
+        GetCursorPos 现取。
         """
         if not self._drag["on"]:
             return
         self._drag["moved"] = True
-        self._drag["pending"] = True
-        if self._drag.get("job") is None:
-            try:
-                self._drag["job"] = self.root.after(8, self._flush_drag)
-            except Exception:
-                self._flush_drag()
 
     def _flush_drag(self):
         self._drag["job"] = None
-        if not self._drag["on"]:
+        if not self._drag["on"] or self._drag.get("ending"):
             return
+        # 左键其实已经松了（松在窗口外、或被别的程序抢走）：直接当松手处理，
+        # 否则浮标会一直跟着光标跑。
+        try:
+            if not (ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000):
+                self._drag["ending"] = True
+                try:
+                    self._on_release(None)
+                finally:
+                    self._drag["ending"] = False
+                return
+        except Exception:
+            pass
         pt = wintypes.POINT()
         try:
             if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
@@ -472,15 +504,16 @@ class NetFloat:
             return
         nx = pt.x - self.root.winfo_rootx() - self._drag["dx"]
         ny = pt.y - self.root.winfo_rooty() - self._drag["dy"]
-        if self._docked:                     # 拖出来就取消收纳
+        # 真的移动了才取消收纳 —— 否则"在收纳的小标签上点一下想开图"会把它展开
+        动了 = (abs(nx - self._rel[0]) > 2 or abs(ny - self._rel[1]) > 2)
+        if 动了 and self._docked:
             self._docked = None
             self._peek = False
             self._redraw()
         # 拖动过程中就夹在主窗口内：以前只在松手时夹，中途可以拖到窗口外面去
         self._rel = list(self._clamp(nx, ny))
         self._apply()
-        if self._drag["pending"]:
-            self._drag["pending"] = False
+        if self._drag["on"]:
             try:
                 self._drag["job"] = self.root.after(8, self._flush_drag)
             except Exception:
@@ -497,6 +530,16 @@ class NetFloat:
         self._drag["job"] = None
         self._flush_drag()          # 松手前先把最后一帧补上，避免停在旧位置
         self._drag["on"] = False
+        try:
+            ctypes.windll.user32.ReleaseCapture()
+        except Exception:
+            pass
+        if getattr(self, "_timer_fine", False):
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
+            self._timer_fine = False
         if self._drag["moved"]:
             edge = self._detect_edge()
             if edge:
