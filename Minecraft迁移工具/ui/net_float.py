@@ -105,6 +105,7 @@ class NetFloat:
         self._drag = {"dx": 0, "dy": 0, "on": False, "moved": False,
                       "job": None, "pending": False}
         self._hover = False
+        self._collapse_job = None
         self._peek = False
         self._docked = None
         self._job = None
@@ -592,17 +593,46 @@ class NetFloat:
 
     def _on_enter(self, _e):
         self._hover = True
+        # 取消还没执行的收缩（光标只是"闪"出去一下又回来了）
+        if self._collapse_job:
+            try:
+                self.root.after_cancel(self._collapse_job)
+            except Exception:
+                pass
+            self._collapse_job = None
         if self._docked and self.dock_enabled and not self._peek:
             self._peek = True
             self._snap(self._docked)         # 展开成圆
-        self._redraw()
+            self._redraw()
+        elif not self._docked:
+            self._redraw()
+        # 已经是展开态：什么都不用做（别每来一次 <Enter> 就重画一遍）
 
     def _on_leave(self, _e):
+        """离开时延迟 180ms 再收缩，别立刻收。
+
+        ⚠ 展开会让窗口变大并左移，Tk/Windows 在几何变化时会再判一次 <Leave>：
+        立刻收缩 → 光标又落回小标签 → 再 <Enter> → 再展开……实测 0.8 秒里抖了
+        7 个来回（ENLVENLV…）。延迟一下就把这种"几何变化引起的假离开"滤掉了。
+        """
         self._hover = False
+        if self._docked and self.dock_enabled and self._peek:
+            if self._collapse_job is None:
+                try:
+                    self._collapse_job = self.root.after(180, self._collapse_now)
+                except Exception:
+                    self._collapse_job = None
+        elif not self._docked:
+            self._redraw()
+
+    def _collapse_now(self):
+        self._collapse_job = None
+        if self._hover:                 # 期间又回来了
+            return
         if self._docked and self.dock_enabled and self._peek:
             self._peek = False
             self._snap(self._docked)         # 缩回小标签
-        self._redraw()
+            self._redraw()
 
     def _menu(self):
         self.menu = tk.Menu(self._target(), tearoff=0)
@@ -773,7 +803,8 @@ class NetFloat:
 
     def close(self):
         self._stop = True
-        for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None)):
+        for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None),
+                  getattr(self, "_collapse_job", None)):
             try:
                 if j:
                     self.root.after_cancel(j)
