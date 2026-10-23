@@ -86,7 +86,8 @@ class _EdgeGlow:
 
     W = 22          # 带宽（设计像素，往窗口内侧延伸）
     H = 320         # 仅作为"没拿到窗口尺寸"时的兜底高度
-    FPS_MS = 50     # 20fps：整条边每帧都要重传位图，慢一点更稳
+    FPS_MS = 16     # 60fps：粒子是"运动"的东西，20fps 看着明显一顿一顿
+    寿命 = 2.2      # 颗粒从边框飘到最内侧的时间（秒）
     色 = (110, 220, 130)
 
     def __init__(self, root):
@@ -134,10 +135,22 @@ class _EdgeGlow:
         except Exception:
             pass
         if self._job is None:
+            try:
+                ctypes.windll.winmm.timeBeginPeriod(1)
+                self._fine = True
+            except Exception:
+                self._fine = False
+            self._last_t = time.perf_counter()
             self._tick()
 
     def hide(self):
         self._edge = None
+        if getattr(self, "_fine", False):
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
+            self._fine = False
         if self._job:
             try:
                 self.root.after_cancel(self._job)
@@ -184,19 +197,24 @@ class _EdgeGlow:
         self._job = None
         if not self._edge:
             return
-        self._step()
+        现在 = time.perf_counter()
+        上次 = getattr(self, "_last_t", None) or 现在
+        self._last_t = 现在
+        dt = min(0.08, max(0.001, 现在 - 上次))     # 卡一下也不会瞬移
+        self._step(dt)
         self._draw()
         try:
             self._job = self.root.after(self.FPS_MS, self._tick)
         except Exception:
             self._job = None
 
-    def _step(self):
+    def _step(self, dt):
+        """按**时间**推进（不是按帧）：改 fps 不会改变粒子的速度。"""
         for p in self._parts:
-            p[2] += 1.0
-            p[0] += 0.018 + 0.014 * self._rnd.random()      # 往窗口内侧飘
-            p[1] += (self._rnd.random() - 0.5) * 0.006
-            if p[0] > 1.05 or p[2] > 46:
+            p[2] += dt                                  # 年龄（秒）
+            p[0] += dt * (0.34 + 0.22 * self._rnd.random())   # 往窗口内侧飘
+            p[1] += (self._rnd.random() - 0.5) * dt * 0.25
+            if p[0] > 1.05 or p[2] > self.寿命:
                 p[0] = 0.0
                 p[1] = self._rnd.uniform(0.0, 1.0)
                 p[2] = 0.0
@@ -241,7 +259,7 @@ class _EdgeGlow:
             return u * W, y
 
         for v, u, 年龄, 半径 in self._parts:
-            t = 1.0 - min(1.0, 年龄 / 46.0)
+            t = 1.0 - min(1.0, 年龄 / self.寿命)
             a = int(210 * t * (1.0 - 0.6 * v))
             if a <= 0:
                 continue
