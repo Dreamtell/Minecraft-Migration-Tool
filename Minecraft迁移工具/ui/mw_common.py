@@ -154,6 +154,8 @@ _BUTTON_LABELS.update(button_prefs.LABELS)
 # 外部链接（设置窗口里的快捷入口）
 LINK_MINECRAFT = "https://www.minecraft.net/zh-hans"
 LINK_GITHUB = "https://github.com/Dreamtell/Minecraft-Migration-Tool"
+LINK_MCMOD = "https://www.mcmod.cn/"          # MC百科：中文模组资料
+LINK_PCL = "https://pcl.ruanmao.net/"         # PCL 启动器：国内常用的整合包启动器
 
 # 设置窗口的分区配色 / 图标（标题色、描边色、图标都是同一支主色）
 _SECTION_STYLE = {
@@ -522,7 +524,7 @@ def _file_task_lock(name):
 # 这些名字会被 `from ui.mw_common import *` 原样搬进 ui/main_window.py，
 # 保持拆分前 `MW.<名字>` 的老接口面（_dctest 的验证脚本靠它打桩）。
 __all__ = [
-    "CONFIG_FILE", "Counter", "DARK_THEME", "DataText", "LIGHT_THEME", "LINK_GITHUB",
+    "CONFIG_FILE", "Counter", "DARK_THEME", "DataText", "LIGHT_THEME", "LINK_GITHUB", "LINK_MCMOD", "LINK_PCL",
     "LINK_MINECRAFT", "LiquidProgress", "OptionCards", "Path", "ProgressWindow",
     "RoundedEntry", "RoundedTabs", "RoundedTextArea", "ScanProgressWindow",
     "SegmentedControl", "SmoothScroller", "SwitchRow", "VirtualTable", "_BIG_VIEW_BACKENDS",

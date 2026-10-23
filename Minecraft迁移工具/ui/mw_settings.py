@@ -13,7 +13,8 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from ui import button_prefs
 from ui.mw_common import (
-    LINK_GITHUB, LINK_MINECRAFT, _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS,
+    LINK_GITHUB, LINK_MCMOD, LINK_MINECRAFT, LINK_PCL,
+    _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS,
     _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS, _LOCK_MODES,
     _RENAME_MARKERS, _SECTION_STYLE, _mix,
 )
@@ -574,11 +575,20 @@ class SettingsMixin:
                                lambda: self.open_link(LINK_MINECRAFT),
                                colors=("#43a047", "#66bb6a"), width=150, height=28,
                                font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 8))
+        create_gradient_button(row_link, "📚 MC百科",
+                               lambda: self.open_link(LINK_MCMOD),
+                               colors=("#2e7d32", "#43a047"), width=150, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 8))
+        create_gradient_button(row_link, "🚀 PCL 启动器",
+                               lambda: self.open_link(LINK_PCL),
+                               colors=("#1565c0", "#42a5f5"), width=150, height=28,
+                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 8))
         create_gradient_button(row_link, "🐙 GitHub 仓库",
                                lambda: self.open_link(LINK_GITHUB),
                                colors=("#455a64", "#78909c"), width=150, height=28,
                                font=("微软雅黑", 9, "bold")).pack(side="left")
-        tk.Label(box4, text=LINK_GITHUB + i18n.tr("\n欢迎反馈问题或提交建议。"),
+        tk.Label(box4, text=LINK_GITHUB + i18n.tr(
+                     "\nMC百科：中文模组资料库　·　PCL：整合包启动器　·　欢迎反馈问题或提交建议。"),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left").pack(anchor="w", pady=(4, 0))
 
