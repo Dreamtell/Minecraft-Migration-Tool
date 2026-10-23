@@ -84,9 +84,10 @@ class _EdgeGlow:
       · 粒子从边缘生成、往窗口内侧飘、逐渐淡出，看起来就是"溢出来"。
     """
 
-    W = 26          # 带宽（设计像素，往窗口内侧延伸）
-    H = 320         # 带高
-    FPS_MS = 33     # 30fps 够用，重传整条带子也不贵
+    W = 22          # 带宽（设计像素，往窗口内侧延伸）
+    H = 320         # 仅作为"没拿到窗口尺寸"时的兜底高度
+    FPS_MS = 50     # 20fps：整条边每帧都要重传位图，慢一点更稳
+    色 = (110, 220, 130)
 
     def __init__(self, root):
         import random
@@ -124,7 +125,9 @@ class _EdgeGlow:
         self._geom = dict(geom)
         self._cy = center_y
         if not self._parts:
-            self._spawn(18)
+            # 粒子数按边长来：整条边太长的话 18 个会显得稀
+            长 = max(self._geom.get("w", 0), self._geom.get("h", 0)) or 900
+            self._spawn(max(18, min(64, int(长 / 26))))
         self._place()
         try:
             self.win.deiconify()
@@ -147,16 +150,18 @@ class _EdgeGlow:
             pass
 
     def _place(self):
-        """把带子摆到窗口内侧那条边上，纵向以浮标为中心。"""
+        """把带子铺满窗口的**整条边**，并且严格裁在窗口客户区内（不溢出）。"""
         g = self._geom
-        w, h = px(self.W), px(self.H)
+        厚 = px(self.W)
+        gw, gh = max(2, int(g.get("w") or 0)), max(2, int(g.get("h") or 0))
         if self._edge in ("left", "right"):
-            x = g["x"] if self._edge == "left" else g["x"] + g["w"] - w
-            y = self._cy - h // 2
+            w, h = 厚, gh
+            x = g["x"] if self._edge == "left" else g["x"] + gw - w
+            y = g["y"]
         else:
-            x = self._cy - h // 2
-            y = g["y"] if self._edge == "top" else g["y"] + g["h"] - w
-            w, h = h, w
+            w, h = gw, 厚
+            x = g["x"]
+            y = g["y"] if self._edge == "top" else g["y"] + gh - h
         self._size = (w, h)
         self._pos = (int(x), int(y))
         try:
@@ -201,11 +206,29 @@ class _EdgeGlow:
     def _draw(self):
         from PIL import Image, ImageDraw
         W, H = self._size
-        色 = (255, 213, 79)
+        色 = self.色
         水平 = self._edge in ("left", "right")
         深 = W if 水平 else H          # 深度方向的像素长度
-        S = 2
-        img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+
+        # 渐变是静态的：按尺寸缓存一份，每帧只 copy + 画粒子
+        key = (W, H, self._edge)
+        if getattr(self, "_base_key", None) != key:
+            底 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d0 = ImageDraw.Draw(底)
+            for j in range(深):
+                t = j / max(1, 深 - 1)          # 0 = 边框，1 = 最内侧
+                a = int(140 * (1 - t) ** 1.7)
+                if a <= 0:
+                    continue
+                if 水平:
+                    x = (W - 1 - j) if self._edge == "right" else j
+                    d0.line([(x, 0), (x, H - 1)], fill=色 + (a,))
+                else:
+                    y = (H - 1 - j) if self._edge == "bottom" else j
+                    d0.line([(0, y), (W - 1, y)], fill=色 + (a,))
+            self._base_img, self._base_key = 底, key
+
+        img = self._base_img.copy()
         d = ImageDraw.Draw(img)
 
         def 像素(v, u):
@@ -217,41 +240,35 @@ class _EdgeGlow:
             y = (H - v * H) if self._edge == "bottom" else (v * H)
             return u * W, y
 
-        # 贴着边框最亮、往里淡出
-        for j in range(深):
-            t = j / max(1, 深 - 1)          # 0 = 边框，1 = 最内侧
-            a = int(150 * (1 - t) ** 1.7)
-            if a <= 0:
-                continue
-            if 水平:
-                x = (W - 1 - j) if self._edge == "right" else j
-                d.line([(x * S, 0), (x * S, H * S - 1)], fill=色 + (a,))
-            else:
-                y = (H - 1 - j) if self._edge == "bottom" else j
-                d.line([(0, y * S), (W * S - 1, y * S)], fill=色 + (a,))
-
-        # 颗粒：从边框往内侧飘，越深越淡
         for v, u, 年龄, 半径 in self._parts:
             t = 1.0 - min(1.0, 年龄 / 46.0)
             a = int(210 * t * (1.0 - 0.6 * v))
             if a <= 0:
                 continue
             x, y = 像素(v, u)
-            r = 半径 * (0.6 + 0.4 * t) * S
-            d.ellipse([x * S - r, y * S - r, x * S + r, y * S + r], fill=色 + (a,))
-        img = img.resize((W, H), Image.LANCZOS)
+            r = 半径 * (0.6 + 0.4 * t)
+            d.ellipse([x - r, y - r, x + r, y + r], fill=色 + (a,))
         self._upload(img)
 
     def _upload(self, img):
         if not self._ok:
             return
-        buf = bytearray(img.convert("RGBA").tobytes("raw", "BGRA"))
-        for i in range(0, len(buf), 4):
-            a = buf[i + 3]
-            if a != 255:
-                buf[i] = buf[i] * a // 255
-                buf[i + 1] = buf[i + 1] * a // 255
-                buf[i + 2] = buf[i + 2] * a // 255
+        # 预乘 alpha：整条边有 2 万多像素，Python 逐像素循环要 4~5ms，
+        # 用 numpy 一次算完（约 0.4ms）。
+        try:
+            import numpy as np
+            arr = np.asarray(img.convert("RGBA"), dtype=np.uint16)
+            a = arr[:, :, 3:4]
+            arr[:, :, :3] = (arr[:, :, :3] * a) // 255
+            buf = np.ascontiguousarray(arr[:, :, [2, 1, 0, 3]].astype(np.uint8)).tobytes()
+        except Exception:
+            buf = bytearray(img.convert("RGBA").tobytes("raw", "BGRA"))
+            for i in range(0, len(buf), 4):
+                a = buf[i + 3]
+                if a != 255:
+                    buf[i] = buf[i] * a // 255
+                    buf[i + 1] = buf[i + 1] * a // 255
+                    buf[i + 2] = buf[i + 2] * a // 255
         u = ctypes.windll.user32
         g = ctypes.windll.gdi32
         w, h = img.size
@@ -1083,7 +1100,7 @@ class NetFloat:
         if 提示:
             k = 0.5 + 0.5 * math.sin(time.time() * 9.0)      # 0..1 呼吸
             alpha = int(80 + 130 * k)
-            提示色 = (255, 213, 79)                          # 亮黄，和绿/红主题都分得开
+            提示色 = (110, 220, 130)                         # 亮绿：和普通状态的深绿环区分得开
             外 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             d2 = ImageDraw.Draw(外)
             pad2 = max(0, pad - int(2.5 * S))
@@ -1104,7 +1121,7 @@ class NetFloat:
                 条 = [bx0 + (bx1 - bx0) * 0.32, by1 - 条宽, bx0 + (bx1 - bx0) * 0.68, by1]
             try:
                 ImageDraw.Draw(img).rounded_rectangle(
-                    条, radius=条宽 / 2.0, fill=提示色 + (min(255, alpha + 60),))
+                    条, radius=条宽 / 2.0, fill=(170, 255, 190, min(255, alpha + 60)))
             except Exception:
                 pass
 
