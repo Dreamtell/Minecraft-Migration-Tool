@@ -209,11 +209,15 @@ class _EdgeGlow:
             self._job = None
 
     def _step(self, dt):
-        """按**时间**推进（不是按帧）：改 fps 不会改变粒子的速度。"""
+        """按**时间**推进（不是按帧）：改 fps 不会改变粒子的速度。
+
+        粒子只做**直线运动**：垂直朝窗口内侧走，速度恒定、不平移不抖动，
+        随机的只有出生位置（沿边）和大小。这样看着像一排整齐的雨丝，
+        而不是一群乱飘的萤火虫。
+        """
         for p in self._parts:
-            p[2] += dt                                  # 年龄（秒）
-            p[0] += dt * (0.34 + 0.22 * self._rnd.random())   # 往窗口内侧飘
-            p[1] += (self._rnd.random() - 0.5) * dt * 0.25
+            p[2] += dt                     # 年龄（秒）
+            p[0] += dt * 0.45              # 深度：等速直线
             if p[0] > 1.05 or p[2] > self.寿命:
                 p[0] = 0.0
                 p[1] = self._rnd.uniform(0.0, 1.0)
@@ -350,12 +354,13 @@ class NetFloat:
 
     def __init__(self, root, get_history, on_open_chart, on_close=None,
                  size=None, shadow=True, dock=True, bg="#f0f0f0",
-                 x=None, y=None, on_drag_state=None):
+                 x=None, y=None, on_drag_state=None, edge_fx=True):
         self.root = root
         self.get_history = get_history
         self.on_open_chart = on_open_chart
         self.on_close = on_close
         self.on_drag_state = on_drag_state
+        self.edge_fx = bool(edge_fx)
         self.shadow = bool(shadow)
         self.dock_enabled = bool(dock)
         self.bg = bg or "#f0f0f0"
@@ -950,6 +955,8 @@ class NetFloat:
 
     def _update_glow(self):
         """窗口边框的发光带 + 颗粒：提示"松手会被这条边吸进去"。"""
+        if not getattr(self, "edge_fx", True):
+            return
         if not self._hint:
             if self._glow is not None:
                 try:

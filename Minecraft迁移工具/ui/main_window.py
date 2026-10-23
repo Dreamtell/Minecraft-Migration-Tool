@@ -245,6 +245,7 @@ class MigrationGUI(
             self.net_float_size = 56
             self.history_limit = 10
         self.pack_warning = bool(self.config.get("pack_warning", True))
+        self.float_edge_fx = bool(self.config.get("float_edge_fx", True))
         self.net_float_shadow = bool(self.config.get("net_float_shadow", True))
         self.net_float_dock = bool(self.config.get("net_float_dock", True))
         self._stage("就绪")
@@ -416,6 +417,7 @@ class MigrationGUI(
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
             "history_limit": int(getattr(self, "history_limit", 10) or 10),
             "pack_warning": bool(getattr(self, "pack_warning", True)),
+            "float_edge_fx": bool(getattr(self, "float_edge_fx", True)),
             "net_float_shadow": bool(getattr(self, "net_float_shadow", True)),
             "net_float_dock": bool(getattr(self, "net_float_dock", True)),
         }

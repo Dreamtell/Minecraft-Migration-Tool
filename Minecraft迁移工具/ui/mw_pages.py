@@ -1521,10 +1521,28 @@ class PagesMixin:
             on_close=self._on_net_float_event, x=x, y=y,
             size=getattr(self, "net_float_size", 56),
             on_drag_state=self._on_float_drag_state,
+            edge_fx=getattr(self, "float_edge_fx", True),
             shadow=getattr(self, "net_float_shadow", True),
             dock=getattr(self, "net_float_dock", True),
             bg=self.theme.get("bg", "#f0f0f0"))
         self.net_float_on = True
+        try:
+            self.save_config()
+        except Exception:
+            pass
+
+    def set_float_edge_fx(self, 开):
+        """设置开关：贴边时的边缘特效（光带 + 粒子）是否启用，立即生效。"""
+        self.float_edge_fx = bool(开)
+        f = getattr(self, "_net_float", None)
+        if f is not None:
+            f.edge_fx = bool(开)
+            if not 开:
+                try:
+                    if getattr(f, "_glow", None) is not None:
+                        f._glow.hide()
+                except Exception:
+                    pass
         try:
             self.save_config()
         except Exception:

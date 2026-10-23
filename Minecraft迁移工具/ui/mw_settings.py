@@ -289,6 +289,12 @@ class SettingsMixin:
              self.settings_float_dock_var, self._toggle_float_dock,
              名="floatdock").pack(fill="x", pady=(6, 0))
 
+        self.settings_float_edgefx_var = tk.BooleanVar(
+            value=bool(getattr(self, "float_edge_fx", True)))
+        开关(box1, "贴边时显示边缘特效（绿色光带 + 粒子）",
+             self.settings_float_edgefx_var, self._toggle_float_edgefx,
+             名="floatedgefx").pack(fill="x", pady=(6, 0))
+
         # 配置文件是这个程序唯一的"数据文件"（语言 / 主题 / 各种偏好都在里面），
         # 给个一键用系统默认程序打开；改完要重启才生效，所以顺手写在旁边。
         row_cfg = tk.Frame(box1, bg=self.theme["bg"])
@@ -824,6 +830,21 @@ class SettingsMixin:
         self._refresh_net_float()
         self.log(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
                  level="INFO", save=False)
+
+    def _toggle_float_edgefx(self):
+        """开关：贴边时的边缘特效（光带 + 粒子），立即生效。"""
+        try:
+            开 = bool(self.settings_float_edgefx_var.get())
+        except Exception:
+            开 = True
+        try:
+            self.set_float_edge_fx(开)
+        except Exception:
+            self.float_edge_fx = 开
+            try:
+                self.save_config()
+            except Exception:
+                pass
 
     def _toggle_pack_warning(self):
         """开关：主界面的「整合包更新提醒」是否显示（立即生效）。"""
