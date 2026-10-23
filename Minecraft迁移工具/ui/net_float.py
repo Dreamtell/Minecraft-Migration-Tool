@@ -27,6 +27,7 @@
 """
 
 import ctypes
+import math
 import os
 import time
 import tkinter as tk
@@ -106,6 +107,9 @@ class NetFloat:
                       "job": None, "pending": False}
         self._hover = False
         self._collapse_job = None
+        self._hint = None          # 正在"将要吸附"的那条边（None = 无提示）
+        self._hint_job = None
+        self._hint_until = 0.0
         self._peek = False
         self._docked = None
         self._job = None
@@ -535,6 +539,9 @@ class NetFloat:
                 self._redraw()
         self._rel = list(self._clamp(nx, ny))
         self._apply()
+        if self._drag["on"] and self._drag["moved"]:
+            # 拖动中：离哪条边够近就亮哪条边的边框提示（松手会收纳）
+            self._set_hint(self._detect_edge())
         return True
 
     def _flush_drag(self):
@@ -588,6 +595,7 @@ class NetFloat:
                     self._docked = edge
                     self._snap(edge, apply=False)
                     self._redraw()
+                    self._set_hint(edge, 持续=0.4)   # 收纳成功后边框再亮一下
                 else:
                     self._docked = None
                     self._rel = list(self._clamp(*self._rel))
@@ -633,6 +641,32 @@ class NetFloat:
                     self._collapse_job = None
         elif not self._docked:
             self._redraw()
+
+    def _set_hint(self, edge, 持续=0.0):
+        """设置/清除"将要收纳"的提示。持续>0 时会在一段时间后自动清除（松手确认用）。"""
+        if edge != self._hint:
+            self._hint = edge
+            self._redraw()
+        if 持续:
+            self._hint_until = time.time() + 持续
+        if self._hint and self._hint_job is None:
+            self._hint_tick()
+
+    def _hint_tick(self):
+        """提示期间的脉冲：60ms 一帧，让边框亮度呼吸；提示消失就停（不空转）。"""
+        self._hint_job = None
+        if not self._hint:
+            return
+        if self._hint_until and time.time() > self._hint_until:
+            self._hint = None
+            self._hint_until = 0.0
+            self._redraw()
+            return
+        self._redraw()
+        try:
+            self._hint_job = self.root.after(60, self._hint_tick)
+        except Exception:
+            self._hint_job = None
 
     def _collapse_now(self):
         self._collapse_job = None
@@ -776,6 +810,36 @@ class NetFloat:
             dr.rounded_rectangle(box, radius=radius, fill=底 + (255,))
             dr.rounded_rectangle(box, radius=radius, outline=环 + (255,), width=ring)
 
+        # ---- 收纳提示：脉冲边框 + 朝向那条边的短条 ----
+        提示 = getattr(self, "_hint", None)
+        if 提示:
+            k = 0.5 + 0.5 * math.sin(time.time() * 9.0)      # 0..1 呼吸
+            alpha = int(80 + 130 * k)
+            提示色 = (255, 213, 79)                          # 亮黄，和绿/红主题都分得开
+            外 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d2 = ImageDraw.Draw(外)
+            pad2 = max(0, pad - int(2.5 * S))
+            box2 = [pad2, pad2, W - 1 - pad2, H - 1 - pad2]
+            d2.ellipse(box2, outline=提示色 + (alpha,),
+                       width=max(2 * S, int(min(W, H) * 0.035)))
+            img = Image.alpha_composite(img, 外)
+            dr = ImageDraw.Draw(img)      # ⚠ 合成换了对象，draw 目标要重新绑，否则后面的字画在旧图上
+            条宽 = max(3 * S, int(min(W, H) * 0.06))
+            bx0, by0, bx1, by1 = box
+            if 提示 == "right":
+                条 = [bx1 - 条宽, by0 + (by1 - by0) * 0.32, bx1, by0 + (by1 - by0) * 0.68]
+            elif 提示 == "left":
+                条 = [bx0, by0 + (by1 - by0) * 0.32, bx0 + 条宽, by0 + (by1 - by0) * 0.68]
+            elif 提示 == "top":
+                条 = [bx0 + (bx1 - bx0) * 0.32, by0, bx0 + (bx1 - bx0) * 0.68, by0 + 条宽]
+            else:
+                条 = [bx0 + (bx1 - bx0) * 0.32, by1 - 条宽, bx0 + (bx1 - bx0) * 0.68, by1]
+            try:
+                ImageDraw.Draw(img).rounded_rectangle(
+                    条, radius=条宽 / 2.0, fill=提示色 + (min(255, alpha + 60),))
+            except Exception:
+                pass
+
         # 收纳成小标签（22px 宽）时放不下数字，只留色条
         if cw >= ch * 0.7:
             def 字体(大小, 粗=False):
@@ -832,7 +896,8 @@ class NetFloat:
     def close(self):
         self._stop = True
         for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None),
-                  getattr(self, "_collapse_job", None)):
+                  getattr(self, "_collapse_job", None),
+                  getattr(self, "_hint_job", None)):
             try:
                 if j:
                     self.root.after_cancel(j)
