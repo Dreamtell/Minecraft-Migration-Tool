@@ -330,7 +330,14 @@ class NetFloat:
             return "bottom"
         return None
 
-    def _snap(self, edge):
+    def _snap(self, edge, apply=True):
+        """吸附到某条边。
+
+        apply=False 时**只算位置、不动窗口** —— 展开/收缩会同时改尺寸，如果先
+        SetWindowPos 挪位置（尺寸还是旧的），中间会闪过一帧"90px 的圆被挪到窗口
+        右边外面"，看起来就是抖一下。此时交给随后的 _redraw（一次
+        UpdateLayeredWindow 同时设尺寸和位置）原子完成。
+        """
         self._docked = edge
         w, h = self._parent_size()
         cw, ch = self._cur_size()
@@ -344,7 +351,8 @@ class NetFloat:
         elif edge == "bottom":
             y = h - ch
         self._rel = [int(x), int(y)]
-        self._apply()
+        if apply:
+            self._apply()
 
     # ---------------- 交互 ----------------
     def _target(self):
@@ -578,7 +586,7 @@ class NetFloat:
                 edge = self._detect_edge()
                 if edge:
                     self._docked = edge
-                    self._snap(edge)
+                    self._snap(edge, apply=False)
                     self._redraw()
                 else:
                     self._docked = None
@@ -603,7 +611,7 @@ class NetFloat:
             self._collapse_job = None
         if self._docked and self.dock_enabled and not self._peek:
             self._peek = True
-            self._snap(self._docked)         # 展开成圆
+            self._snap(self._docked, apply=False)   # 尺寸+位置交给 _redraw 一次做完
             self._redraw()
         elif not self._docked:
             self._redraw()
@@ -632,7 +640,7 @@ class NetFloat:
             return
         if self._docked and self.dock_enabled and self._peek:
             self._peek = False
-            self._snap(self._docked)         # 缩回小标签
+            self._snap(self._docked, apply=False)   # 同上
             self._redraw()
 
     def _menu(self):
