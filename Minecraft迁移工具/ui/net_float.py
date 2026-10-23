@@ -470,6 +470,7 @@ class NetFloat:
             if geom != self._last_geom:
                 self._refresh_geom()
                 self._sync_geometry()
+            self._sync_visibility()
         except Exception:
             pass
         try:
@@ -661,12 +662,31 @@ class NetFloat:
             self.on_close(self, False)
 
     # ---------------- 绘制 ----------------
+    def _app_is_foreground(self):
+        """前台窗口是不是本程序的（主界面 / 设置 / 曲线图 / 浮标自身都算）。"""
+        try:
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            pid = wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+            return int(pid.value) == os.getpid()
+        except Exception:
+            return True
+
     def _root_should_show(self):
-        """主窗口是不是「可见」：既没最小化、也没 withdraw（收托盘）。"""
+        """浮标该不该显示。
+
+        三个条件：没最小化、没 withdraw（收托盘）、**本程序在前台**。
+
+        第三条是重点：别的程序把主界面盖住时（焦点被抢走），浮标如果还挂在
+        最上层就很突兀 —— 用户的原话是"主动隐藏能同步，被动覆盖就不同步了"。
+        现在按前台窗口判定：只要前台不是本程序，浮标就跟着藏起来。
+        """
         try:
             if self.root.state() != "normal":
                 return False
-            return bool(self.root.winfo_viewable())
+            if not self.root.winfo_viewable():
+                return False
+            return self._app_is_foreground()
         except Exception:
             return True
 
