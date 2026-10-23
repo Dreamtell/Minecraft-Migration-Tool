@@ -376,7 +376,32 @@ class PagesMixin:
                 pass
             self._pack_warning_frame = None
 
-        _链接("不再提示", _不再提示)
+        # 「不再提示」做成一个小方块按钮（只显示警告表情），比一行带下划线的文字干净
+        关闭钮 = tk.Label(右, text="⚠️", bg=底, fg=边, cursor="hand2",
+                       font=("微软雅黑", 11), padx=px(7), pady=px(2),
+                       bd=0, highlightthickness=1, highlightbackground=边)
+        关闭钮.pack(side="left")
+        _悬停色 = "#f0e2b8" if not 深 else "#4a3d24"
+
+        def _进入(_e):
+            try:
+                关闭钮.config(bg=_悬停色)
+            except Exception:
+                pass
+
+        def _离开(_e):
+            try:
+                关闭钮.config(bg=底)
+            except Exception:
+                pass
+
+        关闭钮.bind("<Button-1>", lambda e: _不再提示())
+        关闭钮.bind("<Enter>", _进入, add="+")
+        关闭钮.bind("<Leave>", _离开, add="+")
+        try:
+            self.create_tooltip(关闭钮, "不再提示（设置 → 外观与启动 里可以重新打开）")
+        except Exception:
+            pass
 
     def set_pack_warning(self, 开):
         """设置里开关：重新显示 / 隐藏这条提醒（立即生效）。"""
