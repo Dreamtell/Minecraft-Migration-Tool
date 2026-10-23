@@ -1147,9 +1147,11 @@ class PagesMixin:
             色 = 配色[i % len(配色)][1 if 深色 else 0]
             系列.append({
                 "名": 名, "色": 色,
-                "线": 轴.plot([], [], color=色, linewidth=1.8, label=名,
+                "线": 轴.plot([], [], color=色, linewidth=2.2, label=名,
                               solid_capstyle="round", solid_joinstyle="round",
                               antialiased=True, zorder=3)[0],
+                "填": 轴.fill_between([], [], color=色, alpha=0.10, linewidth=0,
+                                     edgecolor="none", antialiased=False, zorder=2),
                 "点": 轴.plot([], [], "o", color=色, markersize=3.0, zorder=4)[0],
                 "尾点": 轴.plot([], [], "o", color=色, markersize=6.0, zorder=5)[0],
                 "dx": None, "dy": None, "t_base": 0.0, "base_base": 0.0,
@@ -1158,8 +1160,9 @@ class PagesMixin:
                 "end_t0": None, "ts": [], "ys": [],
             })
         try:
-            轴.legend(loc="upper left", fontsize=8, frameon=False,
-                      labelcolor=前景, handlelength=1.8, borderaxespad=0.4)
+            轴.legend(loc="lower left", bbox_to_anchor=(0.0, 1.005), ncol=len(平台),
+                      fontsize=8, frameon=False, labelcolor=前景,
+                      handlelength=2.0, borderaxespad=0.0, columnspacing=1.6)
         except Exception:
             pass
 
@@ -1173,7 +1176,7 @@ class PagesMixin:
                       bbox=dict(boxstyle="round,pad=0.35", fc=提示底色,
                                 ec=网格色, lw=0.8, alpha=0.96))
 
-        动态 = tuple(a for s in 系列 for a in (s["线"], s["点"], s["尾点"])) + \
+        动态 = tuple(a for s in 系列 for a in (s["线"], s["填"], s["点"], s["尾点"])) + \
             (空提示, 十字, 提示)
         过渡秒 = 0.35
         状态 = {"bg": None, "span": None, "ylim": None, "stop": False,
@@ -1247,7 +1250,7 @@ class PagesMixin:
             for a in 动态:
                 a.set_visible(False)
             for s in 系列:
-                for k in ("线", "点", "尾点"):
+                for k in ("线", "填", "点", "尾点"):
                     s[k].set_visible(True)
 
         def _藏提示():
@@ -1318,6 +1321,10 @@ class PagesMixin:
                         s["线"].set_data([], [])
                         s["点"].set_data([], [])
                         s["尾点"].set_data([], [])
+                        try:
+                            s["填"].set_verts([])
+                        except Exception:
+                            pass
                         continue
                     有数据 = True
                     p = 1.0 if s["end_t0"] is None else min(
@@ -1348,6 +1355,16 @@ class PagesMixin:
                         tx = np.append(tx, 基准)
                         ty = np.append(ty, ty[-1])
                     s["线"].set_data(tx, ty)
+                    # 面积填充：曲线和 x 轴之间（同 netmon 的 fill="tozeroy"）
+                    try:
+                        if len(tx) >= 2:
+                            s["填"].set_verts([np.column_stack([
+                                np.concatenate(([tx[0]], tx, [tx[-1]])),
+                                np.concatenate(([0.0], ty, [0.0]))])])
+                        else:
+                            s["填"].set_verts([])
+                    except Exception:
+                        pass
 
                     mx = np.asarray(ts, dtype=float) - 现在t
                     if len(mx) <= 40:
@@ -1359,6 +1376,7 @@ class PagesMixin:
                     else:
                         s["尾点"].set_data([], [])
 
+                    轴.draw_artist(s["填"])
                     轴.draw_artist(s["线"])
                     轴.draw_artist(s["点"])
                     轴.draw_artist(s["尾点"])
