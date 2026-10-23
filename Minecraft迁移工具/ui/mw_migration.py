@@ -438,11 +438,47 @@ class MigrationMixin:
 
         概览 = tk.Frame(内容, bg=面板色)
         概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)))
-        详情["源"] = _行(概览, "源目录", "")
-        详情["目标"] = _行(概览, "目标目录", "")
-        详情["统计"] = _行(概览, "统计", "")
-        详情["耗时"] = _行(概览, "耗时", "")
-        详情["失败"] = _行(概览, "失败", "")
+        数据色 = self.theme.get("data_fg", 主色)
+        数字色 = self.theme.get("data_num_fg", 主色)
+
+        def _行文本(名, 值色=None):
+            行 = tk.Frame(概览, bg=面板色)
+            行.pack(fill="x", pady=(0, px(3)))
+            tk.Label(行, text=名, font=("微软雅黑", 9), bg=面板色, fg=弱色,
+                     width=8, anchor="w").pack(side="left")
+            标 = tk.Label(行, text="", font=("微软雅黑", 9), bg=面板色,
+                          fg=值色 or self.theme["fg"], anchor="w", justify="left")
+            标.pack(side="left", fill="x", expand=True)
+            return 标
+
+        def _行数据(名):
+            """带颜色分级的统计行：数字用数据色，跳过用警示色，失败用红色。"""
+            行 = tk.Frame(概览, bg=面板色)
+            行.pack(fill="x", pady=(0, px(3)))
+            tk.Label(行, text=名, font=("微软雅黑", 9), bg=面板色, fg=弱色,
+                     width=8, anchor="w").pack(side="left")
+            槽 = tk.Frame(行, bg=面板色)
+            槽.pack(side="left", fill="x", expand=True)
+            return 槽
+
+        def _填数据(槽, 成功, 跳过=0, 失败=0, 有跳过=True):
+            for c in 槽.winfo_children():
+                c.destroy()
+            段 = [(str(成功), "data_num_fg"), (" 个", "muted_fg")]
+            if 有跳过:
+                段 += [("　跳过 ", "muted_fg"),
+                       (str(跳过), "log_warning_fg" if 跳过 else "muted_fg")]
+            段 += [("　失败 ", "muted_fg"),
+                   (str(失败), "fail_fg" if 失败 else "ok_fg")]
+            DataText(槽, self.theme, 段, font=("微软雅黑", 9)).pack(anchor="w")
+
+        详情["源"] = _行文本("源目录", 数据色)
+        详情["目标"] = _行文本("目标目录", 数据色)
+        详情["模组"] = _行数据("模组")
+        详情["config"] = _行数据("config")
+        详情["其它"] = _行数据("其它")
+        详情["耗时"] = _行文本("耗时", 数字色)
+        详情["失败"] = _行文本("失败")
 
         日志标题 = tk.Frame(内容, bg=面板色)
         日志标题.pack(fill="x", padx=px(14), pady=(px(10), px(2)))
@@ -463,14 +499,27 @@ class MigrationMixin:
         滚.pack(side="right", fill="y")
         详情["日志"].config(yscrollcommand=滚.set, state="disabled")
 
+        # 日志按级别上色（和历史窗口、主界面同一套主题色）
+        级别标签 = {
+            "INFO": ("log_info", self.theme.get("log_info_fg", 弱色)),
+            "WARNING": ("log_warning", self.theme.get("log_warning_fg", 警色)),
+            "ERROR": ("log_error", self.theme.get("log_error_fg", 坏色)),
+            "SUCCESS": ("log_success", self.theme.get("log_success_fg", 好色)),
+            "SIMULATE": ("log_simulate", self.theme.get("log_simulate_fg", 主色)),
+        }
+        for _名, _色 in 级别标签.values():
+            详情["日志"].tag_configure(_名, foreground=_色)
+
+        def _清空日志():
+            详情["日志"].config(state="normal")
+            详情["日志"].delete("1.0", "end")
+            详情["日志"].config(state="disabled")
+            详情["日志计数"].config(text="")
+
         _滑动 = {"job": None, "当前": -1}
 
         def _滑入():
-            """切换档案时让详情内容从右边滑进来。
-
-            Tk 没有真透明，做不了淡入淡出；滑动是唯一看起来"有过渡"又不失真的做法。
-            内容是 Canvas 里的一个 window item，只要改它的 x 坐标即可，没有重排开销。
-            """
+            """切换档案时让详情内容从右边滑进来。"""
             try:
                 if _滑动["job"]:
                     顶.after_cancel(_滑动["job"])
@@ -511,11 +560,11 @@ class MigrationMixin:
             if not rec:
                 详情["标题"].config(text="没有档案")
                 详情["副标题"].config(text="")
-                for k in ("源", "目标", "统计", "耗时", "失败"):
+                for k in ("源", "目标", "耗时", "失败"):
                     详情[k].config(text="—")
-                详情["日志"].config(state="normal")
-                详情["日志"].delete("1.0", "end")
-                详情["日志"].config(state="disabled")
+                for k in ("模组", "config", "其它"):
+                    _填数据(详情[k], 0, 0, 0)
+                _清空日志()
                 return
             模式 = "模拟运行" if rec.get("mode") == "dry" else "实际迁移"
             结果 = rec.get("result") or ""
@@ -528,23 +577,35 @@ class MigrationMixin:
             m = 统计.get("mods") or {}
             c = 统计.get("config") or {}
             e = 统计.get("extra") or {}
-            详情["统计"].config(text="模组 %d（跳过 %d，失败 %d）　·　config %d（失败 %d）　·　其它 %d（跳过 %d，失败 %d）"
-                                % (m.get("success", 0), m.get("skipped", 0), m.get("failed", 0),
-                                   c.get("success", 0), c.get("failed", 0),
-                                   e.get("success", 0), e.get("skipped", 0), e.get("failed", 0)))
+            _填数据(详情["模组"], m.get("success", 0), m.get("skipped", 0), m.get("failed", 0))
+            _填数据(详情["config"], c.get("success", 0), 0, c.get("failed", 0), 有跳过=False)
+            _填数据(详情["其它"], e.get("success", 0), e.get("skipped", 0), e.get("failed", 0))
             详情["耗时"].config(text="%s 秒" % rec.get("duration", "—"))
             失败 = (rec.get("lists") or {}).get("failed") or []
             if 失败:
                 详情["失败"].config(text="%d 条（详见日志）" % len(失败), fg=坏色)
             else:
                 详情["失败"].config(text="无", fg=好色)
+
             full = history_store.load_record(rec.get("id") or "") or rec
-            日志 = full.get("log") or "（这份档案没有日志）"
             详情["日志"].config(state="normal")
             详情["日志"].delete("1.0", "end")
-            详情["日志"].insert("1.0", 日志)
+            行们 = full.get("log_lines")
+            if isinstance(行们, list) and 行们:
+                for 项 in 行们:
+                    try:
+                        级, 文 = 项[0], 项[1]
+                    except Exception:
+                        continue
+                    名, _ = 级别标签.get(str(级).upper(), 级别标签["INFO"])
+                    详情["日志"].insert("end", str(文) + "\n", 名)
+                行数 = len(行们)
+            else:
+                日志 = full.get("log") or "（这份档案没有日志）"
+                详情["日志"].insert("1.0", 日志)
+                行数 = 日志.count("\n") + 1
             详情["日志"].config(state="disabled")
-            详情["日志计数"].config(text="%d 行" % (日志.count("\n") + 1))
+            详情["日志计数"].config(text="%d 行" % 行数)
 
         # ---- 底部按钮 ----
         底 = tk.Frame(顶, bg=self.theme["bg"])

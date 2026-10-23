@@ -784,7 +784,7 @@ def run_migration(
 
     def log(msg, level="INFO"):
         try:
-            _日志.append(str(msg))
+            _日志.append([str(level or "INFO"), str(msg)])
         except Exception:
             pass
         if log_callback:
@@ -1162,7 +1162,9 @@ def run_migration(
                         "extras": list(extralist or [])[:history_store.LIST_MAX],
                         "failed": 失败明细[:100],
                     },
-                    "log": "\n".join(_日志),
+                    # 纯文本（兼容旧版本读取）+ 带级别的行（历史窗口按级别上色）
+                    "log": "\n".join(行 for _, 行 in _日志),
+                    "log_lines": _日志[-2000:],
                 }
                 rid = history_store.save_record(档案)
                 if rid:
