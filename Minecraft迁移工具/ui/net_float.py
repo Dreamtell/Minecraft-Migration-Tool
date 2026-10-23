@@ -84,11 +84,12 @@ class NetFloat:
 
     def __init__(self, root, get_history, on_open_chart, on_close=None,
                  size=None, shadow=True, dock=True, bg="#f0f0f0",
-                 x=None, y=None):
+                 x=None, y=None, on_drag_state=None):
         self.root = root
         self.get_history = get_history
         self.on_open_chart = on_open_chart
         self.on_close = on_close
+        self.on_drag_state = on_drag_state
         self.shadow = bool(shadow)
         self.dock_enabled = bool(dock)
         self.bg = bg or "#f0f0f0"
@@ -112,6 +113,7 @@ class NetFloat:
         self._dib = None
         self._shown = True
         self._last_geom = None
+        self._geom = {"x": 0, "y": 0, "w": 0, "h": 0}
         self._follow_job = None
         self._layered = False
         self._hwnd = 0
@@ -167,14 +169,31 @@ class NetFloat:
         self._redraw()
         self._tick()          # ⚠ 必须启动刷新循环，否则数字会停在初始化那一刻
         try:
-            self._last_geom = (root.winfo_rootx(), root.winfo_rooty(),
-                               root.winfo_width(), root.winfo_height())
+            self._refresh_geom()
+            self._last_geom = (self._geom["x"], self._geom["y"],
+                               self._geom["w"], self._geom["h"])
             self._follow_job = root.after(100, self._follow_tick)
         except Exception:
             pass
 
     # ---------------- 坐标 ----------------
+    def _refresh_geom(self):
+        """缓存主窗口位置/尺寸。
+
+        拖动浮标时每帧都要用它算坐标，而 winfo_rootx/winfo_width 都是 Tcl 往返
+        （一次 ~0.05ms，四个就是 0.2ms），60~125fps 下很可观。改成由
+        <Configure> 和 100ms 看门狗刷新缓存，拖动时直接读内存。
+        """
+        try:
+            self._geom = {"x": self.root.winfo_rootx(), "y": self.root.winfo_rooty(),
+                          "w": self.root.winfo_width(), "h": self.root.winfo_height()}
+        except Exception:
+            pass
+
     def _parent_size(self):
+        w, h = self._geom.get("w") or 0, self._geom.get("h") or 0
+        if w > 1 and h > 1:
+            return w, h
         try:
             return (max(self.d, self.root.winfo_width()),
                     max(self.d, self.root.winfo_height()))
@@ -205,6 +224,8 @@ class NetFloat:
         self._apply()
 
     def _abs_pos(self):
+        if self._geom.get("w"):
+            return self._geom["x"] + self._rel[0], self._geom["y"] + self._rel[1]
         try:
             return (self.root.winfo_rootx() + self._rel[0],
                     self.root.winfo_rooty() + self._rel[1])
@@ -331,7 +352,9 @@ class NetFloat:
     def _bind(self):
         c = self._target()
         c.bind("<Button-1>", self._on_press)
-        c.bind("<B1-Motion>", self._on_drag)
+        # 不绑 <B1-Motion>：位置由 _move_to_cursor 的定时器读光标得到。
+        # 高速拖动时每秒几百个 Motion 事件全进 Python 只会拖慢主循环（实测会出现
+        # 40ms+ 的掉帧），而它们是多余的。
         c.bind("<ButtonRelease-1>", self._on_release)
         c.bind("<Button-3>", self._popup)
         c.bind("<Enter>", self._on_enter)
@@ -424,9 +447,10 @@ class NetFloat:
         · 缩放：先把偏移夹回新的客户区（否则窗口变小后浮标会留在外面），
           再按贴边状态重新吸附 —— 收纳成小标签时也要贴着新的边。
         """
+        self._refresh_geom()
         try:
-            self._last_geom = (self.root.winfo_rootx(), self.root.winfo_rooty(),
-                               self.root.winfo_width(), self.root.winfo_height())
+            self._last_geom = (self._geom["x"], self._geom["y"],
+                               self._geom["w"], self._geom["h"])
         except Exception:
             pass
         self._rel = list(self._clamp(*self._rel))
@@ -443,6 +467,7 @@ class NetFloat:
             geom = (self.root.winfo_rootx(), self.root.winfo_rooty(),
                     self.root.winfo_width(), self.root.winfo_height())
             if geom != self._last_geom:
+                self._refresh_geom()
                 self._sync_geometry()
         except Exception:
             pass
@@ -452,67 +477,69 @@ class NetFloat:
             pass
 
     def _on_press(self, e):
-        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, pending=True)
-        # 鼠标被"抓住"：拖到窗口外面也能收到松开事件（否则松手收不到，浮标会一直跟着光标跑）
+        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, ending=False)
         try:
             ctypes.windll.user32.SetCapture(int(self._hwnd or 0))
         except Exception:
             pass
-        # 把系统定时器精度提到 1ms，after(8) 才会真的 8ms 一次（默认 15.6ms）
         try:
             ctypes.windll.winmm.timeBeginPeriod(1)
             self._timer_fine = True
         except Exception:
             self._timer_fine = False
-        # ⚠ 关键：按下期间由**定时器**驱动移动，不再依赖 <B1-Motion>。
-        # 拖快时指针瞬间就离开浮标那 90×90 的范围，Tk 不再发 Motion 事件，
-        # 事件驱动的实现就会停在原地 —— 看起来就是"一拖快就卡"。
-        self._flush_drag()
+        # 按下期间由**定时器**驱动移动：拖快时指针瞬间就离开浮标范围，
+        # Tk 不再发 <B1-Motion>，事件驱动的实现会停在原地。
+        self._notify_drag(True)
+        self._move_to_cursor()
+        self._drag["job"] = self.root.after(8, self._flush_drag)
+
+    def _notify_drag(self, 在拖):
+        try:
+            if self.on_drag_state:
+                self.on_drag_state(bool(在拖))
+        except Exception:
+            pass
 
     def _on_drag(self, e):
-        """拖动事件只用来判断"动过了"，实际移动由 _flush_drag 定时器做。
+        """只标记"动过了"，位置一律由 _move_to_cursor 现取光标算。"""
+        if self._drag["on"]:
+            self._drag["moved"] = True
 
-        不在这里直接移动，也不靠这个事件的坐标：拖快时事件会被合并/丢弃，
-        甚至因为指针离开浮标范围而完全断掉。位置一律在 _flush_drag 里用
-        GetCursorPos 现取。
-        """
-        if not self._drag["on"]:
-            return
-        self._drag["moved"] = True
+    def _move_to_cursor(self):
+        """把浮标挪到"光标 - 抓取偏移"的位置（不依赖任何事件坐标）。"""
+        pt = wintypes.POINT()
+        try:
+            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                return False
+        except Exception:
+            return False
+        nx = pt.x - self._geom["x"] - self._drag["dx"]
+        ny = pt.y - self._geom["y"] - self._drag["dy"]
+        动 = (abs(nx - self._rel[0]) > 1 or abs(ny - self._rel[1]) > 1)
+        if 动:
+            if self._drag["on"]:
+                self._drag["moved"] = True
+            if self._docked:                 # 真的移动了才取消收纳
+                self._docked = None
+                self._peek = False
+                self._redraw()
+        self._rel = list(self._clamp(nx, ny))
+        self._apply()
+        return True
 
     def _flush_drag(self):
         self._drag["job"] = None
         if not self._drag["on"] or self._drag.get("ending"):
             return
-        # 左键其实已经松了（松在窗口外、或被别的程序抢走）：直接当松手处理，
-        # 否则浮标会一直跟着光标跑。
+        # 左键其实已经松了（松在窗口外 / 被别的程序抢走焦点）：直接收尾
         try:
             if not (ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000):
-                self._drag["ending"] = True
-                try:
-                    self._on_release(None)
-                finally:
-                    self._drag["ending"] = False
+                self._on_release(None)
                 return
         except Exception:
             pass
-        pt = wintypes.POINT()
-        try:
-            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
-                return
-        except Exception:
+        if not self._move_to_cursor():
             return
-        nx = pt.x - self.root.winfo_rootx() - self._drag["dx"]
-        ny = pt.y - self.root.winfo_rooty() - self._drag["dy"]
-        # 真的移动了才取消收纳 —— 否则"在收纳的小标签上点一下想开图"会把它展开
-        动了 = (abs(nx - self._rel[0]) > 2 or abs(ny - self._rel[1]) > 2)
-        if 动了 and self._docked:
-            self._docked = None
-            self._peek = False
-            self._redraw()
-        # 拖动过程中就夹在主窗口内：以前只在松手时夹，中途可以拖到窗口外面去
-        self._rel = list(self._clamp(nx, ny))
-        self._apply()
         if self._drag["on"]:
             try:
                 self._drag["job"] = self.root.after(8, self._flush_drag)
@@ -520,40 +547,48 @@ class NetFloat:
                 pass
 
     def _on_release(self, _e):
-        if not self._drag["on"]:
+        # ⚠ 必须防重入：旧实现在这里调用 _flush_drag，而 _flush_drag 的兜底分支
+        # 又会回调 _on_release，于是 _open_chart 被调用两次 —— 表现就是
+        # "点一下浮标，窗口打开又立刻关上"。
+        if not self._drag["on"] or self._drag.get("ending"):
             return
+        self._drag["ending"] = True
         try:
-            if self._drag.get("job"):
-                self.root.after_cancel(self._drag["job"])
-        except Exception:
-            pass
-        self._drag["job"] = None
-        self._flush_drag()          # 松手前先把最后一帧补上，避免停在旧位置
-        self._drag["on"] = False
-        try:
-            ctypes.windll.user32.ReleaseCapture()
-        except Exception:
-            pass
-        if getattr(self, "_timer_fine", False):
             try:
-                ctypes.windll.winmm.timeEndPeriod(1)
+                if self._drag.get("job"):
+                    self.root.after_cancel(self._drag["job"])
             except Exception:
                 pass
-            self._timer_fine = False
-        if self._drag["moved"]:
-            edge = self._detect_edge()
-            if edge:
-                self._docked = edge
-                self._snap(edge)
-                self._redraw()               # 换成小标签尺寸
+            self._drag["job"] = None
+            self._drag["on"] = False
+            self._move_to_cursor()          # 最后一帧，避免停在旧位置
+            try:
+                ctypes.windll.user32.ReleaseCapture()
+            except Exception:
+                pass
+            if getattr(self, "_timer_fine", False):
+                try:
+                    ctypes.windll.winmm.timeEndPeriod(1)
+                except Exception:
+                    pass
+                self._timer_fine = False
+            if self._drag["moved"]:
+                edge = self._detect_edge()
+                if edge:
+                    self._docked = edge
+                    self._snap(edge)
+                    self._redraw()
+                else:
+                    self._docked = None
+                    self._rel = list(self._clamp(*self._rel))
+                    self._apply()
+                if self.on_close:
+                    self.on_close(self, False)
             else:
-                self._docked = None
-                self._rel = list(self._clamp(*self._rel))
-                self._apply()
-            if self.on_close:
-                self.on_close(self, False)
-        else:
-            self._open_chart()
+                self._open_chart()
+        finally:
+            self._drag["ending"] = False
+            self._notify_drag(False)
 
     def _on_enter(self, _e):
         self._hover = True

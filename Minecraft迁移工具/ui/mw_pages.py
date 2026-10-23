@@ -1256,6 +1256,14 @@ class PagesMixin:
         def 帧():
             if 状态["stop"]:
                 return
+            # 正在拖浮标：让路（曲线图推迟 16ms，肉眼看不出来，但拖动会顺很多 ——
+            # 两边都在抢 60fps 主循环时，实测拖动帧间隔 p95 会明显变差）
+            if getattr(self, "_net_float_dragging", False):
+                try:
+                    顶.after(16, 帧)
+                except Exception:
+                    pass
+                return
             try:
                 if not 顶.winfo_exists():
                     return
@@ -1494,6 +1502,7 @@ class PagesMixin:
             self.root, 历史, self.show_net_chart,
             on_close=self._on_net_float_event, x=x, y=y,
             size=getattr(self, "net_float_size", 56),
+            on_drag_state=self._on_float_drag_state,
             shadow=getattr(self, "net_float_shadow", True),
             dock=getattr(self, "net_float_dock", True),
             bg=self.theme.get("bg", "#f0f0f0"))
@@ -1502,6 +1511,10 @@ class PagesMixin:
             self.save_config()
         except Exception:
             pass
+
+    def _on_float_drag_state(self, 在拖):
+        """拖动浮标时让曲线图暂停重绘：两边都在 60fps 抢主循环，拖动会顿。"""
+        self._net_float_dragging = bool(在拖)
 
     def _on_net_float_event(self, flt, closed):
         """浮标关闭 / 拖动结束时调用：记住位置和开关状态。"""
