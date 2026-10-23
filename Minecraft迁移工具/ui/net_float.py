@@ -74,6 +74,236 @@ class _BITMAPINFO(ctypes.Structure):
     _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
 
 
+class _EdgeGlow:
+    """紧贴主窗口某条边的发光带 + 向内侧溢出的颗粒（"要被吸进去了"的提示）。
+
+    实现要点：
+      · 是一个**点击穿透**的分层窗口（WS_EX_TRANSPARENT + WS_EX_LAYERED），
+        压在窗口内侧那条边上，不拦鼠标、不抢焦点；
+      · 只画浮标上下各 160px 的一条带子（不是整条边），面积小、每帧重传也便宜；
+      · 粒子从边缘生成、往窗口内侧飘、逐渐淡出，看起来就是"溢出来"。
+    """
+
+    W = 26          # 带宽（设计像素，往窗口内侧延伸）
+    H = 320         # 带高
+    FPS_MS = 33     # 30fps 够用，重传整条带子也不贵
+
+    def __init__(self, root):
+        import random
+        self.root = root
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.withdraw()
+        try:
+            self.win.attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            self.win.update_idletasks()
+            self._hwnd = int(self.win.wm_frame(), 16)
+            u = ctypes.windll.user32
+            ex = u.GetWindowLongW(self._hwnd, _GWL_EXSTYLE)
+            u.SetWindowLongW(self._hwnd, _GWL_EXSTYLE,
+                             ex | _WS_EX_LAYERED | _WS_EX_TOOLWINDOW | 0x00000020)
+            self._ok = True
+        except Exception:
+            self._ok = False
+        self._dib = None
+        self._job = None
+        self._edge = None
+        self._rnd = random.Random()
+        self._parts = []        # [x, y, vx, vy, life, size]
+        self._size = (px(self.W), px(self.H))
+
+    # ---------- 显示 / 隐藏 ----------
+    def show(self, edge, geom, center_y):
+        if edge not in ("left", "right", "top", "bottom"):
+            self.hide()
+            return
+        self._edge = edge
+        self._geom = dict(geom)
+        self._cy = center_y
+        if not self._parts:
+            self._spawn(18)
+        self._place()
+        try:
+            self.win.deiconify()
+        except Exception:
+            pass
+        if self._job is None:
+            self._tick()
+
+    def hide(self):
+        self._edge = None
+        if self._job:
+            try:
+                self.root.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+        try:
+            self.win.withdraw()
+        except Exception:
+            pass
+
+    def _place(self):
+        """把带子摆到窗口内侧那条边上，纵向以浮标为中心。"""
+        g = self._geom
+        w, h = px(self.W), px(self.H)
+        if self._edge in ("left", "right"):
+            x = g["x"] if self._edge == "left" else g["x"] + g["w"] - w
+            y = self._cy - h // 2
+        else:
+            x = self._cy - h // 2
+            y = g["y"] if self._edge == "top" else g["y"] + g["h"] - w
+            w, h = h, w
+        self._size = (w, h)
+        self._pos = (int(x), int(y))
+        try:
+            ctypes.windll.user32.SetWindowPos(self._hwnd, -1, int(x), int(y), w, h,
+                                              0x0004 | 0x0010)
+        except Exception:
+            pass
+
+    # ---------- 粒子 ----------
+    # 用"边缘空间"描述：v = 离边框的深度（0 在边框上，1 到最内侧），u = 沿边方向。
+    # 这样四条边的逻辑完全一样，只是映射到像素时换一下方向。
+    def _spawn(self, n):
+        for _ in range(n):
+            self._parts.append([self._rnd.uniform(0.0, 1.0),     # v 深度
+                                self._rnd.uniform(0.0, 1.0),     # u 沿边
+                                self._rnd.uniform(0.0, 40.0),    # 年龄
+                                self._rnd.uniform(1.2, 2.6)])    # 半径
+
+    def _tick(self):
+        self._job = None
+        if not self._edge:
+            return
+        self._step()
+        self._draw()
+        try:
+            self._job = self.root.after(self.FPS_MS, self._tick)
+        except Exception:
+            self._job = None
+
+    def _step(self):
+        for p in self._parts:
+            p[2] += 1.0
+            p[0] += 0.018 + 0.014 * self._rnd.random()      # 往窗口内侧飘
+            p[1] += (self._rnd.random() - 0.5) * 0.006
+            if p[0] > 1.05 or p[2] > 46:
+                p[0] = 0.0
+                p[1] = self._rnd.uniform(0.0, 1.0)
+                p[2] = 0.0
+                p[3] = self._rnd.uniform(1.2, 2.6)
+
+    # ---------- 绘制 ----------
+    def _draw(self):
+        from PIL import Image, ImageDraw
+        W, H = self._size
+        色 = (255, 213, 79)
+        水平 = self._edge in ("left", "right")
+        深 = W if 水平 else H          # 深度方向的像素长度
+        S = 2
+        img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+
+        def 像素(v, u):
+            """(深度 0..1, 沿边 0..1) → 图像像素坐标。"""
+            v = max(0.0, min(1.0, v))
+            if 水平:
+                x = (W - v * W) if self._edge == "right" else (v * W)
+                return x, u * H
+            y = (H - v * H) if self._edge == "bottom" else (v * H)
+            return u * W, y
+
+        # 贴着边框最亮、往里淡出
+        for j in range(深):
+            t = j / max(1, 深 - 1)          # 0 = 边框，1 = 最内侧
+            a = int(150 * (1 - t) ** 1.7)
+            if a <= 0:
+                continue
+            if 水平:
+                x = (W - 1 - j) if self._edge == "right" else j
+                d.line([(x * S, 0), (x * S, H * S - 1)], fill=色 + (a,))
+            else:
+                y = (H - 1 - j) if self._edge == "bottom" else j
+                d.line([(0, y * S), (W * S - 1, y * S)], fill=色 + (a,))
+
+        # 颗粒：从边框往内侧飘，越深越淡
+        for v, u, 年龄, 半径 in self._parts:
+            t = 1.0 - min(1.0, 年龄 / 46.0)
+            a = int(210 * t * (1.0 - 0.6 * v))
+            if a <= 0:
+                continue
+            x, y = 像素(v, u)
+            r = 半径 * (0.6 + 0.4 * t) * S
+            d.ellipse([x * S - r, y * S - r, x * S + r, y * S + r], fill=色 + (a,))
+        img = img.resize((W, H), Image.LANCZOS)
+        self._upload(img)
+
+    def _upload(self, img):
+        if not self._ok:
+            return
+        buf = bytearray(img.convert("RGBA").tobytes("raw", "BGRA"))
+        for i in range(0, len(buf), 4):
+            a = buf[i + 3]
+            if a != 255:
+                buf[i] = buf[i] * a // 255
+                buf[i + 1] = buf[i + 1] * a // 255
+                buf[i + 2] = buf[i + 2] * a // 255
+        u = ctypes.windll.user32
+        g = ctypes.windll.gdi32
+        w, h = img.size
+        hdc_screen = u.GetDC(0)
+        hdc_mem = g.CreateCompatibleDC(hdc_screen)
+        bmi = _BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = w
+        bmi.bmiHeader.biHeight = -h
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bits = ctypes.c_void_p()
+        hbmp = g.CreateDIBSection(hdc_mem, ctypes.byref(bmi), 0,
+                                  ctypes.byref(bits), None, 0)
+        ctypes.memmove(bits, bytes(buf), len(buf))
+        g.SelectObject(hdc_mem, hbmp)
+        u.ReleaseDC(0, hdc_screen)
+        old = self._dib
+        self._dib = (hbmp, hdc_mem, w, h)
+        self._blit()
+        if old:
+            try:
+                g.DeleteObject(old[0])
+                g.DeleteDC(old[1])
+            except Exception:
+                pass
+
+    def _blit(self):
+        if not self._dib:
+            return
+        hbmp, hdc_mem, w, h = self._dib
+        x, y = self._pos
+        u = ctypes.windll.user32
+        hdc_screen = u.GetDC(0)
+        pt_dst = wintypes.POINT(int(x), int(y))
+        pt_src = wintypes.POINT(0, 0)
+        size = wintypes.SIZE(w, h)
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
+        u.UpdateLayeredWindow(self._hwnd, hdc_screen, ctypes.byref(pt_dst),
+                              ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
+                              0, ctypes.byref(blend), _ULW_ALPHA)
+        u.ReleaseDC(0, hdc_screen)
+
+    def destroy(self):
+        self.hide()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+
+
+
 class NetFloat:
     """`get_history()` 返回 [(时间戳, 毫秒, 连通源数, 源总数), ...]。"""
 
@@ -110,6 +340,7 @@ class NetFloat:
         self._hint = None          # 正在"将要吸附"的那条边（None = 无提示）
         self._hint_job = None
         self._hint_until = 0.0
+        self._glow = None
         self._peek = False
         self._docked = None
         self._job = None
@@ -440,6 +671,14 @@ class NetFloat:
 
     def _hide(self):
         self._shown = False
+        # 主窗口被挡住/最小化时，发光带也要一起收掉（它是独立的置顶窗口）
+        self._hint = None
+        self._hint_until = 0.0
+        if getattr(self, "_glow", None) is not None:
+            try:
+                self._glow.hide()
+            except Exception:
+                pass
         try:
             self.win.withdraw()
         except Exception:
@@ -542,6 +781,8 @@ class NetFloat:
         if self._drag["on"] and self._drag["moved"]:
             # 拖动中：离哪条边够近就亮哪条边的边框提示（松手会收纳）
             self._set_hint(self._detect_edge())
+            if self._hint:
+                self._update_glow()      # 跟着浮标移动
         return True
 
     def _flush_drag(self):
@@ -647,6 +888,7 @@ class NetFloat:
         if edge != self._hint:
             self._hint = edge
             self._redraw()
+            self._update_glow()
         if 持续:
             self._hint_until = time.time() + 持续
         if self._hint and self._hint_job is None:
@@ -667,6 +909,32 @@ class NetFloat:
             self._hint_job = self.root.after(60, self._hint_tick)
         except Exception:
             self._hint_job = None
+
+    def _update_glow(self):
+        """窗口边框的发光带 + 颗粒：提示"松手会被这条边吸进去"。"""
+        if not self._hint:
+            if self._glow is not None:
+                try:
+                    self._glow.hide()
+                except Exception:
+                    pass
+            return
+        if self._glow is None:
+            try:
+                self._glow = _EdgeGlow(self.root)
+            except Exception:
+                self._glow = None
+                return
+        ax, ay = self._abs_pos()
+        cw, ch = self._cur_size()
+        中心 = (ay + ch // 2) if self._hint in ("left", "right") else (ax + cw // 2)
+        try:
+            self._glow.show(self._hint,
+                            {"x": self._geom.get("x", 0), "y": self._geom.get("y", 0),
+                             "w": self._geom.get("w", 0), "h": self._geom.get("h", 0)},
+                            中心)
+        except Exception:
+            pass
 
     def _collapse_now(self):
         self._collapse_job = None
@@ -903,6 +1171,12 @@ class NetFloat:
                     self.root.after_cancel(j)
             except Exception:
                 pass
+        if getattr(self, "_glow", None) is not None:
+            try:
+                self._glow.destroy()
+            except Exception:
+                pass
+            self._glow = None
         try:
             self.win.destroy()
         except Exception:
