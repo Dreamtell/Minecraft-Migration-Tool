@@ -143,10 +143,11 @@ class EditMixin:
                             "Listbox", "Treeview", "TNotebook")
 
     def _on_blank_click(self, event):
-        """点击窗口空白处 = 退出主界面编辑模式（等于让清单文本框失焦）。
+        """点击窗口空白处 = 让清单文本框失焦（清选区、焦点收回主窗口）。
 
-        编辑模式下改清单不用先去找那个开关，随手点一下背景就回到只读
-        （设置 →「🎨 外观与启动」可以关掉这个行为）。
+        ⚠ 只失焦，**不关闭「主界面编辑」开关**：那个开关是用户的意图，点一下背景
+        就被"顺手关掉"是错的（曾经就是这么实现的）。失焦之后文本框还是可编辑的，
+        点回清单就能接着改。
 
         只有下面这些"点下去有明确用途"的地方不算空白，点了不退出：
         - **三个清单文本框本身** —— 那正是要继续编辑的地方；
@@ -184,13 +185,14 @@ class EditMixin:
                 return
         except Exception:
             return
-        # 点空白处一律让清单文本框失焦（"点了别处"该有的反应），
-        # 至于要不要连编辑模式一起关，由设置里的开关决定
+        # 点空白处只让清单文本框**失焦**（清选区、焦点收回主窗口），
+        # 不去翻「主界面编辑」那个总开关。
+        # 以前这里会把 edit_mode 置 False 再 toggle_edit_mode()，于是点一下空白，
+        # 用户刚打开的编辑开关就被"顺手关掉"了 —— 那是把"退出编辑"的逻辑
+        # 错误地套到了总开关上。
         if not self.blank_exit_edit.get():
-            self._blur_list_texts()
             return
-        self.edit_mode.set(False)
-        self.toggle_edit_mode()                     # 里面也会失焦 + 清选区
+        self._blur_list_texts()
 
     def _blur_list_texts(self):
         """让三个清单文本框失焦：清掉蓝色选区、焦点收回主窗口（描边跟着灭）。

@@ -313,7 +313,7 @@ class SettingsMixin:
         # 开着：编辑时随手点一下背景就回只读；关掉：只能用编辑开关自己关，
         # 免得手滑点到背景就把编辑状态丢了。
         self.settings_blank_exit_sw = SwitchRow(
-            box1, self.theme, "点空白处退出主界面编辑",
+            box1, self.theme, "点空白处取消清单文本框焦点",
             desc="关闭后只能用编辑开关自己关",
             command=self._toggle_blank_exit_edit, compact=True,
             accent="switch_on")
@@ -1237,7 +1237,7 @@ class SettingsMixin:
         self.save_config()
 
     def _toggle_blank_exit_edit(self):
-        """设置页里"点空白处退出主界面编辑"开关：同步变量 + 存配置。"""
+        """设置页里"点空白处取消清单文本框焦点"开关：同步变量 + 存配置。"""
         try:
             self.blank_exit_edit.set(self.settings_blank_exit_sw.get())
         except Exception:
