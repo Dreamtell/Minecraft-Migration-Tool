@@ -328,7 +328,8 @@ class _EdgeGlow:
         pt_dst = wintypes.POINT(int(x), int(y))
         pt_src = wintypes.POINT(0, 0)
         size = wintypes.SIZE(w, h)
-        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
+        常 = int(getattr(self, "_alpha", 255))
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, max(0, min(255, 常)), _AC_SRC_ALPHA)
         u.UpdateLayeredWindow(self._hwnd, hdc_screen, ctypes.byref(pt_dst),
                               ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
                               0, ctypes.byref(blend), _ULW_ALPHA)
@@ -381,6 +382,9 @@ class NetFloat:
         self._hint_job = None
         self._hint_until = 0.0
         self._glow = None
+        self._alpha = 255          # 整体不透明度（淡入淡出用）
+        self._fade_job = None
+        self._fade_token = 0
         self._peek = False
         self._docked = None
         self._job = None
@@ -448,7 +452,7 @@ class NetFloat:
             self._refresh_geom()
             self._last_geom = (self._geom["x"], self._geom["y"],
                                self._geom["w"], self._geom["h"])
-            self._follow_job = root.after(100, self._follow_tick)
+            self._follow_job = root.after(40, self._follow_tick)
         except Exception:
             pass
 
@@ -700,14 +704,64 @@ class NetFloat:
         except Exception:
             pass
 
+    def _fade_to(self, 目标, 时长=110, 完成=None):
+        """用 UpdateLayeredWindow 的常量 alpha 做淡入淡出（不重画位图，只改 alpha）。
+
+        Windows 的最小化/还原本身有 ~200ms 的动画，浮标如果"啪"地消失/出现，
+        就会和主窗口一前一后错开，看起来很生硬。
+        """
+        self._fade_token += 1
+        令 = self._fade_token
+        if self._fade_job:
+            try:
+                self.root.after_cancel(self._fade_job)
+            except Exception:
+                pass
+            self._fade_job = None
+        起 = self._alpha
+        步 = max(1, int(时长 / 16))
+
+        def 帧(i):
+            if 令 != self._fade_token or self._stop:
+                return
+            self._alpha = int(起 + (目标 - 起) * (i / 步))
+            try:
+                if self._dib:
+                    self._blit(self._dib, *self._abs_pos())
+            except Exception:
+                pass
+            if i < 步:
+                try:
+                    self._fade_job = self.root.after(16, lambda: 帧(i + 1))
+                except Exception:
+                    self._fade_job = None
+            else:
+                self._alpha = 目标
+                self._fade_job = None
+                if 完成:
+                    try:
+                        完成()
+                    except Exception:
+                        pass
+
+        帧(0)
+
     def _show(self):
-        self._shown = True
+        刚打开 = False
         try:
-            if self.win.state() == "withdrawn":
-                self.win.deiconify()
+            刚打开 = (self.win.state() == "withdrawn")
         except Exception:
             pass
+        self._shown = True
+        if 刚打开:
+            self._alpha = 0                 # 从全透明开始，再淡入
+            try:
+                self.win.deiconify()
+            except Exception:
+                pass
         self._redraw()
+        if 刚打开:
+            self._fade_to(255, 120)
 
     def _hide(self):
         self._shown = False
@@ -719,10 +773,14 @@ class NetFloat:
                 self._glow.hide()
             except Exception:
                 pass
-        try:
-            self.win.withdraw()
-        except Exception:
-            pass
+        if self._drag["on"]:                 # 拖动中被隐藏：直接收，别做动画
+            self._alpha = 0
+            try:
+                self.win.withdraw()
+            except Exception:
+                pass
+            return
+        self._fade_to(0, 90, lambda: self.win.withdraw())
 
     def _on_root_configure(self, ev):
         try:
@@ -765,7 +823,7 @@ class NetFloat:
         except Exception:
             pass
         try:
-            self._follow_job = self.root.after(100, self._follow_tick)
+            self._follow_job = self.root.after(40, self._follow_tick)
         except Exception:
             pass
 
@@ -1282,6 +1340,7 @@ class NetFloat:
     def close(self):
         self._stop = True
         for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None),
+                  getattr(self, "_fade_job", None),
                   getattr(self, "_collapse_job", None),
                   getattr(self, "_hint_job", None)):
             try:
