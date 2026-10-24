@@ -443,10 +443,26 @@ class NetFloat:
                                     cursor="hand2")
             self.canvas.pack(fill="both", expand=True)
 
+        try:
+            self.win.withdraw()          # 先藏起来，等 _sync_visibility 决定要不要显示
+        except Exception:
+            pass
         self._bind()
         self._menu()
         self._restore(x, y)
         self._redraw()
+        try:
+            if not self._root_should_show():
+                # 启动阶段：闪屏还在、或主窗口还没露出、或本程序还没到前台 ——
+                # 这时候露脸就会"闪一下"。等 _follow_tick 判定可以显示时再淡入。
+                self._shown = False
+                self._alpha = 0
+                self.win.withdraw()
+            else:
+                self._alpha = 255
+                self.win.deiconify()
+        except Exception:
+            pass
         self._tick()          # ⚠ 必须启动刷新循环，否则数字会停在初始化那一刻
         try:
             self._refresh_geom()
@@ -747,6 +763,16 @@ class NetFloat:
         帧(0)
 
     def _show(self):
+        # 统一在这里把门：主窗口没露出、或本程序不在前台，就绝不显示。
+        # 否则 <Map> / <FocusIn> 一来就先淡入，40ms 后看门狗又把它藏掉 —— 看着就是闪一下。
+        try:
+            if not self._root_should_show():
+                self._shown = False
+                self._alpha = 0
+                self.win.withdraw()
+                return
+        except Exception:
+            pass
         刚打开 = False
         try:
             刚打开 = (self.win.state() == "withdrawn")
