@@ -416,6 +416,8 @@ class NetFloat:
         self._alpha = 255          # 整体不透明度（淡入淡出用）
         self._fade_job = None
         self._fade_token = 0
+        self._show_job = None
+        self._SHOW_DELAY = 150      # 主窗口出现后等这么久再露面（对齐系统显示动画）
         self._peek = False
         self._docked = None
         self._job = None
@@ -726,7 +728,7 @@ class NetFloat:
                 return
         except Exception:
             pass
-        self._show()
+        self._request_show()
 
     def _on_root_unmap(self, ev):
         if getattr(ev, "widget", None) is not self.root:
@@ -741,7 +743,7 @@ class NetFloat:
             self.win.attributes("-topmost", True)
         except Exception:
             pass
-        self._show()
+        self._request_show()
 
     def _on_root_focus_out(self, ev):
         """主窗口失去焦点：取消置顶，免得它压在其他程序上面。
@@ -1242,15 +1244,47 @@ class NetFloat:
         except Exception:
             return True
 
+    def _request_show(self):
+        """请求显示：**延迟一小会儿**再露脸。
+
+        主窗口"显示"有 ~200ms 的系统动画，浮标如果和 <Map> 同时出现，看起来就是
+        "浮标比主界面还快"。等 150ms 再淡入，正好和窗口显现的节奏对上。
+        """
+        if self._shown or self._show_job is not None:
+            return
+        try:
+            self._show_job = self.root.after(self._SHOW_DELAY, self._do_show)
+        except Exception:
+            self._show_job = None
+            self._show()
+
+    def _do_show(self):
+        self._show_job = None
+        try:
+            if self._root_should_show():
+                self._show()
+        except Exception:
+            pass
+
+    def _cancel_show(self):
+        if self._show_job is not None:
+            try:
+                self.root.after_cancel(self._show_job)
+            except Exception:
+                pass
+            self._show_job = None
+
     def _sync_visibility(self):
         """轮询兜底：withdraw()（收托盘）不一定触发 <Unmap>，光靠事件会漏。"""
         want = self._root_should_show()
         if want and not self._shown:
-            self._shown = True
-            self._show()
+            self._request_show()
         elif not want and self._shown:
+            self._cancel_show()
             self._shown = False
             self._hide()
+        elif not want:
+            self._cancel_show()
 
     def _tick(self):
         if self._stop:
@@ -1426,6 +1460,7 @@ class NetFloat:
     def close(self):
         self._stop = True
         for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None),
+                  getattr(self, "_show_job", None),
                   getattr(self, "_fade_job", None),
                   getattr(self, "_collapse_job", None),
                   getattr(self, "_hint_job", None)):
