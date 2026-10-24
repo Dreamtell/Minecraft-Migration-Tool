@@ -146,6 +146,7 @@ class _ArchiveList(tk.Frame):
         self.offset = 0.0
         self.target = 0.0
         self._job = None
+        self._last_t = 0.0
         self._imgs = {}
         self.canvas = tk.Canvas(self, bg=theme["bg"], highlightthickness=0, bd=0,
                                 cursor="hand2")
@@ -191,46 +192,54 @@ class _ArchiveList(tk.Frame):
             self.hover = -1
             self.redraw()
 
+    # 缓动系数：每 16ms 仍剩 70% 距离（≈210ms 收敛，和原来 220ms 的手感对齐）
+    _REST = 0.70
+
     def _wheel(self, e):
-        # 触控板/滚轮都给一个"步数"，然后交给缓动去追
+        # 触控板/滚轮都给一个"步数"：只挪目标，正在跑的缓动接着追，绝不重开
         步 = int(e.delta / 120) or (1 if e.delta > 0 else -1)
         self.target = max(0.0, min(self._max_off(), self.target - 步 * px(56)))
         self._anim()
 
     def _anim(self):
-        """滚动缓动：固定时长 220ms、easeOutCubic，跟手指"甩一下"的手感更接近。
+        """滚动缓动：一阶低通，每帧按**真实 dt** 收掉剩余距离的 30%。
 
-        以前是"每帧走剩余距离的 35%"，滚动量大时会显得越滚越慢、拖尾很长；
-        改成按时间插值后，无论滚多远都是同一个时长，停下来就停（不空转）。
+        ⚠ 这里前后换过三版，前两版都栽在同一件事上 —— 别改回"每次滚轮重开一条插值"：
+
+        · 每帧走剩余 35%：滚动量大时越滚越慢、拖尾很长。
+        · 固定时长 220ms 的 easeOutCubic：每来一个滚轮事件就从当前位置重开一条链，
+          而插值第 0 帧的位移恒为 0；触控板之类 8ms 就发一次事件，16ms 的定时器还没跑
+          就被取消 —— 整个滑动期间列表**一动不动**，事件停了才"啪"地跳过去
+          （实测 40 次 @8ms 连发：期间位移 0px，结束后一步跳 990px）。
+          不取消而是放任多条链并行，则会来回跳着写 offset（实测 63 帧里 14 帧往回跳）。
+
+        低通没有"重开"这一步：滚轮只改 target，位移天然连续，也永远不会卡住不动。
+        收尾用 0.5px 阈值直接吸附，避免留下看不出来的尾巴一直空转。
         """
-        # 上一次的缓动还没跑完又滚了一下：必须先掐掉旧的 after 链。
-        # 否则两条链同时在跑，各自拿自己的「起/终」往 canvas 上写 offset，60fps 下交替生效
-        # —— 看上去就是列表在抖、在闪（实测 63 帧里 14 帧往回跳）。
-        if self._job is not None:
-            try:
-                self.after_cancel(self._job)
-            except Exception:
-                pass
-            self._job = None
-        起 = self.offset
-        终 = self.target
-        总 = px(220)
-
-        def 帧(k):
-            缓 = 1 - (1 - k) ** 3
-            self.offset = 起 + (终 - 起) * 缓
+        if abs(self.target - self.offset) < 0.5:
+            self.offset = self.target
             self.redraw()
-            if k < 1.0:
-                try:
-                    self._job = self.after(16, lambda: 帧(min(1.0, k + 16.0 / 总)))
-                except Exception:
-                    self._job = None
-            else:
-                self.offset = 终
-                self.redraw()
-                self._job = None
+            return
+        if self._job is not None:
+            return                      # 链已经在跑，让它继续追新的 target
+        self._last_t = time.monotonic()
+        self._tick()
 
-        帧(0.0)
+    def _tick(self):
+        now = time.monotonic()
+        dt = max(0.0, min(0.05, now - self._last_t))   # 卡了一下也别一帧跳太远
+        self._last_t = now
+        self.offset += (self.target - self.offset) * (1.0 - self._REST ** (dt / 0.016))
+        if abs(self.target - self.offset) < 0.5:
+            self.offset = self.target
+            self.redraw()
+            self._job = None
+            return
+        self.redraw()
+        try:
+            self._job = self.after(16, self._tick)
+        except Exception:
+            self._job = None
 
     # ---------- 绘制 ----------
     def _card_img(self, w, h, 状态, 条色="#2e7d32"):
