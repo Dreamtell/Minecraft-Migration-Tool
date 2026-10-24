@@ -806,6 +806,18 @@ class NetFloat:
 
         帧(0)
 
+    def _redraw_faded(self):
+        """换形态（圆 ⇄ 小标签）时用淡出-换图-淡入，而不是直接"啪"地改尺寸。"""
+        if not self._dib:
+            self._redraw()
+            return
+
+        def 换():
+            self._redraw()               # 尺寸/位置在这里一次改到位（此时 alpha=0，看不见跳变）
+            self._fade_to(255, 80)
+
+        self._fade_to(0, 45, 换)
+
     def _show(self):
         # 统一在这里把门：主窗口没露出、或本程序不在前台，就绝不显示。
         # 否则 <Map> / <FocusIn> 一来就先淡入，40ms 后看门狗又把它藏掉 —— 看着就是闪一下。
@@ -1007,7 +1019,7 @@ class NetFloat:
                 if edge:
                     self._docked = edge
                     self._snap(edge, apply=False)
-                    self._redraw()
+                    self._redraw_faded()
                     self._set_hint(edge, 持续=0.4)   # 收纳成功后边框再亮一下
                 else:
                     self._docked = None
@@ -1037,7 +1049,7 @@ class NetFloat:
         if self._docked and self.dock_enabled and not self._peek:
             self._peek = True
             self._snap(self._docked, apply=False)   # 尺寸+位置交给 _redraw 一次做完
-            self._redraw()
+            self._redraw_faded()
         elif not self._docked:
             self._redraw()
         # 已经是展开态：什么都不用做（别每来一次 <Enter> 就重画一遍）
@@ -1173,7 +1185,7 @@ class NetFloat:
         if self._docked and self.dock_enabled and self._peek:
             self._peek = False
             self._snap(self._docked, apply=False)   # 同上
-            self._redraw()
+            self._redraw_faded()
 
     def _menu(self):
         self.menu = tk.Menu(self._target(), tearoff=0)
