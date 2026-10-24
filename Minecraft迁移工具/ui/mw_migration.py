@@ -22,6 +22,7 @@ from ui.mw_common import (
     _SCAN_DONE, _UI_PUMP_MS, _center_window, _file_task_lock, _grad_width,
 )
 from ui.virtual_table import VirtualTable
+from utils import anim            # 帧节奏（跟随显示器刷新率）—— 只用来问"多久排下一帧"
 from utils.dpi import px, window_geometry
 from utils.helpers import DataText, create_gradient_button, focus_window, set_window_icon
 from utils.theme import apply_theme_to_widget_tree
@@ -44,18 +45,47 @@ def _打桩优先(名字, 默认):
     return getattr(_mw, 名字, 默认)
 
 
+def _占定时器(拥有者):
+    """滚动链启动时把系统定时器精度提到 1ms（配对 anim.release）。
+
+    为什么非占不可：Tk 的 after() 在真 mainloop 里被 Windows 默认的 15.6ms 定时器粒度
+    卡死 —— 实测 after(4) 只有 64fps、p50 15.9ms，raise 之后才是 232fps、p50 4.05ms。
+    但全程 raise 会让整机空转耗电，所以只在链跑着的时候占。
+    ⚠ 绝不每帧 hold/release：计数漏还一次，高精度定时器就被永久占着了。
+    """
+    if not getattr(拥有者, "_holding", False):
+        anim.hold()
+        拥有者._holding = True
+
+
+def _停计时(拥有者):
+    """还回高精度定时器。滚动链的每条出口都要走这里，宁可多还一次也不能漏还。"""
+    if getattr(拥有者, "_holding", False):
+        拥有者._holding = False
+        anim.release()
+
+
 class _SmoothText(tk.Text):
     """日志框：滚轮走缓动，而不是一格一格地跳。
 
     Tk 的 Text 没有像素滚动（`yview units` 的单位就是"行"），所以这里按**行**
     做缓动：滚轮只改目标行号，然后每帧朝目标走一小段，看起来就是滑过去。
     目标按"当前顶部行"重新算，所以拖滚动条/按 PageDown 之后也不会漂。
+
+    ⚠ 走多快**必须按真实时间折算**：改前是 after(16) + 每帧 1 行（= "1 行 / 16ms"）
+    定死的，帧间隔一变成 4ms，同样的"每帧 1 行"就快 4 倍。现在每帧先算"从手势开始
+    到现在本该滚过几行"（见 _anim），只把差额滚出去 —— 16ms 排帧和 4ms 排帧走完
+    同样的距离、花同样的时间，观感和改前一致。
     """
 
     def __init__(self, master, **kw):
         super().__init__(master, **kw)
         self._job = None
         self._target = 1
+        self._holding = False
+        # 兜底：日志框会随历史窗口一起销毁，那时链还没跑完（甚至正卡在一帧中间），
+        # 不走这条绑定的话 hold() 的计数永远停在 1，整机一直占着 1ms 精度。
+        self.bind("<Destroy>", lambda e: _停计时(self), add="+")
         self.bind("<MouseWheel>", self._on_wheel, add="+")
         self.bind("<Button-4>", lambda e: (self._scroll(-3), "break")[-1], add="+")
         self.bind("<Button-5>", lambda e: (self._scroll(3), "break")[-1], add="+")
@@ -82,6 +112,10 @@ class _SmoothText(tk.Text):
         self._target = max(1, min(总, self._target + 行))
         self._anim()
 
+    # 手感基准：改前是 after(16) + 每帧滚 1 行，也就是"1 行 / 16ms"。这是**速度基准**，
+    # 不要换成 anim.frame_ms()：帧间隔是"多久算一次"，这里要的是"每毫秒走多远"。
+    _行基准 = 0.016
+
     def _anim(self):
         if self._job:
             try:
@@ -89,14 +123,36 @@ class _SmoothText(tk.Text):
             except Exception:
                 pass
             self._job = None
+        _占定时器(self)            # 链一起跑就 raise 定时器精度，见 _占定时器 的说明
+        # 手势起点：这两帧之后"走了多远"一律按 (现在 - 起点) 的**绝对时间**算，
+        # 不逐帧累加。累加会把每帧取整的零头攒着，收尾时 4ms 排帧与 16ms 排帧能差
+        # 出一整帧的量（实测 3 行 47ms vs 36ms，差 24%）。
+        self._起_t = time.perf_counter()
+        self._起行 = self._top()
 
         def 帧():
             剩 = self._target - self._top()
-            if abs(剩) <= 0:
+            if 剩 == 0:
                 self._job = None
+                _停计时(self)
                 return
-            self.yview_scroll(1 if 剩 > 0 else -1, "units")
-            self._job = self.after(16, 帧)
+            # 这一帧"总共该滚过几行"：+1 是改前"滚轮一到就立刻滚 1 行"的那一步，
+            # 之后每过 _行基准(16ms) 再多 1 行。
+            # 那 1ms 是**取整余量**：真机的 after(16) 实测 15.6~16.1ms，差那么一点
+            # 就会被 int() 截掉，于是每一行都要多等一帧（3 行 47ms 而不是 32ms）。
+            # 反过来也不能"四舍五入"（+8ms 会让 4ms 排帧每行早到半格，实测快 41%）。
+            该走 = int((time.perf_counter() - self._起_t + 0.001) / self._行基准) + 1
+            已走 = abs(self._top() - self._起行)
+            步 = min(abs(剩), 该走 - 已走)
+            if 步 > 0:
+                self.yview_scroll(步 if 剩 > 0 else -步, "units")
+                # 到位就当场停：否则还要多排一帧空转，"开始到停住"的总时长会随帧间隔
+                # 长短而变化（帧间隔越短空转越短，看着像变快了）。
+                if self._top() == self._target:
+                    self._job = None
+                    _停计时(self)
+                    return
+            self._job = self.after(anim.delay(self), 帧)
 
         帧()
 
@@ -135,6 +191,8 @@ class _ArchiveList(tk.Frame):
     CARD_H = 92
     GAP = 8
     RADIUS = 10
+    # 文字图元的 y 相对卡片顶的偏移（_build 里 create_text 用的就是这几个值；0 号是整卡图片）
+    _文字DY = {1: 16, 2: 16, 3: 38, 4: 60, 5: 78}
 
     def __init__(self, master, theme, records, on_select):
         super().__init__(master, bg=theme["bg"])
@@ -147,6 +205,7 @@ class _ArchiveList(tk.Frame):
         self.target = 0.0
         self._job = None
         self._last_t = 0.0
+        self._holding = False
         self._imgs = {}
         self.canvas = tk.Canvas(self, bg=theme["bg"], highlightthickness=0, bd=0,
                                 cursor="hand2")
@@ -156,6 +215,8 @@ class _ArchiveList(tk.Frame):
         self.canvas.bind("<Leave>", self._leave)
         self.canvas.bind("<MouseWheel>", self._wheel)
         self.canvas.bind("<Configure>", lambda e: self.redraw())
+        # 兜底：窗口关掉时链还没跑完，不走这条绑定就会把 hold() 的计数留在 1
+        self.bind("<Destroy>", lambda e: _停计时(self), add="+")
         self.redraw()
 
     # ---------- 几何 ----------
@@ -222,11 +283,16 @@ class _ArchiveList(tk.Frame):
             return
         if self._job is not None:
             return                      # 链已经在跑，让它继续追新的 target
-        self._last_t = time.monotonic()
+        _占定时器(self)                # 4ms 排帧必须先把定时器精度提到 1ms
+        self._last_t = time.perf_counter()
         self._tick()
 
     def _tick(self):
-        now = time.monotonic()
+        # ⚠ 计时必须用 perf_counter：这台机器上 time.monotonic() 走的是 GetTickCount64，
+        # 实测 15.6ms 一格（sleep(4ms) 采样出的间隔 p50=0.00ms / max=16.00ms），
+        # 4ms 排帧时 4 帧里有 3 帧 dt=0 —— 缓动只在 15.6ms 的格子里跳，提帧等于白提。
+        # perf_counter 同一测法 p50=4.51ms，每帧都有真实 dt。
+        now = time.perf_counter()
         dt = max(0.0, min(0.05, now - self._last_t))   # 卡了一下也别一帧跳太远
         self._last_t = now
         self.offset += (self.target - self.offset) * (1.0 - self._REST ** (dt / 0.016))
@@ -234,12 +300,21 @@ class _ArchiveList(tk.Frame):
             self.offset = self.target
             self.redraw()
             self._job = None
+            _停计时(self)              # 出口 1：正常吸附收工
             return
         self.redraw()
         try:
-            self._job = self.after(16, self._tick)
+            # 多久排下一帧交给 anim.delay：240Hz 屏给 4ms（最小化/失焦自动降到 33ms）。
+            # 上面那行 `_REST ** (dt / 0.016)` 里的 0.016 是**手感基准**，不是帧间隔，别动。
+            # 排帧间隔要**扣掉本帧已经花掉的时间**：after() 是从"现在"起算的，
+            # 直接给 anim.delay() 的话帧周期 = 一帧的活(实测 3.4~4.6ms，其中 Tk 重绘
+            # 2.4~3.6ms) + 4ms ≈ 8ms —— 真 mainloop 实测 p50 8.08ms / 131fps，
+            # 到不了 240Hz。扣掉之后周期才贴着刷新率走（实测 p50 4.4ms / ~227fps）。
+            用了 = int((time.perf_counter() - now) * 1000)
+            self._job = self.after(max(1, anim.delay(self) - 用了), self._tick)
         except Exception:
             self._job = None
+            _停计时(self)              # 出口 2：排帧失败（控件没了）
 
     # ---------- 绘制 ----------
     def _card_img(self, w, h, 状态, 条色="#2e7d32"):
@@ -320,12 +395,24 @@ class _ArchiveList(tk.Frame):
                 px(20), px(78), anchor="w",
                 text="耗时 %s 秒　·　%s" % (rec.get("duration", "?"), 结果 or "—"),
                 fill=弱色, font=("微软雅黑", 8)))
-            self._items.append(组)
+            # 滚动时只需要 (图元, x, 相对卡片顶的 dy)：文字图元的 x 建完就再也不变了，
+            # 所以在建的时候取一次存下来。改前 redraw() 是每帧每个图元都
+            # `c.coords(item, c.coords(item)[0], top + 相对)` —— 先取再设，两次 Tcl 往返，
+            # 12 卡 × 6 图元 = 每帧 144 次（实测单次 6~12us，光这一段就 0.9ms）。
+            # ⚠ 0 号图片的 dy 必须直接写 0：px(0) 是 1（px 有"至少 1 像素"的语义），
+            # 用它算偏移会把整张卡往下挪 1px（实测改动前后快照对不上就是这个）。
+            self._items.append([(item, px(4) if k == 0 else c.coords(item)[0],
+                                 px(self._文字DY[k]) if k in self._文字DY else 0)
+                                for k, item in enumerate(组)])
         self._sb = c.create_rectangle(0, 0, 0, 0,
                                       fill=self.theme.get("muted_fg", "#888888"),
                                       outline="")
         self._sig = (w, h, self.sel, self.hover, len(self.records))
-        self._w, self._h = w, h
+        # ⚠ 别写成 self._w / self._h：那是 Tkinter 自己存的**控件路径名**（widget path），
+        # 覆盖掉之后这个 Frame 的所有 winfo_* / bind 查询 / destroy 都会报
+        # bad window path name "420"（实测 winfo_exists() 直接返回 0，
+        # anim.is_slow(self) 永远为 False、<Destroy> 绑定也不会响）。
+        self._卡宽, self._卡高 = w, h
 
     def redraw(self):
         c = self.canvas
@@ -336,16 +423,12 @@ class _ArchiveList(tk.Frame):
         sig = (w, h, self.sel, self.hover, len(self.records))
         if sig != getattr(self, "_sig", None):
             self._build(w, h)
-        # 只改坐标：滚动时没有删除/重建，所以不会闪
-        for i, 组 in enumerate(getattr(self, "_items", [])):
+        # 只改坐标：滚动时没有删除/重建，所以不会闪。
+        # 每个图元只发一次 coords（x / dy 在 _build 里就记好了，不用每帧再取回来）。
+        for i, 列 in enumerate(getattr(self, "_items", [])):
             top = self._top(i)
-            for k, item in enumerate(组):
-                if k == 0:
-                    c.coords(item, px(4), top)
-                else:
-                    # 文字的 y 是相对卡片顶的偏移，建的时候按 px(16/38/60/78) 摆的
-                    相对 = {1: px(16), 2: px(16), 3: px(38), 4: px(60), 5: px(78)}.get(k, 0)
-                    c.coords(item, c.coords(item)[0], top + 相对)
+            for item, x, dy in 列:
+                c.coords(item, x, top + dy)
         # 滚动条
         total, hh = self._total(), h
         try:

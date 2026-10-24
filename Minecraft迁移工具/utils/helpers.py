@@ -8,6 +8,7 @@ import time
 import weakref
 
 from utils import i18n          # 界面语言（默认中文时 tr() 原样返回，行为不变）
+from utils import anim          # 帧节奏（跟随显示器刷新率）—— 只用来问"多久排下一帧"
 
 # 活着的平滑滚动器（弱引用，不阻止回收）。用来统一管理/诊断，
 # 也可以将来做"一键关掉平滑滚动"的开关。
@@ -16,6 +17,16 @@ _LIVE_SCROLLERS = weakref.WeakSet()
 
 def live_scrollers():
     return [s for s in _LIVE_SCROLLERS]
+
+
+# ---- 滚动期间把 Windows 定时器精度提到 1ms：统一走 anim.hold() / anim.release() ----
+# 为什么需要（实测，真 mainloop + 本机 240Hz 屏）：Tk 空闲等下一帧时会被 Windows 默认的
+# 15.6ms 定时器粒度卡住 —— 不 raise 时 after(16) 只有 50fps/p90 30ms、after(4) 只有 64fps
+# /p50 15.9ms（**连线上原有的 16ms 动画都只有 50fps**），连续喂滚动的场景 71% 的帧落在
+# 15.3ms（81fps）；raise 之后 after(4) = 232fps / p50 4.05ms。anim.py 里原先那句
+# "timeBeginPeriod 前后完全相同"是在忙泵里量的（泵一直烧消息队列、定时器根本不用等），
+# 那条结论已由 anim.py 自己改正。
+# 计数和 winmm 调用现在都在 anim 里，这里只做"一次动画只 hold 一次"的薄封装（见 _hold_hr）。
 
 
 def text_delta(旧, 新):
@@ -154,7 +165,8 @@ class SmoothScroller:
 
     实测前提（Tk 8.6 / Windows）：Text 的 `yview_scroll(n, "pixels")` 可用，视图
     **不是**按行对齐的（能停在半行上），每帧只重绘可见区，成本与文档长度无关——
-    3000 行和 20000 行都是 1.5ms 上下，所以逐帧动画很宽裕（实测 66fps）。
+    3000 行和 20000 行都是 1.5ms 上下，所以逐帧动画很宽裕（原来写死 12ms 一帧 = 60fps；
+    改成按刷新率排帧后实测 234fps、单帧 0.10ms，滚动速度不变，见 _step 的 dt 换算）。
 
     两类滚动目标：
     - `for_text`：像素级，真·平滑（Text 类控件）。
@@ -168,6 +180,10 @@ class SmoothScroller:
                  bind_widgets=None, on_user_scroll=None, on_settle=None,
                  accel=0.45, max_step_ratio=0.6):
         self.widget = widget
+        # frame_ms 不再决定"多久排一帧"（那交给 anim.delay：240Hz 屏上是 4ms），
+        # 它只是**手感标定的基准帧**：ease / accel / 单帧限幅 / 最小步长都按这个基准
+        # 定义，真跑起来按 dt/frame_ms 换算（见 _step）——于是 12ms 排帧和 4ms 排帧
+        # 得到同一条运动曲线，只是 4ms 切得更细。实测 240Hz 下有效帧率 60fps -> 228fps。
         self.frame_ms = frame_ms
         self.ease = ease
         # 起步别"窜"：单帧最大位移限制在一格滚动的 45% 左右，速度再用 accel
@@ -176,6 +192,9 @@ class SmoothScroller:
         self.accel = accel
         self.max_step_ratio = max_step_ratio
         self._vel = 0.0
+        self._last_t = 0.0        # 上一帧开始时的 perf_counter（0.0 = 还没起过步）
+        self._timer_hr = False    # 这段动画是否占着 1ms 定时器精度（见 _hold_hr）
+        self._warned = False      # 异常兜底只报一次（见 _abort）
         self.px_per_notch = px_per_notch
         self._mover = mover
         self._left = 0.0          # 还没滚完的像素（正=向下）
@@ -189,6 +208,13 @@ class SmoothScroller:
                 w.bind("<MouseWheel>", self._on_wheel)
             except Exception:
                 pass
+        # 控件被销毁时（关对话框、切页、重建列表都是这条路）Tk 会**悄悄取消**挂在它
+        # 身上的 after，_step 再也不会跑 —— 于是 _release_hr 永远等不到，1ms 定时器
+        # 精度就永久泄漏（实测：动画中途 destroy 后引用计数停在 1）。必须在这里收尾。
+        try:
+            widget.bind("<Destroy>", self._on_destroy, add="+")
+        except Exception:
+            pass
         try:
             _LIVE_SCROLLERS.add(self)
         except Exception:
@@ -309,10 +335,7 @@ class SmoothScroller:
         except Exception:
             return
         if self._job is None:
-            try:
-                self._job = self.widget.after(1, self._step)
-            except Exception:
-                self._job = None
+            self._kick()
 
     def stop(self):
         if self._job is not None:
@@ -323,6 +346,7 @@ class SmoothScroller:
             self._job = None
         self._left = 0.0
         self._vel = 0.0
+        self._release_hr()
 
     # ------------------------------------------------------------------- 动画
     def _on_wheel(self, event):
@@ -335,7 +359,7 @@ class SmoothScroller:
             except Exception:
                 pass
         if self._job is None:
-            self._job = self.widget.after(1, self._step)
+            self._kick()
         return "break"
 
     def _settle(self):
@@ -345,36 +369,140 @@ class SmoothScroller:
             except Exception:
                 pass
 
+    def _hold_hr(self):
+        """动画开始：占住 1ms 定时器精度（anim.hold）。
+
+        只在这里置位：一次动画从头到尾只 hold 一次，绝不能变成每帧 hold/release ——
+        那样计数会来回抖到 0，timeEndPeriod/timeBeginPeriod 每 4ms 调一次，反而更贵。
+        """
+        if not self._timer_hr:
+            self._timer_hr = True
+            anim.hold()
+
+    def _release_hr(self):
+        """动画结束/停下/控件没了：还回去（anim.release）。必须和 _hold_hr 成对。"""
+        if self._timer_hr:
+            self._timer_hr = False
+            anim.release()
+
+    def _abort(self, where):
+        """异常兜底：这段动画就地停掉并还租 —— 不要一边报错一边继续续帧。
+
+        为什么必须收：_step / _kick 都是 Tk 的 after 回调，异常只会被 Tk 打一行
+        traceback 然后吞掉 —— 三条正常出口（left<1 / blocked / 失控）一条都走不到，
+        于是 _hold_hr 占着的 1ms 定时器精度就**永久**占着（实测：mover 直接 raise 时
+        anim.holding() 一直是 True，进程不退就一直占，全局定时器分辨率被按在 1ms）。
+
+        只报一次（_warned）：mover 每帧都炸的话，不设这个标记就会每 4ms 刷一屏
+        traceback —— 那是"一边报错一边跑"，比安静地停下更糟；停下之后不再续帧，
+        自然也就不会再有第二帧。
+        不收 _settle：异常时位置停在哪并不确定，别让回调以为"滚完了"。
+        """
+        self._left = 0.0
+        self._vel = 0.0
+        self._job = None
+        self._release_hr()
+        if not self._warned:
+            self._warned = True
+            try:
+                import traceback
+                sys.stderr.write("SmoothScroller: %s 抛异常，这段平滑滚动已停掉并还回定时器精度\n" % where)
+                traceback.print_exc()
+            except Exception:
+                pass
+
+    def _on_destroy(self, event=None):
+        """控件销毁 = 这段动画没了：收掉状态和定时器精度（Tk 已经把 after 取消了）。"""
+        try:
+            if event is not None and getattr(event, "widget", None) is not self.widget:
+                return
+        except Exception:
+            pass
+        self._job = None
+        self._left = 0.0
+        self._vel = 0.0
+        self._release_hr()
+
+    def _kick(self):
+        """排下一帧（滚轮刚到时也从这里起步）：间隔交给 anim.delay。
+
+        以前是写死的 after(1) 起步 / after(frame_ms) 续帧 —— 12ms 一帧就是 60fps 封顶。
+        现在跟随显示器刷新率（240Hz 屏给 4ms），窗口最小化/失焦时 anim.delay 自动降到
+        30fps，看不见的时候不烧帧。
+        """
+        if self._job is not None:
+            return
+        self._hold_hr()
+        self._last_t = time.perf_counter()
+        try:
+            self._job = self.widget.after(anim.delay(self.widget), self._step)
+        except Exception:
+            # 起始排帧就排不上（控件正在销毁 / after 被禁用）：同样要还租，不能只清 _job
+            self._abort("after(起始排帧)")
+
     def _step(self):
         self._job = None
         try:
             if not self.widget.winfo_exists():
+                self._release_hr()
                 return
         except Exception:
+            self._release_hr()
             return
         if abs(self._left) < 1.0:
             self._left = 0.0
             self._vel = 0.0
+            self._release_hr()
             self._settle()
             return
+        # ---- 真实 dt ----
+        # 排帧间隔现在跟着刷新率走（本机 240Hz -> 4ms），"每帧"就不能再当常量用了：
+        # 下面所有系数都按基准帧 frame_ms（12ms 手感）标定，再换算到这一帧的 dt。
+        # 不换算的话 4ms 一帧的动作正好快 3 倍（实测差得就是这么多，肉眼像在甩）。
+        now = time.perf_counter()
+        dt = (now - self._last_t) * 1000.0 if self._last_t else float(self.frame_ms)
+        self._last_t = now
+        # 掉帧保护：拖窗口 / GC 时 dt 会跳到几百毫秒，照它算单帧位移就是"瞬移"。
+        # 封顶 4 个基准帧（48ms）：真掉帧的那一段宁可走得比真实时间慢。
+        if dt < 0.05:
+            dt = float(self.frame_ms)          # 计时器精度抖动，当成一个基准帧
+        elif dt > self.frame_ms * 4:
+            dt = float(self.frame_ms) * 4
+        ratio = dt / float(self.frame_ms or 12)
+        # 换算规则：系数 a' = 1 - (1 - a) ** ratio，位移 v' = v * ratio。
+        # ease 走幂律这一条，4ms 一帧连做 3 次正好等于 12ms 一帧做 1 次，于是**滚动
+        # 速度与收敛时间跟原来 12ms 排帧一模一样**，只是切得更细；位移量（单帧限幅、
+        # 最小步长）按 ratio 线性缩放。两条都不可省：只按 ratio 线性缩放 ease 会让
+        # 4ms 排帧的收敛慢 20%（实测），只缩放位移又会快 3 倍。
+        ease = 1.0 - (1.0 - self.ease) ** ratio
+        accel = 1.0 - (1.0 - self.accel) ** ratio
         # 速度模型：目标速度 = 剩余量 × ease（越接近目标越慢），先限幅再让实际速度
         # 向它渐近 —— 于是起步是"缓→快→缓"，而不是第一帧就窜掉三成。
-        v_target = self._left * self.ease
-        cap = abs(self.px_per_notch) * self.max_step_ratio or 1.0
+        v_target = self._left * ease
+        cap = (abs(self.px_per_notch) * self.max_step_ratio or 1.0) * ratio
         if v_target > cap:
             v_target = cap
         elif v_target < -cap:
             v_target = -cap
-        self._vel += (v_target - self._vel) * self.accel
+        self._vel += (v_target - self._vel) * accel
         move = self._vel
-        # 每帧至少走 1 像素，否则会卡在最后一点点
-        if abs(move) < 1.0:
-            move = 1.0 if move > 0 else -1.0
+        # 每帧至少走 1 像素，否则会卡在最后一点点。这个 1 也要跟着 dt 缩放，
+        # 否则 240fps 下尾巴一帧就走掉 1 像素 = 4 倍速地窜到终点。
+        min_step = 1.0 * ratio
+        if abs(move) < min_step:
+            move = min_step if move > 0 else -min_step
         before_left = self._left
-        consumed, blocked = self._mover(move)
+        try:
+            consumed, blocked = self._mover(move)
+        except Exception:
+            # mover 抛异常（自绘列表的 mover 里会直接调 _set_top -> _render，那里没有 try）：
+            # 就地停掉并还租，绝不冒泡给 Tk。
+            self._abort("mover")
+            return
         if blocked:
             self._left = 0.0
             self._vel = 0.0
+            self._release_hr()
             self._settle()
             return
         self._left -= consumed
@@ -384,9 +512,13 @@ class SmoothScroller:
         if abs(self._left) > abs(before_left):
             self._left = 0.0
             self._vel = 0.0
+            self._release_hr()
             self._settle()
             return
-        self._job = self.widget.after(self.frame_ms, self._step)
+        try:
+            self._job = self.widget.after(anim.delay(self.widget), self._step)
+        except Exception:
+            self._abort("after(续帧)")
 
 
 def _hwnd_of(win):
