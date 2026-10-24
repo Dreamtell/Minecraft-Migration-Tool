@@ -710,6 +710,10 @@ class NetFloat:
         c.bind("<Enter>", self._on_enter)
         c.bind("<Leave>", self._on_leave)
         try:
+            self.root.bind("<Destroy>", self._on_root_destroy, add="+")
+        except Exception:
+            pass
+        try:
             self.root.bind("<Configure>", self._on_root_configure, add="+")
             # 跟着主窗口显示/隐藏：最小化、收进托盘时浮标也必须消失，
             # 否则它会孤零零留在桌面上（"不同图层"最明显的毛病）。
@@ -730,10 +734,26 @@ class NetFloat:
             pass
         self._request_show()
 
+    def _on_root_destroy(self, ev):
+        """主窗口被销毁 = 程序正在退出：浮标立刻消失，别留着比窗口还久。"""
+        try:
+            if getattr(ev, "widget", None) is not self.root:
+                return
+        except Exception:
+            pass
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _on_root_unmap(self, ev):
         if getattr(ev, "widget", None) is not self.root:
             return
-        self._hide()
+        try:
+            立即 = self.root.state() == "withdrawn"
+        except Exception:
+            立即 = False
+        self._hide(fade=not 立即)
 
     def _on_root_focus_in(self, ev):
         """主窗口回到前台：浮标重新置顶并重画（隐藏过之后 ULW 内容要重传）。"""
@@ -854,7 +874,7 @@ class NetFloat:
         if 刚打开:
             self._fade_to(255, 120)
 
-    def _hide(self):
+    def _hide(self, fade=True):
         self._shown = False
         # 主窗口被挡住/最小化时，发光带也要一起收掉（它是独立的置顶窗口）
         self._hint = None
@@ -864,7 +884,8 @@ class NetFloat:
                 self._glow.hide()
             except Exception:
                 pass
-        if self._drag["on"]:                 # 拖动中被隐藏：直接收，别做动画
+        if not fade or self._drag["on"]:
+            # 程序正在关闭 / 拖动中：立刻收，不做淡出
             self._alpha = 0
             self._park()
             return
@@ -1282,7 +1303,12 @@ class NetFloat:
         elif not want and self._shown:
             self._cancel_show()
             self._shown = False
-            self._hide()
+            立即 = True
+            try:
+                立即 = self.root.state() == "withdrawn" or not self.root.winfo_exists()
+            except Exception:
+                pass
+            self._hide(fade=not 立即)
         elif not want:
             self._cancel_show()
 
