@@ -313,6 +313,20 @@ class MigrationMixin:
 
     # ---------- 历史记录 ----------
     # ---------- 迁移历史（档案形式） ----------
+    @staticmethod
+    def _日志级别标签(行):
+        """旧档案没有级别字段时，从行里的图标/关键字推断该用哪个颜色标签。"""
+        文 = str(行 or "")
+        if "❌" in 文 or "ERROR" in 文:
+            return "log_error"
+        if "⚠️" in 文 or "⏭️" in 文:
+            return "log_warning"
+        if "✅" in 文:
+            return "log_success"
+        if "[模拟]" in 文 or "[SIMULATE]" in 文:
+            return "log_simulate"
+        return "log_info"
+
     def action_show_history(self):
         """迁移历史：一次迁移 = 一份档案，按时间倒序排列，可看统计/清单/完整日志。
 
@@ -393,7 +407,14 @@ class MigrationMixin:
 
             w = max(2, 右.winfo_width())
             h = max(2, 右.winfo_height())
-            S = 3
+            # 先把整块铺成面板色（瞬间），再延后一帧画圆角图 ——
+            # 否则缩放的那一帧会露出深色底，看起来就是"闪一下"。
+            try:
+                右.delete("bg")
+                右.create_rectangle(0, 0, w, h, fill=面板色, outline="", tags="bg")
+            except Exception:
+                pass
+            S = 2
             半径 = px(14) * S
             img = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
@@ -403,9 +424,20 @@ class MigrationMixin:
                                 width=S)
             背景图 = ImageTk.PhotoImage(img.resize((w, h), Image.LANCZOS))
             _背景["img"] = 背景图
-            右.delete("bg")
-            右.create_image(0, 0, anchor="nw", image=背景图, tags="bg")
-            右.tag_lower("bg")
+
+            def _换上():
+                try:
+                    if (右.winfo_width(), 右.winfo_height()) != (w, h):
+                        return                      # 尺寸又变了，这一帧作废
+                    右.delete("bg")
+                    右.create_image(0, 0, anchor="nw", image=背景图, tags="bg")
+                    右.tag_lower("bg")
+                except Exception:
+                    pass
+            try:
+                右.after_idle(_换上)
+            except Exception:
+                _换上()
             右.coords(_内窗, px(1), px(1))
             右.itemconfig(_内窗, width=w - px(2), height=h - px(2))
 
@@ -572,6 +604,11 @@ class MigrationMixin:
 
         def 选中(i):
             变了 = (i != _滑动["当前"])
+            if not 变了 and 0 <= i < len(记录):
+                # 点的是当前已选中的档案：只更新卡片高亮，不重排详情（重排会让日志闪）
+                列表.sel = i
+                列表.redraw()
+                return
             列表.sel = i
             列表.redraw()
             显示(记录[i] if 0 <= i < len(记录) else None)
@@ -624,9 +661,12 @@ class MigrationMixin:
                     详情["日志"].insert("end", str(文) + "\n", 名)
                 行数 = len(行们)
             else:
+                # 旧档案没有 log_lines：按行里的图标/关键字推断级别，照样上色
                 日志 = full.get("log") or "（这份档案没有日志）"
-                详情["日志"].insert("1.0", 日志)
-                行数 = 日志.count("\n") + 1
+                行数 = 0
+                for 行 in 日志.split("\n"):
+                    行数 += 1
+                    详情["日志"].insert("end", 行 + "\n", self._日志级别标签(行))
             详情["日志"].config(state="disabled")
             详情["日志计数"].config(text="%d 行" % 行数)
 
