@@ -890,6 +890,10 @@ class NetFloat:
             self._notify_drag(False)
 
     def _on_enter(self, _e):
+        # 拖动中指针会反复进出浮标（窗口跟着动），此时不该重画：图标是 6 倍超采样，
+        # 一次 20~30ms，拖快一点就是"中间掉了几帧"。松手后再按真实悬停状态重画。
+        if self._drag["on"]:
+            return
         self._hover = True
         # 取消还没执行的收缩（光标只是"闪"出去一下又回来了）
         if self._collapse_job:
@@ -913,6 +917,8 @@ class NetFloat:
         立刻收缩 → 光标又落回小标签 → 再 <Enter> → 再展开……实测 0.8 秒里抖了
         7 个来回（ENLVENLV…）。延迟一下就把这种"几何变化引起的假离开"滤掉了。
         """
+        if self._drag["on"]:
+            return
         self._hover = False
         if self._docked and self.dock_enabled and self._peek:
             if self._collapse_job is None:
@@ -927,15 +933,56 @@ class NetFloat:
         """设置/清除"将要收纳"的提示。持续>0 时会在一段时间后自动清除（松手确认用）。"""
         if edge != self._hint:
             self._hint = edge
-            self._redraw()
+            # 拖动中**不重画图标**：光标在吸附边界来回时，这条边会反复变 None/Right，
+            # 每变一次都重渲染（20ms）就是"拖起来掉帧"。此时窗口边缘的绿色光带
+            # 已经足够说明问题，图标上的绿环留到松手后再亮。
+            if not self._drag["on"]:
+                self._redraw()
             self._update_glow()
         if 持续:
             self._hint_until = time.time() + 持续
         if self._hint and self._hint_job is None:
             self._hint_tick()
 
+    _HINT_FRAMES = 6          # 脉冲预渲染帧数
+
+    def _hint_frame_list(self):
+        """按当前尺寸/提示态预渲染一组脉冲帧（只做一次，之后循环播放）。
+
+        ⚠ 以前每 60ms 调一次 _redraw() → _image()：图标是 6 倍超采样再 LANCZOS
+        缩小的，一次 20~50ms —— 拖着浮标靠近边缘时，脉冲就把主线程一段段堵死，
+        看起来就是"中间几帧丢了"。现在只在上传一张 90x90 位图（~0.3ms）。
+        """
+        键 = (self._cur_size(), self._hint, self._通色())
+        缓存 = getattr(self, "_hint_cache", None)
+        if 缓存 is not None and 缓存[0] == 键:
+            return 缓存[1]
+        帧 = []
+        for i in range(self._HINT_FRAMES):
+            try:
+                帧.append(self._image(脉冲k=i / float(self._HINT_FRAMES), 超采样=3))
+            except Exception:
+                break
+        self._hint_cache = (键, 帧)
+        self._hint_i = 0
+        return 帧
+
+    def _通色(self):
+        """当前主题色签名（用于判断预渲染帧是否过期）。"""
+        try:
+            历史 = list(self.get_history() or [])
+            if 历史:
+                t0, v, 通源, 总源 = 历史[-1][:4]
+                return (t0 > time.time() - 150) and 通源 > 0
+        except Exception:
+            pass
+        return True
+
     def _hint_tick(self):
-        """提示期间的脉冲：60ms 一帧，让边框亮度呼吸；提示消失就停（不空转）。"""
+        """提示期间的脉冲：60ms 一帧，让边框亮度呼吸；提示消失就停（不空转）。
+
+        帧是预渲染好的，这里只换图（_upload），不重新绘制。
+        """
         self._hint_job = None
         if not self._hint:
             return
@@ -943,11 +990,17 @@ class NetFloat:
             self._hint = None
             self._hint_until = 0.0
             self._redraw()
-            # ⚠ 这里以前漏了：提示超时清掉时没有把发光带一起收起，
-            # 结果边框上的绿色光带会一直留着不走。
             self._update_glow()
             return
-        self._redraw()
+        帧 = self._hint_frame_list()
+        if 帧:
+            self._hint_i = (getattr(self, "_hint_i", 0) + 1) % len(帧)
+            try:
+                self._upload(帧[self._hint_i])
+            except Exception:
+                self._redraw()
+        else:
+            self._redraw()
         try:
             self._hint_job = self.root.after(60, self._hint_tick)
         except Exception:
@@ -1064,7 +1117,7 @@ class NetFloat:
             pass
         try:
             if self._shown and not self._drag["on"] and not (self._docked and not self._peek):
-                self._redraw()
+                self._tick_redraw()
         except Exception:
             pass
         try:
@@ -1072,11 +1125,11 @@ class NetFloat:
         except Exception:
             pass
 
-    def _image(self):
+    def _image(self, 脉冲k=None, 超采样=None):
         from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
         cw, ch = self._cur_size()
-        S = 6
+        S = int(超采样 or 6)
         W, H = cw * S, ch * S
 
         try:
@@ -1126,7 +1179,10 @@ class NetFloat:
         # ---- 收纳提示：脉冲边框 + 朝向那条边的短条 ----
         提示 = getattr(self, "_hint", None)
         if 提示:
-            k = 0.5 + 0.5 * math.sin(time.time() * 9.0)      # 0..1 呼吸
+            if 脉冲k is None:
+                k = 0.5 + 0.5 * math.sin(time.time() * 9.0)  # 0..1 呼吸
+            else:
+                k = float(脉冲k)                              # 预渲染帧用固定相位
             alpha = int(80 + 130 * k)
             提示色 = (110, 220, 130)                         # 亮绿：和普通状态的深绿环区分得开
             外 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -1182,6 +1238,23 @@ class NetFloat:
             dr.text(((W - w2) / 2, H * 0.63), "ms", font=f2, fill=副)
 
         return img.resize((cw, ch), Image.LANCZOS)
+
+    def _tick_redraw(self):
+        """每秒的刷新：只有内容真的变了才重画。
+
+        图标是 6 倍超采样 + LANCZOS，一次 20~30ms；每秒无脑重画一次，正好卡在
+        拖动/滚动时。数字没变（同一个延迟值）就什么都不做。
+        """
+        键 = (self._cur_size(), self._hint, self._通色(), self._hover)
+        try:
+            值 = self.get_history()[-1][1] if self.get_history() else None
+        except Exception:
+            值 = None
+        键 = 键 + (值,)
+        if getattr(self, "_tick_key", None) == 键:
+            return
+        self._tick_key = 键
+        self._redraw()
 
     def _redraw(self):
         img = self._image()
