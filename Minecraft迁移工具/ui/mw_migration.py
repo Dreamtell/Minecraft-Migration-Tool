@@ -256,22 +256,16 @@ class _ArchiveList(tk.Frame):
         self._imgs[key] = 图
         return 图
 
-    def redraw(self):
+    def _build(self, w, h):
+        """建一次图元；之后滚动只改坐标（不删了重建，否则每帧都闪）。"""
         c = self.canvas
         try:
             c.delete("all")
         except Exception:
             pass
-        w = c.winfo_width() or px(360)
-        h = c.winfo_height() or px(400)
-        if w < px(24):
-            return              # 展开动画把列表压到 0 宽时不画（否则 PIL 会报负宽度）
+        self._items = []
         弱色 = self.theme.get("muted_fg", "#888888")
         for i, rec in enumerate(self.records):
-            y0 = self._top(i)
-            y1 = y0 + px(self.CARD_H)
-            if y1 < 0 or y0 > h:
-                continue
             模式 = rec.get("mode")
             结果 = rec.get("result") or ""
             if 模式 == "dry":
@@ -282,36 +276,70 @@ class _ArchiveList(tk.Frame):
                 条 = self.theme.get("fail_fg", "#c62828")
             状态 = "s" if i == self.sel else ("h" if i == self.hover else "n")
             img = self._card_img(w - px(14), px(self.CARD_H), 状态, 条)
-            c.create_image(px(4), int(y0), anchor="nw", image=img)
-            c.create_text(px(20), y0 + px(16), anchor="w", text=rec.get("time", "?"),
-                          fill=self.theme["fg"], font=("微软雅黑", 10, "bold"))
-            c.create_text(w - px(24), y0 + px(16), anchor="e",
-                          text=("模拟" if 模式 == "dry" else "实际"),
-                          fill=条, font=("微软雅黑", 9, "bold"))
+            组 = [c.create_image(px(4), 0, anchor="nw", image=img)]
 
             def _名(pth):
                 段 = str(pth or "").replace("\\", "/").rstrip("/").split("/")
                 return 段[-1] if 段 else "?"
-            c.create_text(px(20), y0 + px(38), anchor="w",
-                          text="%s → %s" % (_名(rec.get("source")), _名(rec.get("target"))),
-                          fill=弱色, font=("微软雅黑", 9))
+            组.append(c.create_text(px(20), px(16), anchor="w",
+                                    text=rec.get("time", "?"),
+                                    fill=self.theme["fg"], font=("微软雅黑", 10, "bold")))
+            组.append(c.create_text(w - px(24), px(16), anchor="e",
+                                    text=("模拟" if 模式 == "dry" else "实际"),
+                                    fill=条, font=("微软雅黑", 9, "bold")))
+            组.append(c.create_text(px(20), px(38), anchor="w",
+                                    text="%s → %s" % (_名(rec.get("source")), _名(rec.get("target"))),
+                                    fill=弱色, font=("微软雅黑", 9)))
             统 = rec.get("stats") or {}
-            m = (统.get("mods") or {}).get("success", 0)
-            cf = (统.get("config") or {}).get("success", 0)
-            ex = (统.get("extra") or {}).get("success", 0)
-            c.create_text(px(20), y0 + px(60), anchor="w",
-                          text="模组 %d　·　config %d　·　其它 %d" % (m, cf, ex),
-                          fill=弱色, font=("微软雅黑", 9))
-            c.create_text(px(20), y0 + px(78), anchor="w",
-                          text="耗时 %s 秒　·　%s" % (rec.get("duration", "?"), 结果 or "—"),
-                          fill=弱色, font=("微软雅黑", 8))
+            组.append(c.create_text(
+                px(20), px(60), anchor="w",
+                text="模组 %d　·　config %d　·　其它 %d" % (
+                    (统.get("mods") or {}).get("success", 0),
+                    (统.get("config") or {}).get("success", 0),
+                    (统.get("extra") or {}).get("success", 0)),
+                fill=弱色, font=("微软雅黑", 9)))
+            组.append(c.create_text(
+                px(20), px(78), anchor="w",
+                text="耗时 %s 秒　·　%s" % (rec.get("duration", "?"), 结果 or "—"),
+                fill=弱色, font=("微软雅黑", 8)))
+            self._items.append(组)
+        self._sb = c.create_rectangle(0, 0, 0, 0,
+                                      fill=self.theme.get("muted_fg", "#888888"),
+                                      outline="")
+        self._sig = (w, h, self.sel, self.hover, len(self.records))
+        self._w, self._h = w, h
 
+    def redraw(self):
+        c = self.canvas
+        w = c.winfo_width() or px(360)
+        h = c.winfo_height() or px(400)
+        if w < px(24):
+            return              # 展开动画把列表压到 0 宽时不画（PIL 会报负宽度）
+        sig = (w, h, self.sel, self.hover, len(self.records))
+        if sig != getattr(self, "_sig", None):
+            self._build(w, h)
+        # 只改坐标：滚动时没有删除/重建，所以不会闪
+        for i, 组 in enumerate(getattr(self, "_items", [])):
+            top = self._top(i)
+            for k, item in enumerate(组):
+                if k == 0:
+                    c.coords(item, px(4), top)
+                else:
+                    # 文字的 y 是相对卡片顶的偏移，建的时候按 px(16/38/60/78) 摆的
+                    相对 = {1: px(16), 2: px(16), 3: px(38), 4: px(60), 5: px(78)}.get(k, 0)
+                    c.coords(item, c.coords(item)[0], top + 相对)
+        # 滚动条
         total, hh = self._total(), h
-        if total > hh:
-            bar = max(px(24), int(hh * hh / total))
-            top = int((hh - bar) * (self.offset / max(1.0, total - hh)))
-            c.create_rectangle(w - px(6), top, w - px(3), top + bar,
-                               fill=self.theme.get("muted_fg", "#888888"), outline="")
+        try:
+            if total > hh:
+                bar = max(px(24), int(hh * hh / total))
+                top = int((hh - bar) * (self.offset / max(1.0, total - hh)))
+                c.coords(self._sb, w - px(6), top, w - px(3), top + bar)
+                c.itemconfigure(self._sb, state="normal")
+            else:
+                c.itemconfigure(self._sb, state="hidden")
+        except Exception:
+            pass
 
 
 class MigrationMixin:
