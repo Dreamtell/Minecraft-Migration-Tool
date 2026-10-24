@@ -203,6 +203,15 @@ class _ArchiveList(tk.Frame):
         以前是"每帧走剩余距离的 35%"，滚动量大时会显得越滚越慢、拖尾很长；
         改成按时间插值后，无论滚多远都是同一个时长，停下来就停（不空转）。
         """
+        # 上一次的缓动还没跑完又滚了一下：必须先掐掉旧的 after 链。
+        # 否则两条链同时在跑，各自拿自己的「起/终」往 canvas 上写 offset，60fps 下交替生效
+        # —— 看上去就是列表在抖、在闪（实测 63 帧里 14 帧往回跳）。
+        if self._job is not None:
+            try:
+                self.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
         起 = self.offset
         终 = self.target
         总 = px(220)
