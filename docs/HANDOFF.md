@@ -114,7 +114,83 @@
 
 ---
 
-## 五、待办
+## 五、动画帧节奏（2026-10 重做，务必先读）
+
+### 契约：`utils/anim.py` 是唯一入口
+
+| 接口 | 语义 |
+|---|---|
+| `anim.frame_ms(win)` | 一帧毫秒。**跟随窗口所在那块屏的刷新率**，上限 240Hz（本机 240Hz → 4ms） |
+| `anim.slow_ms()` | 降帧档 33ms（30fps） |
+| `anim.is_slow(win)` | 窗口最小化 / 失去焦点 |
+| `anim.delay(win, slow=False)` | 本帧该排多久；`slow` 或 `is_slow` 时给 33 |
+| `anim.hold()` / `anim.release()` / `anim.holding()` | **引用计数**管 `timeBeginPeriod(1)`，只在动画期间占用 |
+
+**铁律：帧率只改"多久排下一帧"，动画速度必须按真实 dt 算。** 所有插值系数都要写成
+`a' = 1 - (1 - a) ** (dt / 基准帧)`，位移量按 `dt / 基准帧` 线性缩放。只缩放其中一边会快/慢数倍。
+
+### 坑 1：Tk 的 `after()` 被 15.6ms 定时器粒度卡住（不 raise 就快不了）
+
+真 mainloop（阻塞在 `GetMessage`）下自链定时器实测：
+
+| | 无 `timeBeginPeriod` | 有 `timeBeginPeriod(1)` |
+|---|---|---|
+| `after(16)` | 50.0fps，p90 **30.45ms** | 61.4fps，p90 16.98ms |
+| `after(8)` | 63.4fps / p50 15.87 | 120.3fps / p50 8.06 |
+| `after(4)` | 64.3fps / p50 15.89 | 232.5fps / p50 4.05 |
+
+也就是说**改之前线上那些 16ms 动画其实只有 50fps，一半帧滑到 30ms**。
+⚠ **千万不要在"忙泵"里量定时器**（一边 `root.update()` 一边轮询）：泵一直烧消息队列，
+定时器不用等，会量出 `after(4)=228fps` 的假象——第一版就是这么错的。
+
+### 坑 2：`time.monotonic()` 在本机只有 15.6ms 粒度
+
+`time.get_clock_info("monotonic").resolution == 0.015625`（GetTickCount64）。4ms 排帧时
+**4 帧里有 3 帧 dt 算成 0**。算 dt 一律用 `time.perf_counter()`（分辨率 1e-7）。
+仓库里还剩 `hangwatch.py`（100ms 看门狗）和 `mw_log.py:448`（25ms 淡入节流）在用 monotonic，
+它们的量级远大于 15.6ms，**不需要改**。
+
+### 坑 3：`self._w` 是 tkinter 的控件路径名，不能拿去存东西
+
+`_ArchiveList._build` 曾写 `self._w, self._h = w, h`，覆盖了 tkinter 内部的控件路径名。
+后果是连锁的：`winfo_exists()` 返回 0、`winfo_width()/winfo_toplevel()` 抛
+`TclError: bad window path name 420`、`<Destroy>` 绑定不响、`anim.is_slow()` 永远 False。
+已改名 `_卡宽/_卡高`。**任何 Tk 控件上都别再定义 `_w` / `_h` 这类名字。**
+
+### 坑 4：PySide 的 `destroyed` 信号只投递给 lambda / 模块级函数
+
+绑定方法（`self.method`）**0 次命中**（Python 3.12 + PySide6 6.12 实测）。
+所以 Qt 那边"控件销毁就还定时器精度"不能挂在绑定方法上，要挂
+`lambda *_, _st=对象: _st.release()`，而那个对象必须是纯 Python 小对象，不能碰 PySide 实例。
+
+### 坑 5：Qt 的 QTimer **不**吃 15.6ms 粒度（和 Tk 不同）
+
+裸 `QTimer(4)` 自链在真 `app.exec()` 下，**不 raise 定时器精度**也有 249.6fps / p50 4.00ms；
+CoarseTimer 与 PreciseTimer 都能排到 4ms（p50 4.00 / 4.01）。选 Precise 只为避开 Coarse 的
+5% 容差。所以"Qt 侧必须 hold"是错的，但 Qt 侧照样 hold —— 让所有滚动面共用一套策略。
+
+### 实测成绩（本机 240Hz）
+
+| 目标 | 改前 | 改后 |
+|---|---|---|
+| 文本类平滑滚动（`SmoothScroller`） | 60fps（实际 50fps，p90 30ms） | 205~235fps，p50 4.2ms，p90 4.9ms |
+| 迁移历史档案卡（`_ArchiveList`） | 32fps / p50 31ms | 205fps / p50 4.57ms（约 73% 单核，只在滚动那几百毫秒） |
+| 迁移历史日志框（`_SmoothText`） | 每帧 1 行 | 按真实时间推进，16ms 与 4ms 排帧速度差 0.02% |
+| Qt 大视图（`_SmoothWheel`） | 73fps / p50 12.13ms | 242fps / p50 4.00ms |
+
+**速度不变性**是单独验过的：同样 600px，4 / 16 / 33ms 三档排帧的收敛时间是
+400.8 / 400.0 / 400.2ms。验收任何帧率改动时这两条要一起看：fps 上去了、收敛时间没变。
+
+### 排帧的一个技巧
+
+`after(anim.delay(...))` 是"从现在起算"，帧周期会变成"一帧的活 + 延迟"（实测只有 131fps）。
+要真的排到目标帧率，必须扣掉本帧已花的时间：`after(max(1, anim.delay(self) - 用了))`。
+慢档（33ms）语义不变。副作用：当一帧的活本身就超过延迟时，会以 `after(1)` 连跑 = 吃满一个核，
+这是"跑满刷新率"的固有代价，不是 bug。
+
+---
+
+## 六、待办
 
 | 优先级 | 事项 |
 |---|---|
@@ -122,10 +198,12 @@
 | 中 | 打包验证（`--exclude-module numpy` 去掉后 matplotlib/TkAgg 未实跑） |
 | 中 | MC百科接入（跳转链接零风险 → API 需申请） |
 | 低 | 浮标改用 Qt 重写（消除手写 ULW/淡化/捕获） |
+| 低 | 档案卡列表每帧 4.6ms 里 Tk 重绘占 3.6~4.4ms；要再降只能改画法（Tk 原生绘制/减图元） |
+| 低 | 未改动的动画仍是老节奏：曲线图 4fps、进度条 30fps、流动边 30fps、标签页滑动 12ms（本轮只做滚动） |
 
 ---
 
-## 六、测试套路（可直接复用）
+## 七、测试套路（可直接复用）
 
 启动 app 并接管 mainloop：
 
