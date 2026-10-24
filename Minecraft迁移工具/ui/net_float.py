@@ -560,6 +560,22 @@ class NetFloat:
         except Exception:
             return self._rel[0], self._rel[1]
 
+    def _has_other_window(self):
+        """本程序是不是还有别的窗口开着（设置 / 历史 / 曲线图 / 各种对话框）。"""
+        try:
+            for w in self.root.winfo_children():
+                if w is self.win:
+                    continue
+                if isinstance(w, tk.Toplevel):
+                    try:
+                        if w.winfo_viewable():
+                            return True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return False
+
     def _park(self):
         """把窗口挪到屏幕外（代替 withdraw，withdraw 之后 ULW 会彻底失效）。"""
         self._parked = True
@@ -758,7 +774,8 @@ class NetFloat:
         if getattr(ev, "widget", None) is not self.root:
             return
         try:
-            self.win.lift()          # 主窗口回到前台：把浮标抬回它上面
+            if not self._has_other_window():
+                self.win.lift()      # 主窗口回到前台：抬回它上面（有别的窗口时让开）
         except Exception:
             pass
         self._request_show()
@@ -870,7 +887,8 @@ class NetFloat:
                 pass
         self._redraw()
         try:
-            self.win.lift()          # 抬到主窗口之上（不置顶，所以不会压住别的程序）
+            if not self._has_other_window():
+                self.win.lift()      # 抬到主窗口之上（不置顶，不压住别的程序）
         except Exception:
             pass
         if 刚打开:
@@ -934,7 +952,10 @@ class NetFloat:
             # 不置顶的情况下，主窗口一旦被抬起就会盖住浮标。这里每 ~240ms 把它抬回来
             # （只是 SetWindowPos 换 z 序，成本可忽略），保证它始终贴在我们窗口之上。
             self._lift_n = getattr(self, "_lift_n", 0) + 1
-            if self._shown and self._lift_n % 6 == 0:
+            # 只有"本程序没有别的窗口开着"时才把自己抬到主窗口之上 ——
+            # 否则设置/历史/曲线图这些窗口会被浮标压住（用户说的"不在同一层"）。
+            if (self._shown and self._lift_n % 6 == 0
+                    and not self._has_other_window()):
                 try:
                     self.win.lift()
                 except Exception:
