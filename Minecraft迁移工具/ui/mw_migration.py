@@ -490,20 +490,25 @@ class MigrationMixin:
 
         # 放大查看：**在本窗口里**把日志铺满（不另开窗口）
         _放大 = {"on": False}
-        放大钮 = tk.Label(日志标题, text="⤢ 放大", bg=面板色, fg=主色,
-                        cursor="hand2", font=("微软雅黑", 9, "underline"))
+        放大钮 = tk.Label(日志标题, text="⤢  放大", bg=面板色, fg=主色,
+                        cursor="hand2", font=("微软雅黑", 9),
+                        padx=px(9), pady=px(1), bd=0,
+                        highlightthickness=1, highlightbackground=边框色)
         放大钮.pack(side="right", padx=(0, px(10)))
+        _悬停底 = self.theme.get("hover_bg") or ("#3a3a3a" if 深色系 else "#eef2f7")
+        放大钮.bind("<Enter>", lambda e: 放大钮.config(bg=_悬停底), add="+")
+        放大钮.bind("<Leave>", lambda e: 放大钮.config(bg=面板色), add="+")
 
         def _切换放大(_e=None):
             _放大["on"] = not _放大["on"]
             if _放大["on"]:
                 左.pack_forget()
                 概览.pack_forget()
-                放大钮.config(text="⤡ 还原")
+                放大钮.config(text="⤡  还原")
             else:
                 左.pack(side="left", fill="y", before=右)
                 概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)), after=顶条)
-                放大钮.config(text="⤢ 放大")
+                放大钮.config(text="⤢  放大")
         放大钮.bind("<Button-1>", _切换放大)
 
         日志框 = tk.Frame(内容, bg=面板色)

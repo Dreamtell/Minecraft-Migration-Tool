@@ -433,13 +433,11 @@ class NetFloat:
 
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
-        # 必须置顶：无边框弹出窗口如果不置顶，就会被自己的主窗口盖住（实测把主窗口
-        # 置前之后浮标就消失了）。Tk/Win32 没有「只压在主窗口之上、又低于其它程序」
-        # 这种中间层级可用。
-        try:
-            self.win.attributes("-topmost", True)
-        except Exception:
-            pass
+        # ⚠ 不置顶：置顶会让它压在**别的程序**上面，很干扰。
+        # 代价是主窗口一被抬起它就会被盖住，所以每次本程序回到前台都 lift() 一下
+        # （见 _show / _on_root_focus_in）。这样它永远只在"我们自己的窗口之上"。
+        # 不置顶了，失焦不用再降级；真正的"藏起来"由 _sync_visibility 做
+        pass
         # ⚠ 不能用 tk 的 transient()：它会让 Tk 把这个窗口变成**子窗口**（实测
         # style 里 WS_CHILD 置位），子窗口被父窗口裁剪、坐标也变成客户区相对，
         # 于是 geometry 按屏幕坐标摆位就永远画不出来。
@@ -760,7 +758,7 @@ class NetFloat:
         if getattr(ev, "widget", None) is not self.root:
             return
         try:
-            self.win.attributes("-topmost", True)
+            self.win.lift()          # 主窗口回到前台：把浮标抬回它上面
         except Exception:
             pass
         self._request_show()
@@ -871,6 +869,10 @@ class NetFloat:
             except Exception:
                 pass
         self._redraw()
+        try:
+            self.win.lift()          # 抬到主窗口之上（不置顶，所以不会压住别的程序）
+        except Exception:
+            pass
         if 刚打开:
             self._fade_to(255, 120)
 
@@ -929,6 +931,14 @@ class NetFloat:
                 self._refresh_geom()
                 self._sync_geometry()
             self._sync_visibility()
+            # 不置顶的情况下，主窗口一旦被抬起就会盖住浮标。这里每 ~240ms 把它抬回来
+            # （只是 SetWindowPos 换 z 序，成本可忽略），保证它始终贴在我们窗口之上。
+            self._lift_n = getattr(self, "_lift_n", 0) + 1
+            if self._shown and self._lift_n % 6 == 0:
+                try:
+                    self.win.lift()
+                except Exception:
+                    pass
         except Exception:
             pass
         try:
