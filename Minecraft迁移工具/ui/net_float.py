@@ -272,6 +272,37 @@ class _EdgeGlow:
             d.ellipse([x - r, y - r, x + r, y + r], fill=色 + (a,))
         self._upload(img)
 
+    def _real_hwnd(self):
+        """真正的顶层窗口句柄（一路往上找没有 parent 的那个）。"""
+        try:
+            h = int(self.win.wm_frame(), 16)
+        except Exception:
+            return 0
+        u = ctypes.windll.user32
+        for _ in range(8):
+            p = u.GetParent(h)
+            if not p:
+                break
+            h = p
+        return h
+
+    def _apply_layered(self):
+        """给当前句柄补上 WS_EX_LAYERED（hide/deiconify 之后 Tk 可能把它弄丢）。"""
+        try:
+            if not self._hwnd:
+                return False
+            u = ctypes.windll.user32
+            ex = u.GetWindowLongW(self._hwnd, _GWL_EXSTYLE)
+            u.SetWindowLongW(self._hwnd, _GWL_EXSTYLE,
+                             ex | _WS_EX_LAYERED | _WS_EX_TOOLWINDOW)
+            # ⚠ 对**已经显示**的窗口改扩展样式必须 SWP_FRAMECHANGED 才生效，
+            # 否则样式写进去了、ULW 却仍然失败（返回 0），窗口只剩自己的底色。
+            u.SetWindowPos(self._hwnd, 0, 0, 0, 0, 0,
+                           0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+            return True
+        except Exception:
+            return False
+
     def _upload(self, img):
         if not self._ok:
             return
@@ -443,26 +474,27 @@ class NetFloat:
                                     cursor="hand2")
             self.canvas.pack(fill="both", expand=True)
 
-        try:
-            self.win.withdraw()          # 先藏起来，等 _sync_visibility 决定要不要显示
-        except Exception:
-            pass
+        # ⚠ 千万不要在创建时 withdraw()：实测对 Tk 顶层窗口 withdraw 之后再 deiconify，
+        # UpdateLayeredWindow 会一直返回 0（窗口只剩自己的底色 = 一块深色方块）。
+        # "隐藏"改成把窗口挪到屏幕外 + alpha 0。
+        self._parked = False
         self._bind()
         self._menu()
         self._restore(x, y)
-        self._redraw()
         try:
-            if not self._root_should_show():
-                # 启动阶段：闪屏还在、或主窗口还没露出、或本程序还没到前台 ——
-                # 这时候露脸就会"闪一下"。等 _follow_tick 判定可以显示时再淡入。
-                self._shown = False
-                self._alpha = 0
-                self.win.withdraw()
-            else:
-                self._alpha = 255
-                self.win.deiconify()
+            该显示 = self._root_should_show()
         except Exception:
-            pass
+            该显示 = True
+        if 该显示:
+            self._alpha = 255
+            self._redraw()
+        else:
+            # 启动阶段：闪屏还在、或主窗口还没露出、或本程序还没到前台 ——
+            # 这时候露脸就会"闪一下"。先画一张完全透明的，再挪到屏幕外。
+            self._shown = False
+            self._alpha = 0
+            self._redraw()
+            self._park()
         self._tick()          # ⚠ 必须启动刷新循环，否则数字会停在初始化那一刻
         try:
             self._refresh_geom()
@@ -528,6 +560,16 @@ class NetFloat:
         except Exception:
             return self._rel[0], self._rel[1]
 
+    def _park(self):
+        """把窗口挪到屏幕外（代替 withdraw，withdraw 之后 ULW 会彻底失效）。"""
+        self._parked = True
+        try:
+            ctypes.windll.user32.SetWindowPos(
+                int(self._hwnd), 0, -32000, -32000, 0, 0,
+                0x0001 | 0x0004 | 0x0010)      # NOSIZE | NOZORDER | NOACTIVATE
+        except Exception:
+            pass
+
     def _apply(self):
         """只挪位置：用 SetWindowPos，不重传位图（比 ULW 快 18 倍）。
 
@@ -535,6 +577,8 @@ class NetFloat:
         而拖动时内容根本不变，只需要挪窗口 —— SetWindowPos 是 0.006ms。
         内容/尺寸变化时才走 _upload（那里才调用 ULW）。
         """
+        if getattr(self, "_parked", False):
+            return
         ax, ay = self._abs_pos()
         if self._layered and self._hwnd and self._dib:
             try:
@@ -773,16 +817,23 @@ class NetFloat:
                 return
         except Exception:
             pass
-        刚打开 = False
-        try:
-            刚打开 = (self.win.state() == "withdrawn")
-        except Exception:
-            pass
+        # "刚打开"现在以 _parked 为准（不再用 withdraw 表达隐藏）
+        刚打开 = bool(getattr(self, "_parked", False))
+        self._parked = False
         self._shown = True
+        self._parked = False
         if 刚打开:
             self._alpha = 0                 # 从全透明开始，再淡入
             try:
                 self.win.deiconify()
+                self.win.update_idletasks()
+                self.win.update()
+            except Exception:
+                pass
+            # 显示之后才是真正的顶层句柄，样式也可能被 Tk 重置 —— 补一次再画
+            try:
+                self._hwnd = self._real_hwnd() or self._hwnd
+                self._apply_layered()
             except Exception:
                 pass
         self._redraw()
@@ -801,12 +852,9 @@ class NetFloat:
                 pass
         if self._drag["on"]:                 # 拖动中被隐藏：直接收，别做动画
             self._alpha = 0
-            try:
-                self.win.withdraw()
-            except Exception:
-                pass
+            self._park()
             return
-        self._fade_to(0, 90, lambda: self.win.withdraw())
+        self._fade_to(0, 90, self._park)
 
     def _on_root_configure(self, ev):
         try:
