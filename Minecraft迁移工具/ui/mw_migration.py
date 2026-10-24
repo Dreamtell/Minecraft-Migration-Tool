@@ -225,6 +225,7 @@ class _ArchiveList(tk.Frame):
 
     # ---------- 绘制 ----------
     def _card_img(self, w, h, 状态, 条色="#2e7d32"):
+        w = max(8, int(w))
         key = (w, h, 状态, 条色)
         图 = self._imgs.get(key)
         if 图 is not None:
@@ -257,9 +258,14 @@ class _ArchiveList(tk.Frame):
 
     def redraw(self):
         c = self.canvas
-        c.delete("all")
+        try:
+            c.delete("all")
+        except Exception:
+            pass
         w = c.winfo_width() or px(360)
         h = c.winfo_height() or px(400)
+        if w < px(24):
+            return              # 展开动画把列表压到 0 宽时不画（否则 PIL 会报负宽度）
         弱色 = self.theme.get("muted_fg", "#888888")
         for i, rec in enumerate(self.records):
             y0 = self._top(i)
@@ -414,6 +420,8 @@ class MigrationMixin:
                 右.create_rectangle(0, 0, w, h, fill=面板色, outline="", tags="bg")
             except Exception:
                 pass
+            if getattr(self, "_hist_animating", False):
+                return          # 展开/还原的动画期间只铺纯色，动画结束再画圆角
             S = 2
             半径 = px(14) * S
             img = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
@@ -531,16 +539,42 @@ class MigrationMixin:
         放大钮.bind("<Enter>", lambda e: 放大钮.config(bg=_悬停底), add="+")
         放大钮.bind("<Leave>", lambda e: 放大钮.config(bg=面板色), add="+")
 
+        def _画列表宽(目标, 完成=None):
+            """把左侧列表的宽度平滑地收/放（Tk 没有布局动画，只能自己逐帧改宽度）。"""
+            self._hist_animating = True
+            起 = 左.winfo_width() or px(380)
+
+            def 帧(k):
+                缓 = 1 - (1 - k) ** 3
+                左.configure(width=max(0, int(起 + (目标 - 起) * 缓)))
+                if k < 1.0:
+                    try:
+                        顶.after(16, lambda: 帧(min(1.0, k + 16.0 / 150)))
+                    except Exception:
+                        pass
+                else:
+                    self._hist_animating = False
+                    try:
+                        右.event_generate("<Configure>")     # 让圆角背景重画一次
+                    except Exception:
+                        pass
+                    if 完成:
+                        完成()
+
+            帧(0.0)
+
         def _切换放大(_e=None):
             _放大["on"] = not _放大["on"]
             if _放大["on"]:
-                左.pack_forget()
-                概览.pack_forget()
                 放大钮.config(text="⤡  还原")
+                概览.pack_forget()
+                _画列表宽(0, lambda: 左.pack_forget())
             else:
-                左.pack(side="left", fill="y", before=右)
-                概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)), after=顶条)
                 放大钮.config(text="⤢  放大")
+                左.pack(side="left", fill="y", before=右)
+                左.configure(width=0)
+                _画列表宽(px(380), lambda: 概览.pack(
+                    fill="x", padx=px(14), pady=(px(4), px(2)), after=顶条))
         放大钮.bind("<Button-1>", _切换放大)
 
         日志框 = tk.Frame(内容, bg=面板色)
