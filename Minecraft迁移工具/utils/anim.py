@@ -118,6 +118,27 @@ def _device_hz(device):
     return 0
 
 
+def _hwnd_of(win):
+    """从一个窗口句柄拿到值得用的 HWND：Tk 控件、Qt 控件、裸 int 都收。
+
+    Tk 的 winfo_id() 给的是子窗口，要 GetParent 才是顶层；Qt 的 winId() 一般已经是顶层，
+    GetParent 会返回 0，下面会退回原值。拿不到就返回 0（调用方据此退回主屏）。
+    """
+    if win is None:
+        return 0
+    if isinstance(win, int):
+        return win
+    for getter in ("winfo_id", "winId"):
+        fn = getattr(win, getter, None)
+        if fn is None:
+            continue
+        try:
+            return int(fn())
+        except Exception:
+            continue
+    return 0
+
+
 def _monitor_device(win):
     """窗口所在那块屏的设备名（\\\\.\\DISPLAYn）。拿不到返回 None。"""
     try:
@@ -126,7 +147,9 @@ def _monitor_device(win):
         user.GetParent.argtypes = [ctypes.c_void_p]
         user.MonitorFromWindow.restype = ctypes.c_void_p
         user.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
-        hwnd = int(win.winfo_id())
+        hwnd = _hwnd_of(win)
+        if not hwnd:
+            return None
         hwnd = int(user.GetParent(ctypes.c_void_p(hwnd)) or hwnd)   # 顶层 hwnd
         MONITOR_DEFAULTTONEAREST = 2
         hmon = user.MonitorFromWindow(ctypes.c_void_p(hwnd), MONITOR_DEFAULTTONEAREST)

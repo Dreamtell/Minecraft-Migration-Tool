@@ -58,6 +58,9 @@ from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
 # 界面语言：Qt 侧没法包 Tk 那套，靠"包住会显示文字的 Qt API" + 这里显式的 tr()。
 # 中文（默认）时 tr() 原样返回，行为不变；英文时由 ui/qt_host.py 里的 install_qt() 激活。
 from utils.i18n import tr, trf                                      # noqa: E402
+# 滚轮缓动的帧节奏：跟随显示器刷新率（本机 4ms），动画期间把系统定时器精度提到 1ms。
+# 只 import 模块、不 from ... import frame_ms：测试里要 monkeypatch 它做 12ms/4ms 对照。
+from utils import anim                                              # noqa: E402
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
 CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
@@ -1004,18 +1007,59 @@ class TableModel(QtCore.QAbstractTableModel):
         return None
 
 
+# 滚轮动画定时器的类型。实测（大视图连续滚 1.4s，真 app.exec()，本机 240Hz）：
+#   CoarseTimer  381 帧 244fps  p50 4.01  p90 5.00  max 9.16ms
+#   PreciseTimer 378 帧 244fps  p50 4.01  p90 4.97  max 9.31ms
+# 结论：4ms 两种类型都排得出来 —— Qt 在 Windows 上不吃 GetMessage 那 15.6ms 粒度
+# （和 Tk 的 after 完全不同，见 utils/anim.py），所以"4ms 排不出来"这条不用 Precise 也能过。
+# 选 Precise 只是不想让 CoarseTimer 那 5% 容差/整数对齐在大视图"边滚边重绘"时冒出来。
+SW_TIMER_TYPE = QtCore.Qt.PreciseTimer
+
+
+class _PrecHold:
+    """一次 anim.hold() 的占用。
+
+    为什么单独一个对象、而不是在控件上放个标志位：控件销毁时的 `destroyed` 信号
+    **只会调用 lambda / 模块级函数，绑定方法（self.method）不会被调用**（本机实测：
+    bound 槽 0 次命中，lambda 命中）。所以"销毁"这条出口不能碰任何 PySide 对象，只留
+    一个纯 Python 小对象负责把精度还回去。
+    """
+    __slots__ = ("held",)
+
+    def __init__(self):
+        self.held = False
+
+    def acquire(self):
+        if not self.held:
+            self.held = True
+            anim.hold()
+
+    def release(self):
+        if self.held:
+            self.held = False
+            anim.release()
+
+
 class _SmoothWheel:
-    """滚轮缓动混入：由泵每帧推进一步，和 Tk 版 helpers.SmoothScroller 同一套手感。
+    """滚轮缓动混入：自己起一个跟随刷新率的 QTimer 逐帧推进，和 Tk 版 SmoothScroller 同手感。
 
     Qt 的 `ScrollPerPixel` 只是"滚动单位是像素"，滚轮本身还是一次跳到位。
 
-    **为什么不用 QTimer**：本窗口的 Qt 事件是靠 Tk 的 `after` 泵推的（实测泵 62.7 次/秒、
-    间隔 16.16ms）。如果动画自己跑 12ms 的 QTimer，就比泵还快 —— 两次 tick 之间才画一帧，
-    帧被吞掉、相位还会漂，看着就是掉帧。改成 `pump()` 每进来一次推进一步，一个泵帧
-    正好一帧画面；缓动系数按**真实经过时间**换算（`1-(1-0.3)^(dt/12ms)`），所以泵快泵慢
-    滚动速度都一样，只是帧数不同。
+    **为什么自驱动**：Qt 窗口只跑在 `app.py --qt-host` 派生的子进程里（`app.exec()`
+    正常跑事件循环），没有外部泵每帧来推 —— 早先靠 Tk 的 after 里 `pump()` 推，搬进
+    子进程后就成了"滚轮收到了、`_sw_active` 也置了、画面不动"（用户实测）。控件自带
+    驱动就与谁在跑无关了；这里**不依赖外部每帧调 `tick_scroll()`**。外部泵仍然可以
+    调，但只算补充，不会改变速度（缓动按真实 dt 算，见下）。
+
+    **帧间隔跟随显示器刷新率**：`anim.frame_ms(self)`（本机 240Hz -> 4ms，约 228fps），
+    原来是写死的 12ms。缓动系数按**真实经过时间**换算（`1-(1-0.3)^(dt/12ms)`），
+    所以换帧率只改变切分密度，不改变滚动速度和收敛时间（12ms 与 4ms 实测总耗时差 < 10%）。
+
+    **定时器精度**：动画期间 `anim.hold()` 把系统定时器精度提到 1ms，走完/让位/隐藏/
+    销毁就 `anim.release()`（引用计数在 anim 里；`_PrecHold` 保证一次动画只 hold
+    一次，绝不是每帧一进一出）。
     """
-    WHEEL_FRAME_S = 0.012      # Tk 版的一帧 = 12ms（"每帧走 30%"就是这个节奏）
+    WHEEL_FRAME_S = 0.012      # 手感标定基准：Tk 版一帧 = 12ms（"每帧走 30%"就是这个节奏）
     WHEEL_EASE = 0.30
     WHEEL_SNAP_PX = 0.6        # 离目标不足这么多像素就吸附收工
 
@@ -1026,16 +1070,47 @@ class _SmoothWheel:
     # ---- 状态（懒初始化，免得跟 Shiboken 的多继承 MRO 打架）----
     def _sw_setup(self):
         self._sw_active = False
+        self._sw_prec = _PrecHold()        # anim.hold() 的持有标记（与控件解耦）
         self._sw_cur = float(self.verticalScrollBar().value())
         self._sw_target = self._sw_cur
         self._sw_last = time.perf_counter()
         bar = self.verticalScrollBar()
         bar.sliderPressed.connect(self._sw_cancel)
         bar.actionTriggered.connect(lambda *_: self._sw_cancel())
+        # 销毁是最后一道出口；这里必须用 lambda（destroyed 不调绑定方法，见 _PrecHold）
+        self.destroyed.connect(lambda *_, _st=self._sw_prec: _st.release())
+
+    # ---- 定时器精度：占/还是成对的，出口全在这两个方法上 ----
+    def _sw_hold(self):
+        prec = getattr(self, "_sw_prec", None)
+        if prec is not None:
+            prec.acquire()
+
+    def _sw_release(self):
+        prec = getattr(self, "_sw_prec", None)
+        if prec is not None:
+            prec.release()
+
+    def _sw_busy(self) -> bool:
+        """动画在跑，或者定时器精度还占着（hide/close 这两条出口用）。"""
+        if getattr(self, "_sw_active", False):
+            return True
+        prec = getattr(self, "_sw_prec", None)
+        return bool(prec is not None and prec.held)
+
+    def _sw_stop_timer(self):
+        timer = getattr(self, "_sw_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:              # 控件正在销毁时 QTimer 可能已经没了
+                pass
 
     def _sw_cancel(self, *_a):
         """用户自己拖了滚动条/翻页：动画让位，重新对齐位置。"""
         self._sw_active = False
+        self._sw_stop_timer()
+        self._sw_release()
         self._sw_cur = float(self.verticalScrollBar().value())
         self._sw_target = self._sw_cur
 
@@ -1052,6 +1127,7 @@ class _SmoothWheel:
             self._sw_cur = self._sw_target
             bar.setValue(int(round(self._sw_cur)))
             self._sw_active = False
+            self._sw_release()                            # 收工就把定时器精度还回去
             return False
         k = 1.0 - (1.0 - self.WHEEL_EASE) ** (dt / self.WHEEL_FRAME_S)
         self._sw_cur += left * k
@@ -1059,31 +1135,29 @@ class _SmoothWheel:
         return True
 
     def _sw_ensure_timer(self):
-        """滚轮动画**自驱动**：收到滚轮就起一个 12ms 的 QTimer，走完自己停。
+        """滚轮动画**自驱动**：收到滚轮就起一个跟随刷新率的 QTimer，走完自己停。
 
-        以前是靠外面每帧调 `tick_scroll()`（主进程那套：Tk 的 after 里
-        `view.pump()`）。窗口搬进独立子进程之后没人推了 —— 表现就是
-        "滚轮事件收到了、`_sw_active` 也置了，但画面不动"（用户实测）。
-        控件自带驱动就与谁在跑无关了。
-
-        早先不用 QTimer 是因为"进程内那套泵 16ms 一次，QTimer 12ms 比泵还快会吞帧"
-        —— 现在 Qt 窗口只跑在子进程里（`app.exec()` 正常工作线程事件循环），
-        不存在两个泵抢帧的问题。
+        间隔每次启动都重新问 `anim.frame_ms(self)`：窗口被拖到另一块屏就不一样了。
         """
         timer = getattr(self, "_sw_timer", None)
         if timer is None:
             timer = QtCore.QTimer(self)
-            timer.setInterval(12)
+            timer.setTimerType(SW_TIMER_TYPE)
             timer.timeout.connect(self._sw_step)
             self._sw_timer = timer
+        ms = anim.frame_ms(self)          # 本机 4ms（240Hz -> 约 228fps）
+        if timer.interval() != ms:
+            timer.setInterval(ms)
+        self._sw_hold()                   # 只有动画期间才占高精度定时器
         timer.start()
 
     def _sw_step(self):
+        if not self.isVisible():          # 窗口已经藏了：动画没人看，收掉并还精度
+            self._sw_cancel()
+            return
         if not self.tick_scroll(time.perf_counter()):
-            try:
-                self._sw_timer.stop()
-            except Exception:
-                pass
+            self._sw_stop_timer()
+            self._sw_release()
 
     def wheelEvent(self, ev):
         if not hasattr(self, "_sw_active"):
@@ -1114,6 +1188,18 @@ class _SmoothWheel:
         self._sw_active = True
         self._sw_ensure_timer()                   # 自己驱动，不等外部泵
         ev.accept()
+
+    def hideEvent(self, ev):
+        """窗口一藏起来就收掉动画：否则定时器精度会被一直占着。"""
+        if self._sw_busy():
+            self._sw_cancel()
+        super().hideEvent(ev)
+
+    def closeEvent(self, ev):
+        """关窗（子控件 close() 走的是 hide()，顶层控件走这里）：同样收干净。"""
+        if self._sw_busy():
+            self._sw_cancel()
+        super().closeEvent(ev)
 
 
 class SmoothTable(_SmoothWheel, QtWidgets.QTableView):
