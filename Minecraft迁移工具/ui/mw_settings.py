@@ -884,6 +884,8 @@ class SettingsMixin:
                 self.save_config()
             except Exception:
                 pass
+        self.toast(trp("✨ 贴边特效已{0}", i18n.tr("开启" if 开 else "关闭")),
+                   level="ok")
 
     def _toggle_pack_warning(self):
         """开关：主界面的「整合包更新提醒」是否显示（立即生效）。"""
@@ -899,6 +901,8 @@ class SettingsMixin:
                 self.save_config()
             except Exception:
                 pass
+        self.toast(trp("📣 整合包更新提醒已{0}", i18n.tr("开启" if 开 else "关闭")),
+                   level="ok")
 
     def _toggle_toast(self):
         """开关：右下角的吐司消息是否显示（立即生效，顺便落盘）。"""
@@ -906,11 +910,17 @@ class SettingsMixin:
             开 = bool(self.settings_toast_var.get())
         except Exception:
             开 = True
+        # ⚠ 顺序很重要：关掉之后就不会再有吐司了，所以**先弹再关**，
+        # 否则用户点"关闭"会毫无反应（.message 系统自己关自己）。
+        if not 开:
+            self.toast("🔔 消息提示已关闭（右下角不再弹卡片）", level="warn", ms=2500)
         self.toast_on = 开
         try:
             self.save_config()
         except Exception:
             pass
+        if 开:
+            self.toast("🔔 消息提示已开启", level="ok")
 
     def _bump_scroll_speed(self, 增量):
         """平滑滚动速度：1 最慢 … 5 最快。改完立刻生效，不用重启。"""
@@ -925,6 +935,7 @@ class SettingsMixin:
             self.scroll_speed_lbl.config(text=str(新))
         except Exception:
             pass
+        self.toast(trp("🖱️ 平滑滚动速度已设为 {0} 档", 新), level="ok")
         try:
             self.save_config()
         except Exception:
@@ -943,6 +954,7 @@ class SettingsMixin:
             self.history_limit_lbl.config(text=str(新))
         except Exception:
             pass
+        self.toast(trp("🗂️ 迁移历史最多保留 {0} 份", 新), level="ok")
         try:
             self.save_config()
         except Exception:
@@ -1311,7 +1323,19 @@ class SettingsMixin:
         """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""
         self.dry_run.set(self.dry_run_sw.get())
         self.save_config()
+        # 这两个开关以前是**完全静默**的（既没日志也没吐司），用户点了不知道生效没。
+        开 = bool(self.dry_run.get())
+        if 开:
+            self.toast("🧪 模拟运行已开启：只显示将要执行的操作，不会修改任何文件",
+                       level="ok")
+        else:
+            self.toast("🧪 模拟运行已关闭：接下来的迁移会真正写入文件", level="warn")
 
     def _on_overwrite_switch(self):
         self.overwrite_mods.set(self.overwrite_sw.get())
         self.save_config()
+        开 = bool(self.overwrite_mods.get())
+        if 开:
+            self.toast("🔁 覆盖已存在的模组已开启：同名文件会被覆盖", level="ok")
+        else:
+            self.toast("🔁 覆盖已存在的模组已关闭：同名文件会被跳过", level="info")
