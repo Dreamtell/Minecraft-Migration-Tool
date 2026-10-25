@@ -364,6 +364,26 @@ class SettingsMixin:
         create_gradient_button(row_hist, "－", lambda: self._bump_history_limit(-1),
                                width=px(46), height=px(26)).pack(side="right", padx=(0, px(6)))
 
+        # ---------- 平滑滚动速度 ----------
+        # 速度不该由帧率隐式决定（帧率提到 229 后同样一格滚轮快过 28%，实测），
+        # 所以把它显式标定并交给用户。1 最慢、5 最快，3 = 原版速度。
+        row_scroll = tk.Frame(box_m, bg=self.theme["bg"])
+        row_scroll.pack(fill="x", pady=(10, 0))
+        tk.Label(row_scroll, text="平滑滚动速度", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        self.scroll_speed_lbl = tk.Label(
+            row_scroll, text=str(getattr(self, "scroll_speed", 3)),
+            bg=self.theme["bg"], fg=self.theme.get("data_num_fg", "#1565c0"),
+            font=("微软雅黑", 11, "bold"), width=3)
+        self.scroll_speed_lbl.pack(side="left", padx=(px(8), px(2)))
+        tk.Label(row_scroll, text="档（1 最慢 – 5 最快，3 = 原速）", bg=self.theme["bg"],
+                 fg=self.theme.get("muted_fg", "#888888"),
+                 font=("微软雅黑", 8)).pack(side="left")
+        create_gradient_button(row_scroll, "＋", lambda: self._bump_scroll_speed(1),
+                               width=px(46), height=px(26)).pack(side="right")
+        create_gradient_button(row_scroll, "－", lambda: self._bump_scroll_speed(-1),
+                               width=px(46), height=px(26)).pack(side="right", padx=(0, px(6)))
+
         self.settings_pack_warn_var = tk.BooleanVar(value=getattr(self, "pack_warning", True))
         开关(box_m, "显示「整合包更新提醒」（模组可能被作者删除/替换）",
              self.settings_pack_warn_var, self._toggle_pack_warning, 名="packwarn").pack(fill="x")
@@ -870,6 +890,24 @@ class SettingsMixin:
                 self.save_config()
             except Exception:
                 pass
+
+    def _bump_scroll_speed(self, 增量):
+        """平滑滚动速度：1 最慢 … 5 最快。改完立刻生效，不用重启。"""
+        try:
+            from utils.helpers import SmoothScroller
+        except Exception:
+            return
+        当前 = int(getattr(self, "scroll_speed", 3) or 3)
+        新 = SmoothScroller.set_speed(max(1, min(5, 当前 + int(增量))))
+        self.scroll_speed = 新
+        try:
+            self.scroll_speed_lbl.config(text=str(新))
+        except Exception:
+            pass
+        try:
+            self.save_config()
+        except Exception:
+            pass
 
     def _bump_history_limit(self, 增量):
         """迁移历史保存上限：1~15，超出后删最旧的档案。"""

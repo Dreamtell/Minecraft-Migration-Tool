@@ -207,7 +207,34 @@ class SmoothScroller:
     # 为什么要这个旋钮：帧率从 62 提到 229 之后，同样一格滚轮的**总耗时**从 97ms 掉到 76ms
     # （实测，39px 一格），用户反馈"有点快了"。速度不该由帧率隐式决定，所以显式标定。
     # 实测（一格 39px，4ms 排帧）：1.0 -> 76ms / 1.3 -> 约 99ms / 1.5 -> 约 114ms。
-    GLIDE_SCALE = 1.25
+    GLIDE_SCALE = 1.0
+
+    # 设置里的档位（1 最慢 … 5 最快）。1.0 是原版标定：一格 39px 约 73ms，
+    # 与"帧率还没提上去"的版本同速。实测（4ms 排帧、一格 39px）：
+    #   档 1 (1.60) -> 112ms   档 2 (1.30) -> 95ms    档 3 (1.00) -> 73ms
+    #   档 4 (0.85) -> 65ms    档 5 (0.75) -> 59ms
+    _SPEED_SCALES = (1.60, 1.30, 1.00, 0.85, 0.75)
+
+    @classmethod
+    def set_speed(cls, level):
+        """按设置里的档位（1 最慢 … 5 最快）改手感速度，返回真正生效的档位。"""
+        try:
+            n = int(level)
+        except Exception:
+            n = 3
+        n = max(1, min(5, n))
+        cls.GLIDE_SCALE = cls._SPEED_SCALES[n - 1]
+        return n
+
+    @classmethod
+    def apply_config_speed(cls):
+        """从配置里读回档位并生效（启动时调一次）。读不到就按默认第 3 档。"""
+        try:
+            from utils.config import load_raw_config
+            level = (load_raw_config() or {}).get("scroll_speed", 3)
+        except Exception:
+            level = 3
+        return cls.set_speed(level)
 
     def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=0.30,
                  bind_widgets=None, on_user_scroll=None, on_settle=None,

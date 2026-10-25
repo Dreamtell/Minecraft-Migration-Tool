@@ -1039,6 +1039,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⏳ 扫描中…": "⏳ Scanning…",
     "⏳ 解析中...": "⏳ Parsing...",
     "迁移历史记录": "Migration history",
+    "平滑滚动速度": "Smooth scrolling speed",
+    "档（1 最慢 – 5 最快，3 = 原速）": "1 = slowest, 5 = fastest, 3 = default",
     "当前目标实例没有迁移记录。": "The target instance has no migration history.",
     "越靠上越新 · 滚轮翻阅": "Newest at the top · scroll to browse",
     "⚠️ 确认回滚": "⚠️ Confirm rollback",
