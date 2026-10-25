@@ -63,6 +63,102 @@ def _字体(号):
     return 形
 
 
+_字体缓存 = {}
+_表情缓存 = {}
+
+# 表情符号的码位范围。微软雅黑里**没有 emoji 字形**，混在一起画会变成空白或豆腐块；
+# 这些字符要单独用 Segoe UI Emoji 画（而且要 embedded_color=True，否则是单色剪影）。
+_表情区段 = ((0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF))
+_表情单字 = {0x2139, 0x2328, 0x2705, 0x274C, 0x2764, 0x203C, 0xFE0F, 0x200D}
+
+
+def _是表情(ch):
+    cp = ord(ch)
+    if cp in _表情单字:
+        return True
+    for a, b in _表情区段:
+        if a <= cp <= b:
+            return True
+    return False
+
+
+def _表情字体(号):
+    if 号 in _表情缓存:
+        return _表情缓存[号]
+    形 = None
+    for 名 in (r"C:\Windows\Fonts\seguiemj.ttf",):
+        try:
+            形 = ImageFont.truetype(名, 号)
+            break
+        except Exception:
+            continue
+    _表情缓存[号] = 形
+    return 形
+
+
+def _分段(文本):
+    """把文本切成"表情段 / 文字段"，相邻同类合并。"""
+    段 = []
+    for ch in 文本:
+        e = _是表情(ch)
+        if 段 and 段[-1][1] == e:
+            段[-1][0].append(ch)
+        else:
+            段.append([[ch], e])
+    return [("".join(t), e) for t, e in 段]
+
+
+def _量文本(文本, 号):
+    """按字体实际测宽（表情和文字各用各的字体）。"""
+    宽 = 0.0
+    for t, e in _分段(文本):
+        形 = _表情字体(号) if e else _字体(号)
+        try:
+            宽 += 形.getlength(t) if 形 is not None else len(t) * 号
+        except Exception:
+            宽 += len(t) * 号
+    return 宽
+
+
+def _截断(文本, 号, 最大宽):
+    """超宽就截断并补省略号（以前没有截断，长文案会直接画到卡片外面去）。"""
+    if 最大宽 <= 0 or _量文本(文本, 号) <= 最大宽:
+        return 文本
+    省 = "…"
+    省宽 = _量文本(省, 号)
+    低, 高 = 0, len(文本)
+    while 低 < 高:
+        中 = (低 + 高 + 1) // 2
+        if _量文本(文本[:中], 号) + 省宽 <= 最大宽:
+            低 = 中
+        else:
+            高 = 中 - 1
+    return 文本[:低] + 省
+
+
+def _画文本(画, x, y, 文本, 字色, 号):
+    """逐段画：文字用雅黑、表情用 Segoe UI Emoji（带 embedded_color）。"""
+    for t, e in _分段(文本):
+        形 = _表情字体(号) if e else _字体(号)
+        if 形 is None:
+            continue
+        try:
+            if e:
+                画.text((x, y), t, font=形, fill=字色, anchor="lm",
+                        embedded_color=True)
+            else:
+                画.text((x, y), t, font=形, fill=字色, anchor="lm")
+        except Exception:
+            try:
+                画.text((x, y), t, font=形, fill=字色, anchor="lm")
+            except Exception:
+                pass
+        try:
+            x += 形.getlength(t)
+        except Exception:
+            x += len(t) * 号
+
+
 def _hex(v, 缺="#888888"):
     """'#rrggbb' → (r,g,b)。"""
     try:
@@ -218,14 +314,11 @@ class ToastHost:
             画.ellipse([cx - lw // 2, cy - r - 1, cx + lw // 2 + 1, cy - r + lw],
                        fill=条)
             画.line([(cx, cy - r * 0.35), (cx, cy + r)], fill=条, width=lw)
-        # 文案
-        形 = _字体(max(9, int(px(9))))
-        if 形 is not None:
-            try:
-                画.text((px(42), cy), str(文案 or ""), font=形,
-                        fill=字色, anchor="lm")
-            except Exception:
-                pass
+        # 文案：按实际像素测宽**截断**（以前长文案会画到卡片外面），
+        # 表情段单独换字体（雅黑没有 emoji 字形）
+        号 = max(9, int(px(9)))
+        可用 = max(px(16), int(w) - px(42) - px(26))
+        _画文本(画, px(42), cy, _截断(str(文案 or ""), 号, 可用), 字色, 号)
         # 右侧 ×
         ex, ey = int(w) - px(14), cy
         q = max(1.5, px(3))
@@ -577,8 +670,7 @@ class _Toast:
 
     def _量宽(self):
         try:
-            形 = _字体(max(9, int(px(9))))
-            w = 形.getlength(self.text) if 形 is not None else len(self.text) * 12
+            w = _量文本(self.text, max(9, int(px(9))))
         except Exception:
             w = len(self.text) * 12
         return int(min(px(340), max(px(180), w + px(78))))
