@@ -410,6 +410,10 @@ class NetFloat:
                       "job": None, "pending": False}
         self._hover = False
         self._collapse_job = None
+        self._hover_job = None     # 贴边悬停轮询（不信 Enter/Leave，见 _poll_hover）
+        self._morph = None         # 交叉溶解状态（见 _redraw_faded）
+        self._morph_job = None
+        self._shape_cache = {}     # 尺寸 -> 图标图（换形态时两边都要用）
         self._hint = None          # 正在"将要吸附"的那条边（None = 无提示）
         self._hint_job = None
         self._hint_until = 0.0
@@ -531,6 +535,9 @@ class NetFloat:
             return 1920, 1080
 
     def _cur_size(self):
+        m = self._morph
+        if m is not None:                 # 交叉溶解期间：用两边的较大尺寸承载
+            return m["size"]
         if self._docked and self.dock_enabled and not self._peek:
             if self._docked in ("left", "right"):
                 return (self.tab_w, self.d)        # 竖条
@@ -554,6 +561,10 @@ class NetFloat:
         self._apply()
 
     def _abs_pos(self):
+        m = self._morph
+        if m is not None:                 # 交叉溶解期间：位置也由过渡接管
+            return (self._geom.get("x", 0) + m["rel"][0],
+                    self._geom.get("y", 0) + m["rel"][1])
         if self._geom.get("w"):
             return self._geom["x"] + self._rel[0], self._geom["y"] + self._rel[1]
         try:
@@ -716,6 +727,8 @@ class NetFloat:
         self._rel = [int(x), int(y)]
         if apply:
             self._apply()
+        if edge:
+            self._ensure_hover_poll()
 
     # ---------------- 交互 ----------------
     def _target(self):
@@ -885,17 +898,111 @@ class NetFloat:
 
         帧()
 
+    _MORPH_MS = 130        # 交叉溶解总时长
+
+    def _shape_img(self, size):
+        """按尺寸取图标图（缓存）。换形态时两边的图都要，不能各渲染两次。"""
+        键 = (size, self._hint, self._hover, self.shadow, self.bg)
+        缓存 = self._shape_cache.get(size)
+        if 缓存 is not None and 缓存[0] == 键:
+            return 缓存[1]
+        图 = self._image()
+        self._shape_cache[size] = (键, 图)
+        return 图
+
+    def _anchor_paste(self, img, box):
+        """把 img 按贴边锚点摆进 box 大小的透明画布（右/下边对齐，其余靠左上）。"""
+        from PIL import Image
+        W, H = box
+        w, h = img.size
+        x = W - w if self._docked == "right" else 0
+        y = H - h if self._docked == "bottom" else 0
+        画布 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        画布.paste(img, (x, y))
+        return 画布
+
     def _redraw_faded(self):
-        """换形态（圆 ⇄ 小标签）时用淡出-换图-淡入，而不是直接"啪"地改尺寸。"""
-        if not self._dib:
+        """换形态（圆 ⇄ 小标签）：**交叉溶解** —— 旧形态淡出的同时新形态淡入，全程不消失。
+
+        ⚠ 别改回"淡出 → 换尺寸 → 淡入"：那样浮标会先彻底透明 45ms 再淡回来，
+        看起来就是眨一下（用户报"会闪一下"）。
+        做法：过渡期窗口临时用两边的**较大尺寸**，把两张图按贴边锚点对到同一画布上，
+        逐帧 PIL 混合后上传；结束时 _peek 已翻好，一次 _redraw 落到目标尺寸
+        （贴边锚点不变，所以这一步看不见）。
+        """
+        if not self._dib or not self._docked:
             self._redraw()
             return
+        try:
+            from PIL import Image
+            # 入口时 _peek 已经是**新**值（调用方先翻好再进来），所以新图直接取，
+            # 旧图要临时翻回去渲染 —— 顺序反了就会倒着播，结束时还会跳一下。
+            新尺寸 = self._cur_size()
+            新图 = self._shape_img(新尺寸)
+            self._peek = not self._peek
+            try:
+                旧尺寸 = self._cur_size()
+                旧图 = self._shape_img(旧尺寸)
+            finally:
+                self._peek = not self._peek      # 真正的翻转等溶解结束再落定
+            盒 = (max(旧尺寸[0], 新尺寸[0]), max(旧尺寸[1], 新尺寸[1]))
+            A = self._anchor_paste(旧图, 盒)
+            B = self._anchor_paste(新图, 盒)
+        except Exception:
+            self._redraw()
+            return
+        W, H = A.size
+        pw, ph = self._parent_size()
+        x = (pw - W) if self._docked == "right" else (0 if self._docked == "left" else self._rel[0])
+        y = (ph - H) if self._docked == "bottom" else (0 if self._docked == "top" else self._rel[1])
+        self._morph = {"size": (W, H), "rel": [int(x), int(y)], "A": A, "B": B, "i": 0}
+        if self._morph_job is not None:
+            try:
+                self.root.after_cancel(self._morph_job)
+            except Exception:
+                pass
+            self._morph_job = None
+        if not self._fade_hr:
+            self._fade_hr = True
+            try:
+                anim.hold()
+            except Exception:
+                pass
+        t0 = time.perf_counter()
+        总 = float(self._MORPH_MS)
 
-        def 换():
-            self._redraw()               # 尺寸/位置在这里一次改到位（此时 alpha=0，看不见跳变）
-            self._fade_to(255, 80)
+        def 帧():
+            m = self._morph
+            if m is None or self._stop:
+                return
+            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / 总)
+            try:
+                self._upload(Image.blend(m["A"], m["B"], k))
+            except Exception:
+                pass
+            if k < 1.0:
+                try:
+                    self._morph_job = self.root.after(anim.frame_ms(self.win), 帧)
+                except Exception:
+                    self._morph_job = None
+            else:
+                self._morph_job = None
+                self._morph = None
+                # _peek 在渲染两张图时已经还原成**新**值，这里千万别再翻一次
+                # （翻了就会停在原地：实测收起后仍是 70、展开后仍是 28）。
+                try:
+                    self._snap(self._docked, apply=False)
+                except Exception:
+                    pass
+                self._redraw()
+                if self._fade_hr:
+                    self._fade_hr = False
+                    try:
+                        anim.release()
+                    except Exception:
+                        pass
 
-        self._fade_to(0, 45, 换)
+        帧()
 
     def _show(self):
         # 统一在这里把门：主窗口没露出、或本程序不在前台，就绝不显示。
@@ -1142,11 +1249,11 @@ class NetFloat:
             except Exception:
                 pass
             self._collapse_job = None
-        if self._docked and self.dock_enabled and not self._peek:
-            self._peek = True
-            self._snap(self._docked, apply=False)   # 尺寸+位置交给 _redraw 一次做完
-            self._redraw_faded()
-        elif not self._docked:
+        # 贴边时交给轮询按**真实光标**判定（事件在几何变化时会撒谎，见 _poll_hover）
+        if self._docked:
+            self._hover_update()
+            self._ensure_hover_poll()
+        else:
             self._redraw()
         # 已经是展开态：什么都不用做（别每来一次 <Enter> 就重画一遍）
 
@@ -1159,18 +1266,15 @@ class NetFloat:
         """
         if self._drag["on"]:
             return
-        # 几何变化招来的假 <Leave>：光标其实还在窗口上，别理它（见 _cursor_inside）
-        if self._docked and self.dock_enabled and self._peek and self._cursor_inside():
-            self._hover = True
-            return
-        self._hover = False
-        if self._docked and self.dock_enabled and self._peek:
-            if self._collapse_job is None:
-                try:
-                    self._collapse_job = self.root.after(180, self._collapse_now)
-                except Exception:
-                    self._collapse_job = None
-        elif not self._docked:
+        # ⚠ 这里**只**更新状态、不动几何：几何变化会招来假 <Leave>。
+        # 真正的收缩决定交给 _poll_hover 按真实光标位置做 —— 只丢弃假事件是不行的：
+        # 假 <Leave> 被吃掉之后，用户**真的**移开时 Windows 也不会再补发一次，
+        # 展开态就永远收不回去（用户实测"有概率无法收纳"）。
+        if self._docked:
+            self._hover_update()
+            self._ensure_hover_poll()
+        else:
+            self._hover = False
             self._redraw()
 
     def _cursor_inside(self, 余量=2):
@@ -1193,6 +1297,64 @@ class NetFloat:
         except Exception:
             return False
 
+    _HOVER_POLL_MS = 120
+
+    def _hover_update(self):
+        """按**真实光标位置**决定"展开 / 收起"。这是唯一的判定入口。"""
+        if self._stop or self._parked or self._drag["on"]:
+            return
+        if not (self._docked and self.dock_enabled):
+            return
+        if self._cursor_inside():
+            self._hover = True
+            if self._collapse_job:
+                try:
+                    self.root.after_cancel(self._collapse_job)
+                except Exception:
+                    pass
+                self._collapse_job = None
+            if not self._peek:
+                self._peek = True
+                self._snap(self._docked, apply=False)   # 尺寸+位置交给 _redraw 一次做完
+                self._redraw_faded()
+        else:
+            self._hover = False
+            if self._peek and self._collapse_job is None:
+                try:
+                    self._collapse_job = self.root.after(180, self._collapse_now)
+                except Exception:
+                    self._collapse_job = None
+
+    def _ensure_hover_poll(self):
+        if getattr(self, "_polling", False):
+            return                    # 轮询里又走到这儿，别开第二条链
+        if self._hover_job is None and self._docked and not self._stop:
+            self._poll_hover()
+
+    def _poll_hover(self):
+        """贴边状态下每 120ms 巡一次真实光标。
+
+        为什么不能只靠 <Enter>/<Leave>：展开/收缩会改窗口矩形，Windows 在几何变化时
+        会再判一次 <Leave>（假离开）。靠事件两头都会出事 ——
+          信它 → 收起/展开来回抖（实测光标静止 2.2 秒换了 5 次形态）；
+          丢它 → 假事件被吃掉之后，用户**真的**移开时也不再有新事件，
+                 展开态就永远收不回去（"有概率无法收纳"）。
+        轮询没有状态残留，收/展只取决于"光标现在在哪"。
+        """
+        self._hover_job = None
+        if self._stop or self._parked or not (self._docked and self.dock_enabled):
+            return
+        self._polling = True
+        try:
+            self._hover_update()
+        finally:
+            self._polling = False
+        if not (self._stop or self._parked or not self._docked):
+            try:
+                self._hover_job = self.root.after(self._HOVER_POLL_MS, self._poll_hover)
+            except Exception:
+                self._hover_job = None
+
     def _set_hint(self, edge, 持续=0.0):
         """设置/清除"将要收纳"的提示。持续>0 时会在一段时间后自动清除（松手确认用）。"""
         if edge != self._hint:
@@ -1200,7 +1362,9 @@ class NetFloat:
             # 拖动中**不重画图标**：光标在吸附边界来回时，这条边会反复变 None/Right，
             # 每变一次都重渲染（20ms）就是"拖起来掉帧"。此时窗口边缘的绿色光带
             # 已经足够说明问题，图标上的绿环留到松手后再亮。
-            if not self._drag["on"]:
+            # 换形态的淡变还在跑时别重画：_image() 一次 20~50ms，正好卡在淡入中途，
+            # 看起来就是"闪一下"。等这轮淡完，提示帧下一拍自然会补上。
+            if not self._drag["on"] and self._fade_job is None:
                 self._redraw()
             self._update_glow()
         if 持续:
@@ -1249,6 +1413,14 @@ class NetFloat:
         """
         self._hint_job = None
         if not self._hint:
+            return
+        if self._fade_job is not None:
+            # 正在换形态的淡入淡出：这一拍别上传（尺寸刚变过，重建脉冲帧要几十毫秒，
+            # 会把淡变卡成一次闪），淡完再继续。
+            try:
+                self._hint_job = self.root.after(60, self._hint_tick)
+            except Exception:
+                self._hint_job = None
             return
         if self._hint_until and time.time() > self._hint_until:
             self._hint = None
@@ -1563,6 +1735,20 @@ class NetFloat:
         self._redraw()
 
     def _redraw(self):
+        if self._morph is not None:        # 过渡被别的路径打断（主题/数据刷新等）
+            self._morph = None
+            if self._morph_job is not None:
+                try:
+                    self.root.after_cancel(self._morph_job)
+                except Exception:
+                    pass
+                self._morph_job = None
+            if self._fade_hr:
+                self._fade_hr = False
+                try:
+                    anim.release()
+                except Exception:
+                    pass
         img = self._image()
         if self._layered:
             self._upload(img)
