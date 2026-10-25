@@ -506,6 +506,7 @@ class NetFloat:
             self._redraw()
             self._park()
         self._tick()          # ⚠ 必须启动刷新循环，否则数字会停在初始化那一刻
+        self._vis_tick()      # 250ms 可见性轮询：主窗口一藏，浮标 250ms 内就跟着藏
         try:
             self._refresh_geom()
             self._last_geom = (self._geom["x"], self._geom["y"],
@@ -1665,6 +1666,35 @@ class NetFloat:
         except Exception:
             pass
 
+    def _vis_tick(self):
+        """轻量可见性轮询（250ms）。
+
+        主窗口 withdraw() 时 <Unmap> 在 Windows 上不一定触发（本文件别处已注明），
+        所以需要轮询兜底；但原来兜底挂在 1 秒的 _tick 上，主窗口收起后浮标最多要等
+        1 秒才消失 —— 退出流程里那 280ms 隐藏动画 + stop_qt_host 耗时全落在它露脸
+        期间，用户看到的就是"主界面关了浮标还在"。这里只做显示/隐藏判定，很便宜。
+        """
+        if self._stop:
+            return
+        try:
+            if not self.root.winfo_exists():
+                self.close()
+                return
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                pass
+            return
+        try:
+            self._sync_visibility()
+        except Exception:
+            pass
+        try:
+            self._vis_job = self.root.after(250, self._vis_tick)
+        except Exception:
+            self._vis_job = None
+
     def _image(self, 脉冲k=None, 超采样=None):
         from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -1836,6 +1866,7 @@ class NetFloat:
     def close(self):
         self._stop = True
         for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None),
+                  getattr(self, "_vis_job", None),
                   getattr(self, "_show_job", None),
                   getattr(self, "_fade_job", None),
                   getattr(self, "_collapse_job", None),

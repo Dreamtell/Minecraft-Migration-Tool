@@ -480,6 +480,16 @@ def main():
     root.mainloop()
 
     # 主循环结束（不管从哪条路退出）：统一收尾
+    # ⚠ 第一件事就是把浮标关掉：它是**独立的分层顶层窗口**，下面那段 exit 流程会
+    # 先 root.withdraw() + 280ms 隐藏动画再 destroy，而浮标的可见性判定是 1 秒轮询 ——
+    # 于是这中间（stop_qt_host 还可能更久）就出现"主界面没了、浮标还留在桌面上"。
+    # 显式关掉最稳，不依赖任何轮询时序。
+    try:
+        浮 = getattr(app, "_net_float", None)
+        if 浮 is not None:
+            浮.close()
+    except Exception:
+        pass
     try:
         app.stop_qt_host()          # Qt 窗口子进程不能留在后台
     except Exception:
