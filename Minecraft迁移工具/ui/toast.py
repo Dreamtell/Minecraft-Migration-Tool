@@ -51,6 +51,10 @@ class ToastHost:
 
     _MARGIN = 18          # 离主窗口右下角的距离（设计像素）
     _GAP = 8              # 两条之间的间隔
+    # 画布底部留出的滑动余量（设计像素）。入场从下往上滑、出场往下滑都会越过
+    # 卡片自身的高度；不留余量的话 canvas 会把卡片**裁掉半截**（用户截图里消失
+    # 动画"下半截没了"就是这个）。这块区域是透明键色，看不见也不挡点击。
+    _PADB = 22
 
     def __init__(self, master, theme, max_items=4):
         self.master = master
@@ -225,13 +229,14 @@ class ToastHost:
             return
         总高 = sum(it.h for it in self._items) + self._GAP * (len(self._items) - 1)
         宽 = max(it.w for it in self._items)
+        self._pad = px(self._PADB)
         y = 总高
         for it in self._items:
             y -= it.h
             it.draw(self.canvas, 0, y)
             y -= self._GAP
         try:
-            self.win.geometry("%dx%d" % (int(宽), int(总高)))
+            self.win.geometry("%dx%d" % (int(宽), int(总高 + self._pad)))
         except Exception:
             pass
         self._sync_pos()
@@ -257,8 +262,11 @@ class ToastHost:
                 return
             w = self.win.winfo_width()
             h = self.win.winfo_height()
+            # 窗口比"整叠"高出底部那点滑动余量：定位时把余量扣掉，
+            # 这样视觉上整叠的底边才真的贴着 MARGIN。
+            余 = getattr(self, "_pad", 0)
             x = self.master.winfo_rootx() + mw - px(self._MARGIN) - w
-            y = self.master.winfo_rooty() + mh - px(self._MARGIN) - h
+            y = self.master.winfo_rooty() + mh - px(self._MARGIN) - (h - 余)
             self.win.geometry("+%d+%d" % (int(x), int(y)))
             if not self.win.winfo_ismapped():
                 self.win.deiconify()
