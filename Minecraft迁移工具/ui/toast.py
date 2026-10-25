@@ -82,6 +82,13 @@ class ToastHost:
             self.win.configure(bg=_KEY)
         except Exception:
             pass
+        # ⚠ 这棵子树**不许被主题遍历刷底色**：apply_theme_to_widget_tree 会把
+        # Toplevel/Canvas 一律刷成主题色，那等于把"透明键色"涂成一块实心方块
+        # （用户报"底部一直有一个背景方形"）。挂标记让遍历直接跳过。
+        try:
+            self.win._skip_theme_walk = True
+        except Exception:
+            pass
         self.canvas = tk.Canvas(self.win, bg=_KEY, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
@@ -353,7 +360,9 @@ class _Toast:
         # 进度条：3 行 1px 线，按卡片底部圆角逐行内缩（贴着轮廓走）
         半径 = px(10)
         self._bar = []
-        for 距底 in (0.5, 1.5, 2.5):
+        # 距底从 1.5 起：0.5 那一行会因为 1px 线宽而**溢出卡片底边一行**，
+        # 落到下面的透明区里（实测多出 204 个绿色像素）。
+        for 距底 in (1.5, 2.5, 3.5):
             yy = y + self.h - 距底
             弧 = max(0.0, 半径 - 距底)
             内缩 = 半径 - (max(0.0, 半径 ** 2 - 弧 ** 2)) ** 0.5

@@ -148,6 +148,11 @@ def _inside_rounded_entry(widget):
 def apply_theme_to_widget_tree(widget, theme):
     """将主题颜色递归应用到控件树（含 Toplevel 子窗口），供各窗口创建/切换时复用"""
     try:
+        # 自带配色的自制浮层（吐司的透明窗口）：它们**靠"键色 = 透明"工作**，
+        # 一旦被这里刷成主题色，那块区域就变成一块实心方块（用户报"底部一直有
+        # 一个背景方形"）。挂了这个标记的整棵子树都不许碰。
+        if getattr(widget, "_skip_theme_walk", False):
+            return
         # 自绘圆角输入框（utils.helpers.RoundedEntry）：它不是普通 Frame，
         # 填充/描边要按主题重画，所以要在 Frame 分支之前拦下来。
         # 这里用鸭子类型判断，避免 theme <-> helpers 循环导入。
