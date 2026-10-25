@@ -142,7 +142,8 @@ class LockMixin:
         step(0)
 
     _FLOW_MS_FLOOR = 8      # 边流动画最快 8ms 一帧（125fps）：再快十几块瓦片的 move 会压主线程
-    _FLOW_REF_MS = 12.0     # 速度标定基准帧（原实现"入场加速"那一段就是 12ms 一帧）
+    _FLOW_REF_MS = 12.0     # 速度标定基准帧（原实现"入场加速"那一段就是 12ms 一帧）。
+    #                         只在 dt 缺失（第一帧）时当兜底用。
 
     def _flow_hold_hr(self):
         if not getattr(self, "_flow_hr", False):
@@ -184,7 +185,9 @@ class LockMixin:
         进度 = 1.0 - max(0, min(boost, span_boost)) / float(span_boost)
         速度 = (7.0 / 12.0) + ((3.0 / 32.0) - (7.0 / 12.0)) * 进度     # px/ms
         if boost > 0:
-            self._flow_boost = boost - dt / self._FLOW_REF_MS         # 按时间衰减，不按帧数
+            # 按**毫秒**衰减：原设计是"16 帧、间隔从 12ms 拉到 32ms"，也就是约 350ms 才稳。
+            # 早先按帧数 ÷12ms 换算只有 192ms，实测 200~260ms 就落到稳态了 —— 入场"窜"得不够久。
+            self._flow_boost = max(0.0, boost - dt)
         self._flow_carry = getattr(self, "_flow_carry", 0.0) + 速度 * dt
         step = int(self._flow_carry)        # 不足 1 像素的零头留到下一帧（帧密时步长很小）
         self._flow_carry -= step
@@ -289,7 +292,7 @@ class LockMixin:
             self._lock_overlay = ov
             self._build_flow_border(cv, max(2, ov.winfo_width()), max(2, ov.winfo_height()))
             # 入场：红光先"窜"起来再稳下来（温和一点：23ms 起步 → 稳态 32ms，别把主线程压满）
-            self._flow_boost_total = 16
+            self._flow_boost_total = 350.0   # 入场加速持续多少毫秒（原设计 16 帧×均 22ms）
             self._flow_boost = self._flow_boost_total
             self._flow_t = 0.0          # 上一帧时刻（0 = 还没起过步，见 _flow_step）
             self._flow_carry = 0.0      # 不足 1 像素的位移零头
