@@ -160,6 +160,32 @@ def hover_pair(colors):
     return (lighten_color(colors[0]), lighten_color(colors[1]))
 
 
+class _PxAcc:
+    """把"不足 1 像素"的位移攒到下一帧再滚。
+
+    mover 只能整像素滚（yview_scroll 的 n 是整数），所以这里必须攒零头。
+
+    ⚠ 以前不攒、而是"每帧至少凑 1 像素"（n==0 时强行取 ±1）：那条兜底是**按帧**算的
+    地板，帧率 62 时等于 62px/s，只在极慢的尾巴上生效；帧率提到 229 之后同一个地板变成
+    250px/s —— 实测一格滚轮的前 75% 距离耗时 47ms（和 60fps 一致），最后 25% 却只要
+    24ms（60fps 时是 49ms），观感就是"滑到最后一段突然窜到终点"。攒零头没这个问题，
+    而且顺带消掉了 round() 丢弃小数造成的每帧 0/1 像素顿挫。
+    """
+
+    __slots__ = ("v",)
+
+    def __init__(self):
+        self.v = 0.0
+
+    def take(self, px):
+        """吃掉这次请求，返回本帧该真正滚的整像素数（可能是 0）。"""
+        self.v += px
+        n = int(self.v)          # 向零截断：零头留在 v 里，下一帧接着攒
+        if n:
+            self.v -= n
+        return n
+
+
 class SmoothScroller:
     """给可滚动控件加平滑滚动（滚轮逐帧动画）。
 
@@ -224,10 +250,12 @@ class SmoothScroller:
     @classmethod
     def for_text(cls, widget, bind_widgets=None, **kw):
         """Text 类：像素级平滑。一格滚轮沿用 Tk 默认的 3 行，手感速度不变。"""
+        acc = _PxAcc()
+
         def mover(px):
-            n = int(round(px))
+            n = acc.take(px)
             if n == 0:
-                n = 1 if px > 0 else -1
+                return 0, False       # 还没攒够一像素：这一帧不动，也不算"滚不动"
             before = widget.yview()[0]
             try:
                 widget.yview_scroll(n, "pixels")
@@ -247,10 +275,12 @@ class SmoothScroller:
         —— 于是能停在半行上，做出编辑器那种顺滑滚动。`on_render` 在每帧滚完调用，
         让表格重画新露出来的行。
         """
+        acc = _PxAcc()
+
         def mover(px):
-            n = int(round(px))
+            n = acc.take(px)
             if n == 0:
-                n = 1 if px > 0 else -1
+                return 0, False       # 同上：零头攒到下一帧
             before = widget.canvasy(0)
             try:
                 widget.yview_scroll(n, "units")

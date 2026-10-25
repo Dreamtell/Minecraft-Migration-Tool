@@ -420,7 +420,7 @@ class LogMixin:
             # ⚠ 而且**节流**：迁移时一秒几百条，每条都 see 会不断触发滚动（配合平滑滚动
             #   就是一条永不结束的动画链）。80ms 一次足够跟手，肉眼看不出来。
             if getattr(self, "_log_follow", True):
-                self.log_text.see(tk.END)
+                self._see_log_end()
             self.log_text.configure(state="disabled")
             # 锁屏里那份日志是"第二个视图"：主日志照常记，这里同步追加一份
             lock_log = getattr(self, "_lock_log_text", None)
@@ -598,3 +598,56 @@ class LogMixin:
     def _on_log_scroll_settle(self):
         if self._at_log_bottom():
             self._log_follow = True
+
+    # ---------- 「跟到底」与平滑滚动的协同 ----------
+    _SEE_THROTTLE_S = 0.08
+
+    def _see_log_end(self):
+        """跟随模式下来了一条新日志：把视图拽到最新一行 —— 但节流到 80ms 一次。
+
+        为什么必须节流：迁移时一秒几百条，每条都 see 就是把视图反复重置；而日志区装着
+        平滑滚动，动画链的目标是**按像素**算的，视图被硬拽之后那条链还在往旧目标走 ——
+        表现就是"滚起来怪怪的，像被拽一下又自己往前拱"。80ms 一次足够跟手。
+
+        为什么用 perf_counter：本机 time.monotonic() 是 GetTickCount64，粒度 15.6ms，
+        80ms 的窗口会被量化掉（见 utils/anim.py 文件头）。
+        """
+        now = time.perf_counter()
+        if now - getattr(self, "_log_see_t", 0.0) >= self._SEE_THROTTLE_S:
+            self._see_log_end_now()
+            return
+        if getattr(self, "_log_see_job", None) is not None:
+            return                    # 收尾那一枪已经排上了，别重复排
+        try:
+            self._log_see_job = self.root.after(
+                int(self._SEE_THROTTLE_S * 1000), self._see_log_end_now)
+        except Exception:
+            self._log_see_job = None
+
+    def _see_log_end_now(self):
+        """真正拽到底：**先把平滑滚动收掉**再 see。
+
+        只 see 不收链的话，那条链会在视图被拽到底之后继续按剩余像素往底部顶 —— 顶到
+        "滚不动"才退出，多出一次看得见的推挤；顺带它的定时器精度也要等到那时才还。
+        """
+        # 可能是"排上的那一枪"回调进来的，也可能是节流窗口已过时直接调的。
+        # 后一种情况下队列里还压着一个 after：不撤掉它就会在 80ms 后**再 see 一次**，
+        # 实测 2.46 秒里因此多执行了一倍（48 次 vs 上限 31 次）。先撤，再清标记。
+        job = getattr(self, "_log_see_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._log_see_job = None
+        self._log_see_t = time.perf_counter()
+        sc = getattr(self, "_log_scroller", None)
+        if sc is not None:
+            try:
+                sc.stop()
+            except Exception:
+                pass
+        try:
+            self.log_text.see(tk.END)
+        except Exception:
+            pass
