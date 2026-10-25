@@ -95,6 +95,7 @@ class ToastHost:
         self._last_pos = (0, 0)
         self._当前文本 = ""
         self._指纹 = None
+        self._hr = False           # 是否持有 1ms 定时器精度（动画期间）
         self._底字节 = None
         self._底键 = None
         self._条缓存 = {}          # (w,h,level) → (预乘字节, 条高)
@@ -325,6 +326,12 @@ class ToastHost:
                 self._tick_job = None
 
     def _stop_tick(self):
+        if getattr(self, "_hr", False):
+            try:
+                anim.release()
+            except Exception:
+                pass
+            self._hr = False
         if self._tick_job is not None:
             try:
                 self.win.after_cancel(self._tick_job)
@@ -346,14 +353,35 @@ class ToastHost:
                 动画中 = True
         self._compose()
         if not self._items:
+            if getattr(self, "_hr", False):
+                try:
+                    anim.release()
+                except Exception:
+                    pass
+                self._hr = False
             try:
                 self.win.withdraw()
             except Exception:
                 pass
             return
-        # 动画中最多 8ms 一帧（125fps 够顺滑）；只有进度条在走时 40ms 足够
-        # 动画中 8ms；只有进度条在走时 16ms（60fps —— 40ms 会看出"一格一格掉"）
-        间隔 = 8 if 动画中 else 16
+        # 动画中**跟随显示器刷新率**（本机 240Hz → 4ms）；只有进度条在走时 16ms。
+        # 别再写死 8ms：那等于把 240Hz 屏砍成 125fps，上移/收回一眼就能看出是"挪"不是"滑"。
+        #
+        # ⚠ 光排 after(4) 没用：Tk 的 after 会被量化到 **15.6ms 系统节拍**，实测 p90 直接
+        # 从 5ms 掉到 17.5ms（"偶尔顿一下"就是这个）。必须 hold 住 1ms 定时器精度。
+        # 动画**和**进度条阶段都要持有：只给动画 hold 的话，动画一结束精度就还回去，
+        # 之后 after(16) 又被量化成 15.6/31ms —— 实测 p90 直接 30ms，看着就是"一下一下挪"。
+        # 吐司总共只活两三秒，这点代价远小于观感损失。
+        有进度在走 = any(not it.sticky for it in self._items)
+        if (动画中 or 有进度在走) and not self._hr:
+            anim.hold()
+            self._hr = True
+        elif (not 动画中) and (not 有进度在走) and self._hr:
+            # 只剩"粘性"吐司（不自动消失那种）时不必再占着 1ms 精度：
+            # 那会让整机定时器精度一直偏高（费电），而它已经静止了。
+            anim.release()
+            self._hr = False
+        间隔 = anim.frame_ms(self.win) if 动画中 else 16
         try:
             self._tick_job = self.win.after(max(4, int(间隔)), self._tick)
         except Exception:
