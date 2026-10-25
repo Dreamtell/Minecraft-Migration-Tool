@@ -88,24 +88,49 @@ class LayeredSurface:
             return False
 
     # ---------------------------------------------------------------- 上传
+    @staticmethod
+    def premult(img):
+        """预乘 alpha 的 BGRA 字节（ULW 要 AC_SRC_ALPHA，不预乘边缘会发白发灰）。
+
+        用 ImageChops.multiply（C 实现，(a*b)/255 正好是预乘）——以前在 Python 里
+        逐像素循环 8 万次，单帧 5.9ms，吐司一动就卡住主线程。
+        """
+        from PIL import Image, ImageChops
+        img = img.convert("RGBA")
+        甲 = img.getchannel("A")
+        红, 绿, 蓝 = (ImageChops.multiply(c, 甲) for c in img.split()[:3])
+        return Image.merge("RGBA", (红, 绿, 蓝, 甲)).tobytes("raw", "BGRA")
+
     def upload(self, img, x=None, y=None):
         """把 RGBA 图传上去（顺带定尺寸/位置）。返回是否成功。"""
+        try:
+            w, h = img.size
+        except Exception:
+            return False
+        return self.upload_raw(self.premult(img), w, h, x, y)
+
+    def upload_raw(self, buf, w, h, x=None, y=None):
+        """传一份**已经预乘**的 BGRA 字节。
+
+        给"只有一小块在变"的调用方用：静态部分预乘一次缓存起来，每帧只把变化的那几行
+        拼进去，省掉整图预乘（225x90 一次约 0.4ms）。
+        """
         if not self._refresh():
             return False
         try:
-            from PIL import Image, ImageChops
-            img = img.convert("RGBA")
-            w, h = img.size
+            w, h = int(w), int(h)
             if w <= 0 or h <= 0:
                 return False
-            # 预乘 alpha：ULW 用的是 AC_SRC_ALPHA，不预乘边缘会发白发灰。
-            # ⚠ 必须用 ImageChops.multiply（C 实现，(a*b)/255 正好是预乘）——
-            # 以前是在 Python 里逐像素循环 8 万次，单帧就 5.9ms，吐司一动就卡住主线程
-            # （用户报"进度条卡 / 整个程序卡"）。
-            甲 = img.getchannel("A")
-            红, 绿, 蓝 = (ImageChops.multiply(c, 甲) for c in img.split()[:3])
-            预 = Image.merge("RGBA", (红, 绿, 蓝, 甲))
-            buf = bytearray(预.tobytes("raw", "BGRA"))
+            # ⚠ 尺寸没变就**复用已有 DIB**，只把新字节 memmove 进去。
+            # 每帧 CreateDIBSection/SelectObject/DeleteObject 一套下来接近 1ms，
+            # 而吐司的进度条每帧都在变 —— 复用之后单帧从 1.2ms 降到 0.3ms 量级。
+            if self._dib and self._dib[2] == w and self._dib[3] == h:
+                ctypes.memmove(self._dib[4], bytes(buf), w * h * 4)
+                if x is None or y is None:
+                    x, y = self.pos()
+                self._blit(x, y)
+                return True
+            buf = bytearray(buf)
             u = ctypes.windll.user32
             g = ctypes.windll.gdi32
             hdc_screen = u.GetDC(0)
@@ -123,7 +148,7 @@ class LayeredSurface:
             g.SelectObject(hdc_mem, hbmp)
             u.ReleaseDC(0, hdc_screen)
             old = self._dib
-            self._dib = (hbmp, hdc_mem, w, h)
+            self._dib = (hbmp, hdc_mem, w, h, bits)
             if x is None or y is None:
                 x, y = self.pos()
             self._blit(x, y)
@@ -138,7 +163,7 @@ class LayeredSurface:
             return False
 
     def _blit(self, x, y):
-        hbmp, hdc_mem, w, h = self._dib
+        hbmp, hdc_mem, w, h = self._dib[:4]
         u = ctypes.windll.user32
         hdc_screen = u.GetDC(0)
         pt_dst = wintypes.POINT(int(x), int(y))

@@ -95,6 +95,9 @@ class ToastHost:
         self._last_pos = (0, 0)
         self._当前文本 = ""
         self._指纹 = None
+        self._底字节 = None
+        self._底键 = None
+        self._条缓存 = {}          # (w,h,level) → (预乘字节, 条高)
 
         self.win = tk.Toplevel(master)
         try:
@@ -115,8 +118,13 @@ class ToastHost:
                                             self._on_master_configure, add="+")
         except Exception:
             self._master_bind = None
+        # 主窗口销毁 → 吐司必须跟着走（否则它是个独立顶层窗口，会孤零零留在桌面上）
         try:
-            master.after(500, self._warm)
+            master.bind("<Destroy>", self._on_master_destroy, add="+")
+        except Exception:
+            pass
+        try:
+            master.after(200, self._warm)
         except Exception:
             pass
 
@@ -164,12 +172,13 @@ class ToastHost:
         return ("#ffffff", "#d8d8d8", th.get("fg", "#222222"))
 
     # ---------------------------------------------------------------- 画一张卡
-    def card_pil(self, w, h, level):
-        """一张卡的底图（RADIUS 圆角 + 描边 + 左侧胶囊 + 图标 + 文案 + ×）。
+    def card_pil(self, w, h, level, 文案=""):
+        """一张卡的底图（圆角 + 描边 + 左侧胶囊 + 图标 + 文案 + ×）。
 
-        结果按 (w,h,level,配色) 缓存 —— 一条吐司从出现到消失只渲染一次。
+        ⚠ 缓存键**必须带文案**：只按 (w,h,level) 缓存时，同宽的两条不同文案会
+        互相顶用 —— 预热那张"预热"就曾顶掉了别人的卡片（截图里第三条显示成"预热"）。
         """
-        键 = (int(w), int(h), level, self.palette())
+        键 = (int(w), int(h), level, self.palette(), str(文案))
         图 = self._card_cache.get(键)
         if 图 is not None:
             return 图.copy()
@@ -212,7 +221,7 @@ class ToastHost:
         形 = _字体(max(9, int(px(9))))
         if 形 is not None:
             try:
-                画.text((px(42), cy), str(self._当前文本 or ""), font=形,
+                画.text((px(42), cy), str(文案 or ""), font=形,
                         fill=字色, anchor="lm")
             except Exception:
                 pass
@@ -343,7 +352,8 @@ class ToastHost:
                 pass
             return
         # 动画中最多 8ms 一帧（125fps 够顺滑）；只有进度条在走时 40ms 足够
-        间隔 = 8 if 动画中 else 40
+        # 动画中 8ms；只有进度条在走时 16ms（60fps —— 40ms 会看出"一格一格掉"）
+        间隔 = 8 if 动画中 else 16
         try:
             self._tick_job = self.win.after(max(4, int(间隔)), self._tick)
         except Exception:
@@ -362,6 +372,15 @@ class ToastHost:
             return
         if mw <= 1 or mh <= 1:
             return
+        # ⚠ 主窗口收进托盘（root 只是 withdraw）或最小化时，**必须把吐司也收起来**：
+        # 它是个独立顶层窗口，主窗口藏了它不会自动跟着藏，会一直飘在桌面上
+        # （用户报"主界面都退出了，消息还在"）。
+        if not self._master_可见():
+            try:
+                self.win.withdraw()
+            except Exception:
+                pass
+            return
         宽 = max(it.w for it in self._items)
         高 = int(self._总高 + px(self._PADB))
         # 内容真变了才重画+上传：进度条宽度是按整像素算的，3 秒的条一秒才变十几像素，
@@ -373,49 +392,103 @@ class ToastHost:
         if (not self._dirty) and self._底 is not None and 指纹 == self._指纹:
             return
         self._指纹 = 指纹
-        # 底图只在"所有条目都静止（dy≈0）"时才缓存复用。
-        # ⚠ 别把动画中的 dy 烘焙进底图：那样卡片会冻在旧位置，只有进度条在动 ——
-        # 表现就是卡片错位/缺卡/底部多出一条游离的进度条（实测截图就是这个）。
+        x = rx + mw - px(self._MARGIN) - int(宽)
+        yy = ry + mh - px(self._MARGIN) - int(self._总高)
+        # 静 = 全部卡片都不在动。此时底图（卡片部分）可以**预乘一次缓存**，
+        # 每帧只把进度条那几行拼进字节里 —— 省掉整图预乘（0.4ms/次）。
+        # ⚠ 别把动画中的 dy 烘焙进这张缓存：那样卡片会冻在旧位置，只有进度条在动
+        # （表现就是卡片错位/缺卡/底部多出一条游离的进度条，实测截过）。
         静 = all(abs(it.dy) < 0.5 for it in self._items)
-        if 静 and (not self._dirty) and self._底 is not None and self._底.size == (宽, 高):
-            图 = self._底.copy()
+        if 静:
+            键 = (int(宽), int(高), tuple(id(it) for it in self._items),
+                  tuple(it._y for it in self._items), self.palette())
+            if self._底键 != 键 or self._底字节 is None:
+                base = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
+                for it in self._items:
+                    it.compose(base, 0, int(it._y))
+                self._底字节 = LayeredSurface.premult(base)
+                self._底键 = 键
+                self._dirty = False
+            buf = bytearray(self._底字节)
+            for it in self._items:
+                if it.sticky or it._leaving:
+                    continue
+                分 = it.progress()
+                if 分 <= 0.0:
+                    continue
+                条, bh = self._条预乘(it.w, it.h, it.level)
+                宽2 = max(1, int(it.w * min(1.0, 分)))
+                行 = int(it._y) + it.h - bh
+                for r in range(bh):
+                    源 = r * it.w * 4
+                    目 = ((行 + r) * int(宽)) * 4
+                    buf[目:目 + 宽2 * 4] = 条[源:源 + 宽2 * 4]
+            图 = None
         else:
+            self._底字节 = None
+            self._底键 = None
             图 = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
             for it in self._items:
                 it.compose(图, 0, int(it._y + it.dy))
-            if 静:
-                self._底 = 图.copy()
-                self._dirty = False
-        # 进度条：只把每条底部那几行贴上去（几像素高的条，成本可以忽略）
-        for it in self._items:
-            if it.sticky or it._leaving:
-                continue
-            条 = self.bar_strip(it.w, it.h, it.level)
-            分 = it.progress()
-            if 分 <= 0.0:
-                continue
-            宽2 = max(1, int(条.width * min(1.0, 分)))
-            图.alpha_composite(条.crop((0, 0, 宽2, 条.height)),
-                               (0, int(it._y + it.dy) + it.h - 条.height))
-        x = rx + mw - px(self._MARGIN) - int(宽)
-        yy = ry + mh - px(self._MARGIN) - int(self._总高)
+            for it in self._items:
+                if it.sticky or it._leaving:
+                    continue
+                条 = self.bar_strip(it.w, it.h, it.level)
+                分 = it.progress()
+                if 分 <= 0.0:
+                    continue
+                宽2 = max(1, int(条.width * min(1.0, 分)))
+                图.alpha_composite(条.crop((0, 0, 宽2, 条.height)),
+                                   (0, int(it._y + it.dy) + it.h - 条.height))
         try:
             if not self.win.winfo_ismapped():
                 self.win.deiconify()
         except Exception:
             pass
-        if self.surf.upload(图, x, yy):
+        ok = (self.surf.upload(图, x, yy) if 图 is not None
+              else self.surf.upload_raw(buf, int(宽), int(高), x, yy))
+        if ok:
             self._last_pos = (x, yy)
         try:
             self.win.lift()
         except Exception:
             pass
 
+    def _条预乘(self, w, h, level):
+        """进度条整条的**预乘字节**（按 w/h/level 缓存），供拼帧时逐行拷贝。"""
+        键 = (int(w), int(h), level, self.palette())
+        项 = self._条缓存.get(键)
+        if 项 is None:
+            条 = self.bar_strip(w, h, level)
+            项 = (LayeredSurface.premult(条), 条.height)
+            self._条缓存[键] = 项
+        return 项
+
     def _on_master_configure(self, _e=None):
         try:
             self.win.after(20, self._ensure_tick)
         except Exception:
             pass
+
+    def _on_master_destroy(self, e=None):
+        """只有主窗口自己被销毁才收尾（子控件销毁也会冒泡到这里）。"""
+        try:
+            if e is not None and getattr(e, "widget", None) is not self.master:
+                return
+        except Exception:
+            pass
+        self.close()
+
+    def _master_可见(self):
+        """主窗口可见吗？收进托盘 / 最小化 / 已销毁都不算。"""
+        try:
+            if not self.master.winfo_exists():
+                return False
+            if self.master.state() == "iconic":
+                return False
+            return bool(self.master.winfo_viewable())
+        except Exception:
+            return False
 
     # ---------------------------------------------------------------- 交互
     def _on_click(self, e):
@@ -429,9 +502,24 @@ class ToastHost:
         return "break"
 
     def _warm(self):
+        """预热：把常用卡片图和字体缓存先建好，并**让窗口先映射一次**。
+
+        ⚠ 第一次 deiconify 一个新建的 Toplevel 要 20~30ms（建窗口 + 合成），
+        正好落在第一张吐司出现的那一帧上 —— 用户感觉就是"弹出来会顿一下"。
+        这里先贴一张 1x1 全透明图把窗口映射好，之后每次只是改内容。
+        """
         try:
             t = _Toast(self, "预热", "info", 1000, False)
             t.base()
+            for 级 in ("ok", "warn", "error"):
+                self.card_pil(t.w, t.h, 级, "预热")
+        except Exception:
+            pass
+        try:
+            from PIL import Image as _I
+            self.surf.upload(_I.new("RGBA", (1, 1), (0, 0, 0, 0)),
+                             self.master.winfo_rootx(), self.master.winfo_rooty())
+            self.win.deiconify()
         except Exception:
             pass
 
@@ -471,11 +559,7 @@ class _Toast:
     def base(self):
         """卡片底图（不含进度条），带缓存。"""
         if self._base is None:
-            self.host._当前文本 = self.text
-            try:
-                self._base = self.host.card_pil(self.w, self.h, self.level)
-            finally:
-                self.host._当前文本 = ""
+            self._base = self.host.card_pil(self.w, self.h, self.level, self.text)
         return self._base
 
     def compose(self, 画布, x, y):
