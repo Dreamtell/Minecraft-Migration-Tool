@@ -175,6 +175,7 @@ class ListsMixin:
         if not src_mods.exists():
             self.root.bell()
             self.log(trp("❌ 源 mods 目录不存在：{0}", src_mods), level="ERROR")
+            self.toast(trp("❌ 源 mods 目录不存在：{0}", src_mods), level="warn")
             return
 
         modlist_raw = self.mod_text.get(1.0, tk.END).splitlines()
@@ -218,6 +219,13 @@ class ListsMixin:
                 self.log(f"  - {m}", level="ERROR")
             if len(missing) > 50:
                 self.log(trp("  ... 还有 {0} 个未显示", len(missing) - 50), level="WARNING")
+
+        _重复 = sum(v - 1 for v in counts.values() if v > 1)
+        if missing or _重复:
+            self.toast(trp("⚠️ 模组清单有问题：缺 {0} 项 / 重复 {1} 行", len(missing), _重复),
+                       level="warn")
+        else:
+            self.toast(trp("✅ 模组清单检查完成：{0} 项全部存在", len(modlist)), level="ok")
 
         # 主界面临时闪烁高亮：存在=绿 / 缺失=红 / 重复=黄，1秒后自动恢复
         self._clear_mod_status()
@@ -354,6 +362,7 @@ class ListsMixin:
         if not src_config.exists():
             self.root.bell()
             self.log(trp("❌ 源 config 目录不存在：{0}", src_config), level="ERROR")
+            self.toast(trp("❌ 源 config 目录不存在：{0}", src_config), level="warn")
             return
 
         # 优先原生多选文件夹对话框（返回绝对路径）
@@ -592,6 +601,7 @@ class ListsMixin:
         if not src_config.exists():
             self.root.bell()
             self.log(trp("❌ 源 config 目录不存在：{0}", src_config), level="ERROR")
+            self.toast(trp("❌ 源 config 目录不存在：{0}", src_config), level="warn")
             return
 
         selected = filedialog.askopenfilenames(
@@ -920,6 +930,7 @@ class ListsMixin:
         if not base.exists():
             self.root.bell()
             self.log(trp("❌ 源整合包目录不存在：{0}", base), level="ERROR")
+            self.toast(trp("❌ 源整合包目录不存在：{0}", base), level="warn")
             return
 
         selected, native_ok = None, False
@@ -960,6 +971,7 @@ class ListsMixin:
         if not base.exists():
             self.root.bell()
             self.log(trp("❌ 源整合包目录不存在：{0}", base), level="ERROR")
+            self.toast(trp("❌ 源整合包目录不存在：{0}", base), level="warn")
             return
         selected = filedialog.askopenfilenames(
             title="请选择要一起带走的文件（可多选，相对整合包根目录）",
@@ -1027,6 +1039,7 @@ class ListsMixin:
         if not base.exists():
             self.root.bell()
             self.log(trp("❌ 源整合包目录不存在：{0}", base), level="ERROR")
+            self.toast(trp("❌ 源整合包目录不存在：{0}", base), level="warn")
             return
 
         entries = [l.strip() for l in self.extra_text.get("1.0", tk.END).splitlines()
@@ -1076,6 +1089,12 @@ class ListsMixin:
                 self.log(trp("  ... 还有 {0} 条未显示", missing - 50), level="WARNING")
         elif not duplicate:
             self.log("✅ 其它文件条目均存在且无重复。", level="SUCCESS")
+
+        if missing or duplicate:
+            self.toast(trp("⚠️ 其它文件清单有问题：缺 {0} 项 / 重复 {1} 行", missing, duplicate),
+                       level="warn")
+        else:
+            self.toast(trp("✅ 其它文件清单检查完成：{0} 项全部存在", len(entries)), level="ok")
 
         old = getattr(self, "_extra_flash_after", None)
         if old:
@@ -1261,6 +1280,7 @@ class ListsMixin:
         if not src_config.exists():
             self.root.bell()
             self.log(trp("❌ 源 config 目录不存在：{0}", src_config), level="ERROR")
+            self.toast(trp("❌ 源 config 目录不存在：{0}", src_config), level="warn")
             return
 
         # 先按源目录把文件夹条目补上末尾 "/"（便于区分，且与高亮/重复判定一致）
@@ -1314,6 +1334,12 @@ class ListsMixin:
                 self.log(trp("  ... 还有 {0} 条未显示", missing - 50), level="WARNING")
         elif not duplicate:
             self.log("✅ 所有 config 条目均存在且无重复。", level="SUCCESS")
+
+        if missing or duplicate:
+            self.toast(trp("⚠️ config 清单有问题：缺 {0} 项 / 重复 {1} 行", missing, duplicate),
+                       level="warn")
+        else:
+            self.toast(trp("✅ config 清单检查完成：{0} 项全部存在", len(entries)), level="ok")
 
         # 主界面临时闪烁高亮：1秒后自动恢复（清除颜色，回到普通文本）
         _flash_after = getattr(self, "_config_flash_after", None)

@@ -890,6 +890,8 @@ class BigViewMixin:
             self.log(trp("☑ 已{0}：当前显示 {1} 项，选中 {2} 项",
                          trp(_MODE_TEXT.get(mode, mode)), len(order), n),
                      level="INFO", save=False)
+            self.toast(trp("☑ 已{0}：当前显示 {1} 项，选中 {2} 项",
+                           trp(_MODE_TEXT.get(mode, mode)), len(order), n), level="ok")
 
         def open_mod_detail(row: int):
             """打开指定行对应模组的详情窗口（含 Modrinth 联网搜索）。"""
@@ -1241,6 +1243,7 @@ class BigViewMixin:
                 # 删掉的那一行在文本里就是 entry_idx+1，让它先淡出再重写
                 write_back(fade_out_lines=[entry_idx + 1])
                 self.log(trp("🗑 已从清单移除：{0}", name), level="WARNING", save=False)
+                self.toast(trp("🗑 已从清单移除：{0}", name), level="ok")
 
         def card_menu(i: int, event):
             """单行操作（详情/定位/移除）+ 批量勾选，省得去顶栏点。
@@ -1320,6 +1323,7 @@ class BigViewMixin:
                     btn_view.set_text("📋 表格视图")
                     self.log("🗂 已切到卡片视图（只读预览；勾选/编辑请切回表格）",
                              level="INFO", save=False)
+                    self.toast("🗂 已切到卡片视图（只读预览）", level="info")
                 else:
                     if card_state["list"] is not None:
                         card_state["list"].grid_remove()
@@ -1332,6 +1336,7 @@ class BigViewMixin:
                 except Exception:
                     pass
                 self.log(trp("⚠️ 卡片视图不可用：{0}", exc), level="WARNING", save=False)
+                self.toast("⚠️ 卡片视图不可用，已切回表格视图，详见日志", level="warn")
 
         btn_view = create_gradient_button(
             row_btns, "🗂 卡片视图", toggle_view,

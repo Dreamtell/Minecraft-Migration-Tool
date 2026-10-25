@@ -706,6 +706,7 @@ class SettingsMixin:
             self.toast(trp("📝 已打开配置文件：{0}", 路径), level="ok")
         except Exception as e:
             self.log(trp("❌ 打开配置文件失败：{0}", e), level="ERROR")
+            self.toast("❌ 打开配置文件失败，详见日志", level="warn")
 
     # ---------- 设置窗口里的按钮列表 ----------
     def _refresh_button_tree(self):
@@ -1224,6 +1225,7 @@ class SettingsMixin:
         else:
             self.log("❌ CurseForge API Key 保存失败：写不了 %s" % secrets.where_text(),
                      level="ERROR")
+            self.toast("❌ CurseForge API Key 保存失败，详见日志", level="warn")
 
     def _clear_cf_key(self):
         """删掉本机保存的 key。"""
@@ -1268,6 +1270,7 @@ class SettingsMixin:
             threading.Thread(target=跑, daemon=True).start()
         except Exception as e:
             self.log("❌ 起不了测试线程：%s" % secrets.redact_exc(e), level="ERROR")
+            self.toast("❌ 起不了测试线程，详见日志", level="warn")
 
     def _toggle_silent(self):
         """后台静默执行开关。"""

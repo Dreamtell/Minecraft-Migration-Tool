@@ -207,6 +207,7 @@ class QtMixin:
             pass
         self.log(trp("🗂 已打开 Qt 放大查看：{0}（{1} 项，独立进程）", title, len(entries)),
                  level="INFO", save=False)
+        self.toast(trp("🗂 已打开 Qt 放大查看：{0}（{1} 项）", title, len(entries)), level="info")
         return True
 
     def _open_diff_window(self, data, apply_callback):
@@ -240,8 +241,10 @@ class QtMixin:
                 pass
             self.log(trp("🗂 已打开 Qt 差异窗口（{0} 项，独立进程）", len(data)),
                      level="INFO", save=False)
+            self.toast(trp("🗂 已打开 Qt 差异窗口（{0} 项）", len(data)), level="info")
             return None
         self.log("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口", level="WARNING", save=False)
+        self.toast("⚠ Qt 子进程起不来，已改用进程内 Tk 差异窗口", level="warn")
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback,
                                             cards=_想卡片, env=self._instance_env())
@@ -310,6 +313,7 @@ class QtMixin:
             return True
         except Exception as e:
             self.log(trp("⚠ 无法启动 Qt 子进程：{0}", e), level="ERROR", save=False)
+            self.toast("⚠ 无法启动 Qt 子进程，详见日志", level="warn")
             return False
 
     def _send_qt_host_command(self, cmd, kind=None, 附加=None):

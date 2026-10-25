@@ -34,6 +34,7 @@ class PagesMixin:
             import webbrowser
             webbrowser.open_new_tab(url)
             self.log(trp("🔗 已打开链接：{0}", url), level="INFO", save=False)
+            self.toast(trp("🔗 已打开链接：{0}", url), level="info")
         except Exception as e:
             messagebox.showerror("打开失败", trp("无法打开链接：{0}", e), parent=self.settings_win)
 
