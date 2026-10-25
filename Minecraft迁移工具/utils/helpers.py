@@ -202,6 +202,13 @@ class SmoothScroller:
     只接管鼠标滚轮：拖滚动条、键盘翻页保持原样；连续滚轮只往目标累加，不互相打断。
     """
 
+    # 手感速度：1.0 = 原来按 12ms 标定的速度。调大 -> 每帧只走更小的一步，滑得更久更慢
+    # （时间常数按比例放大，形状不变）。
+    # 为什么要这个旋钮：帧率从 62 提到 229 之后，同样一格滚轮的**总耗时**从 97ms 掉到 76ms
+    # （实测，39px 一格），用户反馈"有点快了"。速度不该由帧率隐式决定，所以显式标定。
+    # 实测（一格 39px，4ms 排帧）：1.0 -> 76ms / 1.3 -> 约 99ms / 1.5 -> 约 114ms。
+    GLIDE_SCALE = 1.25
+
     def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=0.30,
                  bind_widgets=None, on_user_scroll=None, on_settle=None,
                  accel=0.45, max_step_ratio=0.6):
@@ -498,7 +505,7 @@ class SmoothScroller:
             dt = float(self.frame_ms)          # 计时器精度抖动，当成一个基准帧
         elif dt > self.frame_ms * 4:
             dt = float(self.frame_ms) * 4
-        ratio = dt / float(self.frame_ms or 12)
+        ratio = dt / (float(self.frame_ms or 12) * self.GLIDE_SCALE)
         # 换算规则：系数 a' = 1 - (1 - a) ** ratio，位移 v' = v * ratio。
         # ease 走幂律这一条，4ms 一帧连做 3 次正好等于 12ms 一帧做 1 次，于是**滚动
         # 速度与收敛时间跟原来 12ms 排帧一模一样**，只是切得更细；位移量（单帧限幅、
