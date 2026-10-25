@@ -164,7 +164,7 @@ class ToastHost:
 
     def card_pil(self, w, h, level):
         """圆角卡底（PIL 版，便于单测取像素）。"""
-        from PIL import Image, ImageDraw, ImageChops
+        from PIL import Image, ImageDraw
         S = 2
         fill, border, _fg = self.palette()
         条 = _LEVELS.get(level, _LEVELS["info"])[1]
@@ -174,15 +174,16 @@ class ToastHost:
         card = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(card).rounded_rectangle(box, radius=r, fill=fill,
                                                outline=border, width=S)
-        # 左侧等级色条 = **卡片轮廓 ∩ 左侧 4px**，让色条两端跟着卡片圆弧走。
-        # ⚠ 别写成"画一个 4px 宽的圆角矩形"：PIL 会把圆角半径夹到宽度的一半（=2px），
-        # 色条两端看着就是方头（用户报"左侧圆角化有问题"）。
-        sil = Image.new("L", (W, H), 0)
-        ImageDraw.Draw(sil).rounded_rectangle(box, radius=r, fill=255)
-        strip = Image.new("L", (W, H), 0)
-        ImageDraw.Draw(strip).rectangle([0, 0, px(4) * S - 1, H], fill=255)
-        强调 = Image.new("RGBA", (W, H), 条)
-        card.paste(强调, (0, 0), ImageChops.multiply(sil, strip))
+        # 左侧等级色条：**内缩的胶囊**（上下各留 px(3)，两端自己圆角）。
+        # 试过两种都不行：① 4px 宽的圆角矩形 —— PIL 把半径夹到宽度一半，端头是方的；
+        # ② 卡片轮廓 ∩ 左侧竖条 —— 端头被卡片圆弧削成月牙，看着发细。用户选了这一版。
+        内缩 = px(3) * S
+        条宽 = max(2, px(5) * S)
+        条高 = max(1, H - 内缩 * 2)
+        胶囊 = Image.new("RGBA", (条宽, 条高), (0, 0, 0, 0))
+        ImageDraw.Draw(胶囊).rounded_rectangle([0, 0, 条宽 - 1, 条高 - 1],
+                                               radius=条宽 // 2, fill=条)
+        card.paste(胶囊, (内缩, 内缩), 胶囊)
         return card.resize((w, h), Image.LANCZOS)
 
     def card_image(self, w, h, level):
