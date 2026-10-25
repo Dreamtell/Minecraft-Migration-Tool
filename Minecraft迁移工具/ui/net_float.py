@@ -1159,6 +1159,10 @@ class NetFloat:
         """
         if self._drag["on"]:
             return
+        # 几何变化招来的假 <Leave>：光标其实还在窗口上，别理它（见 _cursor_inside）
+        if self._docked and self.dock_enabled and self._peek and self._cursor_inside():
+            self._hover = True
+            return
         self._hover = False
         if self._docked and self.dock_enabled and self._peek:
             if self._collapse_job is None:
@@ -1168,6 +1172,26 @@ class NetFloat:
                     self._collapse_job = None
         elif not self._docked:
             self._redraw()
+
+    def _cursor_inside(self, 余量=2):
+        """光标是否**真的**还在浮标窗口里（GetCursorPos + 窗口矩形）。
+
+        ⚠ 别用 <Enter>/<Leave> 判断这件事：展开/收缩会改窗口矩形，Windows 在几何变化
+        时会再判一次 <Leave> —— 那是"假离开"。据它收缩就会进死循环：收缩 → 光标落回
+        标签 → <Enter> → 展开 → 假 <Leave> → 收缩……（实测光标**静止不动**时 2.2 秒里
+        换了 5 次形态、还发起 2 次收缩，看着就是不停闪）。180ms 延迟只是把它拖慢，
+        没根治；这里直接用真实光标位置做判定，几何变化骗不了它。
+        """
+        try:
+            pt = wintypes.POINT()
+            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                return False
+            ax, ay = self._abs_pos()
+            cw, ch = self._cur_size()
+            return ((ax - 余量) <= pt.x <= (ax + cw + 余量)
+                    and (ay - 余量) <= pt.y <= (ay + ch + 余量))
+        except Exception:
+            return False
 
     def _set_hint(self, edge, 持续=0.0):
         """设置/清除"将要收纳"的提示。持续>0 时会在一段时间后自动清除（松手确认用）。"""
@@ -1277,6 +1301,11 @@ class NetFloat:
     def _collapse_now(self):
         self._collapse_job = None
         if self._hover:                 # 期间又回来了
+            return
+        # 最后一道闸：收之前再问一次真实光标。_hover 可能被一串假 <Leave>/<Enter>
+        # 弄得来回翻，只有光标**确实**不在窗口上才允许收缩（见 _cursor_inside）。
+        if self._cursor_inside():
+            self._hover = True
             return
         if self._docked and self.dock_enabled and self._peek:
             self._peek = False
