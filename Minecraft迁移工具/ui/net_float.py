@@ -484,6 +484,10 @@ class NetFloat:
         # UpdateLayeredWindow 会一直返回 0（窗口只剩自己的底色 = 一块深色方块）。
         # "隐藏"改成把窗口挪到屏幕外 + alpha 0。
         self._parked = False
+        try:
+            root.bind("<Destroy>", self._on_root_destroy, add="+")
+        except Exception:
+            pass
         self._bind()
         self._menu()
         self._restore(x, y)
@@ -1622,8 +1626,30 @@ class NetFloat:
         elif not want:
             self._cancel_show()
 
+    def _on_root_destroy(self, e=None):
+        """只有主窗口自己被销毁才收尾（子控件销毁也会冒泡到这里）。"""
+        try:
+            if e is not None and getattr(e, "widget", None) is not self.root:
+                return
+        except Exception:
+            pass
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _tick(self):
         if self._stop:
+            return
+        # ⚠ 主窗口没了就自毁：浮标是独立顶层窗口（Toplevel + 分层/色键），
+        # 主窗口一旦销毁，它没了"该不该显示"的判据，会孤零零留在桌面上
+        # （用户报"主界面关闭了它还在"）。这里先兜一层，别指望调度顺序。
+        try:
+            if not self.root.winfo_exists():
+                self.close()
+                return
+        except Exception:
+            self.close()
             return
         try:
             self._sync_visibility()
