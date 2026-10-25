@@ -295,14 +295,16 @@ class _ToastItem:
                       font=("微软雅黑", 9))
         c.create_text(self._w - px(14), self._h // 2, anchor="e", text="✕",
                       fill=fg, font=("微软雅黑", 9))
-        # 进度条：**左右各内缩一个圆角半径**，两端不再戳到圆角外面
-        self._bar_x0 = px(11)
-        self._bar_x1 = self._w - px(11)
-        self._bar_y1 = self._h - px(1)
-        self._bar_y0 = self._h - px(3)
-        self._bar = c.create_rectangle(self._bar_x0, self._bar_y0,
-                                       self._bar_x1, self._bar_y1,
-                                       fill=色, outline="")
+        # 进度条：**铺满整条底边**（左右只留 3px），两端用圆头（capstyle=round）。
+        # 这样既占满底边，又不会像方形矩形那样在卡片圆角外露出两个绿角。
+        self._bar_x0 = px(3)
+        self._bar_x1 = self._w - px(3)
+        self._bar_y = self._h - px(2)
+        self._bar_w = max(2, px(3))
+        self._bar = c.create_line(self._bar_x0, self._bar_y,
+                                  self._bar_x1, self._bar_y,
+                                  width=self._bar_w, capstyle="round",
+                                  fill=色)
 
     # ---------------------------------------------------------------- 进度条
     def _drain(self):
@@ -319,7 +321,7 @@ class _ToastItem:
             已 = (time.perf_counter() - self.t0) * 1000.0
             余 = max(0.0, 1.0 - 已 / max(1, self.ms))
             x1 = self._bar_x0 + (self._bar_x1 - self._bar_x0) * 余
-            self.canvas.coords(self._bar, self._bar_x0, self._bar_y0, x1, self._bar_y1)
+            self.canvas.coords(self._bar, self._bar_x0, self._bar_y, x1, self._bar_y)
             if 余 <= 0.0:
                 self.destroy()
                 return
