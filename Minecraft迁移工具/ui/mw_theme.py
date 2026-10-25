@@ -396,7 +396,16 @@ class ThemeMixin:
         new_name = "dark" if self.current_theme == "light" else "light"
         new_theme = DARK_THEME if new_name == "dark" else LIGHT_THEME
 
+        已切 = [False]
+
         def do_switch():
+            # ⚠ 必须幂等：circular_reveal 会先调 on_switch(=本函数)，结束时又调
+            # on_done，而 done() 里**又调一次**本函数。没有这道闸，一次点主题按钮会
+            # 让 apply_theme 跑两次、save_config 跑四次、主题吐司弹两条
+            # （用户报的"消息会意外报两次"就是这么来的）。
+            if 已切[0]:
+                return
+            已切[0] = True
             self.current_theme = new_name
             self.theme = new_theme
             self.apply_theme()
