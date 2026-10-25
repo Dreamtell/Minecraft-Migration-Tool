@@ -154,8 +154,9 @@ class MigrationGUI(
         self._stage("正在构建界面…")
         self.create_widgets()
 
-        # 主窗口建好之后才建吐司容器：ToastHost 要 place 在 self.root 上，而此刻
-        # self.theme 已是字典（__init__ 开头按 current_theme 选好的 LIGHT/DARK）。
+        # 主窗口建好之后才建吐司容器：ToastHost 是个挂在 self.root 名下的无边框
+        # Toplevel（真透明圆角，见 ui/toast.py 开头那段），得等主窗口存在、能取到
+        # 它的位置才摆得对；此刻 self.theme 已是字典（__init__ 按 current_theme 选好的）
         # 建失败也不抛：吐司永远不该弄崩调用方。
         if ToastHost is not None:
             try:
