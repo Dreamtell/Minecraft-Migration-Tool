@@ -159,7 +159,11 @@ class ToastHost:
         dark = str(th.get("bg", "#ffffff")).lower() in (
             "#1e1e1e", "#202020", "#252525", "#2e2e2e", "#1b1b1b")
         if dark:
-            return ("#262626", "#3c3c3c", th.get("fg", "#e8e8e8"))
+            # ⚠ 深色下卡片底和窗口底必须拉开，否则**圆角看不出来**：
+            # #262626 贴在 #1e1e1e 上只差 8/255，四个圆角的过渡肉眼读成直角
+            # （用户报"卡片左边看着是直角，圆角没生效"——圆角是画了的，是看不见）。
+            # 现在底 #2e2e2e / 描边 #4d4d4d，轮廓能读出来。
+            return ("#2e2e2e", "#4d4d4d", th.get("fg", "#e8e8e8"))
         return ("#ffffff", "#d8d8d8", th.get("fg", "#222222"))
 
     def card_pil(self, w, h, level):
