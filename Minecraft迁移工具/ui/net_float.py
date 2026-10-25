@@ -898,17 +898,45 @@ class NetFloat:
 
         帧()
 
-    _MORPH_MS = 130        # 交叉溶解总时长
+    _MORPH_MS = 70         # 交叉溶解总时长（130 太拖；70ms 仍看得出是溶解不是硬跳）
 
     def _shape_img(self, size):
         """按尺寸取图标图（缓存）。换形态时两边的图都要，不能各渲染两次。"""
-        键 = (size, self._hint, self._hover, self.shadow, self.bg)
-        缓存 = self._shape_cache.get(size)
-        if 缓存 is not None and 缓存[0] == 键:
-            return 缓存[1]
+        # ⚠ 别把 _hover 放进键里：悬停进出时它会变，于是每次都命中不了缓存、
+        # 每次换形态都同步渲染两张图（实测 4~6 次 _image、16~18ms 的起步卡顿）。
+        # 两种悬停态由 _warm_shapes() 一次性预热。
+        # _hint 也不进键：形态图不需要提示环（提示环由 _hint_frame_list 单独上传），
+        # 带上它会让"收纳时亮一下边框"顺带把缓存打掉。
+        键 = (size, self._hover, self.shadow, self.bg)
+        图 = self._shape_cache.get(键)
+        if 图 is not None:
+            return 图
         图 = self._image()
-        self._shape_cache[size] = (键, 图)
-        return 图
+        self._shape_cache[键] = 图            # 键带悬停态：进出两种都要留住，
+        return 图                             # 只按尺寸存会被对方顶掉，等于白预热
+
+    def _warm_shapes(self):
+        """预热"两种形态 × 两种悬停态"的图标图（共 4 张，约 40ms，放在贴边后的空闲时刻）。
+
+        为什么要有：交叉溶解起步要拿到旧、新两张图，各一次 _image()（4~12ms）。
+        不预热时这一步就发生在鼠标刚碰上去的那一瞬 —— 实测每次换形态同步耗时
+        16~18ms、4~6 次 _image，也就是"反应有点慢"的第一下卡顿。
+        """
+        if not self._docked or getattr(self, "_warmed_for", None) == self._docked:
+            return
+        self._warmed_for = self._docked
+        try:
+            保持图, 保持悬 = self._peek, self._hover
+            try:
+                for 悬 in (False, True):
+                    self._hover = 悬
+                    for 展开 in (False, True):
+                        self._peek = 展开
+                        self._shape_img(self._cur_size())
+            finally:
+                self._peek, self._hover = 保持图, 保持悬
+        except Exception:
+            pass
 
     def _anchor_paste(self, img, box):
         """把 img 按贴边锚点摆进 box 大小的透明画布（右/下边对齐，其余靠左上）。"""
@@ -1297,7 +1325,9 @@ class NetFloat:
         except Exception:
             return False
 
-    _HOVER_POLL_MS = 120
+    _HOVER_POLL_MS = 60
+    # 离开后等这么久才收起：轮询已经在 60ms 内确认过光标位置了，不需要再留长缓冲
+    _COLLAPSE_DELAY_MS = 110
 
     def _hover_update(self):
         """按**真实光标位置**决定"展开 / 收起"。这是唯一的判定入口。"""
@@ -1321,7 +1351,8 @@ class NetFloat:
             self._hover = False
             if self._peek and self._collapse_job is None:
                 try:
-                    self._collapse_job = self.root.after(180, self._collapse_now)
+                    self._collapse_job = self.root.after(self._COLLAPSE_DELAY_MS,
+                                                         self._collapse_now)
                 except Exception:
                     self._collapse_job = None
 
@@ -1330,6 +1361,11 @@ class NetFloat:
             return                    # 轮询里又走到这儿，别开第二条链
         if self._hover_job is None and self._docked and not self._stop:
             self._poll_hover()
+        if getattr(self, "_warmed_for", None) != self._docked:
+            try:                       # 趁着用户还没碰，先把两张形态图渲染好
+                self.root.after(150, self._warm_shapes)
+            except Exception:
+                pass
 
     def _poll_hover(self):
         """贴边状态下每 120ms 巡一次真实光标。
