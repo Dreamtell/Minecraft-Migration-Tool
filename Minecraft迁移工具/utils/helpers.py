@@ -580,7 +580,13 @@ class SmoothScroller:
             self._settle()
             return
         try:
-            self._job = self.widget.after(anim.delay(self.widget), self._step)
+            # ⚠ 续帧要**扣掉本帧已经花掉的时间**：after(ms) 从"现在"起算，直接排 delay
+            # 会让周期变成"一帧的活 + delay"。设置页那种容器（画布 + 一整页控件）实测
+            # 一帧要 3ms（p95 5ms），周期于是在 4~9ms 之间抖 —— 看着就是卡顿。
+            # 扣时之后目标帧率才真能兑现（档案卡列表当初就是这么从 131fps 提到 214fps 的）。
+            用了 = (time.perf_counter() - now) * 1000.0
+            间隔 = anim.delay(self.widget)
+            self._job = self.widget.after(max(1, int(间隔 - 用了)), self._step)
         except Exception:
             self._abort("after(续帧)")
 
@@ -3586,12 +3592,18 @@ class OptionCards(tk.Canvas):
                 底 = tuple(int(c * 0.95 + 128 * 0.05) for c in 底)
             # 未选中的卡也要看得出是"一张卡"：描边取"底色与画布底之间"的灰
             边色 = tuple(int((c + b) / 2.0) for c, b in zip(底, 画布底))
-        图 = _圆角矩形((宽, 高), 9, 底)
+        # 圆角半径按行高取（原来是写死的 9）：卡片宽 800+ 而高只有 30 时，9px 的弧在
+        # 整条长边旁边几乎看不出来，观感就是"方角"（用户报"高亮边框圆角化缺失"）。
+        # 选中态再给 2px 描边，让"这是一张圆角卡片"一眼可读。
+        半径 = max(10, min(16, int(round(高 * 0.45))))
+        粗 = 2 if (选中 and self._enabled) else 1
+        图 = _圆角矩形((宽, 高), 半径, 底)
         if 边色 != 底:
             边 = _PILImage.new("RGBA", (宽, 高), (0, 0, 0, 0))
-            边.paste(_圆角矩形((宽, 高), 9, tuple(边色) + (255,)), (0, 0))
-            内 = _圆角矩形((max(1, 宽 - 2), max(1, 高 - 2)), 8, (0, 0, 0, 0))
-            边.paste(内, (1, 1))
+            边.paste(_圆角矩形((宽, 高), 半径, tuple(边色) + (255,)), (0, 0))
+            内 = _圆角矩形((max(1, 宽 - 2 * 粗), max(1, 高 - 2 * 粗)),
+                          max(1, 半径 - 粗), (0, 0, 0, 0))
+            边.paste(内, (粗, 粗))
             图.alpha_composite(边)
         self._cache[键] = 图
         return 图
