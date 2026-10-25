@@ -88,6 +88,13 @@ class ToastHost:
         self._master_bind = None
         self._bar_cache = {}
         self._card_cache = {}
+        self._tick_job = None
+        self._dirty = True
+        self._底 = None
+        self._总高 = 0
+        self._last_pos = (0, 0)
+        self._当前文本 = ""
+        self._指纹 = None
 
         self.win = tk.Toplevel(master)
         try:
@@ -147,48 +154,6 @@ class ToastHost:
             self.show(t, lv, ms, st)
 
     # ---------------------------------------------------------------- 对外
-    def show(self, text, level="info", ms=3000, sticky=None):
-        if self._closed:
-            return None
-        try:
-            text = str(text or "").strip()
-        except Exception:
-            text = ""
-        if not text:
-            return None
-        if level not in _LEVELS:
-            level = "info"
-        if sticky is None:
-            sticky = (level == "error")
-        try:
-            item = _Toast(self, text, level, int(ms), bool(sticky))
-        except Exception:
-            return None
-        item.dy = px(16)                  # 从下方滑上来
-        self._items.append(item)
-        while len(self._items) > self.max_items:
-            try:
-                self._items.pop(0).kill()
-            except Exception:
-                pass
-        self._render()
-        item.animate_to(0.0, item._IN_MS)
-        item.start()                       # 进度条开始走（走完自动 dismiss）
-        return item
-
-    def clear(self):
-        for it in list(self._items):
-            try:
-                it.kill()
-            except Exception:
-                pass
-        self._items = []
-        try:
-            self.win.withdraw()
-        except Exception:
-            pass
-
-    # ---------------------------------------------------------------- 配色
     def palette(self):
         """(卡片底, 描边, 文字色)。深色下必须和窗口底拉开，否则圆角读不出来。"""
         th = self.theme or {}
@@ -277,16 +242,116 @@ class ToastHost:
         self._bar_cache[键] = 条图
         return 条图
 
-    # ---------------------------------------------------------------- 排版/上传
-    def _render(self):
-        """重排整叠并贴到窗口上（内容变化时才调；挪位置只走 surf.move）。"""
+    # ---------------------------------------------------------------- 对外
+    def show(self, text, level="info", ms=3000, sticky=None):
+        if self._closed:
+            return None
+        try:
+            text = str(text or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            return None
+        if level not in _LEVELS:
+            level = "info"
+        if sticky is None:
+            sticky = (level == "error")
+        try:
+            item = _Toast(self, text, level, int(ms), bool(sticky))
+        except Exception:
+            return None
+        self._items.append(item)
+        while len(self._items) > self.max_items:
+            try:
+                self._items.pop(0).kill()
+            except Exception:
+                pass
+        self._layout(重排已有=True)      # 旧的往上让位（带过渡）
+        item.dy = px(16)                 # 新的从下方滑上来
+        item.animate(0.0, _Toast._IN_MS)
+        self._dirty = True
+        self._ensure_tick()
+        return item
+
+    def clear(self):
+        for it in list(self._items):
+            try:
+                it.kill()
+            except Exception:
+                pass
+        self._items = []
+        self._dirty = True
+        self._stop_tick()
+        try:
+            self.win.withdraw()
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------------- 排版/渲染
+    def _layout(self, 重排已有=False):
+        """算每条的目标 y（自下而上），并让已有条目平滑让位。"""
+        旧 = {id(it): it._y for it in self._items} if 重排已有 else {}
+        总高 = sum(it.h for it in self._items) + self._GAP * (len(self._items) - 1)
+        y = 总高
+        for it in self._items:
+            y -= it.h
+            it._y = y
+            y -= self._GAP
+        self._总高 = 总高
+        for it in self._items:
+            老 = 旧.get(id(it))
+            if 老 is None or it._leaving:
+                continue
+            差 = 老 - it._y
+            if abs(差) >= 0.5:
+                it.dy += 差
+                it.animate(0.0, _Toast._MOVE_MS)
+        self._dirty = True
+
+    def _ensure_tick(self):
+        if self._tick_job is None and self._items and not self._closed:
+            try:
+                self._tick_job = self.win.after(16, self._tick)
+            except Exception:
+                self._tick_job = None
+
+    def _stop_tick(self):
+        if self._tick_job is not None:
+            try:
+                self.win.after_cancel(self._tick_job)
+            except Exception:
+                pass
+            self._tick_job = None
+
+    def _tick(self):
+        """**唯一**的渲染循环：整栈每帧最多画一次（以前是每条吐司各跑一个
+        16ms 定时器、各自重画整栈 + UpdateLayeredWindow，4 条就是每帧画 4 次，
+        频繁弹出时直接把主线程压满 —— 用户报"进度条卡 / 整个程序卡"）。"""
+        self._tick_job = None
         if self._closed:
             return
+        现在 = time.perf_counter()
+        动画中 = False
+        for it in list(self._items):
+            if it._advance(现在):
+                动画中 = True
+        self._compose()
         if not self._items:
             try:
                 self.win.withdraw()
             except Exception:
                 pass
+            return
+        # 动画中最多 8ms 一帧（125fps 够顺滑）；只有进度条在走时 40ms 足够
+        间隔 = 8 if 动画中 else 40
+        try:
+            self._tick_job = self.win.after(max(4, int(间隔)), self._tick)
+        except Exception:
+            self._tick_job = None
+
+    def _compose(self):
+        """铺底图 + 贴进度条 + 上传。底图（卡片本身）只在变化时重建。"""
+        if self._closed or not self._items:
             return
         try:
             mw = self.master.winfo_width()
@@ -297,33 +362,58 @@ class ToastHost:
             return
         if mw <= 1 or mh <= 1:
             return
-        总高 = sum(it.h for it in self._items) + self._GAP * (len(self._items) - 1)
         宽 = max(it.w for it in self._items)
-        图 = Image.new("RGBA", (int(宽), int(总高 + px(self._PADB))), (0, 0, 0, 0))
-        y = 总高
+        高 = int(self._总高 + px(self._PADB))
+        # 内容真变了才重画+上传：进度条宽度是按整像素算的，3 秒的条一秒才变十几像素，
+        # 不必每帧都贴（否则同一张图被反复预乘 + UpdateLayeredWindow，白烧 CPU）
+        指纹 = (self._dirty, self._底 is None,
+                tuple((round(it._y + it.dy, 1), it.w) for it in self._items),
+                tuple(int(it.w * it.progress()) if not (it.sticky or it._leaving) else -1
+                      for it in self._items))
+        if (not self._dirty) and self._底 is not None and 指纹 == self._指纹:
+            return
+        self._指纹 = 指纹
+        # 底图只在"所有条目都静止（dy≈0）"时才缓存复用。
+        # ⚠ 别把动画中的 dy 烘焙进底图：那样卡片会冻在旧位置，只有进度条在动 ——
+        # 表现就是卡片错位/缺卡/底部多出一条游离的进度条（实测截图就是这个）。
+        静 = all(abs(it.dy) < 0.5 for it in self._items)
+        if 静 and (not self._dirty) and self._底 is not None and self._底.size == (宽, 高):
+            图 = self._底.copy()
+        else:
+            图 = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
+            for it in self._items:
+                it.compose(图, 0, int(it._y + it.dy))
+            if 静:
+                self._底 = 图.copy()
+                self._dirty = False
+        # 进度条：只把每条底部那几行贴上去（几像素高的条，成本可以忽略）
         for it in self._items:
-            y -= it.h
-            it.compose(图, 0, int(y + getattr(it, "dy", 0)))
-            y -= self._GAP
+            if it.sticky or it._leaving:
+                continue
+            条 = self.bar_strip(it.w, it.h, it.level)
+            分 = it.progress()
+            if 分 <= 0.0:
+                continue
+            宽2 = max(1, int(条.width * min(1.0, 分)))
+            图.alpha_composite(条.crop((0, 0, 宽2, 条.height)),
+                               (0, int(it._y + it.dy) + it.h - 条.height))
         x = rx + mw - px(self._MARGIN) - int(宽)
-        yy = ry + mh - px(self._MARGIN) - 总高
-        # 先让窗口显示出来再上传：withdraw 状态下的分层窗口收不到内容
+        yy = ry + mh - px(self._MARGIN) - int(self._总高)
         try:
             if not self.win.winfo_ismapped():
                 self.win.deiconify()
         except Exception:
             pass
-        if not self.surf.upload(图, x, yy):
-            return
+        if self.surf.upload(图, x, yy):
+            self._last_pos = (x, yy)
         try:
             self.win.lift()
         except Exception:
             pass
-        self._last_pos = (x, yy)
 
     def _on_master_configure(self, _e=None):
         try:
-            self.win.after(20, self._render)
+            self.win.after(20, self._ensure_tick)
         except Exception:
             pass
 
@@ -347,11 +437,11 @@ class ToastHost:
 
 
 class _Toast:
-    """一条吐司：自己渲染、自己管进度条和动画。"""
+    """一条吐司的数据。渲染和动画都由宿主那一个循环推进。"""
 
     _IN_MS = 150
     _OUT_MS = 120
-    _DRAIN_MS = 16
+    _MOVE_MS = 110
 
     def __init__(self, host, text, level, ms, sticky):
         self.host = host
@@ -362,8 +452,9 @@ class _Toast:
         self.gone = False
         self.t0 = time.perf_counter()
         self.dy = 0.0
-        self._drain_job = None
-        self._anim_job = None
+        self._y = 0.0
+        self._leaving = False
+        self._anim = None            # [起, 目标, t0, 时长, 结束后回调]
         self._base = None
         self.h = int(px(46))
         self.w = self._量宽()
@@ -388,118 +479,62 @@ class _Toast:
         return self._base
 
     def compose(self, 画布, x, y):
-        """把这一条贴到整叠图上（画布是 RGBA）。"""
-        图 = self.base()
-        画布.alpha_composite(图, (int(x), int(y)))
-        if self.sticky:
-            return
-        try:
-            余 = 1.0 - (time.perf_counter() - self.t0) * 1000.0 / max(1, self.ms)
-        except Exception:
-            余 = 1.0
-        if 余 <= 0.0:
-            return
-        条 = self.host.bar_strip(self.w, self.h, self.level)
-        宽 = max(1, int(条.width * min(1.0, 余)))
-        段 = 条.crop((0, 0, 宽, 条.height))
-        画布.alpha_composite(段, (int(x), int(y) + self.h - 条.height))
+        画布.alpha_composite(self.base(), (int(x), int(y)))
 
-    # ---------------------------------------------------------------- 进度
-    def _drain(self):
+    def progress(self):
+        if self.sticky or self.ms <= 0:
+            return 1.0 if self.sticky else 0.0
+        try:
+            return max(0.0, 1.0 - (time.perf_counter() - self.t0) * 1000.0 / self.ms)
+        except Exception:
+            return 1.0
+
+    # ---------------------------------------------------------------- 动画/计时
+    def animate(self, 目标, 时长, 结束后=None):
+        self._anim = [float(self.dy), float(目标), time.perf_counter(),
+                      max(1.0, float(时长)), 结束后]
+
+    def _advance(self, 现在):
+        """推进动画/判断到点。返回是否仍在动画中（宿主据此决定下一帧间隔）。"""
         if self.gone:
-            return
-        if self.sticky:
-            return
-        已 = (time.perf_counter() - self.t0) * 1000.0
-        if 已 >= self.ms:
-            self.dismiss()
-            return
-        self.host._render()
-        try:
-            self._drain_job = self.host.win.after(self._DRAIN_MS, self._drain)
-        except Exception:
-            self._drain_job = None
-
-    def start(self):
-        self._drain()
-
-    # ---------------------------------------------------------------- 动画
-    def animate_to(self, 目标, 时长):
-        self._cancel_anim()
-        起 = float(self.dy)
-        t0 = time.perf_counter()
-
-        def 帧():
-            if self.gone:
-                return
-            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / max(1.0, 时长))
+            return False
+        if self._anim is not None:
+            起, 目标, t0, 时长, 回调 = self._anim
+            k = min(1.0, (现在 - t0) * 1000.0 / 时长)
             self.dy = 起 + (目标 - 起) * (1 - (1 - k) ** 3)
-            self.host._render()
-            if k < 1.0:
-                try:
-                    self._anim_job = self.host.win.after(
-                        max(1, anim.frame_ms(self.host.win)), 帧)
-                except Exception:
-                    self._anim_job = None
-            else:
+            if k >= 1.0:
                 self.dy = 目标
-                self._anim_job = None
-
-        帧()
-
-    def _cancel_anim(self):
-        if self._anim_job is not None:
-            try:
-                self.host.win.after_cancel(self._anim_job)
-            except Exception:
-                pass
-            self._anim_job = None
+                self._anim = None
+                if 回调 is not None:
+                    try:
+                        回调()
+                    except Exception:
+                        pass
+            else:
+                return True
+        if not self.sticky and not self._leaving:
+            if (现在 - self.t0) * 1000.0 >= self.ms:
+                self.dismiss()
+                return True
+            return False
+        return self._anim is not None
 
     # ---------------------------------------------------------------- 回收
     def dismiss(self):
-        if self.gone:
+        if self.gone or self._leaving:
             return
-        if self._drain_job is not None:
-            try:
-                self.host.win.after_cancel(self._drain_job)
-            except Exception:
-                pass
-            self._drain_job = None
-        self._cancel_anim()
-        起 = float(self.dy)
-        t0 = time.perf_counter()
-
-        def 帧():
-            if self.gone:
-                return
-            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / self._OUT_MS)
-            self.dy = 起 + px(20) * (k * k)
-            self.host._render()
-            if k < 1.0:
-                try:
-                    self._anim_job = self.host.win.after(
-                        max(1, anim.frame_ms(self.host.win)), 帧)
-                except Exception:
-                    self._anim_job = None
-            else:
-                self.kill()
-
-        帧()
+        self._leaving = True
+        self.animate(px(20), self._OUT_MS, 结束后=self.kill)
 
     def kill(self):
         if self.gone:
             return
         self.gone = True
-        self._cancel_anim()
-        if self._drain_job is not None:
-            try:
-                self.host.win.after_cancel(self._drain_job)
-            except Exception:
-                pass
-            self._drain_job = None
+        self._anim = None
         try:
             if self in self.host._items:
                 self.host._items.remove(self)
         except Exception:
             pass
-        self.host._render()
+        self.host._layout()
+        self.host._ensure_tick()

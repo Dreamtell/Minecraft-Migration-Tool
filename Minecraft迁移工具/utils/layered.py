@@ -93,22 +93,19 @@ class LayeredSurface:
         if not self._refresh():
             return False
         try:
-            from PIL import Image
-        except Exception:
-            return False
-        try:
+            from PIL import Image, ImageChops
             img = img.convert("RGBA")
             w, h = img.size
             if w <= 0 or h <= 0:
                 return False
-            buf = bytearray(img.tobytes("raw", "BGRA"))
-            # 预乘 alpha：ULW 用的是 AC_SRC_ALPHA，不预乘边缘会发白发灰
-            for i in range(0, len(buf), 4):
-                a = buf[i + 3]
-                if a != 255:
-                    buf[i] = buf[i] * a // 255
-                    buf[i + 1] = buf[i + 1] * a // 255
-                    buf[i + 2] = buf[i + 2] * a // 255
+            # 预乘 alpha：ULW 用的是 AC_SRC_ALPHA，不预乘边缘会发白发灰。
+            # ⚠ 必须用 ImageChops.multiply（C 实现，(a*b)/255 正好是预乘）——
+            # 以前是在 Python 里逐像素循环 8 万次，单帧就 5.9ms，吐司一动就卡住主线程
+            # （用户报"进度条卡 / 整个程序卡"）。
+            甲 = img.getchannel("A")
+            红, 绿, 蓝 = (ImageChops.multiply(c, 甲) for c in img.split()[:3])
+            预 = Image.merge("RGBA", (红, 绿, 蓝, 甲))
+            buf = bytearray(预.tobytes("raw", "BGRA"))
             u = ctypes.windll.user32
             g = ctypes.windll.gdi32
             hdc_screen = u.GetDC(0)
