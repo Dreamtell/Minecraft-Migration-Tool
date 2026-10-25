@@ -33,6 +33,7 @@ import time
 import tkinter as tk
 from ctypes import wintypes
 
+from utils import anim
 from utils.dpi import px
 
 # 联网正常 → 绿色主题；探测不通 → 红色主题（整个浮标跟着变色，不只是环）
@@ -416,6 +417,7 @@ class NetFloat:
         self._alpha = 255          # 整体不透明度（淡入淡出用）
         self._fade_job = None
         self._fade_token = 0
+        self._fade_hr = False       # 是否占着 1ms 定时器精度（见 _fade_to）
         self._show_job = None
         self._SHOW_DELAY = 150      # 主窗口出现后等这么久再露面（对齐系统显示动画）
         self._peek = False
@@ -618,7 +620,13 @@ class NetFloat:
         pt_dst = wintypes.POINT(int(x), int(y))
         pt_src = wintypes.POINT(0, 0)
         size = wintypes.SIZE(w, h)
-        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
+        # ⚠ 这里是 ULW 的 SourceConstantAlpha，必须用当前 _alpha：以前写死 255，
+        # 于是 _fade_to() 只改 self._alpha 却合成不出任何变化 —— 实测同一窗口
+        # alpha=255/0/128 截屏像素完全一致，也就是"溶解式换形态"用的是硬切，
+        # 收纳时看着就是闪一下。（同文件的 _EdgeGlow._blit 一直是正确写法。）
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0,
+                               max(0, min(255, int(getattr(self, "_alpha", 255)))),
+                               _AC_SRC_ALPHA)
         u.UpdateLayeredWindow(self._hwnd, hdc_screen, ctypes.byref(pt_dst),
                               ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
                               0, ctypes.byref(blend), _ULW_ALPHA)
@@ -806,6 +814,12 @@ class NetFloat:
 
         Windows 的最小化/还原本身有 ~200ms 的动画，浮标如果"啪"地消失/出现，
         就会和主窗口一前一后错开，看起来很生硬。
+
+        ⚠ 两处别改回去：
+        1. 必须按**真实经过时间**插值。以前是 after(16) + 固定步数（步=时长/16），
+           而真 mainloop 里 after(16) 有一半的帧会滑到 31ms（15.6ms 定时器粒度，
+           见 utils/anim.py），于是 45ms 的淡出实际只有 2~3 帧还时快时慢 —— 看着就是闪。
+        2. 必须让 _blit 用上 _alpha（见 _blit 的注释），否则这里怎么算都不生效。
         """
         self._fade_token += 1
         令 = self._fade_token
@@ -816,32 +830,60 @@ class NetFloat:
                 pass
             self._fade_job = None
         起 = self._alpha
-        步 = max(1, int(时长 / 16))
+        t0 = time.perf_counter()
+        总 = max(1.0, float(时长))
+        # 每条淡入淡出自己一对 hold/release（先还旧的再占新的）。不这么做的话，
+        # 上一条链的收尾会把**新链**占着的定时器精度还掉，新链于是掉回 15.6ms 粒度、
+        # 帧间隔变得忽长忽短 —— 又回到"闪"的老样子。
+        if self._fade_hr:
+            self._fade_hr = False
+            try:
+                anim.release()
+            except Exception:
+                pass
+        self._fade_hr = True
+        try:
+            anim.hold()              # 淡入淡出这几百毫秒要毫秒级定时器，见 anim.py
+        except Exception:
+            pass
 
-        def 帧(i):
+        def 结束(谁=None):
+            if 谁 is not None and 谁 != self._fade_token:
+                return               # 已经换成新的一条链了，别动它的占用
+            self._fade_job = None
+            if self._fade_hr:
+                self._fade_hr = False
+                try:
+                    anim.release()
+                except Exception:
+                    pass
+
+        def 帧():
             if 令 != self._fade_token or self._stop:
+                结束(令)
                 return
-            self._alpha = int(起 + (目标 - 起) * (i / 步))
+            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / 总)
+            self._alpha = int(round(起 + (目标 - 起) * k))
             try:
                 if self._dib:
                     self._blit(self._dib, *self._abs_pos())
             except Exception:
                 pass
-            if i < 步:
+            if k < 1.0:
                 try:
-                    self._fade_job = self.root.after(16, lambda: 帧(i + 1))
+                    self._fade_job = self.root.after(anim.frame_ms(self.win), 帧)
                 except Exception:
-                    self._fade_job = None
+                    结束(令)
             else:
                 self._alpha = 目标
-                self._fade_job = None
+                结束(令)
                 if 完成:
                     try:
                         完成()
                     except Exception:
                         pass
 
-        帧(0)
+        帧()
 
     def _redraw_faded(self):
         """换形态（圆 ⇄ 小标签）时用淡出-换图-淡入，而不是直接"啪"地改尺寸。"""
