@@ -422,7 +422,13 @@ class ThemeMixin:
 
         self._theme_animating = True
         # 覆盖层把旧界面盖住之后，才真正切换主题（详见 circular_reveal 的说明）
-        circular_reveal(self.root, cx, cy, on_switch=do_switch, on_done=done)
+        #
+        # 600ms / 3ms 间隔（≈83 帧、136fps）是实测挑出来的：
+        #   · 时长：390ms 太快（用户反馈"太快了"），600ms 才是原来那版的观感长度；
+        #   · 帧率：SetWindowRgn 每帧的重绘成本取决于**这一帧新露出的面积**，帧越密面积越小，
+        #     所以加帧几乎不额外花钱 —— 22 帧 53fps → 83 帧 136fps，总时长都是 601ms。
+        circular_reveal(self.root, cx, cy, on_switch=do_switch, on_done=done,
+                        interval=3, duration_ms=600)
 
     # ---------- 工具函数 ----------
     # ---------- 设置 ----------
