@@ -202,7 +202,18 @@ class ToastHost:
         ImageDraw.Draw(胶囊).rounded_rectangle([0, 0, 条宽 - 1, 条高 - 1],
                                                radius=条宽 // 2, fill=条)
         card.paste(胶囊, (内缩, 内缩), 胶囊)
-        return card.resize((w, h), Image.LANCZOS)
+        出 = card.resize((w, h), Image.LANCZOS)
+        # ⚠ 边缘半透明像素在 -transparentcolor 下**不会变透明**，而是和近黑的键色
+        # 混合 → 整条圆角边糊一圈暗毛边（用户："圆角化不彻底"）。
+        # 两步处理（都必须在缩放之后，否则重采样又把 alpha 拉回半透明）：
+        #   1) 把这些边缘像素的颜色换成描边色 —— 它们看起来就是卡片自己的一圈边，
+        #      而不是和键色混出来的脏灰；
+        #   2) 再把 alpha 置成不透明，键色一个都不剩。
+        甲 = 出.getchannel("A")
+        边 = 甲.point(lambda v: 255 if 0 < v < 255 else 0)
+        出 = Image.composite(Image.new("RGBA", 出.size, border), 出, 边)
+        出.putalpha(甲.point(lambda v: 255 if v >= 110 else 0))
+        return 出
 
     def palette(self):
         """(卡片底, 描边, 文字色)。深色下必须和窗口底拉开，否则圆角读不出来。"""
