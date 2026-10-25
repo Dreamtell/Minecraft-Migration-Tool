@@ -153,24 +153,35 @@ class ToastHost:
             return ("#262626", "#3c3c3c", th.get("fg", "#e8e8e8"))
         return ("#ffffff", "#d8d8d8", th.get("fg", "#222222"))
 
+    def card_pil(self, w, h, level):
+        """圆角卡底（PIL 版，便于单测取像素）。"""
+        from PIL import Image, ImageDraw
+        S = 2
+        fill, border, _fg = self.palette()
+        条 = _LEVELS.get(level, _LEVELS["info"])[1]
+        W, H = w * S, h * S
+        box = [0, 0, W - 1, H - 1]
+        r = px(10) * S
+        # 左侧等级色条：先画整块圆角条色，再把"圆角卡片"贴在它上面、只让出左边 4px。
+        # ⚠ 别用"整块圆角 + 方形矩形盖住右边"的老写法：那个矩形会把右侧圆角盖成直角。
+        bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(bar).rounded_rectangle(box, radius=r, fill=条)
+        card = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(card).rounded_rectangle(box, radius=r, fill=fill,
+                                               outline=border, width=S)
+        mask = Image.new("L", (W, H), 255)
+        ImageDraw.Draw(mask).rectangle([0, 0, px(4) * S - 1, H], fill=0)
+        bar.paste(card, (0, 0), mask)
+        return bar.resize((w, h), Image.LANCZOS)
+
     def card_image(self, w, h, level):
-        """圆角卡底（按宽度缓存）。"""
+        """圆角卡底（按宽度缓存成 PhotoImage）。"""
         key = (int(w), int(h), level, self.palette())
         img = self._imgs.get(key)
         if img is not None:
             return img
-        from PIL import Image, ImageDraw, ImageTk
-        S = 2
-        fill, border, _fg = self.palette()
-        im = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
-        d = ImageDraw.Draw(im)
-        条 = _LEVELS.get(level, _LEVELS["info"])[1]
-        d.rounded_rectangle([0, 0, w * S - 1, h * S - 1], radius=px(10) * S,
-                            fill=fill, outline=border, width=S)
-        # 左侧等级色条（4px）：先铺满圆角，再用卡片色盖掉右边，只留左边一条
-        d.rounded_rectangle([0, 0, w * S - 1, h * S - 1], radius=px(10) * S, fill=条)
-        d.rectangle([px(4) * S, 0, w * S, h * S], fill=fill)
-        img = ImageTk.PhotoImage(im.resize((w, h), Image.LANCZOS))
+        from PIL import ImageTk
+        img = ImageTk.PhotoImage(self.card_pil(w, h, level))
         self._imgs[key] = img
         return img
 
