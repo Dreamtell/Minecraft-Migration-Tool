@@ -20,6 +20,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 
+from utils import anim
 from utils.dpi import px
 
 _LEVELS = {
@@ -83,12 +84,13 @@ class ToastHost:
             sticky = (level == "error")
         try:
             item = _ToastItem(self, text, level, int(ms), bool(sticky))
+            item._new = True
         except Exception:
             return None
         self._items.append(item)
         while len(self._items) > self.max_items:
             try:
-                self._items.pop(0).destroy()
+                self._items.pop(0).destroy(animate=False)
             except Exception:
                 pass
         self._relayout(animate=True)
@@ -97,7 +99,7 @@ class ToastHost:
     def clear(self):
         for it in list(self._items):
             try:
-                it.destroy()
+                it.destroy(animate=False)
             except Exception:
                 pass
         self._items = []
@@ -140,7 +142,14 @@ class ToastHost:
             w, h = it.size()
             y -= h
             x = mw - px(self._MARGIN) - w
-            it.place(x, y)
+            if getattr(it, "_new", False):
+                # 新卡：先放到目标位下方 16px，再滑上去（"冒出来"而不是"啪一下出现"）
+                it._new = False
+                it._x, it._y = x, y + px(16)
+                it._place()
+                it.move_to(x, y, animate=True)
+            else:
+                it.move_to(x, y, animate=True)      # 给新来的让位：平滑上移
             y -= px(self._GAP)
 
     # ---------------------------------------------------------------- 配色/位图
@@ -187,10 +196,21 @@ class ToastHost:
 
 
 class _ToastItem:
-    """一条吐司。自己管自己的进度条和计时。"""
+    """一条吐司：自己管进度条、入场/出场、以及堆叠时的移动动画。
+
+    ⚠ 三处不能退回去（都是实测被用户指出来的）：
+    1. 进度条**必须内缩**。原来画的是整宽矩形（x 从 0 到 width），两端是直角还压在
+       卡片的圆角上 —— 截图上就是一根方头绿条戳在圆角外面。
+    2. 进度条**必须按帧平滑缩**。原来是 50ms 一跳（20fps），肉眼能看到它一格一格掉。
+    3. 出入场**必须有动画**。原来 place() 直接定位、结束直接 destroy，卡片是"啪"地
+       出现和消失，观感生硬（用户原话"不流畅不灵动"）。
+    """
 
     _H = 46               # 设计高度
-    _PAD = 12
+    _IN_MS = 150          # 入场：从下方滑上来
+    _OUT_MS = 110         # 出场：向下滑走
+    _MOVE_MS = 110        # 堆叠重排时其它卡片的让位
+    _DRAIN_MS = 16        # 进度条刷新（≈60fps，一次只有一次 canvas.coords）
 
     def __init__(self, host, text, level, ms, sticky):
         self.host = host
@@ -201,18 +221,35 @@ class _ToastItem:
         self.gone = False
         self.t0 = time.perf_counter()
         self._drain_job = None
-        self._slide_job = None
-
+        self._move_job = None
+        self._x = 0
+        self._y = 0
         self._w = 0
         self._h = 0
 
         import tkinter as _tk
-        self.frame = _tk.Frame(host.master, bd=0, highlightthickness=0)
-        self.canvas = _tk.Canvas(self.frame, bd=0, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        # ⚠ 尺寸顺序不能颠倒：先量出 (w,h)，再让 Canvas 用这个尺寸建、并且**不许
+        # pack(fill="both", expand=True)**。否则画布会把它自己的默认尺寸（472x331）
+        # 反向传给 Frame，Frame 变成一个巨大的不透明灰框 —— 卡片只画在左上角，
+        # 其余部分把下面几条吐司全盖住（用户截图里"只有一条 + 周围一片灰"就是这个）。
+        self._measure()
+        self.frame = _tk.Frame(host.master, bd=0, highlightthickness=0,
+                               width=self._w, height=self._h)
+        try:
+            self.frame.pack_propagate(False)
+        except Exception:
+            pass
+        底 = None
+        try:
+            底 = host.master.cget("bg")
+        except Exception:
+            底 = None
+        self.canvas = _tk.Canvas(self.frame, bd=0, highlightthickness=0,
+                                 width=self._w, height=self._h,
+                                 bg=底 or host.palette()[0])
+        self.canvas.pack()
         self.canvas.bind("<Button-1>", self._on_click)
 
-        self._measure()
         self._draw()
         self._drain()
 
@@ -240,6 +277,7 @@ class _ToastItem:
     def size(self):
         return self._w, self._h
 
+    # ---------------------------------------------------------------- 绘制
     def _draw(self):
         c = self.canvas
         try:
@@ -251,19 +289,24 @@ class _ToastItem:
         c.create_image(0, 0, anchor="nw", image=img)
         图, 色 = _LEVELS.get(self.level, _LEVELS["info"])
         _fill, _border, fg = self.host.palette()
-        c.create_text(px(20), self._h // 2, anchor="w", text=图, fill=色,
+        c.create_text(px(22), self._h // 2, anchor="w", text=图, fill=色,
                       font=("微软雅黑", 10, "bold"))
-        c.create_text(px(40), self._h // 2, anchor="w", text=self.text, fill=fg,
+        c.create_text(px(42), self._h // 2, anchor="w", text=self.text, fill=fg,
                       font=("微软雅黑", 9))
-        # 右上角 ×
         c.create_text(self._w - px(14), self._h // 2, anchor="e", text="✕",
                       fill=fg, font=("微软雅黑", 9))
-        # 底部进度条（占满时不可见，随进度缩短）
-        self._bar = c.create_rectangle(0, self._h - px(3), self._w,
-                                       self._h, fill=色, outline="")
+        # 进度条：**左右各内缩一个圆角半径**，两端不再戳到圆角外面
+        self._bar_x0 = px(11)
+        self._bar_x1 = self._w - px(11)
+        self._bar_y1 = self._h - px(1)
+        self._bar_y0 = self._h - px(3)
+        self._bar = c.create_rectangle(self._bar_x0, self._bar_y0,
+                                       self._bar_x1, self._bar_y1,
+                                       fill=色, outline="")
 
-    # ---------------------------------------------------------------- 动画
+    # ---------------------------------------------------------------- 进度条
     def _drain(self):
+        """进度条按帧平滑缩（不是"沙漏"，用户要看得出它在走）。"""
         if self.gone:
             return
         if self.sticky:
@@ -275,18 +318,60 @@ class _ToastItem:
         try:
             已 = (time.perf_counter() - self.t0) * 1000.0
             余 = max(0.0, 1.0 - 已 / max(1, self.ms))
-            self.canvas.coords(self._bar, 0, self._h - px(3),
-                               int(self._w * 余), self._h)
+            x1 = self._bar_x0 + (self._bar_x1 - self._bar_x0) * 余
+            self.canvas.coords(self._bar, self._bar_x0, self._bar_y0, x1, self._bar_y1)
             if 余 <= 0.0:
                 self.destroy()
                 return
-            self._drain_job = self.canvas.after(self.host._DRAIN_MS, self._drain)
+            self._drain_job = self.canvas.after(self._DRAIN_MS, self._drain)
         except Exception:
             self._drain_job = None
 
-    def place(self, x, y):
+    # ---------------------------------------------------------------- 位置/动画
+    def move_to(self, x, y, animate=True):
+        """移到目标位置。入场与堆叠让位共用这一条动画（ease-out，按真实时间）。"""
+        tx, ty = int(x), int(y)
+        if self.gone:
+            return
+        if not animate:
+            self._x, self._y = tx, ty
+            self._place()
+            return
+        fx, fy = self._x, self._y
+        t0 = time.perf_counter()
+        总 = float(self._IN_MS if (fx == 0 and fy == 0) else self._MOVE_MS)
+        if self._move_job is not None:
+            try:
+                self.canvas.after_cancel(self._move_job)
+            except Exception:
+                pass
+            self._move_job = None
+            fx, fy = self._x, self._y
+
+        def 帧():
+            if self.gone:
+                return
+            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / 总)
+            缓 = 1 - (1 - k) ** 3
+            self._x = fx + (tx - fx) * 缓
+            self._y = fy + (ty - fy) * 缓
+            self._place()
+            if k < 1.0:
+                try:
+                    self._move_job = self.canvas.after(max(1, anim.frame_ms(self.canvas)), 帧)
+                except Exception:
+                    self._move_job = None
+            else:
+                self._x, self._y = tx, ty
+                self._place()
+                self._move_job = None
+
+        self._place()
+        帧()
+
+    def _place(self):
         try:
-            self.frame.place(x=int(x), y=int(y))
+            self.frame.place(x=int(self._x), y=int(self._y))
             self.frame.lift()
         except Exception:
             pass
@@ -295,16 +380,42 @@ class _ToastItem:
         self.destroy()
         return "break"
 
-    def destroy(self):
+    # ---------------------------------------------------------------- 回收
+    def destroy(self, animate=True):
+        """向下滑走再销毁（没动画的话卡片是"啪"地消失）。"""
         if self.gone:
             return
-        self.gone = True
-        for job in (self._drain_job, self._slide_job):
+        for job in (self._drain_job, self._move_job):
             if job is not None:
                 try:
                     self.canvas.after_cancel(job)
                 except Exception:
                     pass
+        self._drain_job = None
+        self._move_job = None
+        if not animate:
+            self._finish()
+            return
+        t0 = time.perf_counter()
+        fy = self._y
+
+        def 帧():
+            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / self._OUT_MS)
+            缓 = k * k                      # ease-in：先慢后快，像被"抽走"
+            self._y = fy + px(18) * 缓
+            self._place()
+            if k < 1.0:
+                try:
+                    self._move_job = self.canvas.after(max(1, anim.frame_ms(self.canvas)), 帧)
+                except Exception:
+                    self._move_job = None
+            else:
+                self._finish()
+
+        帧()
+
+    def _finish(self):
+        self.gone = True
         try:
             self.frame.place_forget()
             self.frame.destroy()
