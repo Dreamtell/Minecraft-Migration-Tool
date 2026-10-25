@@ -295,16 +295,20 @@ class _ToastItem:
                       font=("微软雅黑", 9))
         c.create_text(self._w - px(14), self._h // 2, anchor="e", text="✕",
                       fill=fg, font=("微软雅黑", 9))
-        # 进度条：**铺满整条底边**（左右只留 3px），两端用圆头（capstyle=round）。
-        # 这样既占满底边，又不会像方形矩形那样在卡片圆角外露出两个绿角。
-        self._bar_x0 = px(3)
-        self._bar_x1 = self._w - px(3)
-        self._bar_y = self._h - px(2)
-        self._bar_w = max(2, px(3))
-        self._bar = c.create_line(self._bar_x0, self._bar_y,
-                                  self._bar_x1, self._bar_y,
-                                  width=self._bar_w, capstyle="round",
-                                  fill=色)
+        # 进度条：铺满整条底边，但**按卡片底部的圆角裁剪**。
+        # 一条直线贴着底边走，在两端圆弧处会戳到卡片轮廓外（用户报"没兼容圆角化"）。
+        # 做法：拆成 3 行 1px 线段，每行按"该高度上圆弧的内缩量"左右各缩进一点，
+        # 于是整条进度条始终落在卡片轮廓里。
+        半径 = px(10)
+        self._bar_rows = []
+        for 距底 in (0.5, 1.5, 2.5):
+            y = self._h - 距底
+            弧 = max(0.0, 半径 - 距底)
+            内缩 = 半径 - (max(0.0, 半径 ** 2 - 弧 ** 2)) ** 0.5
+            x0 = 内缩
+            iid = c.create_line(x0, y, self._w - x0, y, width=1,
+                                capstyle="butt", fill=色)
+            self._bar_rows.append((iid, x0, y))
 
     # ---------------------------------------------------------------- 进度条
     def _drain(self):
@@ -313,15 +317,17 @@ class _ToastItem:
             return
         if self.sticky:
             try:
-                self.canvas.itemconfigure(self._bar, state="hidden")
+                for iid, _x0, _y in self._bar_rows:
+                    self.canvas.itemconfigure(iid, state="hidden")
             except Exception:
                 pass
             return
         try:
             已 = (time.perf_counter() - self.t0) * 1000.0
             余 = max(0.0, 1.0 - 已 / max(1, self.ms))
-            x1 = self._bar_x0 + (self._bar_x1 - self._bar_x0) * 余
-            self.canvas.coords(self._bar, self._bar_x0, self._bar_y, x1, self._bar_y)
+            for iid, x0, y in self._bar_rows:
+                x1 = x0 + (self._w - 2 * x0) * 余
+                self.canvas.coords(iid, x0, y, x1, y)
             if 余 <= 0.0:
                 self.destroy()
                 return
