@@ -235,10 +235,10 @@ class ToastHost:
             y -= it.h
             it.draw(self.canvas, 0, y)
             y -= self._GAP
-        try:
-            self.win.geometry("%dx%d" % (int(宽), int(总高 + self._pad)))
-        except Exception:
-            pass
+        # ⚠ 尺寸要**自己记下来**，定位时别去问 winfo_width/height：geometry() 是
+        # 异步生效的，紧接着读会拿到旧尺寸（实测拿到 325，而实际应是 86），
+        # 于是位置算歪 —— 吐司会飘到离窗口底 265px 的地方（用户报"位置异常"）。
+        self._size = (int(宽), int(总高 + self._pad))
         self._sync_pos()
         try:
             self.win.deiconify()
@@ -260,14 +260,17 @@ class ToastHost:
             mh = self.master.winfo_height()
             if mw <= 1 or mh <= 1:
                 return
-            w = self.win.winfo_width()
-            h = self.win.winfo_height()
+            尺寸 = getattr(self, "_size", None)
+            if not 尺寸:
+                return
+            w, h = 尺寸
             # 窗口比"整叠"高出底部那点滑动余量：定位时把余量扣掉，
             # 这样视觉上整叠的底边才真的贴着 MARGIN。
             余 = getattr(self, "_pad", 0)
             x = self.master.winfo_rootx() + mw - px(self._MARGIN) - w
             y = self.master.winfo_rooty() + mh - px(self._MARGIN) - (h - 余)
-            self.win.geometry("+%d+%d" % (int(x), int(y)))
+            # 尺寸和位置一次给全，避免"先设尺寸、再按旧尺寸算位置"
+            self.win.geometry("%dx%d+%d+%d" % (w, h, int(x), int(y)))
             if not self.win.winfo_ismapped():
                 self.win.deiconify()
             self.win.lift()
