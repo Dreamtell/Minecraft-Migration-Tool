@@ -374,6 +374,21 @@ class ThemeMixin:
         """切换主题：先做一个从触发点向外扩散的圆形过渡，动画结束再真正换配色。"""
         if getattr(self, "_theme_animating", False):
             return                      # 动画进行中，忽略重复点击
+        # 兜底清理：上一次揭示若走异常路径没销毁覆盖层，它会一直盖着旧主题的截图
+        # （表现就是"整个窗口灰/暗了一层、点什么都不恢复"）。开新的之前先扫掉。
+        try:
+            def _清孤儿(w):
+                for ch in list(w.winfo_children()):
+                    if getattr(ch, "_is_theme_overlay", False):
+                        try:
+                            ch.destroy()
+                        except Exception:
+                            pass
+                    else:
+                        _清孤儿(ch)
+            _清孤儿(self.root)
+        except Exception:
+            pass
         new_name = "dark" if self.current_theme == "light" else "light"
         new_theme = DARK_THEME if new_name == "dark" else LIGHT_THEME
 

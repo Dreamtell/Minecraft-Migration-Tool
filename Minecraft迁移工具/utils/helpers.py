@@ -2315,6 +2315,21 @@ def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=
                     pass
                 finish()
 
+        # 兜底：动画链万一断掉（after 排不上、异常吞在别处），这块覆盖层就会**永远**盖着
+        # 旧主题的截图 —— 用户看到的正是"整个窗口灰/暗了一层，怎么点都不恢复"。
+        # 所以到点无条件销毁一次（幂等）。
+        def _兜底销毁():
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+            finish()
+
+        try:
+            ov.after(int(总时长) + 1500, _兜底销毁)
+        except Exception:
+            pass
+
         ov.after(interval, tick)
         return ov
     except Exception:
