@@ -301,22 +301,29 @@ class LockMixin:
             # 吃掉落在遮罩上的鼠标/滚轮/按键 —— 而且**连同遮罩内部的所有控件**一起绑。
             # 只绑 ov 是不够的：点击会先命中**点到的那个子控件**（日志框占了半屏，最常被点），
             # 由它自己处理（获得焦点、开始选择、触发平滑滚动重绘），连点就会发卡
-            # （用户报过"迁移过程中如果点击鼠标会未响应"）。完成态则放行，
-            # 交给 root 上的"按任意键关闭"处理。
+            # （用户报过"迁移过程中如果点击鼠标会未响应"）。
+            #
+            # ⚠ 键鼠分两套处理，这是用户明确要求的语义：
+            #   · 鼠标/滚轮：**任何时候都不响应**（迁移中吃掉；完成态也吃掉 —— 不让它选中、
+            #     滚动、更不会凭一次点击就把锁屏收掉）。
+            #   · 键盘：迁移期间吃掉（否则会积压，见下面"延迟注册"那条坑）；
+            #     完成态放行，交给 root 上的"按任意键关闭"。
             _吃的事件 = ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>",
                         "<Triple-Button-1>", "<Button-2>", "<Button-3>",
                         "<B1-Motion>", "<B2-Motion>", "<B3-Motion>",
                         "<MouseWheel>", "<Key>", "<KeyRelease>")
+            _键事件 = ("<Key>", "<KeyRelease>")
 
-            def _吞事件(event=None):
-                if getattr(self, "_lock_done", False):
-                    return None
+            def _吞鼠标(event=None):
                 return "break"
+
+            def _吞键(event=None):
+                return None if getattr(self, "_lock_done", False) else "break"
 
             def _绑吃事件(w):
                 for _事件 in _吃的事件:
                     try:
-                        w.bind(_事件, _吞事件)
+                        w.bind(_事件, _吞键 if _事件 in _键事件 else _吞鼠标)
                     except Exception:
                         pass
                 for _子 in w.winfo_children():
@@ -448,7 +455,7 @@ class LockMixin:
         self._lock_done = True                  # 从这里开始"按键关闭"才合法
         if getattr(self, "lock_wait_key", True):
             try:
-                self._lock_sub.configure(text="按任意键（或点一下）关闭本界面")
+                self._lock_sub.configure(text="按任意键关闭本界面（鼠标不会关闭）")
             except Exception:
                 pass
             try:
@@ -464,9 +471,8 @@ class LockMixin:
                 if not getattr(self, "_lock_done", False):
                     return
                 self._lock_binds = []
-                for 事件, fn in (("<Key>", self._lock_any_key),
-                                 ("<Button-1>", self._lock_any_key),
-                                 ("<MouseWheel>", self._lock_any_key)):
+                # 只挂键盘：完成态**鼠标不做任何反应**（连点击都不关），这是用户要求的。
+                for 事件, fn in (("<Key>", self._lock_any_key),):
                     try:
                         self._lock_binds.append(self.root.bind(事件, fn, add="+"))
                     except Exception:
@@ -483,7 +489,7 @@ class LockMixin:
             self._lock_auto_job = self.root.after(2000, self._unlock_main_window)
 
     def _lock_any_key(self, event=None):
-        """完成态下按任意键/点一下：收掉锁屏（幂等）。
+        """完成态下**按键盘任意键**：收掉锁屏（幂等）。鼠标不参与（见 _吞鼠标）。
 
         ⚠ **必须先确认迁移真的结束了**：迁移期间用户在遮罩上敲的键会积压在事件队列里，
         绑定一注册就会被投递进来（用户报过"还没完成时按键 → 完成时立即退出"）。
@@ -520,7 +526,7 @@ class LockMixin:
             self._lock_cfg_bind = None
         # 完成态注册的"按任意键关闭"绑定，收尾时必须摘掉，否则下次迁移前
         # 随便敲个键都会去走一遍解锁
-        for 事件, 序号 in zip(("<Key>", "<Button-1>", "<MouseWheel>"),
+        for 事件, 序号 in zip(("<Key>",),
                               getattr(self, "_lock_binds", []) or []):
             try:
                 self.root.unbind(事件, 序号)
