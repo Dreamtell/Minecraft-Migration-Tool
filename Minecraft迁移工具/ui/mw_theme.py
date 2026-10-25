@@ -316,6 +316,14 @@ class ThemeMixin:
                 self.edit_switch.set_theme(self.theme)     # 开关卡片是自绘的，重出图
             except Exception:
                 pass
+        # 右下角的吐司也要换配色：它是自绘控件（圆角卡图 + 进度条），
+        # 只喂主题不会自己变，得显式调一次（host 会把已显示的整批按新配色重建）
+        _toast = getattr(self, "_toast_host", None)
+        if _toast is not None:
+            try:
+                _toast.set_theme(self.theme)
+            except Exception:
+                pass
         self._check_overflow()
 
         # 同步"执行日志放大查看"窗口的配色与主题

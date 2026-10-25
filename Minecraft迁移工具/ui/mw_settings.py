@@ -320,6 +320,14 @@ class SettingsMixin:
         self.settings_blank_exit_sw.pack(fill="x", pady=(10, 0))
         self.settings_blank_exit_sw.set(self.blank_exit_edit.get())
 
+        # 右下角消息提示（吐司）总开关。关掉后 self.toast() 一个字都不弹，
+        # 日志照旧 —— 想安静的用户只会失去这个补充通道。
+        self.settings_toast_var = tk.BooleanVar(
+            value=bool(getattr(self, "toast_on", True)))
+        开关(box1, "显示消息提示（右下角弹出的小卡片）",
+             self.settings_toast_var, self._toggle_toast, 名="toast").pack(
+            fill="x", pady=(6, 0))
+
         # ---------- 迁移行为 ----------
         box_m = section("migrate", page_mig)
         self.settings_rename_var = tk.BooleanVar(value=self.rename_migrated_mods)
@@ -890,6 +898,18 @@ class SettingsMixin:
                 self.save_config()
             except Exception:
                 pass
+
+    def _toggle_toast(self):
+        """开关：右下角的吐司消息是否显示（立即生效，顺便落盘）。"""
+        try:
+            开 = bool(self.settings_toast_var.get())
+        except Exception:
+            开 = True
+        self.toast_on = 开
+        try:
+            self.save_config()
+        except Exception:
+            pass
 
     def _bump_scroll_speed(self, 增量):
         """平滑滚动速度：1 最慢 … 5 最快。改完立刻生效，不用重启。"""

@@ -281,7 +281,7 @@ class ButtonsMixin:
         self._apply_button_layout()
         self.save_config()
         self._refresh_button_tree()
-        self.log("🧩 界面按钮已恢复默认显示与顺序", level="INFO", save=False)
+        self.toast("🧩 界面按钮已恢复默认显示与顺序", level="ok")
 
     def _pack_window_btns(self, gkey, row, entries, side="left", padx=5):
         """按「界面按钮」的配置摆一个窗口工具栏：隐藏的不摆、顺序照配置。

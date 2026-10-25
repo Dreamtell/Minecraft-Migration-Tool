@@ -1040,6 +1040,9 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⏳ 解析中...": "⏳ Parsing...",
     "迁移历史记录": "Migration history",
     "平滑滚动速度": "Smooth scrolling speed",
+    # 设置 →「🎨 外观与启动」→ 右下角消息提示的开关
+    "显示消息提示（右下角弹出的小卡片）":
+        "Show message toasts (small cards in the bottom-right corner)",
     "档（1 最慢 – 5 最快，3 = 原速）": "1 = slowest, 5 = fastest, 3 = default",
     "当前目标实例没有迁移记录。": "The target instance has no migration history.",
     "越靠上越新 · 滚轮翻阅": "Newest at the top · scroll to browse",

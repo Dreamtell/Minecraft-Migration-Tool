@@ -353,10 +353,10 @@ class PathsMixin:
         tgt = self.target_path.get().strip()
         if tgt:
             self.source_path.set(tgt)
-            self.log("已将目标路径复制到源路径", level="INFO")
+            self.toast("已将目标路径复制到源路径", level="ok")
         else:
             self.root.bell()
-            self.log("⚠️ 目标路径为空，无法复制", level="WARNING")
+            self.toast("⚠️ 目标路径为空，无法复制", level="warn")
 
     # ---------- 检查存档（实时） ----------
     def _update_world_status(self):

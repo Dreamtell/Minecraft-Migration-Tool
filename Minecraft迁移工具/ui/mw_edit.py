@@ -53,8 +53,8 @@ class EditMixin:
         锁[kind] = True
         if self.edit_mode.get():
             self.edit_mode.set(False)
-            self.log("ℹ️ %s 打开期间，主界面编辑已关闭（清单两边同时改会互相盖）。"
-                     % self._MIRROR_EDIT_NAMES[kind], level="INFO", save=False)
+            self.toast("ℹ️ %s 打开期间，主界面编辑已关闭（清单两边同时改会互相盖）。"
+                       % self._MIRROR_EDIT_NAMES[kind], level="info")
         self._sync_edit_lock()
         self._update_text_states()
 
@@ -72,7 +72,7 @@ class EditMixin:
         self._edit_before_lock = None
         if 旧 and not self.edit_mode.get():
             self.edit_mode.set(True)
-            self.log("ℹ️ 清单窗口都关了，主界面编辑恢复成「开」。", level="INFO", save=False)
+            self.toast("ℹ️ 清单窗口都关了，主界面编辑恢复成「开」。", level="info")
         self._sync_edit_lock()
         self._update_text_states()
         self.save_config()
@@ -230,7 +230,8 @@ class EditMixin:
             pass
         if self.edit_mode.get():
             self.log("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="WARNING")
+            self.toast("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="warn")
         else:
             self._blur_list_texts()
-            self.log("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="INFO")
+            self.toast("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="info")
         self.save_config()

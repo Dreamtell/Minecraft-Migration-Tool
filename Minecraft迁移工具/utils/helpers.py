@@ -2140,7 +2140,8 @@ def center_window(win, w=None, h=None):
         pass
 
 
-def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=None):
+def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=None,
+                    duration_ms=None):
     """真·圆形揭示过渡：圆内是「新界面」，圆外是「旧界面」。
 
     Tk 既不能给窗口做圆形裁剪，画布也没有 alpha 合成，所以分成四步：
@@ -2255,15 +2256,20 @@ def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=
                 user32.SetWindowRgn(ctypes.c_void_p(target), ctypes.c_void_p(box), True)
 
         set_hole(0)
-        step = {"i": 0}
+        # ⚠ 必须按**真实时间**推进，不能按帧数。实测每帧的活（set_hole 里 3 次 GDI 区域运算
+        # + SetWindowRgn 强制重绘整块新露出的界面）要 5~20ms，越到后面面积越大越慢；
+        # 老的"30 次 after(13)"在真机上被拖成 **600ms 且间隔从 17ms 抖到 30ms** —— 又慢又不匀。
+        # 现在总时长固定（默认沿用 steps×interval=390ms），帧多帧少都不影响观感。
+        总时长 = float(duration_ms if duration_ms else max(120, steps * interval))
+        t0 = time.perf_counter()
 
         def tick():
-            step["i"] += 1
-            t = step["i"] / float(steps)
-            eased = 1 - (1 - t) ** 3        # ease-out：先快后慢，收尾更自然
+            k = min(1.0, (time.perf_counter() - t0) * 1000.0 / 总时长)
+            eased = 1 - (1 - k) ** 3        # ease-out：先快后慢，收尾更自然
             set_hole(int(full_r * eased))
-            if step["i"] < steps:
-                ov.after(interval, tick)
+            if k < 1.0:
+                余 = 总时长 * (1.0 - k)
+                ov.after(max(1, int(min(interval, 余))), tick)
             else:
                 try:
                     ov.destroy()

@@ -34,17 +34,17 @@ class ListsMixin:
         """
         源 = self.source_path.get().strip()
         if not 源:
-            self.log("⚠️ 请先选择源整合包目录，再往清单里加东西", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包目录，再往清单里加东西", level="warn")
             return 0
         if not (Path(源) / 条目.replace("\\", "/").rstrip("/")).exists():
-            self.log("⚠️ 源目录里没有 %s，没加进清单" % 条目, level="WARNING")
+            self.toast("⚠️ 源目录里没有 %s，没加进清单" % 条目, level="warn")
             return 0
         添加, _失败 = self._add_extra_paths([条目])
         if 添加:
-            self.log("✅ 已把 %s 加入「其它文件」清单，迁移时会一起带过去%s"
-                     % (条目, ("（%s）" % 说明) if 说明 else ""), level="SUCCESS")
+            self.toast("✅ 已把 %s 加入「其它文件」清单，迁移时会一起带过去%s"
+                       % (条目, ("（%s）" % 说明) if 说明 else ""), level="ok")
         else:
-            self.log("ℹ️ %s 已经在清单里了" % 条目, level="INFO", save=False)
+            self.toast("ℹ️ %s 已经在清单里了" % 条目, level="info")
         return 添加
 
     def _quick_add_preset(self, 条目):
@@ -163,13 +163,13 @@ class ListsMixin:
         now = time.time()
         if now - self.last_check_modlist_time < 2:
             self.root.bell()
-            self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
+            self.toast("⚠️ 请勿频繁操作！请稍后再试。", level="warn")
             return
         self.last_check_modlist_time = now
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         src_mods = Path(src) / "mods"
         if not src_mods.exists():
@@ -181,7 +181,7 @@ class ListsMixin:
         modlist = [line.strip() for line in modlist_raw if line.strip() and not line.strip().startswith("#")]
         if not modlist:
             self.root.bell()
-            self.log("⚠️ 当前模组清单为空", level="WARNING")
+            self.toast("⚠️ 当前模组清单为空", level="warn")
             return
 
         source_files = {f.name: f for f in src_mods.glob("*.jar")}
@@ -295,9 +295,9 @@ class ListsMixin:
                 self.mod_text.edit_reset()
                 self.save_config()
                 self._update_text_states()
-                self.log(
+                self.toast(
                     trp("从变更日志中提取了 {0} 个模组（Added: {1}, Updated: {2}）", len(all_mods), len(added), len(updated)),
-                    level="SUCCESS"
+                    level="ok"
                 )
                 self.save_config()
                 self._update_text_states()
@@ -348,7 +348,7 @@ class ListsMixin:
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         src_config = Path(src) / "config"
         if not src_config.exists():
@@ -375,6 +375,7 @@ class ListsMixin:
         else:
             # 原生失败 → 回退自定义树形多选（返回相对路径）
             self.log("ℹ️ 原生对话框不可用，已切换到自定义多选对话框", level="INFO")
+            self.toast("ℹ️ 原生对话框不可用，已切换到自定义多选对话框", level="info")
             selected = self._pick_config_folders(src_config)
             if not selected:
                 return
@@ -382,9 +383,9 @@ class ListsMixin:
 
         added, failed = self._add_config_paths(selected_paths)
         if added:
-            self.log(trp("✅ 已添加 {0} 个 config 子文件夹条目", added), level="SUCCESS")
+            self.toast(trp("✅ 已添加 {0} 个 config 子文件夹条目", added), level="ok")
         elif not failed:
-            self.log("ℹ️ 所选文件夹均已在 config 清单中，未重复添加", level="INFO")
+            self.toast("ℹ️ 所选文件夹均已在 config 清单中，未重复添加", level="info")
         if failed:
             messagebox.showwarning(
                 "添加提示",
@@ -585,7 +586,7 @@ class ListsMixin:
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         src_config = Path(src) / "config"
         if not src_config.exists():
@@ -602,9 +603,9 @@ class ListsMixin:
             return
         added, failed = self._add_config_paths(selected)
         if added:
-            self.log(trp("✅ 已添加 {0} 个 config 文件条目", added), level="SUCCESS")
+            self.toast(trp("✅ 已添加 {0} 个 config 文件条目", added), level="ok")
         elif not failed:
-            self.log("ℹ️ 所选文件均已在 config 清单中，未重复添加", level="INFO")
+            self.toast("ℹ️ 所选文件均已在 config 清单中，未重复添加", level="info")
         if failed:
             messagebox.showwarning(
                 "添加提示",
@@ -753,7 +754,7 @@ class ListsMixin:
         self._apply_mod_new_tags()
         self.save_config()
         self._update_text_states()
-        self.log(trp("✅ 已添加 {0} 个模组", len(new)), level="SUCCESS")
+        self.toast(trp("✅ 已添加 {0} 个模组", len(new)), level="ok")
         self._notify_modlist_change()
         return len(new)
 
@@ -914,7 +915,7 @@ class ListsMixin:
         base = self._extra_base()
         if base is None:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         if not base.exists():
             self.root.bell()
@@ -940,9 +941,9 @@ class ListsMixin:
 
         added, failed = self._add_extra_paths([str(p) for p in selected])
         if added:
-            self.log(trp("✅ 已添加 {0} 个其它文件条目（相对整合包根目录）", added), level="SUCCESS")
+            self.toast(trp("✅ 已添加 {0} 个其它文件条目（相对整合包根目录）", added), level="ok")
         elif not failed:
-            self.log("ℹ️ 所选文件夹均已在其它文件清单中，未重复添加", level="INFO")
+            self.toast("ℹ️ 所选文件夹均已在其它文件清单中，未重复添加", level="info")
         if failed:
             messagebox.showwarning(
                 "添加提示",
@@ -954,7 +955,7 @@ class ListsMixin:
         base = self._extra_base()
         if base is None:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         if not base.exists():
             self.root.bell()
@@ -967,9 +968,9 @@ class ListsMixin:
             return
         added, failed = self._add_extra_paths(list(selected))
         if added:
-            self.log(trp("✅ 已添加 {0} 个其它文件条目", added), level="SUCCESS")
+            self.toast(trp("✅ 已添加 {0} 个其它文件条目", added), level="ok")
         elif not failed:
-            self.log("ℹ️ 所选文件均已在其它文件清单中，未重复添加", level="INFO")
+            self.toast("ℹ️ 所选文件均已在其它文件清单中，未重复添加", level="info")
         if failed:
             messagebox.showwarning(
                 "添加提示",
@@ -1014,14 +1015,14 @@ class ListsMixin:
         now = time.time()
         if now - getattr(self, "last_check_extra_time", 0) < 2:
             self.root.bell()
-            self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
+            self.toast("⚠️ 请勿频繁操作！请稍后再试。", level="warn")
             return
         self.last_check_extra_time = now
 
         base = self._extra_base()
         if base is None:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         if not base.exists():
             self.root.bell()
@@ -1032,7 +1033,7 @@ class ListsMixin:
                    if l.strip() and not l.strip().startswith("#")]
         if not entries:
             self.root.bell()
-            self.log("⚠️ 当前其它文件清单为空", level="WARNING")
+            self.toast("⚠️ 当前其它文件清单为空", level="warn")
             self._clear_extra_status()
             return
 
@@ -1247,14 +1248,14 @@ class ListsMixin:
         now = time.time()
         if now - self.last_check_config_time < 2:
             self.root.bell()
-            self.log("⚠️ 请勿频繁操作！请稍后再试。", level="WARNING")
+            self.toast("⚠️ 请勿频繁操作！请稍后再试。", level="warn")
             return
         self.last_check_config_time = now
 
         src = self.source_path.get().strip()
         if not src:
             self.root.bell()
-            self.log("⚠️ 请先选择源整合包实例根目录", level="WARNING")
+            self.toast("⚠️ 请先选择源整合包实例根目录", level="warn")
             return
         src_config = Path(src) / "config"
         if not src_config.exists():
@@ -1268,7 +1269,7 @@ class ListsMixin:
         entries = self._parse_config_lines()
         if not entries:
             self.root.bell()
-            self.log("⚠️ 当前 config 清单为空", level="WARNING")
+            self.toast("⚠️ 当前 config 清单为空", level="warn")
             self._clear_config_status()
             return
 

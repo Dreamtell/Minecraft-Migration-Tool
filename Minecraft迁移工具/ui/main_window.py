@@ -26,6 +26,12 @@ from ui.mw_edit import EditMixin
 from ui.mw_migration import MigrationMixin
 from ui.mw_lock import LockMixin
 from ui.mw_big_view import BigViewMixin
+# 右下角的吐司消息（ui/toast.py 是定稿模块）。缺了/导入失败都不许把主窗口带崩，
+# 吐司只是补充通道，主功能不依赖它，所以这里兜一层、后面全程按可选处理。
+try:
+    from ui.toast import ToastHost
+except Exception:
+    ToastHost = None
 
 
 class MigrationGUI(
@@ -81,6 +87,10 @@ class MigrationGUI(
         self.close_action = self.config.get("close_action", "ask")
         # 启动动画：设置里可关（app.py 启动时直接读配置文件，这里只负责保存）
         self.splash_enabled = bool(self.config.get("splash", True))
+        # 右下角消息提示（吐司）的总开关：关掉后 self.toast() 直接返回；
+        # 容器 _toast_host 要等主窗口建好才创建（见 create_widgets 之后那块）
+        self.toast_on = bool(self.config.get("toast_on", True))
+        self._toast_host = None
         # 后台静默执行：跑任务时不弹进度窗/结果窗，只写日志 + 系统通知
         self.silent_background = bool(self.config.get("silent_background", False))
         # 按钮显示/隐藏 与 自定义顺序
@@ -143,6 +153,15 @@ class MigrationGUI(
 
         self._stage("正在构建界面…")
         self.create_widgets()
+
+        # 主窗口建好之后才建吐司容器：ToastHost 要 place 在 self.root 上，而此刻
+        # self.theme 已是字典（__init__ 开头按 current_theme 选好的 LIGHT/DARK）。
+        # 建失败也不抛：吐司永远不该弄崩调用方。
+        if ToastHost is not None:
+            try:
+                self._toast_host = ToastHost(self.root, self.theme)
+            except Exception:
+                self._toast_host = None
 
         # 后台线程 → 主线程的 UI 通道（worker 只往队列里丢，由主线程的泵执行）。
         # tkinter 的 after 不是线程安全的：从 worker 里调，事件循环不是 mainloop 时
@@ -355,6 +374,26 @@ class MigrationGUI(
         except Exception:
             pass
 
+    # ---------- 消息提示（吐司）----------
+    def toast(self, 文本, level="info", ms=3000, sticky=None):
+        """整个程序统一的消息入口：右下角弹一条吐司（不写日志、不弹 messagebox）。
+
+        文本先过 i18n.tr —— 和 log() 一样，词条表里有的才翻得到；
+        开关关着 / 容器没建起来 / 已经关掉 / 任何意外，一律安静返回，
+        绝不抛异常：吐司是锦上添花，不能把调用它的功能弄崩。
+        """
+        if not bool(getattr(self, "toast_on", True)):
+            return None
+        host = getattr(self, "_toast_host", None)
+        if host is None:
+            return None
+        try:
+            if not host.alive():
+                return None
+            return host.show(i18n.tr(文本), level=level, ms=ms, sticky=sticky)
+        except Exception:
+            return None
+
     def _flush_pending_diff(self):
         """窗口从托盘叫回来时，把之前压着的差异窗口补开出来。"""
         item, self._pending_diff = self._pending_diff, None
@@ -424,6 +463,8 @@ class MigrationGUI(
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
             "history_limit": int(getattr(self, "history_limit", 10) or 10),
             "pack_warning": bool(getattr(self, "pack_warning", True)),
+            # 右下角吐司消息的总开关（缺省开）。不写进来，用户下次改任何设置都会把它抹掉
+            "toast_on": bool(getattr(self, "toast_on", True)),
             "scroll_speed": int(getattr(self, "scroll_speed", 3) or 3),
             "float_edge_fx": bool(getattr(self, "float_edge_fx", True)),
             "net_float_shadow": bool(getattr(self, "net_float_shadow", True)),
