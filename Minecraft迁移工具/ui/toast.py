@@ -164,24 +164,26 @@ class ToastHost:
 
     def card_pil(self, w, h, level):
         """圆角卡底（PIL 版，便于单测取像素）。"""
-        from PIL import Image, ImageDraw
+        from PIL import Image, ImageDraw, ImageChops
         S = 2
         fill, border, _fg = self.palette()
         条 = _LEVELS.get(level, _LEVELS["info"])[1]
         W, H = w * S, h * S
         box = [0, 0, W - 1, H - 1]
         r = px(10) * S
-        # 左侧等级色条：先画整块圆角条色，再把"圆角卡片"贴在它上面、只让出左边 4px。
-        # ⚠ 别用"整块圆角 + 方形矩形盖住右边"的老写法：那个矩形会把右侧圆角盖成直角。
-        bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(bar).rounded_rectangle(box, radius=r, fill=条)
         card = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(card).rounded_rectangle(box, radius=r, fill=fill,
                                                outline=border, width=S)
-        mask = Image.new("L", (W, H), 255)
-        ImageDraw.Draw(mask).rectangle([0, 0, px(4) * S - 1, H], fill=0)
-        bar.paste(card, (0, 0), mask)
-        return bar.resize((w, h), Image.LANCZOS)
+        # 左侧等级色条 = **卡片轮廓 ∩ 左侧 4px**，让色条两端跟着卡片圆弧走。
+        # ⚠ 别写成"画一个 4px 宽的圆角矩形"：PIL 会把圆角半径夹到宽度的一半（=2px），
+        # 色条两端看着就是方头（用户报"左侧圆角化有问题"）。
+        sil = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(sil).rounded_rectangle(box, radius=r, fill=255)
+        strip = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(strip).rectangle([0, 0, px(4) * S - 1, H], fill=255)
+        强调 = Image.new("RGBA", (W, H), 条)
+        card.paste(强调, (0, 0), ImageChops.multiply(sil, strip))
+        return card.resize((w, h), Image.LANCZOS)
 
     def card_image(self, w, h, level):
         """圆角卡底（按宽度缓存成 PhotoImage）。"""
