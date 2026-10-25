@@ -12,6 +12,10 @@ from utils.helpers import circular_reveal, lighten_color, make_theme_icon
 from utils.theme import DARK_THEME, LIGHT_THEME, apply_theme_to_widget_tree
 
 # 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
+# ⚠ 下一条用到的 i18n 模块也必须导入：这行曾经只导了 trp，而 do_switch() 里写了
+# i18n.tr(...)，于是每次切主题都在那里抛 NameError —— 被 circular_reveal 的
+# try/except 吞掉，后半段（Qt 差异窗口、Tk 差异窗口重新上色）**从来没执行过**。
+from utils import i18n
 from utils.i18n import trp
 
 
@@ -398,9 +402,9 @@ class ThemeMixin:
             self.apply_theme()
             self.on_path_change()
             self.save_config()
-            self.log(trp("主题已切换为{0}模式",
-                         i18n.tr('深色' if new_name == 'dark' else '浅色')),
-                     level="SUCCESS", save=False)
+            self.toast(trp("主题已切换为{0}模式",
+                           i18n.tr('深色' if new_name == 'dark' else '浅色')),
+                       level="ok")
             # 更新已打开的差异窗口（Qt 版是自绘控件，得显式喂新主题）
             qt_diff = getattr(self, "diff_qt", None)
             if qt_diff is not None and qt_diff.is_alive():
