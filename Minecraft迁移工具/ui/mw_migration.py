@@ -575,7 +575,10 @@ class MigrationMixin:
                 右.after_idle(_换上)
             except Exception:
                 _换上()
-            右.coords(_内窗, px(1), px(1))
+            # ⚠ 动画期间别把 _内窗 拽回原位：放大/还原会改画布尺寸，<Configure> 正好
+            # 在这时触发，重置一下就等于把滑动动画直接掐掉。
+            if not getattr(self, "_hist_animating", False):
+                右.coords(_内窗, px(1), px(1))
             右.itemconfig(_内窗, width=w - px(2), height=h - px(2))
 
         右.bind("<Configure>", _画圆角背景)
@@ -668,42 +671,85 @@ class MigrationMixin:
         放大钮.bind("<Enter>", lambda e: 放大钮.config(bg=_悬停底), add="+")
         放大钮.bind("<Leave>", lambda e: 放大钮.config(bg=面板色), add="+")
 
-        def _画列表宽(目标, 完成=None):
-            """把左侧列表的宽度平滑地收/放（Tk 没有布局动画，只能自己逐帧改宽度）。"""
-            self._hist_animating = True
-            起 = 左.winfo_width() or px(380)
+        def _滑内容(方向=1, 时长=160):
+            """把右侧详情整块从偏移处滑到位置（放大/还原、切档案都用它）。
 
-            def 帧(k):
+            ⚠ 两个都不能改回去：
+            1. **按真实时间推进**。原来是 after(16) + 每帧 k += 16/170，真 mainloop 里
+               after(16) 有一半的帧滑到 31ms，缓动被不规则采样 —— 看着就是"生硬"。
+            2. **不要再用"逐帧改左栏宽度"来做放大**。实测改一帧宽度要 5~11ms
+               （pack 下 10.5ms、place 下也有 5ms，因为列表里的卡片图是按宽度缓存的，
+               宽度一变就要重渲 12 张 PIL 卡图），150ms 里根本排不出几帧，又硬又卡。
+               现在布局**瞬间切换**，只让详情整块滑一下 —— canvas 挪一个 window 图元
+               实测 0.18ms/帧，可以跑满刷新率。
+            """
+            try:
+                if _滑动["job"]:
+                    顶.after_cancel(_滑动["job"])
+            except Exception:
+                pass
+            _滑动["job"] = None
+            self._hist_animating = True
+            if not _滑动.get("hr"):
+                _滑动["hr"] = True
+                try:
+                    anim.hold()
+                except Exception:
+                    pass
+            t0 = time.perf_counter()
+            总 = max(1.0, float(时长))
+
+            def 帧():
+                k = min(1.0, (time.perf_counter() - t0) * 1000.0 / 总)
                 缓 = 1 - (1 - k) ** 3
-                左.configure(width=max(0, int(起 + (目标 - 起) * 缓)))
+                dx = int(px(30) * 方向 * (1 - 缓))
+                try:
+                    右.coords(_内窗, px(1) + dx, px(1))
+                except Exception:
+                    pass
                 if k < 1.0:
                     try:
-                        顶.after(16, lambda: 帧(min(1.0, k + 16.0 / 150)))
+                        _滑动["job"] = 顶.after(max(1, anim.frame_ms(顶)), 帧)
                     except Exception:
-                        pass
-                else:
-                    self._hist_animating = False
+                        _滑动["job"] = None
+                    return
+                try:
+                    右.coords(_内窗, px(1), px(1))
+                except Exception:
+                    pass
+                _滑动["job"] = None
+                self._hist_animating = False
+                if _滑动.get("hr"):
+                    _滑动["hr"] = False
                     try:
-                        右.event_generate("<Configure>")     # 让圆角背景重画一次
+                        anim.release()
                     except Exception:
                         pass
-                    if 完成:
-                        完成()
+                try:
+                    右.event_generate("<Configure>")     # 动画结束再画圆角背景
+                except Exception:
+                    pass
 
-            帧(0.0)
+            帧()
 
         def _切换放大(_e=None):
+            """在窗口内放大/还原执行日志。
+
+            布局**瞬间切换**（收/放左栏各要重排整块，逐帧做太贵，见 _滑内容 的说明），
+            动感交给详情整块滑动 —— 那个只有 0.18ms/帧。
+            """
             _放大["on"] = not _放大["on"]
             if _放大["on"]:
                 放大钮.config(text="⤡  还原")
                 概览.pack_forget()
-                _画列表宽(0, lambda: 左.pack_forget())
+                左.pack_forget()
+                _滑内容(+1)
             else:
                 放大钮.config(text="⤢  放大")
+                左.configure(width=px(380))
                 左.pack(side="left", fill="y", before=右)
-                左.configure(width=0)
-                _画列表宽(px(380), lambda: 概览.pack(
-                    fill="x", padx=px(14), pady=(px(4), px(2)), after=顶条))
+                概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)), after=顶条)
+                _滑内容(-1)
         放大钮.bind("<Button-1>", _切换放大)
 
         日志框 = tk.Frame(内容, bg=面板色)
@@ -734,36 +780,11 @@ class MigrationMixin:
             详情["日志"].config(state="disabled")
             详情["日志计数"].config(text="")
 
-        _滑动 = {"job": None, "当前": -1}
+        _滑动 = {"job": None, "当前": -1, "hr": False}
 
         def _滑入():
-            """切换档案时让详情内容从右边滑进来。"""
-            try:
-                if _滑动["job"]:
-                    顶.after_cancel(_滑动["job"])
-            except Exception:
-                pass
-
-            def 帧(k):
-                缓 = 1 - (1 - k) ** 3
-                dx = int(px(30) * (1 - 缓))
-                try:
-                    右.coords(_内窗, px(1) + dx, px(1))
-                except Exception:
-                    return
-                if k < 1.0:
-                    try:
-                        _滑动["job"] = 顶.after(16, lambda: 帧(min(1.0, k + 16.0 / 170)))
-                    except Exception:
-                        _滑动["job"] = None
-                else:
-                    try:
-                        右.coords(_内窗, px(1), px(1))
-                    except Exception:
-                        pass
-                    _滑动["job"] = None
-
-            帧(0.0)
+            """切换档案时让详情内容从右边滑进来（和放大共用同一套 dt 驱动实现）。"""
+            _滑内容(+1, 170)
 
         def 选中(i):
             变了 = (i != _滑动["当前"])
