@@ -6,6 +6,7 @@
 """
 import time
 import tkinter as tk
+from utils import anim
 from utils.helpers import trace_exc
 
 
@@ -85,6 +86,28 @@ class LockMixin:
         self._flow_canvas = cv
         self._flow_items = items
 
+    def _flow_set_tiles(self, colors):
+        """只把瓦片图换成新配色的那张 —— **不动图元几何**。
+
+        红→绿过渡原来每帧走 _build_flow_border：delete("border") + 重建一整圈图元
+        （900x600 是 18 块），实测 10 帧 482ms，而且这段正好和"迁移总结写进日志"撞在一起
+        （日志每条还要 update_idletasks）。换图只有十几次 itemconfigure，图元不重建，
+        流动动画也不会被打断（它手上握的是 item id，几何一重建就对不上了）。
+        """
+        cv = getattr(self, "_flow_canvas", None)
+        items = getattr(self, "_flow_items", None) or []
+        if cv is None or not items:
+            return
+        self._flow_colors = tuple(colors)
+        horiz = self._flow_tile(False, self._flow_colors)
+        vert = self._flow_tile(True, self._flow_colors)
+        for it in items:
+            try:
+                cv.itemconfigure(it["id"],
+                                 image=(horiz if it["horizontal"] else vert))
+            except Exception:
+                pass
+
     def _flow_to_color(self, 目标, 帧数=10, 间隔=45):
         """把流动边框从当前颜色**渐变**过去（红→绿那段过渡就是"特效"）。"""
         cv = getattr(self, "_flow_canvas", None)
@@ -104,7 +127,7 @@ class LockMixin:
                 return
             t = i / float(帧数)
             try:
-                self._build_flow_border(cv, w, h, 插(起, 终, t))
+                self._flow_set_tiles(插(起, 终, t))     # 换图，不重建几何
             except Exception:
                 return
             if i < 帧数:
@@ -118,22 +141,55 @@ class LockMixin:
 
         step(0)
 
+    _FLOW_MS_FLOOR = 8      # 边流动画最快 8ms 一帧（125fps）：再快十几块瓦片的 move 会压主线程
+    _FLOW_REF_MS = 12.0     # 速度标定基准帧（原实现"入场加速"那一段就是 12ms 一帧）
+
+    def _flow_hold_hr(self):
+        if not getattr(self, "_flow_hr", False):
+            self._flow_hr = True
+            try:
+                anim.hold()
+            except Exception:
+                pass
+
+    def _flow_release_hr(self):
+        if getattr(self, "_flow_hr", False):
+            self._flow_hr = False
+            try:
+                anim.release()
+            except Exception:
+                pass
+
     def _flow_step(self):
-        """每帧把瓦片整体平移几像素，越界的绕回另一端 —— 看着就是红光在边框里流动。"""
+        """每帧把瓦片整体平移几像素，越界的绕回另一端 —— 看着就是红光在边框里流动。
+
+        ⚠ 位移必须按真实 dt 算（原实现是"每帧固定 3 像素"，帧率一提到 125fps 就会快 15 倍）。
+        速度仍按原来的标定：入场 7px/12ms 衰减到稳态 3px/32ms，换算成 px/ms 之后与帧率无关。
+        排帧走 anim：跟随刷新率（本机 4ms，地板 8ms），动画期间才占 1ms 定时器精度
+        —— 不 hold 的话 after(8) 会被 15.6ms 粒度卡成 64fps，入场加速段也跑不准。
+        """
         cv = getattr(self, "_flow_canvas", None)
         items = getattr(self, "_flow_items", None)
         if cv is None or not items:
             self._flow_job = None
+            self._flow_release_hr()
             return
-        # 入场那一下故意跑快（间隔小、步长大），随后自己衰减到稳态 —— 红光像是"被点着了"
-        # 再稳住。_flow_boost 从初始值递减到 0，期间在 快/慢 之间插值。
+        now = time.perf_counter()
+        dt = (now - getattr(self, "_flow_t", 0.0)) * 1000.0 if self._flow_t else self._FLOW_REF_MS
+        self._flow_t = now
+        dt = max(0.5, min(200.0, dt))       # 掉帧（拖窗口/GC）时别一步跳太远
+        # 入场那一下故意跑快，随后自己衰减到稳态 —— 红光像是"被点着了"再稳住。
         boost = getattr(self, "_flow_boost", 0)
         span_boost = getattr(self, "_flow_boost_total", 1) or 1
         进度 = 1.0 - max(0, min(boost, span_boost)) / float(span_boost)
-        step = int(round(7 + (3 - 7) * 进度))
-        interval = int(round(12 + (32 - 12) * 进度))
+        速度 = (7.0 / 12.0) + ((3.0 / 32.0) - (7.0 / 12.0)) * 进度     # px/ms
         if boost > 0:
-            self._flow_boost = boost - 1
+            self._flow_boost = boost - dt / self._FLOW_REF_MS         # 按时间衰减，不按帧数
+        self._flow_carry = getattr(self, "_flow_carry", 0.0) + 速度 * dt
+        step = int(self._flow_carry)        # 不足 1 像素的零头留到下一帧（帧密时步长很小）
+        self._flow_carry -= step
+        if step <= 0:
+            step = 0
         try:
             for it in items:
                 if it["horizontal"]:
@@ -153,7 +209,13 @@ class LockMixin:
                                 0 if it["horizontal"] else span)
         except Exception:
             pass
-        self._flow_job = self.root.after(interval, self._flow_step)
+        self._flow_hold_hr()
+        try:
+            self._flow_job = self.root.after(
+                max(self._FLOW_MS_FLOOR, anim.frame_ms(self.root)), self._flow_step)
+        except Exception:
+            self._flow_job = None
+            self._flow_release_hr()
 
     def _lock_main_window(self, text="正在执行迁移任务"):
         """迁移期间给主窗口盖一层遮罩（锁屏）：流动红边 + 内嵌执行日志。
@@ -229,6 +291,9 @@ class LockMixin:
             # 入场：红光先"窜"起来再稳下来（温和一点：23ms 起步 → 稳态 32ms，别把主线程压满）
             self._flow_boost_total = 16
             self._flow_boost = self._flow_boost_total
+            self._flow_t = 0.0          # 上一帧时刻（0 = 还没起过步，见 _flow_step）
+            self._flow_carry = 0.0      # 不足 1 像素的位移零头
+            self._flow_hold_hr()
             self._flow_job = self.root.after(23, self._flow_step)
             # 吃掉落在遮罩上的鼠标/滚轮/按键 —— 而且**连同遮罩内部的所有控件**一起绑。
             # 只绑 ov 是不够的：点击会先命中**点到的那个子控件**（日志框占了半屏，最常被点），
@@ -438,6 +503,9 @@ class LockMixin:
                     pass
                 setattr(self, attr, None)
         self._flow_boost = 0                # 入场加速的计数，复位
+        self._flow_release_hr()
+        self._flow_t = 0.0
+        self._flow_carry = 0.0
         self._flow_canvas = None
         self._flow_items = []
         self._lock_log_text = None
