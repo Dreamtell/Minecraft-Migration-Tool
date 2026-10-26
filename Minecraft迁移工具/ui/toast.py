@@ -398,19 +398,28 @@ class ToastHost:
         旧 = {id(it): it._y for it in self._items} if 重排已有 else {}
         总高 = sum(it.h for it in self._items) + self._GAP * (len(self._items) - 1)
         y = 总高
-        for it in self._items:
+        # ⚠ 必须 **reversed**：self._items 是"旧→新"，而堆叠要求**最新的贴底**、
+        # 旧的往上顶。按列表顺序排的话最旧的会占最下面那格，于是有新消息时
+        # 旧的那条被迫**往下滑**去补位 —— 用户看到的就是"进度条卡一下还回弹"。
+        for it in reversed(self._items):
             y -= it.h
             it._y = y
             y -= self._GAP
-        self._总高 = 总高
+        # ⚠ 让位动画的补偿必须**算上窗口原点的位移**：整叠是"底部对齐主窗口"的，
+        # 多一条吐司时窗口顶部会整体上移 (新总高 - 旧总高)，旧卡片的"窗口内 y"却没变。
+        # 只补 y 差值的话它会被窗口带着**瞬移**上去（看着就是"跳一下/回弹"），
+        # 补上 Δ窗口 它才会从原来的屏幕位置平滑滑到新位置。
+        Δ窗口 = 总高 - getattr(self, "_上次总高", 总高)
         for it in self._items:
             老 = 旧.get(id(it))
             if 老 is None or it._leaving:
                 continue
-            差 = 老 - it._y
+            差 = (老 - it._y) + Δ窗口
             if abs(差) >= 0.5:
                 it.dy += 差
                 it.animate(0.0, _Toast._MOVE_MS)
+        self._总高 = 总高
+        self._上次总高 = 总高
         self._dirty = True
 
     def _ensure_tick(self):
