@@ -191,6 +191,8 @@ class ToastHost:
         self._last_pos = (0, 0)
         self._当前文本 = ""
         self._指纹 = None
+        self._帧字节 = None
+        self._帧图 = None
         self._hr = False           # 是否持有 1ms 定时器精度（动画期间）
         self._底字节 = None
         self._底键 = None
@@ -474,7 +476,7 @@ class ToastHost:
             # 那会让整机定时器精度一直偏高（费电），而它已经静止了。
             anim.release()
             self._hr = False
-        间隔 = anim.frame_ms(self.win) if 动画中 else 16
+        间隔 = anim.frame_ms(self.win) if 动画中 else 8
         try:
             self._tick_job = self.win.after(max(4, int(间隔)), self._tick)
         except Exception:
@@ -530,7 +532,14 @@ class ToastHost:
                 self._底字节 = LayeredSurface.premult(base)
                 self._底键 = 键
                 self._dirty = False
-            buf = bytearray(self._底字节)
+            # ⚠ 缓冲**复用**，别每帧新建 bytearray：250 帧/秒 × 81KB ≈ 20MB/s 的分配，
+            # 会给 GC 制造压力，偶发的十几毫秒停顿多半来自这里（观感就是"卡一下"）。
+            总字节 = 高 * int(宽) * 4
+            if self._帧字节 is None or len(self._帧字节) != 总字节:
+                self._帧字节 = bytearray(self._底字节)
+            else:
+                self._帧字节[:] = self._底字节      # 就地 memcpy
+            buf = self._帧字节
             for it in self._items:
                 if it.sticky or it._leaving:
                     continue
@@ -538,17 +547,33 @@ class ToastHost:
                 if 分 <= 0.0:
                     continue
                 条, bh = self._条预乘(it.w, it.h, it.level)
-                宽2 = max(1, int(it.w * min(1.0, 分)))
+                # **亚像素**进度：整像素部分 memcpy，边界那一列按小数部分做 alpha 混合。
+                # 只按整像素推进时，3 秒的条每帧走 0.3px，会有三分之一的帧看着没动 ——
+                # 这列混合把"没动"变成"边缘淡了一点"，眼睛就读成连续运动。
+                浮 = it.w * min(1.0, 分)
+                宽2 = max(1, int(浮))
+                余 = 浮 - int(浮)
                 行 = int(it._y) + it.h - bh
                 for r in range(bh):
                     源 = r * it.w * 4
                     目 = ((行 + r) * int(宽)) * 4
                     buf[目:目 + 宽2 * 4] = 条[源:源 + 宽2 * 4]
+                    if 余 > 0.02 and 宽2 < int(it.w):
+                        目2 = 目 + 宽2 * 4
+                        源2 = 源 + 宽2 * 4
+                        for k in range(3):
+                            底v = buf[目2 + k]
+                            buf[目2 + k] = int(条[源2 + k] * 余 + 底v * (1.0 - 余))
             图 = None
         else:
             self._底字节 = None
             self._底键 = None
-            图 = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
+            # 同样复用：每帧新建一张 RGBA 也是白给的分配量
+            if self._帧图 is None or self._帧图.size != (int(宽), int(高)):
+                self._帧图 = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
+            else:
+                self._帧图.paste((0, 0, 0, 0), (0, 0, int(宽), int(高)))
+            图 = self._帧图
             for it in self._items:
                 it.compose(图, 0, int(it._y + it.dy))
             for it in self._items:
