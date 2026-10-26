@@ -411,10 +411,14 @@ class ThemeMixin:
             self.apply_theme()
             self.on_path_change()
             self.save_config()
-            # ⚠ 不在这里弹吐司：circular_reveal 一开始要做**整窗截图**（大窗口约
-            # 100ms 的主线程阻塞），在那一刻弹吐司，它的动画就会被推迟 100ms+
-            # ——执行日志里的 "⏱ 吐司帧被推迟 107ms" 全是这么来的。
-            # 见下面 done() 里的 弹吐司()。
+            # ⚠ 这里立刻弹，但**不做动画**（弹入=False）：
+            #   · 放到揭示结束（600ms）后再弹 → 用户点完半天没反馈（"反应很慢"）；
+            #   · 在这里带动画弹 → circular_reveal 开头要整窗截图（约 100ms 主线程
+            #     阻塞），动画必然被卡住，随后"跳到终点"看着像弹一下（"回弹"）。
+            # 不做动画就没有可被打断的东西：立刻可见，进度条照常走。
+            self.toast(trp("主题已切换为{0}模式",
+                           i18n.tr('深色' if new_name == 'dark' else '浅色')),
+                       level="ok", 弹入=False)
             # 更新已打开的差异窗口（Qt 版是自绘控件，得显式喂新主题）
             qt_diff = getattr(self, "diff_qt", None)
             if qt_diff is not None and qt_diff.is_alive():
@@ -427,27 +431,11 @@ class ThemeMixin:
                     from ui.diff_window import update_diff_theme
                     update_diff_theme(self.diff_window, self.theme, self.current_theme)
 
-        已弹 = [False]
-
-        def 弹吐司():
-            # 揭示结束、主线程空闲了再弹：这样吐司的每一帧都不会和截图/覆盖层抢主线程
-            if 已弹[0]:
-                return
-            已弹[0] = True
-            self.toast(trp("主题已切换为{0}模式",
-                           i18n.tr('深色' if new_name == 'dark' else '浅色')),
-                       level="ok")
-
         def done():
             try:
                 do_switch()
             finally:
                 self._theme_animating = False
-            # 再等一小会儿，让覆盖层销毁、主窗口重绘都做完
-            try:
-                self.root.after(40, 弹吐司)
-            except Exception:
-                弹吐司()
 
         # 扩散圆心：优先用触发它的按钮，其次鼠标位置，最后窗口中心
         cx = cy = None

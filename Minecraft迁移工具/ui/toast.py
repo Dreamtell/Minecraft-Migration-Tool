@@ -353,7 +353,13 @@ class ToastHost:
         return 条图
 
     # ---------------------------------------------------------------- 对外
-    def show(self, text, level="info", ms=3000, sticky=None):
+    def show(self, text, level="info", ms=3000, sticky=None, 弹入=True):
+        """弹入=False：直接出现在最终位置，不做淡入/让位动画。
+
+        用于"由会阻塞主线程的操作触发的反馈"（例如主题切换：揭示动画开头要整窗截图，
+        约 100ms 主线程阻塞）。那种情况下任何动画都会被卡在半路，看着像"弹一下"；
+        干脆不动画，用户立刻看到结果，进度条照常走。
+        """
         if self._closed:
             return None
         try:
@@ -372,14 +378,16 @@ class ToastHost:
             return None
         self._items.append(item)
         # 入场用**淡入**（不是纵向位移）：见 _Toast.fade_to 的说明
-        item.淡 = 0.0
+        item.淡 = 0.0 if 弹入 else 1.0
         while len(self._items) > self.max_items:
             try:
                 self._items.pop(0).kill()      # kill 内部会 _layout(重排已有=True)
             except Exception:
                 pass
-        self._layout(重排已有=True)      # 旧的往上让位（带过渡）
-        item.fade_to(1.0, _Toast._IN_MS)
+        # 弹入=False 时旧的也不做让位动画（那一帧主线程正忙，动画只会被卡住）
+        self._layout(重排已有=bool(弹入))
+        if 弹入:
+            item.fade_to(1.0, _Toast._IN_MS)
         self._dirty = True
         self._ensure_tick()
         return item
