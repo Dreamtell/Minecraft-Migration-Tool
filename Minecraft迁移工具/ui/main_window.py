@@ -161,6 +161,13 @@ class MigrationGUI(
         if ToastHost is not None:
             try:
                 self._toast_host = ToastHost(self.root, self.theme)
+                # 吐司自己报告"这一帧被主线程推迟了多久"→ 进执行日志。
+                # 正常用着卡的时候，靠这条就能分清是吐司慢还是主线程忙。
+                try:
+                    self._toast_host.stall_log = (
+                        lambda 文: self.log(文, level="WARNING"))
+                except Exception:
+                    pass
             except Exception:
                 self._toast_host = None
 

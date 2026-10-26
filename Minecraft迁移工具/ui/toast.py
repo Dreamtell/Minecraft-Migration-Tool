@@ -195,6 +195,10 @@ class ToastHost:
         self._零字节 = b""
         self._帧图 = None
         self._hr = False           # 是否持有 1ms 定时器精度（动画期间）
+        self._上帧 = None          # 上一帧的时刻（算卡顿用）
+        self._上次报卡顿 = 0.0
+        self._卡顿 = []            # [(时刻, 推迟毫秒)]，最近 40 条
+        self.stall_log = None      # 可选：卡顿汇报钩子（主窗口把它接到执行日志）
         self._底字节 = None
         self._底键 = None
         self._条缓存 = {}          # (w,h,level) → (预乘字节, 条高)
@@ -445,6 +449,25 @@ class ToastHost:
                 pass
             self._tick_job = None
 
+    def _记卡顿(self, 毫秒):
+        """记一次"这一帧被推迟了多久"（限流 2 秒一条，避免刷屏）。"""
+        try:
+            现在 = time.perf_counter()
+            if 现在 - getattr(self, "_上次报卡顿", 0.0) < 2.0:
+                return
+            self._上次报卡顿 = 现在
+            self._卡顿.append((round(现在, 1), round(毫秒, 1)))
+            if len(self._卡顿) > 40:
+                del self._卡顿[:-40]
+            钩 = getattr(self, "stall_log", None)
+            if 钩 is not None:
+                try:
+                    钩("⏱ 吐司帧被推迟 %.0fms（主线程当时在忙别的事）" % 毫秒)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _tick(self):
         """**唯一**的渲染循环：整栈每帧最多画一次（以前是每条吐司各跑一个
         16ms 定时器、各自重画整栈 + UpdateLayeredWindow，4 条就是每帧画 4 次，
@@ -453,11 +476,25 @@ class ToastHost:
         if self._closed:
             return
         现在 = time.perf_counter()
+        # 卡顿记录：这一帧比预期晚到多久。正常情况下每帧 4~8ms，一旦主线程被别的事占住
+        # （写日志、刷列表、扫目录），这里就会记到几十~上百毫秒 —— 这是判断"吐司自己慢"
+        # 还是"被主线程挤"的唯一直接证据。记录会通过 stall_log 钩子进执行日志。
+        距上帧 = 0.0
+        if self._上帧 is not None:
+            距上帧 = (现在 - self._上帧) * 1000.0
+            if 距上帧 > 60.0:
+                self._记卡顿(距上帧)
+        self._上帧 = 现在
         动画中 = False
         for it in list(self._items):
             if it._advance(现在):
                 动画中 = True
-        self._compose()
+        try:
+            self._compose()
+        except Exception:
+            # ⚠ 这一层不能少：_compose 抛异常的话，下面的重排代码就执行不到，
+            # 整个 tick 链就此断掉 —— 吐司会永久冻在屏幕上（实测踩过一次）。
+            pass
         if not self._items:
             if getattr(self, "_hr", False):
                 try:
