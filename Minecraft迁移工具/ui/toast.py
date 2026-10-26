@@ -517,11 +517,14 @@ class ToastHost:
             return
         宽 = max(it.w for it in self._items)
         高 = int(self._总高 + px(self._PADB))
-        # 内容真变了才重画+上传：进度条宽度是按整像素算的，3 秒的条一秒才变十几像素，
-        # 不必每帧都贴（否则同一张图被反复预乘 + UpdateLayeredWindow，白烧 CPU）
+        # 内容真变了才重画+上传。
+        # ⚠ 进度条项**必须按 1/8 像素**量化，不能按整像素：按整像素的话，更新只发生在
+        # "整像素变了"的那一帧，我加的亚像素混合几乎永远不执行 —— 进度条实际是 1px
+        # 硬跳，还带着随机小数，看着就是"一格一格地卡"（用户反复报的就是这个）。
         指纹 = (self._dirty, self._底 is None,
                 tuple((round(it._y + it.dy, 1), it.w) for it in self._items),
-                tuple(int(it.w * it.progress()) if not (it.sticky or it._leaving) else -1
+                tuple(int(it.w * it.progress() * 8)
+                      if not (it.sticky or it._leaving) else -1
                       for it in self._items))
         if (not self._dirty) and self._底 is not None and 指纹 == self._指纹:
             return
