@@ -308,6 +308,7 @@ class PagesMixin:
         边 = "#8a6d1f" if 深 else "#e0a800"
         字 = "#e8d9a8" if 深 else "#5c4400"
         主 = self.theme.get("data_fg", "#1565c0") if not 深 else "#79b8ff"
+        弱色 = "#8a7a4a" if not 深 else "#9d8f6a"
 
         框 = tk.Frame(父, bg=底, highlightthickness=1, highlightbackground=边)
         框.pack(fill="x", padx=5, pady=(4, 2))
@@ -377,10 +378,13 @@ class PagesMixin:
                 pass
             self._pack_warning_frame = None
 
-        # 「不再提示」做成一个小方块按钮（只显示警告表情），比一行带下划线的文字干净
-        关闭钮 = tk.Label(右, text="⚠️", bg=底, fg=边, cursor="hand2",
-                       font=("微软雅黑", 11), padx=px(7), pady=px(2),
-                       bd=0, highlightthickness=1, highlightbackground=边)
+        # ⚠ 这里原来是个只有「⚠️」的小方块按钮，作用是**永久关掉这条安全提醒**
+        # （还会写进配置）。它和横幅自己的警告图标长得一模一样，谁也猜不到含义，
+        # 又紧挨着「复制 AI 提示词」—— 手一抖就把提醒永久点没了。
+        # 改成明确的文字链接：说清"点它会关掉提醒"，且与复制按钮在视觉上分开。
+        关闭钮 = tk.Label(右, text="不再提示", bg=底, fg=弱色, cursor="hand2",
+                       font=("微软雅黑", 8, "underline"), padx=px(4), pady=px(2),
+                       bd=0, highlightthickness=0)
         关闭钮.pack(side="left")
         _悬停色 = "#f0e2b8" if not 深 else "#4a3d24"
 
