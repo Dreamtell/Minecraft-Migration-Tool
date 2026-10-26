@@ -366,15 +366,15 @@ class ToastHost:
         except Exception:
             return None
         self._items.append(item)
-        # 入场位移要**先设**：否则会先按最终位置画一帧、再跳到 +16 开始动画（一跳）。
-        item.dy = px(16)
+        # 入场用**淡入**（不是纵向位移）：见 _Toast.fade_to 的说明
+        item.淡 = 0.0
         while len(self._items) > self.max_items:
             try:
                 self._items.pop(0).kill()      # kill 内部会 _layout(重排已有=True)
             except Exception:
                 pass
         self._layout(重排已有=True)      # 旧的往上让位（带过渡）
-        item.animate(0.0, _Toast._IN_MS)
+        item.fade_to(1.0, _Toast._IN_MS)
         self._dirty = True
         self._ensure_tick()
         return item
@@ -633,9 +633,31 @@ class ToastHost:
             it._内缩表 = 表
         return 字
 
+    def _淡表(self, it, 倍):
+        """按不透明度取一张 256 字节的换算表（缓存），给 bytes.translate 用。
+
+        预乘字节四个通道同乘一个系数就是正确的"整体变淡"，而 translate 是 C 实现，
+        96KB 只要 0.05ms —— 比每帧用 PIL 重新算 alpha 便宜得多。
+        """
+        阶 = max(1, min(31, int(round(倍 * 31))))
+        表缓 = getattr(it, "_淡表缓存", None)
+        if 表缓 is None:
+            表缓 = it._淡表缓存 = {}
+        表 = 表缓.get(阶)
+        if 表 is None:
+            f = 阶 / 31.0
+            表 = bytes(int(v * f) for v in range(256))
+            表缓[阶] = 表
+        return 表
+
     def _贴卡(self, buf, it, 行, 宽, 高):
         """按行把卡片拷进帧缓冲：只写这一行的**不透明段**（圆角处收窄）。"""
+        倍 = float(getattr(it, "淡", 1.0))
+        if 倍 <= 0.02:
+            return
         源全 = self._卡字节(it)
+        if 倍 < 0.999:
+            源全 = 源全.translate(self._淡表(it, 倍))
         行4 = it.w * 4
         表 = it._内缩表
         for r in range(it.h):
@@ -657,6 +679,11 @@ class ToastHost:
         if 分 <= 0.0:
             return
         条, bh = self._条预乘(it.w, it.h, it.level)
+        倍 = float(getattr(it, "淡", 1.0))
+        if 倍 <= 0.02:
+            return
+        if 倍 < 0.999:
+            条 = 条.translate(self._淡表(it, 倍))
         浮 = it.w * min(1.0, 分)
         宽2 = max(1, int(浮))
         余 = 浮 - int(浮)
@@ -760,6 +787,8 @@ class _Toast:
         self.gone = False
         self.t0 = time.perf_counter()
         self.dy = 0.0
+        self.淡 = 1.0                 # 不透明度（入场淡入、出场淡出用）
+        self._淡动画 = None
         self._y = 0.0
         self._leaving = False
         self._anim = None            # [起, 目标, t0, 时长, 结束后回调]
@@ -797,10 +826,36 @@ class _Toast:
         self._anim = [float(self.dy), float(目标), time.perf_counter(),
                       max(1.0, float(时长)), 结束后]
 
+    def fade_to(self, 目标, 时长, 结束后=None):
+        """透明度动画。
+
+        ⚠ 入场/出场**用淡入淡出，不要用纵向位移**：整叠是底部对齐的，新卡要占的位置
+        正是旧卡原来的屏幕位置 —— 让两者同时纵向移动就必然"互相穿插"，纯字节拷贝下
+        表现为一张卡被另一张啃掉一角（截图验过）。淡入淡出没有交叉，也就没有这瑕疵。
+        """
+        self._淡动画 = [float(self.淡), float(目标), time.perf_counter(),
+                        max(1.0, float(时长)), 结束后]
+
     def _advance(self, 现在):
         """推进动画/判断到点。返回是否仍在动画中（宿主据此决定下一帧间隔）。"""
         if self.gone:
             return False
+        忙 = False
+        if self._淡动画 is not None:
+            起, 目标, t0, 时长, 回调 = self._淡动画
+            k = min(1.0, (现在 - t0) * 1000.0 / 时长)
+            # 线性就够：透明度线性变化比纵向缓动更难被眼睛察觉
+            self.淡 = 起 + (目标 - 起) * k
+            if k >= 1.0:
+                self.淡 = 目标
+                self._淡动画 = None
+                if 回调 is not None:
+                    try:
+                        回调()
+                    except Exception:
+                        pass
+            else:
+                忙 = True
         if self._anim is not None:
             起, 目标, t0, 时长, 回调 = self._anim
             k = min(1.0, (现在 - t0) * 1000.0 / 时长)
@@ -819,15 +874,16 @@ class _Toast:
             if (现在 - self.t0) * 1000.0 >= self.ms:
                 self.dismiss()
                 return True
-            return False
-        return self._anim is not None
+            return 忙
+        return 忙 or (self._anim is not None)
 
     # ---------------------------------------------------------------- 回收
     def dismiss(self):
         if self.gone or self._leaving:
             return
         self._leaving = True
-        self.animate(px(20), self._OUT_MS, 结束后=self.kill)
+        # 出场同样用淡出：往下滑会钻进下面那条卡的位置，同样会互相啃
+        self.fade_to(0.0, self._OUT_MS, 结束后=self.kill)
 
     def kill(self):
         if self.gone:
