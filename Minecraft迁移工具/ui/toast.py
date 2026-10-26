@@ -780,8 +780,10 @@ class _Toast:
     """一条吐司的数据。渲染和动画都由宿主那一个循环推进。"""
 
     _IN_MS = 150
-    _OUT_MS = 120
-    _MOVE_MS = 110
+    _OUT_MS = 130
+    # 让位动画：原来 110ms + ease-out cubic，头两帧就走完 37% 的距离，之后慢慢爬 ——
+    # 眼睛读成"猛一下再磨蹭"。改成 160ms + smoothstep，每帧位移约为原来的一半。
+    _MOVE_MS = 160
 
     def __init__(self, host, text, level, ms, sticky):
         self.host = host
@@ -867,7 +869,9 @@ class _Toast:
         if self._anim is not None:
             起, 目标, t0, 时长, 回调 = self._anim
             k = min(1.0, (现在 - t0) * 1000.0 / 时长)
-            self.dy = 起 + (目标 - 起) * (1 - (1 - k) ** 3)
+            # smoothstep：两端都平缓，中段最快 —— 起步不"猛一下"，收尾不"磨蹭"。
+            # 比 ease-out cubic 的峰值速度低约 1/3（cubic 的峰值在起点，smoothstep 在中间）。
+            self.dy = 起 + (目标 - 起) * (k * k * (3.0 - 2.0 * k))
             if k >= 1.0:
                 self.dy = 目标
                 self._anim = None
