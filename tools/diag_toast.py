@@ -51,6 +51,29 @@ from utils import anim         # noqa: E402
 状态 = {"t0": 0.0, "阶段": "预热"}
 
 
+def _测合成():
+    """量一次 DWM 合成的等待时间。
+
+    ⚠ 我们的采样只能证明"帧按时提交了"，证明不了"按时上屏了"。DwmFlush() 会阻塞到
+    下一次合成，所以它的返回间隔 ≈ 屏幕上真实的呈现节奏：约 4ms = 240Hz 在跑，
+    16ms = 被限制到 60Hz，33ms 以上 = 合成被拖慢（GPU/HDR/远程桌面/垂直同步）。
+    """
+    try:
+        import ctypes
+        dwm = ctypes.windll.dwmapi
+    except Exception:
+        return []
+    间隔 = []
+    for _ in range(40):
+        t = time.perf_counter()
+        try:
+            dwm.DwmFlush()
+        except Exception:
+            return []
+        间隔.append((time.perf_counter() - t) * 1000.0)
+    return 间隔
+
+
 def _接(me):
     host = me._toast_host
     原始 = host._compose
@@ -63,6 +86,7 @@ def _接(me):
             采样.append((状态["阶段"], t, (time.perf_counter() - t) * 1000.0,
                        anim.holding()))
     host._compose = 包
+    状态["合成"] = _测合成()
 
     def 开始():
         状态["阶段"] = "4 条入场"
@@ -117,6 +141,13 @@ def 报告(me, host):
     if 耗:
         print("单帧耗时 p50=%.2f  p90=%.2f  max=%.2f ms" %
               (耗[len(耗) // 2], 耗[int(len(耗) * 0.9)], 耗[-1]))
+    合 = sorted(状态.get("合成") or [])
+    if 合:
+        print("屏幕合成间隔 p50=%.1f p90=%.1f max=%.1f ms（应≈帧间隔；"
+              "16/33ms 说明被合成限流）" %
+              (合[len(合) // 2], 合[int(len(合) * 0.9)], 合[-1]))
+    else:
+        print("屏幕合成间隔：测不到（DwmFlush 不可用）")
     print("==============================================")
     print("（把上面这几行贴回给开发者即可；临时配置在 %s，可删）" % CFG)
 
