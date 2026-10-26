@@ -484,6 +484,14 @@ class ToastHost:
             距上帧 = (现在 - self._上帧) * 1000.0
             if 距上帧 > 60.0:
                 self._记卡顿(距上帧)
+                # 被挤了这么久，动画早就追不上了：直接落到终点。否则用户会看到
+                # 卡片停在"半截"位置、透明度停在中间 —— 换主题时那种"一顿一顿、
+                # 卡在中间"的观感就是这么来的（主线程当时在重画所有控件）。
+                for it in list(self._items):
+                    try:
+                        it.瞬收()
+                    except Exception:
+                        pass
         self._上帧 = 现在
         动画中 = False
         for it in list(self._items):
@@ -875,6 +883,27 @@ class _Toast:
     def animate(self, 目标, 时长, 结束后=None):
         self._anim = [float(self.dy), float(目标), time.perf_counter(),
                       max(1.0, float(时长)), 结束后]
+
+    def 瞬收(self):
+        """把正在跑的两个动画直接落到终点（主线程被挤压后用，避免停在半截）。"""
+        甲 = self._anim
+        if 甲 is not None:
+            self._anim = None
+            self.dy = 甲[1]
+            if 甲[4] is not None:
+                try:
+                    甲[4]()
+                except Exception:
+                    pass
+        乙 = self._淡动画
+        if 乙 is not None:
+            self._淡动画 = None
+            self.淡 = 乙[1]
+            if 乙[4] is not None:
+                try:
+                    乙[4]()
+                except Exception:
+                    pass
 
     def fade_to(self, 目标, 时长, 结束后=None):
         """透明度动画。

@@ -2505,28 +2505,69 @@ def set_window_icon(window):
             pass
 
 
-def _圆角矩形(尺寸, 半径, 填充色, 超采样=4):
-    """出一张抗锯齿的圆角矩形图。
+_圆角缓存 = {}
+_圆角遮罩缓存 = {}
 
-    PIL 的 rounded_rectangle 是硬边的（圆角处一格一格的），所以按 4 倍画完再用
+
+def _超采样选(宽, 高, 超采样):
+    """大面积自动降到 2 倍。
+
+    ⚠ 这是一处**真实的卡顿源**：设置窗口那些选项卡每张要画两次圆角矩形
+    （底 + 描边），4 倍超采样下一张 900x46 的卡要 6.7ms，一组 4 张卡清缓存重画
+    就是 95ms，换主题/首次布局会把所有组都重画一遍 —— 看门狗在现场抓到主线程
+    卡在 _圆角矩形 里 1.36 秒。900px 宽、半径 10 的圆角，2 倍与 4 倍肉眼无差。
+    """
+    if 超采样 is not None:
+        return int(超采样)
+    # 小图（按钮/圆点/角标）保留 4 倍；卡片这种 900x46 的用 2 倍足够 ——
+    # 半径 10px 的弧在 2 倍下是 20px，缩回来照样平滑，成本只有 1/4。
+    return 4 if 宽 * 高 <= 20000 else 2
+
+
+def _圆角矩形(尺寸, 半径, 填充色, 超采样=None):
+    """出一张抗锯齿的圆角矩形图（带缓存；返回值是副本，调用方可以随便改）。
+
+    PIL 的 rounded_rectangle 是硬边的（圆角处一格一格的），所以按超采样画完再用
     LANCZOS 缩回来 —— 渐变按钮那套自绘也是这么做的。
     """
     宽, 高 = max(1, int(尺寸[0])), max(1, int(尺寸[1]))
-    大 = _PILImage.new("RGBA", (宽 * 超采样, 高 * 超采样), (0, 0, 0, 0))
+    S = _超采样选(宽, 高, 超采样)
+    try:
+        键 = (宽, 高, round(float(半径), 2),
+             tuple(填充色) if isinstance(填充色, (tuple, list)) else str(填充色), S)
+    except Exception:
+        键 = None
+    if 键 is not None:
+        命中 = _圆角缓存.get(键)
+        if 命中 is not None:
+            return 命中.copy()
+    大 = _PILImage.new("RGBA", (宽 * S, 高 * S), (0, 0, 0, 0))
     _PILDraw.Draw(大).rounded_rectangle(
-        [0, 0, 宽 * 超采样 - 1, 高 * 超采样 - 1], radius=max(0.5, 半径 * 超采样),
-        fill=填充色)
-    return 大.resize((宽, 高), _PILImage.LANCZOS)
+        [0, 0, 宽 * S - 1, 高 * S - 1], radius=max(0.5, 半径 * S), fill=填充色)
+    图 = 大.resize((宽, 高), _PILImage.LANCZOS)
+    if 键 is not None:
+        if len(_圆角缓存) > 120:
+            _圆角缓存.clear()
+        _圆角缓存[键] = 图
+    return 图.copy()
 
 
-def _圆角遮罩(尺寸, 半径, 超采样=4):
-    """同上的抗锯齿圆角，但出一张 L 通道遮罩（给 putalpha 用）。"""
+def _圆角遮罩(尺寸, 半径, 超采样=None):
+    """同上的抗锯齿圆角，但出一张 L 通道遮罩（给 putalpha 用），同样带缓存。"""
     宽, 高 = max(1, int(尺寸[0])), max(1, int(尺寸[1]))
-    大 = _PILImage.new("L", (宽 * 超采样, 高 * 超采样), 0)
+    S = _超采样选(宽, 高, 超采样)
+    键 = (宽, 高, round(float(半径), 2), S)
+    命中 = _圆角遮罩缓存.get(键)
+    if 命中 is not None:
+        return 命中.copy()
+    大 = _PILImage.new("L", (宽 * S, 高 * S), 0)
     _PILDraw.Draw(大).rounded_rectangle(
-        [0, 0, 宽 * 超采样 - 1, 高 * 超采样 - 1], radius=max(0.5, 半径 * 超采样),
-        fill=255)
-    return 大.resize((宽, 高), _PILImage.LANCZOS)
+        [0, 0, 宽 * S - 1, 高 * S - 1], radius=max(0.5, 半径 * S), fill=255)
+    图 = 大.resize((宽, 高), _PILImage.LANCZOS)
+    if len(_圆角遮罩缓存) > 120:
+        _圆角遮罩缓存.clear()
+    _圆角遮罩缓存[键] = 图
+    return 图.copy()
 
 
 class LiquidProgress(tk.Canvas):
