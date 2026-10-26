@@ -792,9 +792,12 @@ class _Toast:
         self.gone = False
         self.t0 = time.perf_counter()
         self.dy = 0.0
+        # ⚠ _y 用 None 表示"还没排过版"。用 0.0 的话，_layout 会把新卡当成
+        # "原本就在 0 位置"的老卡，算出 dy = (0 - 新位置) + Δ窗口 = 负数 →
+        # 新卡会从上面几张卡片中间**往下滑**到自己的位置（用户说的"回弹"）。
+        self._y = None
         self.淡 = 1.0                 # 不透明度（入场淡入、出场淡出用）
         self._淡动画 = None
-        self._y = 0.0
         self._leaving = False
         self._anim = None            # [起, 目标, t0, 时长, 结束后回调]
         self._base = None
