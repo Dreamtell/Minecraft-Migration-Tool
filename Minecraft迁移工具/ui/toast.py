@@ -192,6 +192,7 @@ class ToastHost:
         self._当前文本 = ""
         self._指纹 = None
         self._帧字节 = None
+        self._零字节 = b""
         self._帧图 = None
         self._hr = False           # 是否持有 1ms 定时器精度（动画期间）
         self._底字节 = None
@@ -583,7 +584,11 @@ class ToastHost:
             # p90 2.9ms / max 9.6ms，帧率掉到 10~20fps —— 这就是"短消息很顺、长消息卡"
             # 的原因（我早先只用 225px 宽的短卡测，所以没暴露出来）。
             总字节 = 高 * int(宽) * 4
-            if self._帧字节 is None or len(self._帧字节) != 总字节:
+            # ⚠ _零字节 可能不存在：稳态分支只分配 _帧字节（它从 _底字节 拷），
+            # 于是"先静止、再来新消息"时这里会 AttributeError 崩掉
+            # （真程序里点开几条等它们静止、再触发一条就会崩）。
+            if (self._帧字节 is None or len(self._帧字节) != 总字节
+                    or len(getattr(self, "_零字节", b"")) != 总字节):
                 self._帧字节 = bytearray(总字节)
                 self._零字节 = bytes(总字节)
             else:
