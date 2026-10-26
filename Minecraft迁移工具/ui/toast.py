@@ -30,6 +30,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 from utils import anim
 from utils.dpi import px
+
+# 整体尺寸系数：字、卡片高、内边距、圆角、图标、条高、间距**按同一比例**放大，
+# 这样"字变大"不会显得内边距太挤。想再调大小只改这一个数。
+_UI = 1.30
+
+
+def _u(v):
+    """按界面缩放系数换算设计像素（px 已含 DPI，这里再乘内容比例）。"""
+    return px(float(v) * _UI)
 from utils.layered import LayeredSurface
 
 _LEVELS = {
@@ -172,7 +181,7 @@ class ToastHost:
     """一整叠吐司（一个无边框、逐像素透明的分层窗口）。整个程序只建一个。"""
 
     _MARGIN = 18
-    _GAP = 8
+    _GAP = 10
     _PADB = 26            # 底部滑动余量（出场往下滑时别被窗口边界切掉）
 
     def __init__(self, master, theme, max_items=4):
@@ -292,23 +301,23 @@ class ToastHost:
         W, H = int(w) * S, int(h) * S
         图 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         画 = ImageDraw.Draw(图)
-        半径 = px(10) * S
+        半径 = _u(10) * S
         画.rounded_rectangle([0, 0, W - 1, H - 1], radius=半径, fill=底,
                             outline=边, width=S)
         # 左侧等级色：内缩胶囊（两端自己圆角；4px 宽的圆角矩形会被 PIL 夹成方头）
-        内缩 = px(3) * S
-        条宽 = max(2, px(5) * S)
+        内缩 = _u(3) * S
+        条宽 = max(2, _u(5) * S)
         条高 = max(1, H - 内缩 * 2)
         画.rounded_rectangle([内缩, 内缩, 内缩 + 条宽 - 1, 内缩 + 条高 - 1],
                             radius=max(1, 条宽 // 2), fill=条)
         图 = 图.resize((int(w), int(h)), Image.LANCZOS)
         画 = ImageDraw.Draw(图)
         # 图标：矢量描，不依赖字体里有没有 ✓ 这类字符
-        cx, cy = px(22), int(h) // 2
-        r = max(2.0, px(4))
-        lw = max(1, int(px(2)))
+        cx, cy = _u(22), int(h) // 2
+        r = max(2.0, _u(4))
+        lw = max(1, int(_u(2)))
         if level == "ok":
-            画.line([(cx - r, cy), (cx - px(1), cy + r * 0.7),
+            画.line([(cx - r, cy), (cx - _u(1), cy + r * 0.7),
                      (cx + r, cy - r * 0.9)], fill=条, width=lw, joint="curve")
         elif level == "error":
             画.line([(cx - r, cy - r), (cx + r, cy + r)], fill=条, width=lw)
@@ -323,12 +332,12 @@ class ToastHost:
             画.line([(cx, cy - r * 0.35), (cx, cy + r)], fill=条, width=lw)
         # 文案：按实际像素测宽**截断**（以前长文案会画到卡片外面），
         # 表情段单独换字体（雅黑没有 emoji 字形）
-        号 = max(9, int(px(9)))
-        可用 = max(px(16), int(w) - px(42) - px(26))
-        _画文本(画, px(42), cy, _截断(str(文案 or ""), 号, 可用), 字色, 号)
+        号 = max(10, int(_u(9)))
+        可用 = max(_u(16), int(w) - _u(42) - _u(26))
+        _画文本(画, _u(42), cy, _截断(str(文案 or ""), 号, 可用), 字色, 号)
         # 右侧 ×
-        ex, ey = int(w) - px(14), cy
-        q = max(1.5, px(3))
+        ex, ey = int(w) - _u(14), cy
+        q = max(1.5, _u(3))
         画.line([(ex - q, ey - q), (ex + q, ey + q)], fill=字色, width=1)
         画.line([(ex - q, ey + q), (ex + q, ey - q)], fill=字色, width=1)
         self._card_cache[键] = 图.copy()
@@ -342,11 +351,11 @@ class ToastHost:
             return 图
         S = 2
         条 = _LEVELS.get(level, _LEVELS["info"])[1]
-        W, H, bh = int(w) * S, int(h) * S, max(1, px(4)) * S
+        W, H, bh = int(w) * S, int(h) * S, max(1, _u(4)) * S
         整 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         画 = ImageDraw.Draw(整)
         # 用与卡片同半径的圆角矩形打底，只取最底部 bh 行 → 进度条跟着卡片圆角走
-        画.rounded_rectangle([0, 0, W - 1, H - 1], radius=px(10) * S, fill=条)
+        画.rounded_rectangle([0, 0, W - 1, H - 1], radius=_u(10) * S, fill=条)
         条图 = 整.crop((0, H - bh, W, H)).resize((int(w), max(1, bh // S)),
                                                Image.LANCZOS)
         self._bar_cache[键] = 条图
@@ -569,7 +578,7 @@ class ToastHost:
                 pass
             return
         宽 = max(it.w for it in self._items)
-        高 = int(self._总高 + px(self._PADB))
+        高 = int(self._总高 + _u(self._PADB))
         # 内容真变了才重画+上传。
         # ⚠ 进度条项**必须按 1/8 像素**量化，不能按整像素：按整像素的话，更新只发生在
         # "整像素变了"的那一帧，我加的亚像素混合几乎永远不执行 —— 进度条实际是 1px
@@ -582,8 +591,8 @@ class ToastHost:
         if (not self._dirty) and self._底 is not None and 指纹 == self._指纹:
             return
         self._指纹 = 指纹
-        x = rx + mw - px(self._MARGIN) - int(宽)
-        yy = ry + mh - px(self._MARGIN) - int(self._总高)
+        x = rx + mw - _u(self._MARGIN) - int(宽)
+        yy = ry + mh - _u(self._MARGIN) - int(self._总高)
         # 静 = 全部卡片都不在动。此时底图（卡片部分）可以**预乘一次缓存**，
         # 每帧只把进度条那几行拼进字节里 —— 省掉整图预乘（0.4ms/次）。
         # ⚠ 别把动画中的 dy 烘焙进这张缓存：那样卡片会冻在旧位置，只有进度条在动
@@ -680,7 +689,7 @@ class ToastHost:
             it._预字节 = 字
             # 每行圆角处的不透明内缩量。按行只写不透明段，纯 memcpy 才不会把
             # 圆角的透明像素写成"洞"（两个卡片重叠时那会直接透出桌面）。
-            半 = max(1.0, px(10))
+            半 = max(1.0, _u(10))
             表 = []
             for r in range(it.h):
                 内 = 0.0
@@ -859,15 +868,15 @@ class _Toast:
         self._leaving = False
         self._anim = None            # [起, 目标, t0, 时长, 结束后回调]
         self._base = None
-        self.h = int(px(46))
+        self.h = int(_u(46))
         self.w = self._量宽()
 
     def _量宽(self):
         try:
-            w = _量文本(self.text, max(9, int(px(9))))
+            w = _量文本(self.text, max(10, int(_u(9))))
         except Exception:
             w = len(self.text) * 12
-        return int(min(px(340), max(px(180), w + px(78))))
+        return int(min(_u(340), max(_u(180), w + _u(78))))
 
     # ---------------------------------------------------------------- 渲染
     def base(self):
