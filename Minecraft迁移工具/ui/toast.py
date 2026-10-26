@@ -366,13 +366,14 @@ class ToastHost:
         except Exception:
             return None
         self._items.append(item)
+        # 入场位移要**先设**：否则会先按最终位置画一帧、再跳到 +16 开始动画（一跳）。
+        item.dy = px(16)
         while len(self._items) > self.max_items:
             try:
-                self._items.pop(0).kill()
+                self._items.pop(0).kill()      # kill 内部会 _layout(重排已有=True)
             except Exception:
                 pass
         self._layout(重排已有=True)      # 旧的往上让位（带过渡）
-        item.dy = px(16)                 # 新的从下方滑上来
         item.animate(0.0, _Toast._IN_MS)
         self._dirty = True
         self._ensure_tick()
@@ -774,5 +775,8 @@ class _Toast:
                 self.host._items.remove(self)
         except Exception:
             pass
-        self.host._layout()
+        # ⚠ 必须带 重排已有：不带的话 _y 已被重算过，后面 show() 里那次 _layout
+        # 再算差值就是 0 —— 幸存者不会"滑"上去，而是**直接瞬跳**（第 5 条挤掉最旧时
+        # 最容易看到，用户报的"老问题还在"就是这个）。
+        self.host._layout(重排已有=True)
         self.host._ensure_tick()
