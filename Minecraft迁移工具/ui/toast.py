@@ -578,24 +578,25 @@ class ToastHost:
         else:
             self._底字节 = None
             self._底键 = None
-            # 同样复用：每帧新建一张 RGBA 也是白给的分配量
-            if self._帧图 is None or self._帧图.size != (int(宽), int(高)):
-                self._帧图 = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
+            # 动画期间**也不走 PIL 合成**：卡片的预乘字节按行 memcpy 进帧缓冲即可。
+            # 实测 4 条 425px 宽的卡，原来每帧 "4 次 alpha_composite + 整图预乘" 要
+            # p90 2.9ms / max 9.6ms，帧率掉到 10~20fps —— 这就是"短消息很顺、长消息卡"
+            # 的原因（我早先只用 225px 宽的短卡测，所以没暴露出来）。
+            总字节 = 高 * int(宽) * 4
+            if self._帧字节 is None or len(self._帧字节) != 总字节:
+                self._帧字节 = bytearray(总字节)
+                self._零字节 = bytes(总字节)
             else:
-                self._帧图.paste((0, 0, 0, 0), (0, 0, int(宽), int(高)))
-            图 = self._帧图
+                self._帧字节[:] = self._零字节
+            buf = self._帧字节
+            # 顺序：旧→新，**新卡写在后（也就是在前）** —— 让位时它从下面滑进来，
+            # 压住上面那条的下沿是对的（那是"滑入"的正常遮挡）。
+            # 圆角处的透明像素靠 _贴卡 的"只写不透明段"处理，不会留下洞。
             for it in self._items:
-                it.compose(图, 0, int(it._y + it.dy))
+                self._贴卡(buf, it, int(round(it._y + it.dy)), int(宽), 高)
             for it in self._items:
-                if it.sticky or it._leaving:
-                    continue
-                条 = self.bar_strip(it.w, it.h, it.level)
-                分 = it.progress()
-                if 分 <= 0.0:
-                    continue
-                宽2 = max(1, int(条.width * min(1.0, 分)))
-                图.alpha_composite(条.crop((0, 0, 宽2, 条.height)),
-                                   (0, int(it._y + it.dy) + it.h - 条.height))
+                self._贴条(buf, it, int(round(it._y + it.dy)), int(宽), 高)
+            图 = None
         try:
             if not self.win.winfo_ismapped():
                 self.win.deiconify()
@@ -609,6 +610,69 @@ class ToastHost:
             self.win.lift()
         except Exception:
             pass
+
+    def _卡字节(self, it):
+        """一条吐司卡片的**预乘字节** + 每行的不透明区间（每张卡只算一次）。"""
+        字 = getattr(it, "_预字节", None)
+        if 字 is None:
+            字 = LayeredSurface.premult(it.base())
+            it._预字节 = 字
+            # 每行圆角处的不透明内缩量。按行只写不透明段，纯 memcpy 才不会把
+            # 圆角的透明像素写成"洞"（两个卡片重叠时那会直接透出桌面）。
+            半 = max(1.0, px(10))
+            表 = []
+            for r in range(it.h):
+                内 = 0.0
+                if r < 半:
+                    弧 = 半 - r
+                    内 = 半 - (max(0.0, 半 * 半 - 弧 * 弧)) ** 0.5
+                elif it.h - 1 - r < 半:
+                    弧 = 半 - (it.h - 1 - r)
+                    内 = 半 - (max(0.0, 半 * 半 - 弧 * 弧)) ** 0.5
+                表.append(int(内) + 1)          # +1：宁可少写一列，也不留下洞
+            it._内缩表 = 表
+        return 字
+
+    def _贴卡(self, buf, it, 行, 宽, 高):
+        """按行把卡片拷进帧缓冲：只写这一行的**不透明段**（圆角处收窄）。"""
+        源全 = self._卡字节(it)
+        行4 = it.w * 4
+        表 = it._内缩表
+        for r in range(it.h):
+            y = 行 + r
+            if not (0 <= y < 高):
+                continue
+            内 = 表[r]
+            if 内 * 2 >= it.w:
+                continue
+            目 = (y * 宽) * 4 + 内 * 4
+            起 = r * 行4 + 内 * 4
+            buf[目:目 + (it.w - 2 * 内) * 4] = 源全[起:起 + (it.w - 2 * 内) * 4]
+
+    def _贴条(self, buf, it, 行, 宽, 高):
+        """把进度条按行拷进帧缓冲，边界那一列做亚像素混合。"""
+        if it.sticky or it._leaving:
+            return
+        分 = it.progress()
+        if 分 <= 0.0:
+            return
+        条, bh = self._条预乘(it.w, it.h, it.level)
+        浮 = it.w * min(1.0, 分)
+        宽2 = max(1, int(浮))
+        余 = 浮 - int(浮)
+        for r in range(bh):
+            y = 行 + it.h - bh + r
+            if not (0 <= y < 高):
+                continue
+            目 = (y * 宽) * 4
+            起 = r * it.w * 4
+            buf[目:目 + 宽2 * 4] = 条[起:起 + 宽2 * 4]
+            if 余 > 0.02 and 宽2 < it.w:
+                目2 = 目 + 宽2 * 4
+                起2 = 起 + 宽2 * 4
+                for k in range(3):
+                    底v = buf[目2 + k]
+                    buf[目2 + k] = int(条[起2 + k] * 余 + 底v * (1.0 - 余))
 
     def _条预乘(self, w, h, level):
         """进度条整条的**预乘字节**（按 w/h/level 缓存），供拼帧时逐行拷贝。"""
