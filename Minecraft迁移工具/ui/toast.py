@@ -614,7 +614,10 @@ class ToastHost:
         if (not self._dirty) and self._底 is not None and 指纹 == self._指纹:
             return
         self._指纹 = 指纹
-        x = rx + mw - _u(self._MARGIN) - int(宽)
+        # ⚠ 窗口宽 = 最宽卡 + 右侧留白，但留白只是给"向右滑出"用的空间，
+        # **不属于内容**。窗口位置要按内容宽算（多加一个留白），否则整叠卡片
+        # 会整体左移一个留白：右边缘离应用右边差 130px（用户截图）。
+        x = rx + mw - _u(self._MARGIN) - int(宽) + int(_u(self._PADR))
         yy = ry + mh - _u(self._MARGIN) - int(self._总高)
         # 静 = 全部卡片都不在动。此时底图（卡片部分）可以**预乘一次缓存**，
         # 每帧只把进度条那几行拼进字节里 —— 省掉整图预乘（0.4ms/次）。
