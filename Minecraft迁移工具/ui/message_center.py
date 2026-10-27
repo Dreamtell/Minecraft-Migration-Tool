@@ -119,6 +119,9 @@ class MessageStore:
         self.未读 = 0
 
 
+# 级别 → 中文名（列表里写 ok/warn/error 是开发者语言，用户看的是中文）
+_级别名 = {"ok": "成功", "info": "提示", "warn": "警告", "error": "错误"}
+
 # 级别 → (图标, 颜色)
 _外观 = {
     "ok":    ("✓", "#4caf50"),
@@ -264,24 +267,28 @@ class _抽屉:
         内 = tk.Frame(容器, bg=装)
         内.place(x=内缩, y=内缩, width=宽 - 2 * 内缩, height=高 - 2 * 内缩)
 
+        # 顶栏：标题 + 条数徽标 + 关闭（原来还挂一行灰色副标题，把标题区压成三层，
+        # 视觉上很挤；提示文字挪到底部做脚注）
         顶 = tk.Frame(内, bg=装)
-        顶.pack(fill="x", padx=px(12), pady=(px(8), px(2)))
-        tk.Label(顶, text=trp("消息中心"), bg=装, fg=self.字,
-                 font=("微软雅黑", 10, "bold")).pack(side="left")
+        顶.pack(fill="x", padx=px(14), pady=(px(12), px(8)))
         关 = tk.Label(顶, text="✕", bg=装, fg=self.弱, cursor="hand2",
-                      font=("微软雅黑", 10))
+                      font=("微软雅黑", 11))
         关.pack(side="right")
         关.bind("<Button-1>", lambda e: self.close())
-
-        tk.Label(内, text=trp("灰字是上一次运行留下的"), bg=装, fg=self.弱,
-                 font=("微软雅黑", 8), anchor="w").pack(fill="x", padx=px(12))
+        关.bind("<Enter>", lambda e: 关.config(fg=self.字))
+        关.bind("<Leave>", lambda e: 关.config(fg=self.弱))
+        徽标 = tk.Label(顶, text="", bg=装, fg=self.弱, font=("微软雅黑", 8))
+        徽标.pack(side="right", padx=(0, px(10)))
+        tk.Label(顶, text=trp("消息中心"), bg=装, fg=self.字,
+                 font=("微软雅黑", 11, "bold")).pack(side="left")
 
         底栏 = tk.Frame(内, bg=装)
         底栏.pack(side="bottom", fill="x", padx=px(12), pady=(px(6), px(10)))
 
-        文 = tk.Text(内, bg=self.文本底, fg=self.字, bd=0, highlightthickness=1,
-                     highlightbackground=边, wrap="word", font=("微软雅黑", 9),
-                     padx=px(8), pady=px(6))
+        # 列表去掉描边（现代面板靠留白分层，不靠框线），内边距加大
+        文 = tk.Text(内, bg=self.文本底, fg=self.字, bd=0, highlightthickness=0,
+                     wrap="word", font=("微软雅黑", 9),
+                     padx=px(12), pady=px(10), spacing1=px(2), spacing3=px(4))
         # 滚动条**自己画**：tk.Scrollbar 用的是系统原生渲染，bg/troughcolor 被忽略，
         # 在这块深色面板上就是一条 (240,240,240) 的浅灰柱子（用户截图里那条白杠）。
         滚 = tk.Canvas(内, width=px(6), bg=装, highlightthickness=0, bd=0)
@@ -326,6 +333,13 @@ class _抽屉:
         for 级, (图, 色) in _外观.items():
             文.tag_configure("级_" + 级, foreground=色)
         文.tag_configure("时", foreground=self.弱)
+        文.tag_configure("元", foreground=self.弱, font=("微软雅黑", 8))
+        文.tag_configure("空图", foreground=self.弱, font=("微软雅黑", 20),
+                         justify="center", spacing1=px(8))
+        文.tag_configure("空字", foreground=self.字, font=("微软雅黑", 10),
+                         justify="center", spacing1=px(6))
+        文.tag_configure("空提", foreground=self.弱, font=("微软雅黑", 8),
+                         justify="center", spacing1=px(4))
 
         def _重画():
             try:
@@ -335,17 +349,24 @@ class _抽屉:
                 return
             项 = self.store.全部()
             if not 项:
-                文.insert("end", trp("还没有消息。\n"), "时")
+                # 空状态居中（原来是一句灰字贴在左上角，像出错了）
+                文.insert("end", "\n\n\n")
+                文.insert("end", "🔔\n", "空图")
+                文.insert("end", trp("还没有消息") + "\n", "空字")
+                文.insert("end", trp("操作提示会记在这里，吐司消失后也能回看"), "空提")
             for x in 项:
                 级 = x.get("level") if x.get("level") in _外观 else "info"
                 图, _色 = _外观[级]
                 try:
-                    时 = time.strftime("%H:%M:%S", time.localtime(float(x.get("t") or 0)))
+                    时 = time.strftime("%H:%M", time.localtime(float(x.get("t") or 0)))
                 except Exception:
                     时 = ""
-                文.insert("end", 时 + "  ", "时")
+                # 两行一条：正文一行，下面一行灰色小字（级别 · 时间）。
+                # 挤成一行的"时间 图标 正文"读起来像日志文件，不像通知。
                 文.insert("end", 图 + " ", "级_" + 级)
                 文.insert("end", str(x.get("text") or "") + "\n")
+                文.insert("end", "    " + 时 + "  " + _级别名.get(级, ""), "元")
+                文.insert("end", "\n")
             文.configure(state="disabled")
             try:
                 文.see("end")
@@ -356,27 +377,51 @@ class _抽屉:
 
         def _清空():
             self.store.clear()
-            _重画()
+            self._重画()
 
-        # 按钮用主界面同一套自绘渐变按钮（原来的方框 Label 跟主界面完全不同风格）
+        # 底栏：左边一句脚注（原来是标题下面那行灰字），右边两个按钮 ——
+        # 「清空」是次要操作，做成幽灵按钮（无底色），「关闭」保留实心。
+        tk.Label(底栏, text=trp("灰字为上次运行留下"), bg=装, fg=self.弱,
+                 font=("微软雅黑", 8)).pack(side="left")
+
+        def _幽灵(文字, 命令):
+            钮 = tk.Label(底栏, text=文字, bg=装, fg=self.弱, cursor="hand2",
+                          font=("微软雅黑", 9), padx=px(10), pady=px(3))
+            钮.pack(side="right", padx=(px(8), 0))
+            钮.bind("<Button-1>", lambda e: 命令())
+            钮.bind("<Enter>", lambda e: 钮.config(fg=self.字))
+            钮.bind("<Leave>", lambda e: 钮.config(fg=self.弱))
+            return 钮
+
         try:
             from utils.helpers import create_gradient_button
-            create_gradient_button(底栏, trp("清空"), _清空,
-                                   colors=("#90a4ae", "#607d8b"), width=px(58),
-                                   height=px(24), font=("微软雅黑", 9)).pack(side="left")
             create_gradient_button(底栏, trp("关闭"), self.close,
                                    colors=("#42a5f5", "#1565c0"), width=px(58),
                                    height=px(24), font=("微软雅黑", 9)).pack(side="right")
+            _幽灵(trp("清空"), _清空)
         except Exception:
-            for 标, 命令, side in ((trp("清空"), _清空, "left"),
-                                   (trp("关闭"), self.close, "right")):
-                钮 = tk.Label(底栏, text=标, bg=self.theme.get("button_bg", "#e0e0e0"),
-                              fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
-                              font=("微软雅黑", 9), padx=px(12), pady=px(3))
-                钮.pack(side=side)
-                钮.bind("<Button-1>", lambda e, f=命令: f())
+            钮 = tk.Label(底栏, text=trp("关闭"), bg=self.theme.get("button_bg", "#e0e0e0"),
+                          fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
+                          font=("微软雅黑", 9), padx=px(12), pady=px(3))
+            钮.pack(side="right")
+            钮.bind("<Button-1>", lambda e: self.close())
+            _幽灵(trp("清空"), _清空)
 
-        _重画()
+        def _刷新徽标():
+            try:
+                项 = self.store.全部()
+                徽标.config(text=(trp("{0} 条").format(len(项)) if 项 else ""))
+            except Exception:
+                pass
+
+        旧重画 = _重画
+
+        def _重画2():
+            旧重画()
+            _刷新徽标()
+
+        self._重画 = _重画2
+        _重画2()
         self.store.标记已读()
 
         # 真正的圆角：把窗口区域裁成圆角矩形（无边框窗口只能这么做）
