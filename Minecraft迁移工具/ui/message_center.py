@@ -136,6 +136,40 @@ _圆角 = 14
 _键色 = "#010203"        # 透明键色（和吐司同一套路）
 
 
+def _圆角化窗口(win, 宽, 高, 半径):
+    """用 SetWindowRgn 把无边框窗口裁成圆角。
+
+    ⚠ 为什么不用 DWM 的 DWMWA_WINDOW_CORNER_PREFERENCE：那个只对**有标题栏**的
+    标准窗口生效，overrideredirect 的无边框窗口会被忽略（实测就是四角依旧发方）。
+    也不用 -transparentcolor：那要求窗口是 layered，而 layered 窗口会被 DWM 跳过
+    弹出/关闭动画，还和子控件的绘制抢合层。
+    SetWindowRgn 是**物理裁剪**：窗口本身就是圆角的，桌面从缺角露出来 ——
+    ui/splash.py 一直是这么干的。代价是边缘没有抗锯齿，半径十几像素时看不出来。
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
+        gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+        gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
+        try:
+            win.update_idletasks()
+        except Exception:
+            pass
+        hwnd = user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
+        r = max(2, int(半径) * 2)
+        rgn = gdi32.CreateRoundRectRgn(0, 0, int(宽) + 1, int(高) + 1, r, r)
+        if rgn:
+            user32.SetWindowRgn(ctypes.c_void_p(hwnd), ctypes.c_void_p(rgn), True)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _面板图(宽, 高, 半径, 填充, 描边):
     """圆角面板图（PIL，抗锯齿）：底色圆角矩形 + 1px 描边环。"""
     from PIL import Image
@@ -345,6 +379,13 @@ class _抽屉:
         _重画()
         self.store.标记已读()
 
+        # 真正的圆角：把窗口区域裁成圆角矩形（无边框窗口只能这么做）
+        try:
+            win.update_idletasks()
+            _圆角化窗口(win, 宽, 高, 半径)
+        except Exception:
+            pass
+
         win.bind("<Escape>", lambda e: self.close())
         try:
             self._configure_bind = self.父窗.bind(
@@ -352,6 +393,20 @@ class _抽屉:
         except Exception:
             pass
         return win
+
+    def _on_parent_configure(self, _e=None):
+        """主窗口移动/缩放时重新贴住右边框（尺寸变了还要重裁圆角）。"""
+        if self.win is None:
+            return
+        try:
+            if not self.win.winfo_exists():
+                return
+            宽, 高, x, y = self._目标几何()
+            self._目标 = (宽, 高, x, y)
+            self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, y))
+            _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
+        except Exception:
+            pass
 
     def slide_in(self):
         宽 = self._目标[0]
