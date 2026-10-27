@@ -130,7 +130,7 @@ _外观 = {
 _宽 = 372          # 抽屉宽度（设计像素）
 _高上限 = 560      # 抽屉最高
 _滑入ms = 260      # 170ms 太快，位移 372px 时一眼就是"啪"地出现
-_圆角 = 14
+_圆角 = 16
 
 
 _键色 = "#010203"        # 透明键色（和吐司同一套路）
@@ -409,10 +409,18 @@ class _抽屉:
             pass
 
     def slide_in(self):
-        宽 = self._目标[0]
+        宽, 高 = self._目标[0], self._目标[1]
         try:
             self.win.deiconify()
             self.win.lift()
+        except Exception:
+            pass
+        # ⚠ 圆角区域必须在**显示之后**再裁一次：withdraw 状态的 Toplevel 被
+        # deiconify 时 HWND 可能被重建，之前裁好的区域就跟着一起没了（吐司那边
+        # 踩过同一个坑）。再延迟补一次，兜住重建晚于本帧的情况。
+        _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
+        try:
+            self.win.after(80, lambda: _圆角化窗口(self.win, 宽, 高, int(px(_圆角))))
         except Exception:
             pass
         # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动
