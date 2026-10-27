@@ -891,6 +891,9 @@ class ListsMixin:
         self.save_config()
         self._update_text_states()
         self._notify_modlist_change()
+        # 清空是**不可撤销**的：没有任何提示的话，用户（尤其误点）无法判断发生了
+        # 什么、也没法确认是不是自己想清的那一份（清空按钮就在添加按钮旁边）。
+        self.toast("🗑 模组清单已清空", level="ok")
 
     def clear_config(self):
         """清空 config 清单。"""
@@ -900,6 +903,7 @@ class ListsMixin:
         self.save_config()
         self._update_text_states()
         self._notify_config_change()
+        self.toast("🗑 config 清单已清空", level="ok")
 
     # ---------- 其它文件清单（路径相对**整合包根目录**） ----------
     # 用途：mods / config / saves 之外、但你想一起带走的东西，
@@ -1012,6 +1016,7 @@ class ListsMixin:
         self._clear_extra_status()
         self.save_config()
         self._update_text_states()
+        self.toast("🗑 其它文件清单已清空", level="ok")
 
     def _clear_extra_status(self):
         """清掉其它文件清单的存在性高亮。"""

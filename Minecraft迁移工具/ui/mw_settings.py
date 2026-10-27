@@ -1271,6 +1271,9 @@ class SettingsMixin:
             def 收尾():
                 self.log(("✅ CurseForge Key 可用：" if ok else "❌ CurseForge Key 不可用：")
                          + 说明, level="INFO" if ok else "ERROR")
+                # 点了「测试」之后只弹过「正在测试…」，结果只写日志的话用户永远等不到回音
+                self.toast(("✅ CurseForge Key 可用" if ok else "❌ CurseForge Key 不可用，详见日志"),
+                           level="ok" if ok else "warn")
                 self._update_cf_key_label()
 
             try:
@@ -1302,6 +1305,9 @@ class SettingsMixin:
         except Exception:
             pass
         self.save_config()
+        self.toast(trp("同名文件：{0}",
+                       trp("覆盖（先备份）") if value == "overwrite" else trp("跳过")),
+                   level="ok")
 
     def _toggle_confirm_migrate(self):
         """设置页里那个"迁移前再确认"开关：同步变量 + 存配置（开关只翻自己的状态）。"""
@@ -1310,6 +1316,8 @@ class SettingsMixin:
         except Exception:
             return
         self.save_config()
+        self.toast(trp("迁移前确认已{0}", i18n.tr("开启" if self.confirm_migrate.get() else "关闭")),
+                   level="ok")
 
     def _toggle_blank_exit_edit(self):
         """设置页里"点空白处取消清单文本框焦点"开关：同步变量 + 存配置。"""
@@ -1318,6 +1326,9 @@ class SettingsMixin:
         except Exception:
             return
         self.save_config()
+        self.toast(trp("点空白取消焦点已{0}",
+                       i18n.tr("开启" if self.blank_exit_edit.get() else "关闭")),
+                   level="ok")
 
     def _on_dry_run_switch(self):
         """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""

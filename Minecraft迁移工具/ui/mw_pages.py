@@ -1531,10 +1531,20 @@ class PagesMixin:
         try:
             if self._net_float is not None and self._net_float.alive():
                 self._net_float.close()
+                self.toast("📌 桌面浮标已关闭", level="ok")
             else:
                 self.open_net_float()
-        except Exception:
-            pass
+                if self._net_float is not None and self._net_float.alive():
+                    self.toast("📌 桌面浮标已显示（可拖动，双击看曲线）", level="ok")
+                else:
+                    self.toast("⚠️ 浮标打不开，详见日志", level="warn")
+        except Exception as e:
+            # 原来整段是 try/except pass：失败时连日志都没有，用户只会觉得按钮坏了
+            try:
+                self.log("❌ 切换浮标失败：%s" % e, level="ERROR")
+            except Exception:
+                pass
+            self.toast("⚠️ 浮标打不开，详见日志", level="warn")
 
     def open_net_float(self):
         """把延迟曲线浮到桌面：无边框、置顶、可拖、位置记忆。"""

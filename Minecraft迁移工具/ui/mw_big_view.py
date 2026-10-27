@@ -276,6 +276,8 @@ class BigViewMixin:
                 return
             if not ok:
                 self.log("⚠ " + why + "，本次用经典窗口打开", level="WARNING", save=False)
+                # 用户点的是「放大查看」，实际弹出的却是另一种窗口 —— 不说明就成了怪事
+                self.toast("⚠️ Qt 不可用，已用经典窗口打开", level="warn")
         self.open_big_view(source_text, title)
 
     def open_mod_big_view(self):
