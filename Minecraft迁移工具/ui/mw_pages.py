@@ -186,7 +186,8 @@ class PagesMixin:
                 self.bottom_frame, text="🔔", bg=self.theme["bg"],
                 fg=self.theme.get("muted_fg", "#888888"), cursor="hand2",
                 font=("微软雅黑", 9))
-            self.msg_bell.pack(side="left", padx=(0, 6))
+            # 放右端（用户要求「右下角」）：状态栏左边是网络灯/浮标按钮
+            self.msg_bell.pack(side="right", padx=(6, 4))
             self.msg_bell.bind("<Button-1>", lambda e: self.open_message_center())
             self.create_tooltip(self.msg_bell, "消息中心：最近的提示消息（Ctrl+M）")
         except Exception:

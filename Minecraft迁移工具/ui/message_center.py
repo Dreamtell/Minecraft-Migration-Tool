@@ -129,7 +129,20 @@ _外观 = {
 
 _宽 = 372          # 抽屉宽度（设计像素）
 _高上限 = 560      # 抽屉最高
-_滑入ms = 170
+_滑入ms = 260      # 170ms 太快，位移 372px 时一眼就是"啪"地出现
+_圆角 = 14
+
+
+_键色 = "#010203"        # 透明键色（和吐司同一套路）
+
+
+def _面板图(宽, 高, 半径, 填充, 描边):
+    """圆角面板图（PIL，抗锯齿）：底色圆角矩形 + 1px 描边环。"""
+    from PIL import Image
+    from utils.helpers import _圆角矩形
+    底 = _圆角矩形((宽, 高), 半径, 描边)
+    内 = _圆角矩形((max(1, 宽 - 2), max(1, 高 - 2)), max(1, 半径 - 1), 填充)
+    return Image.alpha_composite(底, 内)
 
 
 class _抽屉:
@@ -177,21 +190,39 @@ class _抽屉:
         宽, 高, 目标x, 目标y = self._目标几何()
         装 = self.theme.get("card_bg") or ("#262626" if self.深 else "#ffffff")
         边 = self.theme.get("border") or ("#3c3c3c" if self.深 else "#d8d8d8")
+        半径 = int(px(_圆角))
+        内缩 = 半径 + 2           # 内容必须整体缩进圆角里，否则方角会盖住圆弧
 
         win = tk.Toplevel(self.父窗)
         win.overrideredirect(True)
-        win.configure(bg=边)          # 外层当 1px 描边
+        # 圆角靠"键色 = 透明"实现：窗口四角是键色 → 真透明，露出下面的界面。
+        # （Tk 控件没有真透明，圆角只能这么做；和吐司是同一套思路。）
+        try:
+            win.attributes("-transparentcolor", _键色)
+            win.configure(bg=_键色)
+        except Exception:
+            win.configure(bg=装)
         win.withdraw()
         self.win = win
         win.geometry("%dx%d+%d+%d" % (宽, 高, self._屏幕外x(), 目标y))
         self._目标 = (宽, 高, 目标x, 目标y)
 
-        内 = tk.Frame(win, bg=装)
-        内.pack(fill="both", expand=True, padx=1, pady=1)
+        画 = tk.Canvas(win, bg=_键色, highlightthickness=0, bd=0)
+        画.pack(fill="both", expand=True)
+        try:
+            from PIL import ImageTk
+            self._photo = ImageTk.PhotoImage(_面板图(宽, 高, 半径, 装, 边))
+            画.create_image(0, 0, anchor="nw", image=self._photo)
+        except Exception:
+            self._photo = None
+            画.configure(bg=装)
 
-        # 顶栏：标题 + 关闭
+        # 内容层：place 内缩，四角的圆弧由下面的面板图显示
+        内 = tk.Frame(win, bg=装)
+        内.place(x=内缩, y=内缩, width=宽 - 2 * 内缩, height=高 - 2 * 内缩)
+
         顶 = tk.Frame(内, bg=装)
-        顶.pack(fill="x", padx=px(12), pady=(px(10), px(2)))
+        顶.pack(fill="x", padx=px(12), pady=(px(8), px(2)))
         tk.Label(顶, text=trp("消息中心"), bg=装, fg=self.字,
                  font=("微软雅黑", 10, "bold")).pack(side="left")
         关 = tk.Label(顶, text="✕", bg=装, fg=self.弱, cursor="hand2",
@@ -202,9 +233,8 @@ class _抽屉:
         tk.Label(内, text=trp("灰字是上一次运行留下的"), bg=装, fg=self.弱,
                  font=("微软雅黑", 8), anchor="w").pack(fill="x", padx=px(12))
 
-        # 底栏先 pack，否则列表会把它挤没（Tk 的 pack 按顺序分配）
         底栏 = tk.Frame(内, bg=装)
-        底栏.pack(side="bottom", fill="x", padx=px(12), pady=px(10))
+        底栏.pack(side="bottom", fill="x", padx=px(12), pady=(px(6), px(10)))
 
         文 = tk.Text(内, bg=self.文本底, fg=self.字, bd=0, highlightthickness=1,
                      highlightbackground=边, wrap="word", font=("微软雅黑", 9),
@@ -255,19 +285,28 @@ class _抽屉:
             self.store.clear()
             _重画()
 
-        for 标, 命令, side in ((trp("清空"), _清空, "left"),
-                               (trp("关闭"), self.close, "right")):
-            钮 = tk.Label(底栏, text=标, bg=self.theme.get("button_bg", "#e0e0e0"),
-                          fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
-                          font=("微软雅黑", 9), padx=px(12), pady=px(3))
-            钮.pack(side=side)
-            钮.bind("<Button-1>", lambda e, f=命令: f())
+        # 按钮用主界面同一套自绘渐变按钮（原来的方框 Label 跟主界面完全不同风格）
+        try:
+            from utils.helpers import create_gradient_button
+            create_gradient_button(底栏, trp("清空"), _清空,
+                                   colors=("#90a4ae", "#607d8b"), width=px(58),
+                                   height=px(24), font=("微软雅黑", 9)).pack(side="left")
+            create_gradient_button(底栏, trp("关闭"), self.close,
+                                   colors=("#42a5f5", "#1565c0"), width=px(58),
+                                   height=px(24), font=("微软雅黑", 9)).pack(side="right")
+        except Exception:
+            for 标, 命令, side in ((trp("清空"), _清空, "left"),
+                                   (trp("关闭"), self.close, "right")):
+                钮 = tk.Label(底栏, text=标, bg=self.theme.get("button_bg", "#e0e0e0"),
+                              fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
+                              font=("微软雅黑", 9), padx=px(12), pady=px(3))
+                钮.pack(side=side)
+                钮.bind("<Button-1>", lambda e, f=命令: f())
 
         _重画()
         self.store.标记已读()
 
         win.bind("<Escape>", lambda e: self.close())
-        # 主窗口移动/缩放时跟着走（抽屉必须始终贴住右边框）
         try:
             self._configure_bind = self.父窗.bind(
                 "<Configure>", self._on_parent_configure, add="+")
@@ -275,19 +314,6 @@ class _抽屉:
             pass
         return win
 
-    def _on_parent_configure(self, _e=None):
-        if self.win is None:
-            return
-        try:
-            if not self.win.winfo_exists():
-                return
-            宽, 高, x, y = self._目标几何()
-            self._目标 = (宽, 高, x, y)
-            self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, y))
-        except Exception:
-            pass
-
-    # ---------------------------------------------------------------- 动画
     def slide_in(self):
         宽, 高, 目标x, 目标y = self._目标
         起x = self._屏幕外x()
@@ -296,14 +322,14 @@ class _抽屉:
             self.win.lift()
         except Exception:
             pass
-        self._animate(起x, 目标x, 目标y)
+        self._animate(起x, 目标x, 目标y, 起a=0.25, 终a=1.0)
 
     def slide_out_and_close(self):
         宽, 高, 目标x, 目标y = self._目标
         终x = self._屏幕外x()
-        self._animate(目标x, 终x, 目标y, 结束后=self._destroy)
+        self._animate(目标x, 终x, 目标y, 结束后=self._destroy, 起a=1.0, 终a=0.1)
 
-    def _animate(self, 起x, 终x, y, 结束后=None):
+    def _animate(self, 起x, 终x, y, 结束后=None, 起a=1.0, 终a=1.0):
         宽, 高 = self._目标[0], self._目标[1]
         t0 = time.perf_counter()
         try:
@@ -313,10 +339,16 @@ class _抽屉:
 
         def 帧():
             k = min(1.0, (time.perf_counter() - t0) * 1000.0 / _滑入ms)
-            缓 = 1 - (1 - k) ** 3 if 终x > 起x else k * k
+            # 开抽屉用 ease-out-quint（前段快、尾部极缓），关抽屉用 ease-in；
+            # 同时做一点透明度过渡 —— 只有位移的话，372px 的距离一眼就是"啪"地出现。
+            缓 = (1 - (1 - k) ** 5) if 终x > 起x else (k * k)
             x = int(起x + (终x - 起x) * 缓)
             try:
                 self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, int(y)))
+            except Exception:
+                pass
+            try:
+                self.win.attributes("-alpha", 起a + (终a - 起a) * 缓)
             except Exception:
                 pass
             if k < 1.0:
