@@ -390,11 +390,14 @@ class ToastHost:
         item.淡 = 0.0 if 弹入 else 1.0
         while len(self._items) > self.max_items:
             try:
-                self._items.pop(0).kill()      # kill 内部会 _layout(重排已有=True)
+                self._items.pop(0).kill()
             except Exception:
                 pass
-        # 弹入=False 时旧的也不做让位动画（那一帧主线程正忙，动画只会被卡住）
-        self._layout(重排已有=bool(弹入))
+        # ⚠ 让位**一律不做位移动画**：整叠底部对齐，新卡要占的位置正是旧卡原来的屏幕
+        # 位置，让两者同时位移必然穿插；在字节渲染下会被看成"啃掉一角/回弹"。这个观感
+        # 前后纠了几轮都没能让用户满意 —— 索性只做淡入淡出：旧卡瞬间落到新位置，
+        # 新卡淡入。没有位移，就不存在回弹。
+        self._layout(重排已有=False)
         if 弹入:
             item.fade_to(1.0, _Toast._IN_MS)
         self._dirty = True
@@ -993,8 +996,5 @@ class _Toast:
                 self.host._items.remove(self)
         except Exception:
             pass
-        # ⚠ 必须带 重排已有：不带的话 _y 已被重算过，后面 show() 里那次 _layout
-        # 再算差值就是 0 —— 幸存者不会"滑"上去，而是**直接瞬跳**（第 5 条挤掉最旧时
-        # 最容易看到，用户报的"老问题还在"就是这个）。
-        self.host._layout(重排已有=True)
-        self.host._ensure_tick()
+        # 让位不做位移动画（见 show() 里的说明）：存活卡片直接落到新位置
+        self.host._layout(重排已有=False)
