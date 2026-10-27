@@ -411,14 +411,9 @@ class ThemeMixin:
             self.apply_theme()
             self.on_path_change()
             self.save_config()
-            # ⚠ 这里立刻弹，但**不做动画**（弹入=False）：
-            #   · 放到揭示结束（600ms）后再弹 → 用户点完半天没反馈（"反应很慢"）；
-            #   · 在这里带动画弹 → circular_reveal 开头要整窗截图（约 100ms 主线程
-            #     阻塞），动画必然被卡住，随后"跳到终点"看着像弹一下（"回弹"）。
-            # 不做动画就没有可被打断的东西：立刻可见，进度条照常走。
-            self.toast(trp("主题已切换为{0}模式",
-                           i18n.tr('深色' if new_name == 'dark' else '浅色')),
-                       level="ok", 弹入=False)
+            # 主题切换**不弹**消息：这条提示每次都踩在揭示动画的整窗截图上（约 100ms
+            # 主线程阻塞），带动画必被卡住、不带又显得生硬；而「主题变了」本身一眼可见，
+            # 不需要再用吐司告知。
             # 更新已打开的差异窗口（Qt 版是自绘控件，得显式喂新主题）
             qt_diff = getattr(self, "diff_qt", None)
             if qt_diff is not None and qt_diff.is_alive():

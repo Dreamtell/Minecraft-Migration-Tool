@@ -182,6 +182,9 @@ class ToastHost:
 
     _MARGIN = 18
     _GAP = 10
+    # 右侧留白：回收动画是**向右滑出**，窗口右边必须留出这段空间，否则卡片会被
+    # 自己的窗口裁掉（和底部 _PADB 同一个道理）。这块是透明区，看不见也不挡点击。
+    _PADR = 80
     _PADB = 26            # 底部滑动余量（出场往下滑时别被窗口边界切掉）
 
     def __init__(self, master, theme, max_items=4):
@@ -381,6 +384,17 @@ class ToastHost:
             level = "info"
         if sticky is None:
             sticky = (level == "error")
+        # 同一条消息不重复叠加：已经有一条一样的（还在显示、没在回收）就只**重置它的
+        # 倒计时**并返回它。否则连点同一个按钮会堆出 4 条一模一样的卡片，
+        # 而且把真正的新消息挤掉。
+        for it in self._items:
+            if (not it._leaving) and it.text == text:
+                it.t0 = time.perf_counter()
+                it._淡动画 = None
+                it.淡 = 1.0
+                self._dirty = True
+                self._ensure_tick()
+                return it
         try:
             item = _Toast(self, text, level, int(ms), bool(sticky))
         except Exception:
@@ -580,14 +594,16 @@ class ToastHost:
             except Exception:
                 pass
             return
-        宽 = max(it.w for it in self._items)
+        # 宽度要多留一段给"向右滑出"的回收动画（透明区，看不见）
+        宽 = max(it.w for it in self._items) + int(_u(self._PADR))
         高 = int(self._总高 + _u(self._PADB))
         # 内容真变了才重画+上传。
         # ⚠ 进度条项**必须按 1/8 像素**量化，不能按整像素：按整像素的话，更新只发生在
         # "整像素变了"的那一帧，我加的亚像素混合几乎永远不执行 —— 进度条实际是 1px
         # 硬跳，还带着随机小数，看着就是"一格一格地卡"（用户反复报的就是这个）。
         指纹 = (self._dirty, self._底 is None,
-                tuple((round(it._y + it.dy, 1), it.w) for it in self._items),
+                tuple((round(it._y + it.dy, 1), round(getattr(it, "dx", 0.0), 1), it.w)
+                      for it in self._items),
                 tuple(int(it.w * it.progress() * 8)
                       if not (it.sticky or it._leaving) else -1
                       for it in self._items))
@@ -600,7 +616,8 @@ class ToastHost:
         # 每帧只把进度条那几行拼进字节里 —— 省掉整图预乘（0.4ms/次）。
         # ⚠ 别把动画中的 dy 烘焙进这张缓存：那样卡片会冻在旧位置，只有进度条在动
         # （表现就是卡片错位/缺卡/底部多出一条游离的进度条，实测截过）。
-        静 = all(abs(it.dy) < 0.5 for it in self._items)
+        静 = all(abs(it.dy) < 0.5 and abs(getattr(it, "dx", 0.0)) < 0.5
+                 for it in self._items)
         if 静:
             键 = (int(宽), int(高), tuple(id(it) for it in self._items),
                   tuple(it._y for it in self._items), self.palette())
@@ -666,9 +683,11 @@ class ToastHost:
             # 压住上面那条的下沿是对的（那是"滑入"的正常遮挡）。
             # 圆角处的透明像素靠 _贴卡 的"只写不透明段"处理，不会留下洞。
             for it in self._items:
-                self._贴卡(buf, it, int(round(it._y + it.dy)), int(宽), 高)
+                self._贴卡(buf, it, int(round(it._y + it.dy)), int(宽), 高,
+                           int(round(getattr(it, "dx", 0.0))))
             for it in self._items:
-                self._贴条(buf, it, int(round(it._y + it.dy)), int(宽), 高)
+                self._贴条(buf, it, int(round(it._y + it.dy)), int(宽), 高,
+                           int(round(getattr(it, "dx", 0.0))))
             图 = None
         try:
             if not self.win.winfo_ismapped():
@@ -723,8 +742,11 @@ class ToastHost:
             表缓[阶] = 表
         return 表
 
-    def _贴卡(self, buf, it, 行, 宽, 高):
-        """按行把卡片拷进帧缓冲：只写这一行的**不透明段**（圆角处收窄）。"""
+    def _贴卡(self, buf, it, 行, 宽, 高, x距=0):
+        """按行把卡片拷进帧缓冲：只写这一行的**不透明段**（圆角处收窄）。
+
+        x距 = 回收动画的右移量（整像素）。
+        """
         倍 = float(getattr(it, "淡", 1.0))
         if 倍 <= 0.02:
             return
@@ -740,11 +762,15 @@ class ToastHost:
             内 = 表[r]
             if 内 * 2 >= it.w:
                 continue
-            目 = (y * 宽) * 4 + 内 * 4
+            段宽 = it.w - 2 * 内
+            左 = 内 + x距
+            if 左 < 0 or 左 + 段宽 > 宽:          # 滑出窗口右边界后就不画了
+                continue
+            目 = (y * 宽) * 4 + 左 * 4
             起 = r * 行4 + 内 * 4
-            buf[目:目 + (it.w - 2 * 内) * 4] = 源全[起:起 + (it.w - 2 * 内) * 4]
+            buf[目:目 + 段宽 * 4] = 源全[起:起 + 段宽 * 4]
 
-    def _贴条(self, buf, it, 行, 宽, 高):
+    def _贴条(self, buf, it, 行, 宽, 高, x距=0):
         """把进度条按行拷进帧缓冲，边界那一列做亚像素混合。"""
         if it.sticky or it._leaving:
             return
@@ -766,6 +792,10 @@ class ToastHost:
                 continue
             目 = (y * 宽) * 4
             起 = r * it.w * 4
+            左 = x距
+            if 左 < 0 or 左 + 宽2 > 宽:
+                continue
+            目 = (y * 宽) * 4 + 左 * 4
             buf[目:目 + 宽2 * 4] = 条[起:起 + 宽2 * 4]
             if 余 > 0.02 and 宽2 < it.w:
                 目2 = 目 + 宽2 * 4
@@ -862,6 +892,8 @@ class _Toast:
         self.gone = False
         self.t0 = time.perf_counter()
         self.dy = 0.0
+        self.dx = 0.0                 # 回收时向右滑出的位移
+        self._dx动画 = None
         # ⚠ _y 用 None 表示"还没排过版"。用 0.0 的话，_layout 会把新卡当成
         # "原本就在 0 位置"的老卡，算出 dy = (0 - 新位置) + Δ窗口 = 负数 →
         # 新卡会从上面几张卡片中间**往下滑**到自己的位置（用户说的"回弹"）。
@@ -955,6 +987,22 @@ class _Toast:
                         pass
             else:
                 忙 = True
+        if self._dx动画 is not None:
+            起, 目标, t0, 时长, 回调 = self._dx动画
+            k = min(1.0, (现在 - t0) * 1000.0 / 时长)
+            # ease-in：起步慢、越走越快，像被"抽走"；同时末端淡一点
+            self.dx = 起 + (目标 - 起) * (k * k)
+            self.淡 = max(0.0, 1.0 - k * 0.55)
+            if k >= 1.0:
+                self.dx = 目标
+                self._dx动画 = None
+                if 回调 is not None:
+                    try:
+                        回调()
+                    except Exception:
+                        pass
+            else:
+                忙 = True
         if self._anim is not None:
             起, 目标, t0, 时长, 回调 = self._anim
             k = min(1.0, (现在 - t0) * 1000.0 / 时长)
@@ -983,8 +1031,10 @@ class _Toast:
         if self.gone or self._leaving:
             return
         self._leaving = True
-        # 出场同样用淡出：往下滑会钻进下面那条卡的位置，同样会互相啃
-        self.fade_to(0.0, self._OUT_MS, 结束后=self.kill)
+        # 出场：**向右滑出**（用户指定的回收方式）。向右是空的方向 —— 那边只有
+        # 主窗口边缘，不会撞到其它卡片；配合末尾的淡出，滑出窗口留白后自毁。
+        self._dx动画 = [float(self.dx), float(_u(self.host._PADR)),
+                        time.perf_counter(), float(self._OUT_MS), self.kill]
 
     def kill(self):
         if self.gone:
