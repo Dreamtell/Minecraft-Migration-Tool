@@ -413,6 +413,10 @@ class ToastHost:
         # 新卡淡入。没有位移，就不存在回弹。
         self._layout(重排已有=False)
         if 弹入:
+            # 入场 = 从右侧滑入 + 同时淡入。滑入方向和回收方向一致（都往右），
+            # 一进一出像抽屉，不会出现"从上面插进来"的穿插。
+            item.dx = float(_u(self._PADR))
+            item._dx入 = [item.dx, 0.0, time.perf_counter(), float(_Toast._IN_MS)]
             item.fade_to(1.0, _Toast._IN_MS)
         self._dirty = True
         self._ensure_tick()
@@ -623,8 +627,12 @@ class ToastHost:
                   tuple(it._y for it in self._items), self.palette())
             if self._底键 != 键 or self._底字节 is None:
                 base = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
+                # ⚠ 这里原来是 compose(base, 0, ...)：静止时卡片一律贴左边，
+                # 一叠里窄卡的右边缘和宽卡差出几十像素（用户截图证实）。
+                # 右边缘要统一落在 宽-留白 那条线上。
+                留白0 = int(_u(self._PADR))
                 for it in self._items:
-                    it.compose(base, 0, int(it._y))
+                    it.compose(base, int(宽) - 留白0 - it.w, int(it._y))
                 self._底字节 = LayeredSurface.premult(base)
                 self._底键 = 键
                 self._dirty = False
@@ -650,9 +658,10 @@ class ToastHost:
                 宽2 = max(1, int(浮))
                 余 = 浮 - int(浮)
                 行 = int(it._y) + it.h - bh
+                基 = int(宽) - int(_u(self._PADR)) - it.w
                 for r in range(bh):
                     源 = r * it.w * 4
-                    目 = ((行 + r) * int(宽)) * 4
+                    目 = ((行 + r) * int(宽) + 基) * 4
                     buf[目:目 + 宽2 * 4] = 条[源:源 + 宽2 * 4]
                     if 余 > 0.02 and 宽2 < int(it.w):
                         目2 = 目 + 宽2 * 4
@@ -682,12 +691,18 @@ class ToastHost:
             # 顺序：旧→新，**新卡写在后（也就是在前）** —— 让位时它从下面滑进来，
             # 压住上面那条的下沿是对的（那是"滑入"的正常遮挡）。
             # 圆角处的透明像素靠 _贴卡 的"只写不透明段"处理，不会留下洞。
+            # ⚠ 卡片必须**右对齐**：窗口宽 = 最宽卡 + 右侧留白，若从 x=0 开始画，
+            # 窄卡片就会贴着左边 —— 一叠里两条右边缘差出几十像素（用户截图证实）。
+            # 基准 x = 窗口宽 - 留白 - 本卡宽，右边缘统一落在同一条线上。
+            留白 = int(_u(self._PADR))
             for it in self._items:
+                基 = int(宽) - 留白 - it.w
                 self._贴卡(buf, it, int(round(it._y + it.dy)), int(宽), 高,
-                           int(round(getattr(it, "dx", 0.0))))
+                           基 + int(round(getattr(it, "dx", 0.0))))
             for it in self._items:
+                基 = int(宽) - 留白 - it.w
                 self._贴条(buf, it, int(round(it._y + it.dy)), int(宽), 高,
-                           int(round(getattr(it, "dx", 0.0))))
+                           基 + int(round(getattr(it, "dx", 0.0))))
             图 = None
         try:
             if not self.win.winfo_ismapped():
@@ -892,7 +907,8 @@ class _Toast:
         self.gone = False
         self.t0 = time.perf_counter()
         self.dy = 0.0
-        self.dx = 0.0                 # 回收时向右滑出的位移
+        self.dx = 0.0                 # 横向位移：入场从右滑入、回收向右滑出
+        self._dx入 = None             # [起, 目标, t0, 时长] 入场滑入
         self._dx动画 = None
         # ⚠ _y 用 None 表示"还没排过版"。用 0.0 的话，_layout 会把新卡当成
         # "原本就在 0 位置"的老卡，算出 dy = (0 - 新位置) + Δ窗口 = 负数 →
@@ -985,6 +1001,16 @@ class _Toast:
                         回调()
                     except Exception:
                         pass
+            else:
+                忙 = True
+        if self._dx入 is not None:
+            起, 目标, t0, 时长 = self._dx入
+            k = min(1.0, (现在 - t0) * 1000.0 / 时长)
+            # ease-out：一上来就走得快、尾巴收得软，和回收的 ease-in 正好对称
+            self.dx = 起 + (目标 - 起) * (1 - (1 - k) ** 3)
+            if k >= 1.0:
+                self.dx = 目标
+                self._dx入 = None
             else:
                 忙 = True
         if self._dx动画 is not None:
