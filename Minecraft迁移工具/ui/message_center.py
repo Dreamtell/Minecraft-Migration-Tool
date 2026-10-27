@@ -289,7 +289,7 @@ class _抽屉:
         底栏.pack(side="bottom", fill="x", padx=px(12), pady=(px(6), px(10)))
 
         # 列表去掉描边（现代面板靠留白分层，不靠框线），内边距加大
-        文 = tk.Text(内, bg=self.文本底, fg=self.字, bd=0, highlightthickness=0,
+        文 = tk.Text(内, bg=装, fg=self.字, bd=0, highlightthickness=0,
                      wrap="word", font=("微软雅黑", 9),
                      padx=px(12), pady=px(10), spacing1=px(2), spacing3=px(4))
         # 滚动条**自己画**：tk.Scrollbar 用的是系统原生渲染，bg/troughcolor 被忽略，
@@ -337,6 +337,19 @@ class _抽屉:
             文.tag_configure("级_" + 级, foreground=色)
         文.tag_configure("时", foreground=self.弱)
         文.tag_configure("元", foreground=self.弱, font=("微软雅黑", 8))
+        # 每条消息做成一条**行带**：自带底色 + 左右内缩 + 上下留白。
+        # 原来所有行同底色连成一片，9 条挤在一起像一整块（用户截图）。
+        # 间隙露出面板底色，就自然分成了"条"。
+        行底 = self.theme.get("row_bg") or ("#2f2f2f" if self.深 else "#f5f5f5")
+        文.tag_configure("条", background=行底, lmargin1=px(10), lmargin2=px(10),
+                         rmargin=px(10), spacing1=px(6), spacing3=px(0))
+        文.tag_configure("条元", background=行底, foreground=self.弱,
+                         font=("微软雅黑", 8), lmargin1=px(10), lmargin2=px(14),
+                         rmargin=px(10), spacing1=px(0), spacing3=px(2))
+        # ⚠ 分隔不能靠 spacing1/3：Tk 会把那段留白也涂上标签底色，整块还是连在一起。
+        # 只能插入一条**面板底色的小行**当真正的空隙。
+        文.tag_configure("隔", background=装, font=("微软雅黑", 4),
+                         spacing1=px(1), spacing3=px(1))
         文.tag_configure("空图", foreground=self.弱, font=("微软雅黑", 20),
                          justify="center", spacing1=px(8))
         文.tag_configure("空字", foreground=self.字, font=("微软雅黑", 10),
@@ -357,19 +370,35 @@ class _抽屉:
                 文.insert("end", "🔔\n", "空图")
                 文.insert("end", trp("还没有消息") + "\n", "空字")
                 文.insert("end", trp("操作提示会记在这里，吐司消失后也能回看"), "空提")
+            # 连续重复的折叠成一条（末尾显示 ×N）：反复开关同一个设置时，
+            # 面板会被十条一模一样的消息糊满，真正的内容反而看不见。
+            组 = []
             for x in 项:
+                if (组 and 组[-1][0].get("text") == x.get("text")
+                        and 组[-1][0].get("level") == x.get("level")):
+                    组[-1].append(x)
+                else:
+                    组.append([x])
+            for 序号, 一组 in enumerate(组):
+                if 序号:
+                    文.insert("end", "\n", "隔")   # 行与行之间的空隙
+                x = 一组[-1]                     # 用最后一条的时间
                 级 = x.get("level") if x.get("level") in _外观 else "info"
                 图, _色 = _外观[级]
                 try:
                     时 = time.strftime("%H:%M", time.localtime(float(x.get("t") or 0)))
                 except Exception:
                     时 = ""
-                # 两行一条：正文一行，下面一行灰色小字（级别 · 时间）。
+                # 两行一条：正文一行，下面一行灰色小字（级别 · 时间 · 次数）。
                 # 挤成一行的"时间 图标 正文"读起来像日志文件，不像通知。
-                文.insert("end", 图 + " ", "级_" + 级)
-                文.insert("end", str(x.get("text") or "") + "\n")
-                文.insert("end", "    " + 时 + "  " + _级别名.get(级, ""), "元")
-                文.insert("end", "\n")
+                文.insert("end", " " + 图 + " ", ("条", "级_" + 级))
+                文.insert("end", str(x.get("text") or ""), "条")
+                文.insert("end", "\n", "条")
+                元 = 时 + "  " + _级别名.get(级, "")
+                if len(一组) > 1:
+                    元 += "  ×%d" % len(一组)
+                文.insert("end", 元, "条元")
+                文.insert("end", "\n", ("条元", "gap"))
             文.configure(state="disabled")
             try:
                 文.see("end")
