@@ -1532,11 +1532,12 @@ class PagesMixin:
         try:
             if self._net_float is not None and self._net_float.alive():
                 self._net_float.close()
-                self.toast("📌 桌面浮标已关闭", level="ok")
+                self.toast("📌 桌面浮标已关闭", level="ok", key="net_float")
             else:
                 self.open_net_float()
                 if self._net_float is not None and self._net_float.alive():
-                    self.toast("📌 桌面浮标已显示（可拖动，双击看曲线）", level="ok")
+                    self.toast("📌 桌面浮标已显示（可拖动，双击看曲线）", level="ok",
+                               key="net_float")
                 else:
                     self.toast("⚠️ 浮标打不开，详见日志", level="warn")
         except Exception as e:

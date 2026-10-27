@@ -1293,7 +1293,7 @@ class SettingsMixin:
         self.save_config()
         self.toast(trp("🤫 后台静默执行已{0}（跑任务时不再弹进度/结果窗口）",
                        i18n.tr('开启' if self.silent_background else '关闭')),
-                   level="ok")
+                   level="ok", key="silent_bg")
 
     def _set_extra_conflict(self, value):
         """「其它文件」遇到目标已有同名文件时怎么办：overwrite（先备份）/ skip。
@@ -1307,7 +1307,7 @@ class SettingsMixin:
         self.save_config()
         self.toast(trp("同名文件：{0}",
                        trp("覆盖（先备份）") if value == "overwrite" else trp("跳过")),
-                   level="ok")
+                   level="ok", key="extra_conflict")
 
     def _toggle_confirm_migrate(self):
         """设置页里那个"迁移前再确认"开关：同步变量 + 存配置（开关只翻自己的状态）。"""
@@ -1317,7 +1317,7 @@ class SettingsMixin:
             return
         self.save_config()
         self.toast(trp("迁移前确认已{0}", i18n.tr("开启" if self.confirm_migrate.get() else "关闭")),
-                   level="ok")
+                   level="ok", key="confirm_migrate")
 
     def _toggle_blank_exit_edit(self):
         """设置页里"点空白处取消清单文本框焦点"开关：同步变量 + 存配置。"""
@@ -1328,7 +1328,7 @@ class SettingsMixin:
         self.save_config()
         self.toast(trp("点空白取消焦点已{0}",
                        i18n.tr("开启" if self.blank_exit_edit.get() else "关闭")),
-                   level="ok")
+                   level="ok", key="blank_exit")
 
     def _on_dry_run_switch(self):
         """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""
@@ -1336,17 +1336,22 @@ class SettingsMixin:
         self.save_config()
         # 这两个开关以前是**完全静默**的（既没日志也没吐司），用户点了不知道生效没。
         开 = bool(self.dry_run.get())
+        # key 固定：同一个开关反复切换时**原地更新那一条**，
+        # 不再每次在右下角新冒一条（用户："本质还是新消息从底部重新弹出"）。
         if 开:
             self.toast("🧪 模拟运行已开启：只显示将要执行的操作，不会修改任何文件",
-                       level="ok")
+                       level="ok", key="dry_run")
         else:
-            self.toast("🧪 模拟运行已关闭：接下来的迁移会真正写入文件", level="warn")
+            self.toast("🧪 模拟运行已关闭：接下来的迁移会真正写入文件", level="warn",
+                       key="dry_run")
 
     def _on_overwrite_switch(self):
         self.overwrite_mods.set(self.overwrite_sw.get())
         self.save_config()
         开 = bool(self.overwrite_mods.get())
         if 开:
-            self.toast("🔁 覆盖已存在的模组已开启：同名文件会被覆盖", level="ok")
+            self.toast("🔁 覆盖已存在的模组已开启：同名文件会被覆盖", level="ok",
+                       key="overwrite_mods")
         else:
-            self.toast("🔁 覆盖已存在的模组已关闭：同名文件会被跳过", level="info")
+            self.toast("🔁 覆盖已存在的模组已关闭：同名文件会被跳过", level="info",
+                       key="overwrite_mods")

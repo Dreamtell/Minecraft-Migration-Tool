@@ -365,7 +365,7 @@ class ToastHost:
         return 条图
 
     # ---------------------------------------------------------------- 对外
-    def show(self, text, level="info", ms=3000, sticky=None, 弹入=True):
+    def show(self, text, level="info", ms=3000, sticky=None, 弹入=True, key=None):
         """弹入=False：直接出现在最终位置，不做淡入/让位动画。
 
         用于"由会阻塞主线程的操作触发的反馈"（例如主题切换：揭示动画开头要整窗截图，
@@ -384,9 +384,21 @@ class ToastHost:
             level = "info"
         if sticky is None:
             sticky = (level == "error")
-        # 同一条消息不重复叠加：已经有一条一样的（还在显示、没在回收）就只**重置它的
-        # 倒计时**并返回它。否则连点同一个按钮会堆出 4 条一模一样的卡片，
-        # 而且把真正的新消息挤掉。
+        # ① 同一 key：这是**同一条消息的状态变化**（如"模拟运行 开/关"）。
+        # 原地换文案、重置倒计时，**不新增卡片、不重播入场动画、位置不变** ——
+        # 否则每切一次开关就在底部多冒一条，观感永远是"又从下面弹出来一个"。
+        if key is not None:
+            for it in self._items:
+                if (not it._leaving) and it.key == key:
+                    it.set_content(text, level)
+                    it.t0 = time.perf_counter()
+                    it._淡动画 = None
+                    it.淡 = 1.0
+                    self._layout(重排已有=False)     # 文案变了宽高可能变
+                    self._dirty = True
+                    self._ensure_tick()
+                    return it
+        # ② 一字不差：连点同一个按钮时不要再堆一条（没有 key 的调用方走这里）
         for it in self._items:
             if (not it._leaving) and it.text == text:
                 it.t0 = time.perf_counter()
@@ -396,7 +408,7 @@ class ToastHost:
                 self._ensure_tick()
                 return it
         try:
-            item = _Toast(self, text, level, int(ms), bool(sticky))
+            item = _Toast(self, text, level, int(ms), bool(sticky), key=key)
         except Exception:
             return None
         self._items.append(item)
@@ -901,10 +913,11 @@ class _Toast:
     # 眼睛读成"猛一下再磨蹭"。改成 160ms + smoothstep，每帧位移约为原来的一半。
     _MOVE_MS = 160
 
-    def __init__(self, host, text, level, ms, sticky):
+    def __init__(self, host, text, level, ms, sticky, key=None):
         self.host = host
         self.text = text
         self.level = level
+        self.key = key                # 同一 key = 同一条消息，状态变了**原地更新**
         self.ms = ms
         self.sticky = sticky
         self.gone = False
@@ -923,6 +936,29 @@ class _Toast:
         self._anim = None            # [起, 目标, t0, 时长, 结束后回调]
         self._base = None
         self.h = int(_u(46))
+        self.w = 0
+
+    def set_content(self, text, level):
+        """原地换文案/级别（同一个 key 的状态变化走这里，不新增卡片）。
+
+        ⚠ 必须让所有按文案派生的缓存失效：预乘字节、圆角内缩表、PIL 底图、
+        以及按文字量出来的宽高 —— 否则卡片会继续显示旧文案（或者新旧拼接）。
+        """
+        变了 = (text != self.text) or (level != self.level)
+        self.text = text
+        self.level = level
+        if not 变了:
+            return False
+        self._base = None
+        self._预字节 = None
+        self._内缩表 = None
+        self._淡表缓存 = None
+        try:
+            self.w = self._量宽()
+        except Exception:
+            pass
+        self.t0 = time.perf_counter()
+        return True
         self.w = self._量宽()
 
     def _量宽(self):

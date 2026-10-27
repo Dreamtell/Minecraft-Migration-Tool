@@ -394,7 +394,7 @@ class MigrationGUI(
             pass
 
     # ---------- 消息提示（吐司）----------
-    def toast(self, 文本, level="info", ms=3000, sticky=None, 弹入=True):
+    def toast(self, 文本, level="info", ms=3000, sticky=None, 弹入=True, key=None):
         """整个程序统一的消息入口：右下角弹一条吐司（不写日志、不弹 messagebox）。
 
         文本先过 i18n.tr —— 和 log() 一样，词条表里有的才翻得到；
@@ -418,7 +418,8 @@ class MigrationGUI(
         try:
             if not host.alive():
                 return None
-            return host.show(文, level=level, ms=ms, sticky=sticky, 弹入=弹入)
+            return host.show(文, level=level, ms=ms, sticky=sticky, 弹入=弹入,
+                            key=key)
         except Exception:
             return None
 
