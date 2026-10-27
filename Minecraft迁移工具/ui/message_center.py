@@ -250,7 +250,10 @@ class _抽屉:
 
         # 内容容器：整体右→左平移，实现"从边框滑出"
         容器 = tk.Frame(win, bg=_键色, bd=0, highlightthickness=0)
-        容器.place(x=0, y=0, width=宽, height=高)
+        # ⚠ 初始 x 必须是**窗口宽度**（整块在窗口外），不能是 0：
+        # deiconify() 会先把窗口渲一帧，容器若在 0 就先完整露一下，
+        # 下一帧才被挪到窗口外开始滑入 —— 这就是用户看到的"闪一下"。
+        容器.place(x=宽, y=0, width=宽, height=高)
         self._容器 = 容器
 
         画 = tk.Canvas(容器, bg=_键色, highlightthickness=0, bd=0)
@@ -424,7 +427,8 @@ class _抽屉:
         _重画2()
         self.store.标记已读()
 
-        # 真正的圆角：把窗口区域裁成圆角矩形（无边框窗口只能这么做）
+        # 真正的圆角：把窗口区域裁成圆角矩形（无边框窗口只能这么做）。
+        # 隐藏状态下先裁一次，让**首次显示**就是圆的。
         try:
             win.update_idletasks()
             _圆角化窗口(win, 宽, 高, 半径)
@@ -460,14 +464,10 @@ class _抽屉:
             self.win.lift()
         except Exception:
             pass
-        # ⚠ 圆角区域必须在**显示之后**再裁一次：withdraw 状态的 Toplevel 被
-        # deiconify 时 HWND 可能被重建，之前裁好的区域就跟着一起没了（吐司那边
-        # 踩过同一个坑）。再延迟补一次，兜住重建晚于本帧的情况。
+        # ⚠ 显示之后**立刻**再裁一次（不是延迟 80ms）：withdraw 状态的 Toplevel 被
+        # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
+        # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
         _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
-        try:
-            self.win.after(80, lambda: _圆角化窗口(self.win, 宽, 高, int(px(_圆角))))
-        except Exception:
-            pass
         # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动
         self._animate(宽, 0)
 
