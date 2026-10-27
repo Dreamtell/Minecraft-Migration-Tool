@@ -204,11 +204,20 @@ class _抽屉:
             win.configure(bg=装)
         win.withdraw()
         self.win = win
-        win.geometry("%dx%d+%d+%d" % (宽, 高, self._屏幕外x(), 目标y))
+        # ⚠ 窗口**固定在最终位置**，动画只挪里面的内容容器：
+        # 之前是让整个窗口从屏幕外滑进来，于是动画期间它浮在桌面之上（用户：
+        # "根本不是从边框出来"）。窗口不动、内容在窗口内右→左滑入，超出部分由 Tk
+        # 自动裁掉，看起来才是"从右边框里被拉出来"。
+        win.geometry("%dx%d+%d+%d" % (宽, 高, 目标x, 目标y))
         self._目标 = (宽, 高, 目标x, 目标y)
 
-        画 = tk.Canvas(win, bg=_键色, highlightthickness=0, bd=0)
-        画.pack(fill="both", expand=True)
+        # 内容容器：整体右→左平移，实现"从边框滑出"
+        容器 = tk.Frame(win, bg=_键色, bd=0, highlightthickness=0)
+        容器.place(x=0, y=0, width=宽, height=高)
+        self._容器 = 容器
+
+        画 = tk.Canvas(容器, bg=_键色, highlightthickness=0, bd=0)
+        画.place(x=0, y=0, width=宽, height=高)
         try:
             from PIL import ImageTk
             self._photo = ImageTk.PhotoImage(_面板图(宽, 高, 半径, 装, 边))
@@ -218,7 +227,7 @@ class _抽屉:
             画.configure(bg=装)
 
         # 内容层：place 内缩，四角的圆弧由下面的面板图显示
-        内 = tk.Frame(win, bg=装)
+        内 = tk.Frame(容器, bg=装)
         内.place(x=内缩, y=内缩, width=宽 - 2 * 内缩, height=高 - 2 * 内缩)
 
         顶 = tk.Frame(内, bg=装)
@@ -239,13 +248,43 @@ class _抽屉:
         文 = tk.Text(内, bg=self.文本底, fg=self.字, bd=0, highlightthickness=1,
                      highlightbackground=边, wrap="word", font=("微软雅黑", 9),
                      padx=px(8), pady=px(6))
-        # 滚动条也要跟主题：默认那条是系统浅灰色，在深色抽屉里像贴了张纸条
-        条 = tk.Scrollbar(内, command=文.yview, orient="vertical",
-                          bg=self.theme.get("button_bg", "#e0e0e0"),
-                          troughcolor=装, activebackground=self.弱,
-                          bd=0, highlightthickness=0, width=px(10))
-        文.configure(yscrollcommand=条.set)
-        条.pack(side="right", fill="y", pady=(px(4), px(4)))
+        # 滚动条**自己画**：tk.Scrollbar 用的是系统原生渲染，bg/troughcolor 被忽略，
+        # 在这块深色面板上就是一条 (240,240,240) 的浅灰柱子（用户截图里那条白杠）。
+        滚 = tk.Canvas(内, width=px(6), bg=装, highlightthickness=0, bd=0)
+        滚.pack(side="right", fill="y", padx=(px(2), px(2)), pady=(px(6), px(6)))
+
+        def _同步(第一, 最后):
+            try:
+                a, b = float(第一), float(最后)
+            except Exception:
+                return
+            高 = 滚.winfo_height()
+            if 高 <= 1:
+                return
+            上 = int(a * 高)
+            下 = int(b * 高)
+            if 下 - 上 < px(18):
+                下 = 上 + int(px(18))
+            try:
+                滚.delete("all")
+                if b - a < 0.999:          # 全部可见时不画滑块
+                    滚.create_rectangle(0, 上, px(6), min(下, 高),
+                                        fill=self.theme.get("border") or "#555555",
+                                        outline="")
+            except Exception:
+                pass
+
+        文.configure(yscrollcommand=_同步)
+
+        def _拖(e):
+            try:
+                文.yview_moveto(max(0.0, min(1.0, e.y / max(1, 滚.winfo_height()))))
+            except Exception:
+                pass
+
+        滚.bind("<Button-1>", _拖)
+        滚.bind("<B1-Motion>", _拖)
+        滚.bind("<Configure>", lambda e: 文.yview())
         文.pack(side="left", fill="both", expand=True, padx=(px(12), 0),
                   pady=(px(4), px(4)))
         self.文 = 文
@@ -315,40 +354,35 @@ class _抽屉:
         return win
 
     def slide_in(self):
-        宽, 高, 目标x, 目标y = self._目标
-        起x = self._屏幕外x()
+        宽 = self._目标[0]
         try:
             self.win.deiconify()
             self.win.lift()
         except Exception:
             pass
-        self._animate(起x, 目标x, 目标y, 起a=0.25, 终a=1.0)
+        # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动
+        self._animate(宽, 0)
 
     def slide_out_and_close(self):
-        宽, 高, 目标x, 目标y = self._目标
-        终x = self._屏幕外x()
-        self._animate(目标x, 终x, 目标y, 结束后=self._destroy, 起a=1.0, 终a=0.1)
+        宽 = self._目标[0]
+        self._animate(0, 宽, 结束后=self._destroy)
 
-    def _animate(self, 起x, 终x, y, 结束后=None, 起a=1.0, 终a=1.0):
-        宽, 高 = self._目标[0], self._目标[1]
+    def _animate(self, 起, 终, 结束后=None):
+        宽 = self._目标[0]
         t0 = time.perf_counter()
         try:
             anim.hold()
         except Exception:
             pass
+        向外 = 终 > 起
 
         def 帧():
             k = min(1.0, (time.perf_counter() - t0) * 1000.0 / _滑入ms)
-            # 开抽屉用 ease-out-quint（前段快、尾部极缓），关抽屉用 ease-in；
-            # 同时做一点透明度过渡 —— 只有位移的话，372px 的距离一眼就是"啪"地出现。
-            缓 = (1 - (1 - k) ** 5) if 终x > 起x else (k * k)
-            x = int(起x + (终x - 起x) * 缓)
+            # 开：ease-out-quint（一上来就动，尾部缓）；关：ease-in（越走越快被抽走）
+            缓 = (k * k) if 向外 else (1 - (1 - k) ** 5)
+            x = int(起 + (终 - 起) * 缓)
             try:
-                self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, int(y)))
-            except Exception:
-                pass
-            try:
-                self.win.attributes("-alpha", 起a + (终a - 起a) * 缓)
+                self._容器.place_configure(x=x)
             except Exception:
                 pass
             if k < 1.0:
@@ -366,6 +400,7 @@ class _抽屉:
                     结束后()
 
         帧()
+
 
     def _destroy(self):
         try:
