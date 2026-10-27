@@ -180,6 +180,17 @@ class PagesMixin:
         self.create_tooltip(self.net_spark, "最近几次探测的连接延迟（双击看完整折线图）")
         self._draw_net_spark()
         # 浮标按钮：把延迟曲线浮到桌面（无边框、置顶、可拖动）
+        # 消息中心入口：铃铛（有未读时显示条数）。吐司会消失，这里能回看。
+        try:
+            self.msg_bell = tk.Label(
+                self.bottom_frame, text="🔔", bg=self.theme["bg"],
+                fg=self.theme.get("muted_fg", "#888888"), cursor="hand2",
+                font=("微软雅黑", 9))
+            self.msg_bell.pack(side="left", padx=(0, 6))
+            self.msg_bell.bind("<Button-1>", lambda e: self.open_message_center())
+            self.create_tooltip(self.msg_bell, "消息中心：最近的提示消息（Ctrl+M）")
+        except Exception:
+            self.msg_bell = None
         try:
             self.net_float_btn = create_gradient_button(
                 self.bottom_frame, "📌", lambda: self.toggle_net_float(),

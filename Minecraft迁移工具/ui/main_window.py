@@ -158,6 +158,17 @@ class MigrationGUI(
         # Toplevel（真透明圆角，见 ui/toast.py 开头那段），得等主窗口存在、能取到
         # 它的位置才摆得对；此刻 self.theme 已是字典（__init__ 按 current_theme 选好的）
         # 建失败也不抛：吐司永远不该弄崩调用方。
+        # 消息存档：吐司消失后还能在「消息中心」回看（只把重要的写盘）
+        try:
+            from ui.message_center import MessageStore
+            self._msg_store = MessageStore()
+        except Exception:
+            self._msg_store = None
+        try:
+            self.root.bind("<Control-m>", lambda e: self.open_message_center())
+        except Exception:
+            pass
+
         if ToastHost is not None:
             try:
                 self._toast_host = ToastHost(self.root, self.theme)
@@ -390,6 +401,15 @@ class MigrationGUI(
         开关关着 / 容器没建起来 / 已经关掉 / 任何意外，一律安静返回，
         绝不抛异常：吐司是锦上添花，不能把调用它的功能弄崩。
         """
+        文 = i18n.tr(文本)
+        # 先记档再判断开关：消息中心是第二条通道，即使吐司被关掉也照样留一份记录
+        try:
+            _存 = getattr(self, "_msg_store", None)
+            if _存 is not None:
+                _存.add(文, level)
+                self._refresh_msg_badge()
+        except Exception:
+            pass
         if not bool(getattr(self, "toast_on", True)):
             return None
         host = getattr(self, "_toast_host", None)
@@ -398,10 +418,37 @@ class MigrationGUI(
         try:
             if not host.alive():
                 return None
-            return host.show(i18n.tr(文本), level=level, ms=ms, sticky=sticky,
-                             弹入=弹入)
+            return host.show(文, level=level, ms=ms, sticky=sticky, 弹入=弹入)
         except Exception:
             return None
+
+    # ---------- 消息中心 ----------
+    def open_message_center(self):
+        """打开消息中心（铃铛按钮 / Ctrl+M 都走这里）。"""
+        _存 = getattr(self, "_msg_store", None)
+        if _存 is None:
+            return None
+        try:
+            from ui.message_center import open_message_center as _开
+            窗 = _开(self.root, _存, self.theme)
+            self._refresh_msg_badge()
+            return 窗
+        except Exception:
+            return None
+
+    def _refresh_msg_badge(self):
+        """刷新状态栏铃铛上的未读数（没建出来就安静跳过）。"""
+        钮 = getattr(self, "msg_bell", None)
+        if 钮 is None:
+            return
+        try:
+            _存 = getattr(self, "_msg_store", None)
+            未读 = int(getattr(_存, "未读", 0) or 0)
+            钮.config(text=("🔔 %d" % 未读) if 未读 else "🔔",
+                      fg=(self.theme.get("warn_fg") or "#ffa000") if 未读
+                      else self.theme.get("muted_fg", "#888888"))
+        except Exception:
+            pass
 
     def _flush_pending_diff(self):
         """窗口从托盘叫回来时，把之前压着的差异窗口补开出来。"""
