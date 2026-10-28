@@ -339,36 +339,49 @@ class ToastHost:
         条高 = max(1, H - 内缩 * 2)
         画.rounded_rectangle([内缩, 内缩, 内缩 + 条宽 - 1, 内缩 + 条高 - 1],
                             radius=max(1, 条宽 // 2), fill=条)
+        # ⚠ 图标和右侧 × **必须画在这张 2 倍图上**再缩小。以前是缩完再画 1~2px 的线，
+        # 完全享受不到超采样：笔画边上全是台阶，还细得看不清（用户说"等级符号显示
+        # 不清晰"）。文字反过来 —— 它必须画在缩小后的图上，才有字体自己的抗锯齿。
+        cx, cy = _u(23) * S, H / 2.0
+        粗 = max(2.0, _u(2.4)) * S
+        r = _u(6.2) * S
+
+        def 竖条(x, y0, y1):
+            画.rounded_rectangle([x - 粗 / 2, y0, x + 粗 / 2, y1],
+                                radius=粗 / 2, fill=条)
+
+        def 圆点(x, y, 直径=None):
+            直 = 粗 if 直径 is None else 直径
+            画.ellipse([x - 直 / 2, y - 直 / 2, x + 直 / 2, y + 直 / 2], fill=条)
+
+        if level == "ok":
+            画.line([(cx - r, cy + 粗 * 0.10), (cx - r * 0.22, cy + r * 0.74),
+                     (cx + r, cy - r * 0.80)], fill=条, width=int(粗), joint="curve")
+            圆点(cx - r, cy + 粗 * 0.10)          # 斜线两端补圆头，不然是方角
+            圆点(cx + r, cy - r * 0.80)
+        elif level == "error":
+            for 甲, 乙 in (((-r, -r), (r, r)), ((-r, r), (r, -r))):
+                画.line([(cx + 甲[0], cy + 甲[1]), (cx + 乙[0], cy + 乙[1])],
+                        fill=条, width=int(粗))
+                圆点(cx + 甲[0], cy + 甲[1])
+                圆点(cx + 乙[0], cy + 乙[1])
+        elif level == "warn":
+            竖条(cx, cy - r, cy + r * 0.18)
+            圆点(cx, cy + r * 0.66)
+        else:                                     # info
+            圆点(cx, cy - r + 粗 / 2)
+            竖条(cx, cy - r * 0.32, cy + r)
+        ex, ey, q = int(w) * S - _u(15) * S, H / 2.0, _u(3.4) * S
+        细 = max(1, int(_u(1.7) * S))
+        画.line([(ex - q, ey - q), (ex + q, ey + q)], fill=字色, width=细)
+        画.line([(ex - q, ey + q), (ex + q, ey - q)], fill=字色, width=细)
         图 = 图.resize((int(w), int(h)), Image.LANCZOS)
         画 = ImageDraw.Draw(图)
-        # 图标：矢量描，不依赖字体里有没有 ✓ 这类字符
-        cx, cy = _u(22), int(h) // 2
-        r = max(2.0, _u(4))
-        lw = max(1, int(_u(2)))
-        if level == "ok":
-            画.line([(cx - r, cy), (cx - _u(1), cy + r * 0.7),
-                     (cx + r, cy - r * 0.9)], fill=条, width=lw, joint="curve")
-        elif level == "error":
-            画.line([(cx - r, cy - r), (cx + r, cy + r)], fill=条, width=lw)
-            画.line([(cx - r, cy + r), (cx + r, cy - r)], fill=条, width=lw)
-        elif level == "warn":
-            画.line([(cx, cy - r), (cx, cy + r * 0.25)], fill=条, width=lw)
-            画.ellipse([cx - lw // 2, cy + r * 0.6, cx + lw // 2 + 1, cy + r * 0.6 + lw],
-                       fill=条)
-        else:                                   # info
-            画.ellipse([cx - lw // 2, cy - r - 1, cx + lw // 2 + 1, cy - r + lw],
-                       fill=条)
-            画.line([(cx, cy - r * 0.35), (cx, cy + r)], fill=条, width=lw)
         # 文案：按实际像素测宽**截断**（以前长文案会画到卡片外面），
         # 表情段单独换字体（雅黑没有 emoji 字形）
         号 = max(10, int(_u(9)))
         可用 = max(_u(16), int(w) - _u(42) - _u(26))
-        _画文本(画, _u(42), cy, _截断(str(文案 or ""), 号, 可用), 字色, 号)
-        # 右侧 ×
-        ex, ey = int(w) - _u(14), cy
-        q = max(1.5, _u(3))
-        画.line([(ex - q, ey - q), (ex + q, ey + q)], fill=字色, width=1)
-        画.line([(ex - q, ey + q), (ex + q, ey - q)], fill=字色, width=1)
+        _画文本(画, _u(42), int(h) // 2, _截断(str(文案 or ""), 号, 可用), 字色, 号)
         self._card_cache[键] = 图.copy()
         return 图
 
