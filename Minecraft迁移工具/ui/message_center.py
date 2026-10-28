@@ -149,7 +149,8 @@ _外观 = {
     "error": ("×", "#e53935"),
 }
 
-_宽 = 372          # 抽屉宽度（设计像素）
+_宽 = 372          # 抽屉卡片宽度（设计像素）
+_边距 = 10         # 卡片离主窗右/上/下的留白（设计像素），留白透明
 _高上限 = 560      # 抽屉最高
 _滑入ms = 260      # 170ms 太快，位移 372px 时一眼就是"啪"地出现
 _圆角 = 16
@@ -158,15 +159,15 @@ _圆角 = 16
 _键色 = "#010203"        # 透明键色（和吐司同一套路）
 
 
-def _圆角化窗口(win, 宽, 高, 半径):
-    """用 SetWindowRgn 把无边框窗口裁成圆角。
+def _裁区域(win, 左, 卡宽, 高, 半径):
+    """把窗口可见区域裁成 [左, 卡宽] x [0, 高] 的圆角矩形。
 
-    ⚠ 为什么不用 DWM 的 DWMWA_WINDOW_CORNER_PREFERENCE：那个只对**有标题栏**的
-    标准窗口生效，overrideredirect 的无边框窗口会被忽略（实测就是四角依旧发方）。
-    也不用 -transparentcolor：那要求窗口是 layered，而 layered 窗口会被 DWM 跳过
-    弹出/关闭动画，还和子控件的绘制抢合层。
-    SetWindowRgn 是**物理裁剪**：窗口本身就是圆角的，桌面从缺角露出来 ——
-    ui/splash.py 一直是这么干的。代价是边缘没有抗锯齿，半径十几像素时看不出来。
+    抽屉的展开动画**只动这条区域**：容器和内容始终钉在窗口左上角 0 处，区域从左
+    往右扫过去。这样每一帧可见的都是完整圆角矩形 —— 包括展开时那条前缘边。
+    （之前"内容在窗口里平移"的做法，前缘那条边在窗口内部，物理上只能是直角，
+    用户看到的就是"动画过程没有圆角化"。）
+
+    故意不调用 update_idletasks：每帧都会调用，必须够便宜。
     """
     try:
         import ctypes
@@ -177,13 +178,15 @@ def _圆角化窗口(win, 宽, 高, 半径):
         user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
         gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
         gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
-        try:
-            win.update_idletasks()
-        except Exception:
-            pass
         hwnd = user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
-        r = max(2, int(半径) * 2)
-        rgn = gdi32.CreateRoundRectRgn(0, 0, int(宽) + 1, int(高) + 1, r, r)
+        左 = int(左)
+        卡宽 = int(卡宽)
+        高 = int(高)
+        if 左 >= 卡宽:                 # 收拢：空区域 → 窗口整块不显示
+            rgn = gdi32.CreateRoundRectRgn(0, 0, 0, 0, 0, 0)
+        else:
+            r = max(2, int(半径) * 2)  # CreateRoundRectRgn 的角宽是直径
+            rgn = gdi32.CreateRoundRectRgn(左, 0, 卡宽, 高 + 1, r, r)
         if rgn:
             user32.SetWindowRgn(ctypes.c_void_p(hwnd), ctypes.c_void_p(rgn), True)
             return True
@@ -229,21 +232,24 @@ class _抽屉:
             rx = self.父窗.winfo_rootx()
             ry = self.父窗.winfo_rooty()
         except Exception:
-            return int(px(_宽)), int(px(_高上限)), 0, 0
-        宽 = int(px(_宽))
-        高 = int(min(px(_高上限), max(px(240), mh - px(90))))
-        # 右边框内侧；底部留一点边距，看起来是"从右边缘滑出"的抽屉
+            return int(px(_宽)) + int(px(_边距)), int(px(_高上限)), 0, 0
+        边距 = int(px(_边距))
+        卡宽 = int(min(px(_宽), max(px(180), mw - 2 * 边距)))
+        宽 = 卡宽 + 边距                       # 窗口 = 卡片 + 右侧留白（留白透明）
+        高 = int(min(px(_高上限), max(px(160), mh - 2 * 边距)))
+        # 悬浮卡片：右侧和底部各留一个边距，不贴边。底部对齐（不是顶部）：
+        # 铃铛在底部状态栏，卡片从它上面长出来才连得上；窗口很高时上方留白。
         x = rx + mw - 宽
-        y = ry + mh - 高 - px(6)
+        y = ry + mh - 高 - 边距
         return 宽, 高, int(x), int(y)
 
-    def _屏幕外x(self):
+    def _卡宽(self):
+        """卡片宽度 = 窗口宽度 - 右侧留白。"""
         try:
-            return self.父窗.winfo_rootx() + self.父窗.winfo_width() + px(4)
+            return max(2, int(self._目标[0]) - int(px(_边距)))
         except Exception:
-            return 4000
+            return int(px(_宽))
 
-    # ---------------------------------------------------------------- 构建
     def build(self):
         宽, 高, 目标x, 目标y = self._目标几何()
         装 = self.theme.get("card_bg") or ("#262626" if self.深 else "#ffffff")
@@ -273,27 +279,26 @@ class _抽屉:
             win.configure(bg=装)
         win.withdraw()
         self.win = win
-        # ⚠ 窗口**固定在最终位置**，动画只挪里面的内容容器：
-        # 之前是让整个窗口从屏幕外滑进来，于是动画期间它浮在桌面之上（用户：
-        # "根本不是从边框出来"）。窗口不动、内容在窗口内右→左滑入，超出部分由 Tk
-        # 自动裁掉，看起来才是"从右边框里被拉出来"。
+        # 窗口**固定在最终位置**，动画既不挪窗口也不挪内容：只改窗口区域
+        # （_裁区域），区域从左往右扫过去。之前是让内容在窗口里右→左平移，
+        # 于是展开途中前缘那条边落在窗口内部，只能是直角 —— 用户："动画过程
+        # 没有圆角化"。区域驱动之后，每一帧可见形状都是完整的圆角矩形。
         win.geometry("%dx%d+%d+%d" % (宽, 高, 目标x, 目标y))
         win.withdraw()          # 属性设完再收一次，保险
         self._目标 = (宽, 高, 目标x, 目标y)
+        卡宽 = self._卡宽()
+        self._左 = 宽            # 收拢初值：区域整体在卡片右侧之外 → 不可见
 
-        # 内容容器：整体右→左平移，实现"从边框滑出"
+        # 内容容器钉死在 0：内容静止，动画期间不重排也不重画
         容器 = tk.Frame(win, bg=_键色, bd=0, highlightthickness=0)
-        # ⚠ 初始 x 必须是**窗口宽度**（整块在窗口外），不能是 0：
-        # deiconify() 会先把窗口渲一帧，容器若在 0 就先完整露一下，
-        # 下一帧才被挪到窗口外开始滑入 —— 这就是用户看到的"闪一下"。
-        容器.place(x=宽, y=0, width=宽, height=高)
+        容器.place(x=0, y=0, width=卡宽, height=高)
         self._容器 = 容器
 
         画 = tk.Canvas(容器, bg=_键色, highlightthickness=0, bd=0)
-        画.place(x=0, y=0, width=宽, height=高)
+        画.place(x=0, y=0, width=卡宽, height=高)
         try:
             from PIL import ImageTk
-            self._photo = ImageTk.PhotoImage(_面板图(宽, 高, 半径, 装, 边))
+            self._photo = ImageTk.PhotoImage(_面板图(卡宽, 高, 半径, 装, 边))
             画.create_image(0, 0, anchor="nw", image=self._photo)
         except Exception:
             self._photo = None
@@ -301,7 +306,7 @@ class _抽屉:
 
         # 内容层：place 内缩，四角的圆弧由下面的面板图显示
         内 = tk.Frame(容器, bg=装)
-        内.place(x=内缩, y=内缩, width=宽 - 2 * 内缩, height=高 - 2 * 内缩)
+        内.place(x=内缩, y=内缩, width=卡宽 - 2 * 内缩, height=高 - 2 * 内缩)
 
         # 顶栏：标题 + 条数徽标 + 关闭（原来还挂一行灰色副标题，把标题区压成三层，
         # 视觉上很挤；提示文字挪到底部做脚注）
@@ -331,7 +336,7 @@ class _抽屉:
         卡半径 = int(px(10))
         内边 = int(px(11))
         图标列 = int(px(17))
-        行宽 = 宽 - 2 * 内缩 - px(12) - px(14) - px(6)   # 左右留白 + 滚动条 + 间隙
+        行宽 = 卡宽 - 2 * 内缩 - px(12) - px(14) - px(6)   # 左右留白 + 滚动条 + 间隙
         文本宽 = max(px(80), 行宽 - 2 * 内边 - 图标列)
         字号 = ("微软雅黑", 9)
         元号 = ("微软雅黑", 8)
@@ -555,11 +560,11 @@ class _抽屉:
         _重画2()
         self.store.标记已读()
 
-        # 真正的圆角：把窗口区域裁成圆角矩形（无边框窗口只能这么做）。
-        # 隐藏状态下先裁一次，让**首次显示**就是圆的。
+        # 隐藏状态下先把区域收成"零宽"（左 = 卡宽）：这样首次显示不会漏出方块，
+        # 淡入的第一帧就是从右边缘长出来的一条圆角。
         try:
             win.update_idletasks()
-            _圆角化窗口(win, 宽, 高, 半径)
+            _裁区域(win, 卡宽, 卡宽, 高, 半径)
         except Exception:
             pass
 
@@ -594,24 +599,24 @@ class _抽屉:
             宽, 高, x, y = self._目标几何()
             self._目标 = (宽, 高, x, y)
             self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, y))
-            _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
+            卡宽 = self._卡宽()
+            self._容器.place_configure(width=卡宽, height=高)
+            _裁区域(self.win, self._当前左(0), 卡宽, 高, int(px(_圆角)))
         except Exception:
             pass
 
-    def _当前x(self, 默认=0):
-        try:
-            值 = self._容器.place_info().get("x") or 默认
-            return int(float(值))
-        except Exception:
-            return int(默认)
+    def _当前左(self, 默认=0):
+        return int(getattr(self, "_左", 默认))
 
     def slide_in(self):
         宽, 高 = self._目标[0], self._目标[1]
+        卡宽 = self._卡宽()
         self._关闭中 = False
-        # 显示之前把容器钉死在窗口外：deiconify 渲的第一帧就只能是"空的"，
-        # 不会先整块露一下再被挪走（那就是"闪一下"）
+        # 显示之前把区域收成"零宽"：deiconify 渲的第一帧只能是空的，
+        # 不会先整块露一下再从右边长出来（那就是"闪一下"）
+        self._左 = 宽
         try:
-            self._容器.place_configure(x=宽)
+            _裁区域(self.win, 宽, 卡宽, 高, int(px(_圆角)))
         except Exception:
             pass
         try:
@@ -622,7 +627,10 @@ class _抽屉:
         # ⚠ 显示之后**立刻**再裁一次（不是延迟 80ms）：withdraw 状态的 Toplevel 被
         # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
         # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
-        _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
+        try:
+            _裁区域(self.win, self._左, 卡宽, 高, int(px(_圆角)))
+        except Exception:
+            pass
         # 关键顺序：deiconify → 先让 Tk 把客户区**真 paint 一遍**（填键色）→ 再放开 alpha。
         # 少了这一步，窗口可能"已经 alpha=1，但客户区还没被 paint"，系统对未初始化的
         # 表面不做键色匹配，于是把一块近黑矩形原样端上去 —— 就是用户看到的黑方块。
@@ -630,18 +638,13 @@ class _抽屉:
             self.win.update()
         except Exception:
             pass
-        # 面板图和圆角都已经就位，这才把窗口放出来（alpha 0 → 1）。
-        try:
-            self.win.attributes("-alpha", 1.0)
-        except Exception:
-            pass
-        # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动。
-        # 同步起滑（不再 after(0)）：alpha 翻到 1 和第一帧动画落在同一帧里，
-        # 中间不会夹一个"已经可见但内容还在窗外"的空帧。
+        # 面板图和圆角都已经就位，这才把窗口放出来（alpha 由动画逐帧抬起来）。
+        # 同步起滑（不再 after(0)）：放开 alpha 和第一帧动画落在同一帧里，
+        # 中间不会夹一个"已经可见但区域还是收拢的"空帧。
         def 起滑():
             # 这一帧之前就被关掉了（铃铛连点）：别再起滑入动画，让关闭动画接管
             if not self._关闭中:
-                self._animate(self._当前x(宽), 0)
+                self._animate(self._当前左(宽), 0)
 
         try:
             起滑()
@@ -652,26 +655,45 @@ class _抽屉:
         宽 = self._目标[0]
         # 起点取**当前**位置：滑入还没走完就被关掉时，从当前位置往回抽，
         # 而不是先跳回 0 再抽走（那样会看到一下弹跳）
-        self._animate(self._当前x(0), 宽, 结束后=self._destroy)
+        self._animate(self._当前左(0), 宽, 结束后=self._destroy)
 
     def _animate(self, 起, 终, 结束后=None):
-        宽 = self._目标[0]
+        """只改两样东西：窗口区域（展开/收拢）+ alpha（淡入淡出）。
+
+        内容容器钉在 0，每帧都不用重排重画；可见形状任何一帧都是半径 _圆角 的
+        圆角矩形，连展开时的前缘那条边也是。
+        """
+        卡宽, 高 = self._卡宽(), self._目标[1]
+        半径 = int(px(_圆角))
         t0 = time.perf_counter()
         try:
             anim.hold()
         except Exception:
             pass
-        向外 = 终 > 起
+        收 = 终 > 起                 # 收回
+        上次 = [None, None]
 
         def 帧():
             k = min(1.0, (time.perf_counter() - t0) * 1000.0 / _滑入ms)
             # 开：ease-out-quint（一上来就动，尾部缓）；关：ease-in（越走越快被抽走）
-            缓 = (k * k) if 向外 else (1 - (1 - k) ** 5)
-            x = int(起 + (终 - 起) * 缓)
-            try:
-                self._容器.place_configure(x=x)
-            except Exception:
-                pass
+            缓 = (k * k) if 收 else (1 - (1 - k) ** 5)
+            左 = int(起 + (终 - 起) * 缓)
+            if 左 != 上次[0]:
+                上次[0] = 左
+                self._左 = 左
+                try:
+                    _裁区域(self.win, 左, 卡宽, 高, 半径)
+                except Exception:
+                    pass
+            # alpha：开 前 45% 淡到 1；收 后 40% 淡到 0。
+            # 区域边是硬的（SetWindowRgn 没有抗锯齿），淡一下才不显得是在"跳"。
+            a = max(0.0, 1.0 - (k - 0.6) / 0.4) if 收 else min(1.0, k / 0.45)
+            if 上次[1] is None or abs(a - 上次[1]) > 0.04 or k >= 1.0:
+                上次[1] = a
+                try:
+                    self.win.attributes("-alpha", round(a, 3))
+                except Exception:
+                    pass
             if k < 1.0:
                 try:
                     self._job = self.win.after(max(4, anim.frame_ms(self.win)), 帧)
