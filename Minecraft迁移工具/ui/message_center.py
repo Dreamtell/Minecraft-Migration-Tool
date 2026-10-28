@@ -216,6 +216,7 @@ class _抽屉:
         self.文本底 = self.theme.get("text_bg", "#ffffff")
         self._job = None
         self._关闭中 = False      # 关闭动画进行中（close 幂等 + 防止滑入动画回抢）
+        self._unmap_bind = None
         self._configure_bind = None
         self.win = None
 
@@ -561,7 +562,20 @@ class _抽屉:
                 "<Configure>", self._on_parent_configure, add="+")
         except Exception:
             pass
+        try:
+            # 主窗口被最小化时，抽屉是个独立窗口，会孤零零留在桌面上 ——
+            # 这时候也要走同一条滑出动画（"被动收回"）
+            self._unmap_bind = self.父窗.bind("<Unmap>", self._on_parent_unmap, add="+")
+        except Exception:
+            pass
         return win
+
+    def _on_parent_unmap(self, _e=None):
+        try:
+            if self.win is not None and str(self.父窗.state()) == "iconic":
+                self.close()
+        except Exception:
+            pass
 
     def _on_parent_configure(self, _e=None):
         """主窗口移动/缩放时重新贴住右边框（尺寸变了还要重裁圆角）。"""
@@ -663,6 +677,12 @@ class _抽屉:
         except Exception:
             pass
         self._configure_bind = None
+        try:
+            if self._unmap_bind is not None:
+                self.父窗.unbind("<Unmap>", self._unmap_bind)
+        except Exception:
+            pass
+        self._unmap_bind = None
         try:
             self.win.destroy()
         except Exception:
