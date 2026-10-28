@@ -230,8 +230,10 @@ class EditMixin:
             pass
         if self.edit_mode.get():
             self.log("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="WARNING")
-            self.toast("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！", level="warn")
+            # key：反复拨开关时吐司原地更新、消息中心并成一条（×N），不再刷屏
+            self.toast("⚠️ 警告：已启用主界面编辑模式，直接修改清单可能导致数据错误，请谨慎操作！",
+                       level="warn", key="edit_mode")
         else:
             self._blur_list_texts()
-            self.toast("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="info")
+            self.toast("ℹ️ 主界面编辑模式已关闭，清单恢复只读。", level="info", key="edit_mode")
         self.save_config()

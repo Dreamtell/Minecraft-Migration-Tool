@@ -1325,7 +1325,7 @@ class BigViewMixin:
                     btn_view.set_text("📋 表格视图")
                     self.log("🗂 已切到卡片视图（只读预览；勾选/编辑请切回表格）",
                              level="INFO", save=False)
-                    self.toast("🗂 已切到卡片视图（只读预览）", level="info")
+                    self.toast("🗂 已切到卡片视图（只读预览）", level="info", key="big_view_view")
                 else:
                     if card_state["list"] is not None:
                         card_state["list"].grid_remove()
@@ -1338,7 +1338,7 @@ class BigViewMixin:
                 except Exception:
                     pass
                 self.log(trp("⚠️ 卡片视图不可用：{0}", exc), level="WARNING", save=False)
-                self.toast("⚠️ 卡片视图不可用，已切回表格视图，详见日志", level="warn")
+                self.toast("⚠️ 卡片视图不可用，已切回表格视图，详见日志", level="warn", key="big_view_view")
 
         btn_view = create_gradient_button(
             row_btns, "🗂 卡片视图", toggle_view,

@@ -414,7 +414,7 @@ class MigrationGUI(
         try:
             _存 = getattr(self, "_msg_store", None)
             if _存 is not None:
-                _存.add(文, level)
+                _存.add(文, level, key=key)
                 self._refresh_msg_badge()
         except Exception:
             pass

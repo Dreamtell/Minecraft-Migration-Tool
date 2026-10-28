@@ -840,7 +840,7 @@ class SettingsMixin:
         self.save_config()
         self.toast(trp("🎬 启动动画已{0}（下次启动程序生效）",
                        i18n.tr('启用' if self.splash_enabled else '关闭')),
-                   level="ok")
+                   level="ok", key="splash")
 
     def _refresh_net_float(self):
         """浮标参数变了：就地重建一个（位置保持不变）。"""
@@ -861,14 +861,14 @@ class SettingsMixin:
         self.save_config()
         self._refresh_net_float()
         self.toast(trp("🖼️ 浮标阴影已{0}", i18n.tr("开启" if self.net_float_shadow else "关闭")),
-                   level="ok")
+                   level="ok", key="float_shadow")
 
     def _toggle_float_dock(self):
         self.net_float_dock = bool(self.settings_float_dock_var.get())
         self.save_config()
         self._refresh_net_float()
         self.toast(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
-                   level="ok")
+                   level="ok", key="float_dock")
 
     def _toggle_float_edgefx(self):
         """开关：贴边时的边缘特效（光带 + 粒子），立即生效。"""
@@ -885,7 +885,7 @@ class SettingsMixin:
             except Exception:
                 pass
         self.toast(trp("✨ 贴边特效已{0}", i18n.tr("开启" if 开 else "关闭")),
-                   level="ok")
+                   level="ok", key="float_edgefx")
 
     def _toggle_pack_warning(self):
         """开关：主界面的「整合包更新提醒」是否显示（立即生效）。"""
@@ -902,7 +902,7 @@ class SettingsMixin:
             except Exception:
                 pass
         self.toast(trp("📣 整合包更新提醒已{0}", i18n.tr("开启" if 开 else "关闭")),
-                   level="ok")
+                   level="ok", key="pack_warning")
 
     def _toggle_toast(self):
         """开关：右下角的吐司消息是否显示（立即生效，顺便落盘）。"""
@@ -913,14 +913,15 @@ class SettingsMixin:
         # ⚠ 顺序很重要：关掉之后就不会再有吐司了，所以**先弹再关**，
         # 否则用户点"关闭"会毫无反应（.message 系统自己关自己）。
         if not 开:
-            self.toast("🔔 消息提示已关闭（右下角不再弹卡片）", level="warn", ms=2500)
+            self.toast("🔔 消息提示已关闭（右下角不再弹卡片）", level="warn", ms=2500,
+                       key="toast_on")
         self.toast_on = 开
         try:
             self.save_config()
         except Exception:
             pass
         if 开:
-            self.toast("🔔 消息提示已开启", level="ok")
+            self.toast("🔔 消息提示已开启", level="ok", key="toast_on")
 
     def _bump_scroll_speed(self, 增量):
         """平滑滚动速度：1 最慢 … 5 最快。改完立刻生效，不用重启。"""
@@ -935,7 +936,7 @@ class SettingsMixin:
             self.scroll_speed_lbl.config(text=str(新))
         except Exception:
             pass
-        self.toast(trp("🖱️ 平滑滚动速度已设为 {0} 档", 新), level="ok")
+        self.toast(trp("🖱️ 平滑滚动速度已设为 {0} 档", 新), level="ok", key="scroll_speed")
         try:
             self.save_config()
         except Exception:
@@ -954,7 +955,7 @@ class SettingsMixin:
             self.history_limit_lbl.config(text=str(新))
         except Exception:
             pass
-        self.toast(trp("🗂️ 迁移历史最多保留 {0} 份", 新), level="ok")
+        self.toast(trp("🗂️ 迁移历史最多保留 {0} 份", 新), level="ok", key="history_limit")
         try:
             self.save_config()
         except Exception:
@@ -977,7 +978,7 @@ class SettingsMixin:
         except Exception:
             pass
         self._refresh_net_float()
-        self.toast(trp("🔎 延迟浮标大小已设为 {0} px", n), level="ok")
+        self.toast(trp("🔎 延迟浮标大小已设为 {0} px", n), level="ok", key="float_size")
 
     # ---------- 迁移标记 ----------
     def _toggle_rename_marker(self):
@@ -991,14 +992,14 @@ class SettingsMixin:
                        i18n.tr('开启' if self.rename_migrated_mods else '关闭'))
                    + (trf("（前缀「{marker}」）", marker=self.rename_marker)
                       if self.rename_migrated_mods else ""),
-                   level="ok")
+                   level="ok", key="rename_marker")
 
     def _set_rename_marker(self, mark):
         """换一个标记符号。"""
         self.rename_marker = mark or "★"
         self._update_marker_preview()
         self.save_config()
-        self.toast(trp("🏷️ 迁移标记符号已改为「{0}」", self.rename_marker), level="ok")
+        self.toast(trp("🏷️ 迁移标记符号已改为「{0}」", self.rename_marker), level="ok", key="rename_marker")
 
     def _update_marker_preview(self):
         """给用户看一眼实际效果（关着的时候也显示，方便先挑）。"""
@@ -1019,7 +1020,7 @@ class SettingsMixin:
         self.lock_mode = value if value in ("all", "real", "off") else "all"
         self.save_config()
         text = dict(_LOCK_MODES).get(self.lock_mode, self.lock_mode)
-        self.toast(trp("🔒 迁移锁定方式已改为：{0}", text), level="ok")
+        self.toast(trp("🔒 迁移锁定方式已改为：{0}", text), level="ok", key="lock_mode")
 
     def _toggle_lock_wait_key(self):
         """完成态是"按任意键关闭"还是"自动关闭"。"""
@@ -1030,7 +1031,7 @@ class SettingsMixin:
         self.save_config()
         self.toast("⌨️ 迁移完成后的收尾方式已改为：%s"
                    % ("按任意键关闭" if self.lock_wait_key else "2 秒后自动关闭"),
-                   level="ok")
+                   level="ok", key="lock_wait_key")
 
     # ---- 「默认携带的目录」（设置里勾选，迁移时自动并进清单） ----
 
@@ -1126,7 +1127,7 @@ class SettingsMixin:
         self.save_config()
         self.toast("🅆 PySide6 %s" % ("已启用" if self.qt_enabled else
                                       "已关闭（纯 Tk 模式，重启后生效）"),
-                   level="ok")
+                   level="ok", key="qt_enabled")
 
     def _on_qt_switch(self):
         """设置页那个总开关：先同步变量再应用（自绘开关只翻自己的状态）。"""
@@ -1141,11 +1142,11 @@ class SettingsMixin:
         self.save_config()
         used_qt = self.big_view_backend == "qt"
         self.toast("🗂 放大查看窗口已切换为：%s" % ("PySide6 试点窗口" if used_qt else "经典 Tk 窗口"),
-                   level="ok")
+                   level="ok", key="big_view_backend")
         if used_qt:
             ok, why = self._qt_available()
             if not ok:
-                self.toast("⚠ " + why, level="warn")
+                self.toast("⚠ " + why, level="warn", key="big_view_backend")
 
     def _set_diff_backend(self, value):
         """差异窗口用哪个实现（下一次扫描生效）。"""
@@ -1153,11 +1154,11 @@ class SettingsMixin:
         self.save_config()
         self.toast("🧩 差异窗口已切换为：%s"
                    % ("PySide6 窗口" if self.diff_backend == "qt" else "经典 Tk 窗口"),
-                   level="ok")
+                   level="ok", key="diff_backend")
         if self.diff_backend == "qt":
             ok, why = self._qt_available()
             if not ok:
-                self.toast("⚠ " + why, level="warn")
+                self.toast("⚠ " + why, level="warn", key="diff_backend")
 
     def _set_big_view_view(self, value):
         """放大查看窗口默认用哪个视图（下一次打开生效）。"""
@@ -1165,7 +1166,7 @@ class SettingsMixin:
         self.save_config()
         self.toast("🗂 放大查看窗口默认视图：%s"
                    % ("卡片视图" if self.big_view_view == "cards" else "表格视图"),
-                   level="ok")
+                   level="ok", key="big_view_view")
 
     def _set_diff_view(self, value):
         """模组差异窗口默认用哪个视图（下一次打开生效）。"""
@@ -1173,7 +1174,7 @@ class SettingsMixin:
         self.save_config()
         self.toast("🧩 模组差异窗口默认视图：%s"
                    % ("卡片视图" if self.diff_view == "cards" else "列表视图"),
-                   level="ok")
+                   level="ok", key="diff_view")
 
     def _toggle_online_tags(self):
         """联网分类开关：开启后扫描会在后台去 Modrinth 取真实分类。"""
@@ -1182,9 +1183,9 @@ class SettingsMixin:
         self._update_tag_cache_label()
         if self.online_tags:
             self.toast("🌐 联网分类已开启：重开一次“放大查看”就会在后台查询真实分类"
-                       "（结果会缓存到本地）", level="ok")
+                       "（结果会缓存到本地）", level="ok", key="online_tags")
         else:
-            self.toast("🌐 联网分类已关闭：改回按关键词推测分类", level="ok")
+            self.toast("🌐 联网分类已关闭：改回按关键词推测分类", level="ok", key="online_tags")
 
     def _update_tag_cache_label(self):
         """显示本地分类缓存条数，让用户知道「查过一次就不会再联网」。"""

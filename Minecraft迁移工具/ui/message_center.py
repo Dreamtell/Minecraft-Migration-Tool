@@ -91,12 +91,23 @@ class MessageStore:
         except Exception:
             pass
 
-    def add(self, text, level="info"):
+    def add(self, text, level="info", key=None):
         文 = str(text or "").strip()
         if not 文:
             return
+        # 同一个 key = 同一条消息的"状态变化"（开/关这类开关反复拨）。
+        # 直接并进上一条：面板只留一行最新状态 + ×N，而不是被十条糊满。
+        上 = self.items[-1] if self.items else None
+        if key and 上 is not None and 上.get("key") == key:
+            self.items[-1] = {"t": time.time(), "level": level or "info",
+                              "text": 文, "旧": False, "key": key,
+                              "n": int(上.get("n") or 1) + 1}
+            self.未读 += 1
+            if (level or "info") in _重要级别:
+                self._写盘()
+            return
         self.items.append({"t": time.time(), "level": level or "info",
-                           "text": 文, "旧": False})
+                           "text": 文, "旧": False, "key": key, "n": 1})
         if len(self.items) > self.上限:
             del self.items[:-self.上限]
         self.未读 += 1
@@ -374,8 +385,17 @@ class _抽屉:
             # 面板会被十条一模一样的消息糊满，真正的内容反而看不见。
             组 = []
             for x in 项:
-                if (组 and 组[-1][0].get("text") == x.get("text")
-                        and 组[-1][0].get("level") == x.get("level")):
+                上 = 组[-1][-1] if 组 else None
+                同 = False
+                if 上 is not None:
+                    if x.get("key"):
+                        # 带 key 的开关消息：文案会随开/关变，但仍是同一条
+                        同 = 上.get("key") == x.get("key")
+                    else:
+                        同 = (not 上.get("key")
+                              and 上.get("text") == x.get("text")
+                              and 上.get("level") == x.get("level"))
+                if 同:
                     组[-1].append(x)
                 else:
                     组.append([x])
@@ -395,8 +415,9 @@ class _抽屉:
                 文.insert("end", str(x.get("text") or ""), "条")
                 文.insert("end", "\n", "条")
                 元 = 时 + "  " + _级别名.get(级, "")
-                if len(一组) > 1:
-                    元 += "  ×%d" % len(一组)
+                次 = sum(int(y.get("n") or 1) for y in 一组)
+                if 次 > 1:
+                    元 += "  ×%d" % 次
                 文.insert("end", 元, "条元")
                 文.insert("end", "\n", ("条元", "gap"))
             文.configure(state="disabled")
