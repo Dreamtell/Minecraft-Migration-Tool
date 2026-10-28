@@ -437,6 +437,12 @@ class MigrationGUI(
         _存 = getattr(self, "_msg_store", None)
         if _存 is None:
             return None
+        # 铃铛上的悬停提示是个独立的深灰小窗，正好落在抽屉要滑出的那片区域；
+        # 不先收掉，它就会压在抽屉上，鼠标一动又消失 —— 看起来就是"闪了个暗块"。
+        try:
+            self._hide_tooltip()
+        except Exception:
+            pass
         try:
             from ui.message_center import open_message_center as _开
             窗 = _开(self.root, _存, self.theme)
