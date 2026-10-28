@@ -256,6 +256,13 @@ class _抽屉:
         # 触发 Tk 的 idle 更新，窗口会被 map 出来一瞬间 —— 那一刻它就是默认尺寸、
         # 默认底色的一个方块，正是用户看到的"打开时闪一下"。
         win.withdraw()
+        # 整体 alpha=0：从"窗口被 map"到"面板画好、圆角贴好"之间，任何一帧漏出来
+        # 都只会是键色（近黑）的一块 —— 用户看到的就是"闪了个黑方块"。alpha=0 期间
+        # 窗口物理上不可见，所以这一整段时序竞争都不再可见；起滑前再设回 1。
+        try:
+            win.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         win.overrideredirect(True)
         # 圆角靠"键色 = 透明"实现：窗口四角是键色 → 真透明，露出下面的界面。
         # （Tk 控件没有真透明，圆角只能这么做；和吐司是同一套思路。）
@@ -616,16 +623,28 @@ class _抽屉:
         # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
         # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
         _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
+        # 关键顺序：deiconify → 先让 Tk 把客户区**真 paint 一遍**（填键色）→ 再放开 alpha。
+        # 少了这一步，窗口可能"已经 alpha=1，但客户区还没被 paint"，系统对未初始化的
+        # 表面不做键色匹配，于是把一块近黑矩形原样端上去 —— 就是用户看到的黑方块。
+        try:
+            self.win.update()
+        except Exception:
+            pass
+        # 面板图和圆角都已经就位，这才把窗口放出来（alpha 0 → 1）。
+        try:
+            self.win.attributes("-alpha", 1.0)
+        except Exception:
+            pass
         # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动。
-        # 用 after(0) 把动画丢到这一帧之后：先让窗口以空内容完成 map，
-        # 第一帧用户看到的就已经是滑入中的画面。
+        # 同步起滑（不再 after(0)）：alpha 翻到 1 和第一帧动画落在同一帧里，
+        # 中间不会夹一个"已经可见但内容还在窗外"的空帧。
         def 起滑():
             # 这一帧之前就被关掉了（铃铛连点）：别再起滑入动画，让关闭动画接管
             if not self._关闭中:
                 self._animate(self._当前x(宽), 0)
 
         try:
-            self.win.after(0, 起滑)
+            起滑()
         except Exception:
             self._animate(宽, 0)
 
