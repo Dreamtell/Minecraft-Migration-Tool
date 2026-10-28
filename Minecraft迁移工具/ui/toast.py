@@ -192,6 +192,9 @@ class ToastHost:
         self.theme = dict(theme or {})
         self.max_items = max(1, int(max_items))
         self._items = []
+        # key -> 该 key 最近那张卡（卡销毁后也留着）。同一个开关的状态消息再来时，
+        # 用它把**原来那张**放回原位置点亮，而不是在底部新建一条。
+        self._keyed = {}
         self._closed = False
         self._master_bind = None
         self._bar_cache = {}
@@ -398,6 +401,38 @@ class ToastHost:
                     self._dirty = True
                     self._ensure_tick()
                     return it
+            # ①b 卡片已经到期/被回收销毁了：把**它自己**放回原来的位置点亮。
+            # 新建一条的话位置在最底下，观感就是"又从下面弹出来一个"——正是用户
+            # 说的"不是替换，而是从底部重新弹出"。
+            旧 = self._keyed.get(key)
+            if 旧 is not None and 旧.host is self:
+                旧.set_content(text, level)
+                旧.sticky = bool(sticky)
+                旧.ms = int(ms)
+                旧.gone = False
+                旧._leaving = False
+                旧._anim = None
+                旧._dx动画 = None
+                旧._dx入 = None
+                旧.dx = 0.0
+                旧.dy = 0.0
+                旧._y = None                  # 交给 _layout 重算，别当"老位置"
+                旧.t0 = time.perf_counter()
+                位 = max(0, min(int(getattr(旧, "_位", len(self._items))), len(self._items)))
+                self._items.insert(位, 旧)
+                while len(self._items) > self.max_items:
+                    被 = self._items.pop(0)
+                    if 被 is not 旧:
+                        try:
+                            被.kill()
+                        except Exception:
+                            pass
+                旧.淡 = 0.0                   # 原地淡入，不重播右侧滑入
+                self._layout(重排已有=False)
+                旧.fade_to(1.0, _Toast._IN_MS)
+                self._dirty = True
+                self._ensure_tick()
+                return 旧
         # ② 一字不差：连点同一个按钮时不要再堆一条（没有 key 的调用方走这里）
         for it in self._items:
             if (not it._leaving) and it.text == text:
@@ -412,6 +447,10 @@ class ToastHost:
         except Exception:
             return None
         self._items.append(item)
+        if key is not None:
+            self._keyed[key] = item
+            if len(self._keyed) > 32:                 # 别让映射无限长
+                self._keyed.pop(next(iter(self._keyed)), None)
         # 入场用**淡入**（不是纵向位移）：见 _Toast.fade_to 的说明
         item.淡 = 0.0 if 弹入 else 1.0
         while len(self._items) > self.max_items:
@@ -1108,6 +1147,7 @@ class _Toast:
         self._anim = None
         try:
             if self in self.host._items:
+                self._位 = self.host._items.index(self)   # 复用时插回原位置
                 self.host._items.remove(self)
         except Exception:
             pass
