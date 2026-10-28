@@ -649,15 +649,19 @@ class ToastHost:
             except Exception:
                 pass
             return
-        # 宽度要多留一段给"向右滑出"的回收动画（透明区，看不见）
-        宽 = max(it.w for it in self._items) + int(_u(self._PADR))
+        # ⚠ 窗口宽度只多留**一个卡片边距**，让窗口右边缘正好压在主窗口边框上。
+        # 以前留的是 _PADR（80px）的"滑出跑道"，窗口就延伸到桌面上去 —— 回收时
+        # 卡片最后那 60 多像素是当着用户的面越过应用边框滑到桌面上的（用户报的）。
+        # 现在跑道算在窗口外：卡片滑到边框就被窗口裁掉，永远不会出现在桌面一侧。
+        宽 = max(it.w for it in self._items) + int(_u(self._MARGIN))
         高 = int(self._总高 + _u(self._PADB))
         # 内容真变了才重画+上传。
         # ⚠ 进度条项**必须按 1/8 像素**量化，不能按整像素：按整像素的话，更新只发生在
         # "整像素变了"的那一帧，我加的亚像素混合几乎永远不执行 —— 进度条实际是 1px
         # 硬跳，还带着随机小数，看着就是"一格一格地卡"（用户反复报的就是这个）。
         指纹 = (self._dirty, self._底 is None,
-                tuple((round(it._y + it.dy, 1), round(getattr(it, "dx", 0.0), 1), it.w)
+                tuple((round(it._y + it.dy, 1), round(getattr(it, "dx", 0.0), 1), it.w,
+                       it.切换步())
                       for it in self._items),
                 tuple(int(it.w * it.progress() * 8)
                       if not (it.sticky or it._leaving) else -1
@@ -668,7 +672,7 @@ class ToastHost:
         # ⚠ 窗口宽 = 最宽卡 + 右侧留白，但留白只是给"向右滑出"用的空间，
         # **不属于内容**。窗口位置要按内容宽算（多加一个留白），否则整叠卡片
         # 会整体左移一个留白：右边缘离应用右边差 130px（用户截图）。
-        x = rx + mw - _u(self._MARGIN) - int(宽) + int(_u(self._PADR))
+        x = rx + mw - int(宽)
         yy = ry + mh - _u(self._MARGIN) - int(self._总高)
         # 静 = 全部卡片都不在动。此时底图（卡片部分）可以**预乘一次缓存**，
         # 每帧只把进度条那几行拼进字节里 —— 省掉整图预乘（0.4ms/次）。
@@ -678,13 +682,13 @@ class ToastHost:
                  for it in self._items)
         if 静:
             键 = (int(宽), int(高), tuple(id(it) for it in self._items),
-                  tuple(it._y for it in self._items), self.palette())
+                  tuple((it._y, it.切换步()) for it in self._items), self.palette())
             if self._底键 != 键 or self._底字节 is None:
                 base = Image.new("RGBA", (int(宽), int(高)), (0, 0, 0, 0))
                 # ⚠ 这里原来是 compose(base, 0, ...)：静止时卡片一律贴左边，
                 # 一叠里窄卡的右边缘和宽卡差出几十像素（用户截图证实）。
                 # 右边缘要统一落在 宽-留白 那条线上。
-                留白0 = int(_u(self._PADR))
+                留白0 = int(_u(self._MARGIN))
                 for it in self._items:
                     it.compose(base, int(宽) - 留白0 - it.w, int(it._y))
                 self._底字节 = LayeredSurface.premult(base)
@@ -712,7 +716,7 @@ class ToastHost:
                 宽2 = max(1, int(浮))
                 余 = 浮 - int(浮)
                 行 = int(it._y) + it.h - bh
-                基 = int(宽) - int(_u(self._PADR)) - it.w
+                基 = int(宽) - int(_u(self._MARGIN)) - it.w
                 for r in range(bh):
                     源 = r * it.w * 4
                     目 = ((行 + r) * int(宽) + 基) * 4
@@ -748,7 +752,7 @@ class ToastHost:
             # ⚠ 卡片必须**右对齐**：窗口宽 = 最宽卡 + 右侧留白，若从 x=0 开始画，
             # 窄卡片就会贴着左边 —— 一叠里两条右边缘差出几十像素（用户截图证实）。
             # 基准 x = 窗口宽 - 留白 - 本卡宽，右边缘统一落在同一条线上。
-            留白 = int(_u(self._PADR))
+            留白 = int(_u(self._MARGIN))
             for it in self._items:
                 基 = int(宽) - 留白 - it.w
                 self._贴卡(buf, it, int(round(it._y + it.dy)), int(宽), 高,
@@ -774,10 +778,12 @@ class ToastHost:
 
     def _卡字节(self, it):
         """一条吐司卡片的**预乘字节** + 每行的不透明区间（每张卡只算一次）。"""
+        步 = it.切换步()
         字 = getattr(it, "_预字节", None)
-        if 字 is None:
-            字 = LayeredSurface.premult(it.base())
+        if 字 is None or 步 != getattr(it, "_字节步", -1):
+            字 = LayeredSurface.premult(it.显示基())
             it._预字节 = 字
+            it._字节步 = 步
             # 每行圆角处的不透明内缩量。按行只写不透明段，纯 memcpy 才不会把
             # 圆角的透明像素写成"洞"（两个卡片重叠时那会直接透出桌面）。
             半 = max(1.0, _u(10))
@@ -833,8 +839,14 @@ class ToastHost:
                 continue
             段宽 = it.w - 2 * 内
             左 = 内 + x距
-            if 左 < 0 or 左 + 段宽 > 宽:          # 滑出窗口右边界后就不画了
+            if 左 < 0:
                 continue
+            if 左 + 段宽 > 宽:
+                # 回收滑出窗口右边界：**裁掉超出的那一截**，不是整行跳过 ——
+                # 整行跳过会让整张卡在越过边缘的那一帧凭空消失，看不出"滑出去"。
+                段宽 = 宽 - 左
+                if 段宽 <= 0:
+                    continue
             目 = (y * 宽) * 4 + 左 * 4
             起 = r * 行4 + 内 * 4
             buf[目:目 + 段宽 * 4] = 源全[起:起 + 段宽 * 4]
@@ -974,8 +986,13 @@ class _Toast:
         self._leaving = False
         self._anim = None            # [起, 目标, t0, 时长, 结束后回调]
         self._base = None
+        self._切换 = None            # 换文案的交叉淡入：[旧底图, 旧宽, t0, 时长, 分档缓存]
+        self._字节步 = -1            # _预字节 是按哪一档算的（-1 = 静止版本）
         self.h = int(_u(46))
-        self.w = 0
+        # ⚠ 这行丢过一次（被 set_content 的补丁挤成了 return 之后的死代码）：
+        # 新卡宽度一直是 0，于是**新建的**吐司一张都画不出来，只有被 key 复用的
+        # 那种（走过 set_content 才量宽）能显示。别删。
+        self.w = self._量宽()
 
     def set_content(self, text, level):
         """原地换文案/级别（同一个 key 的状态变化走这里，不新增卡片）。
@@ -988,17 +1005,24 @@ class _Toast:
         self.level = level
         if not 变了:
             return False
+        旧基, 旧宽 = self._base, self.w
         self._base = None
+        self._空基 = None
         self._预字节 = None
+        self._字节步 = -1
         self._内缩表 = None
         self._淡表缓存 = None
         try:
             self.w = self._量宽()
         except Exception:
             pass
+        # 换文案不做硬切：老内容淡出、新内容淡入（150ms，16 档交叉混合，按档缓存）。
+        # 卡片宽度会变，两张图按**右边缘**对齐 —— 右边缘是钉死的那条线，动的只有
+        # 左边框，眼睛读到的是"卡片长了一截"，而不是"重新弹了一条"（用户要的过渡）。
+        self._切换 = ([旧基, int(旧宽), time.perf_counter(), 150.0, {}]
+                     if (旧基 is not None and 旧宽) else None)
         self.t0 = time.perf_counter()
         return True
-        self.w = self._量宽()
 
     def _量宽(self):
         try:
@@ -1014,8 +1038,55 @@ class _Toast:
             self._base = self.host.card_pil(self.w, self.h, self.level, self.text)
         return self._base
 
+    def 切换步(self):
+        """换文案的交叉淡入当前到了第几档（16 档）；-1 = 没有过渡。"""
+        切 = self._切换
+        if 切 is None:
+            return -1
+        k = (time.perf_counter() - 切[2]) * 1000.0 / 切[3]
+        if k >= 1.0:
+            self._切换 = None
+            return -1
+        return min(15, int(k * 16.0))
+
+    def 空基(self):
+        """同一张卡的"没有文字"版本 —— 过渡的中转帧。
+
+        直接拿新旧两张图交叉混合的话，两段文字的笔画会**叠在一起**看 70ms，
+        读起来就是一团乱码（截过图）。所以过渡分两段：先淡到没有文字的卡片，
+        再从这张卡片淡到新文案 —— 任何时刻只有一段文字在场。
+        """
+        if getattr(self, "_空基", None) is None:
+            self._空基 = self.host.card_pil(self.w, self.h, self.level, "")
+        return self._空基
+
+    def 显示基(self):
+        """这一帧应该画的卡片图（静止版，或过渡中的混合版）。"""
+        步 = self.切换步()
+        if 步 < 0:
+            return self.base()
+        缓 = self._切换[4]
+        图 = 缓.get(步)
+        if 图 is None:
+            旧基, 旧宽 = self._切换[0], self._切换[1]
+            画布 = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 0))
+            偏 = self.w - 旧宽
+            if 偏 >= 0:
+                画布.paste(旧基, (偏, 0))
+            elif 旧宽 > 0:                       # 新的更窄：把老的左边截掉，仍按右边对齐
+                画布.paste(旧基.crop((-偏, 0, 旧宽, self.h)), (0, 0))
+            # 16 档里 0..6（约 65ms）淡出旧文字，7..15 淡入新文字
+            空 = self.空基()
+            k = (步 + 1) / 16.0
+            if k <= 0.45:
+                图 = Image.blend(画布, 空, k / 0.45)
+            else:
+                图 = Image.blend(空, self.base(), (k - 0.45) / 0.55)
+            缓[步] = 图
+        return 图
+
     def compose(self, 画布, x, y):
-        画布.alpha_composite(self.base(), (int(x), int(y)))
+        画布.alpha_composite(self.显示基(), (int(x), int(y)))
 
     def progress(self):
         if self.sticky or self.ms <= 0:
@@ -1096,7 +1167,9 @@ class _Toast:
             k = min(1.0, (现在 - t0) * 1000.0 / 时长)
             # ease-in：起步慢、越走越快，像被"抽走"；同时末端淡一点
             self.dx = 起 + (目标 - 起) * (k * k)
-            self.淡 = max(0.0, 1.0 - k * 0.55)
+            # 一路淡到 0：现在卡片是被窗口右边缘裁掉的，若还留着 45% 亮度，
+            # 收尾那几帧会显示"半张亮卡贴在边框上"。
+            self.淡 = max(0.0, 1.0 - k * k)
             if k >= 1.0:
                 self.dx = 目标
                 self._dx动画 = None
