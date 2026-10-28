@@ -71,6 +71,7 @@ class MessageStore:
                         "level": str(x.get("level") or "info"),
                         "text": 文,
                         "旧": True,
+                        "未读": False,      # 上次运行的记录，打开面板不该算新消息
                     })
         except Exception:
             pass
@@ -99,15 +100,19 @@ class MessageStore:
         # 直接并进上一条：面板只留一行最新状态 + ×N，而不是被十条糊满。
         上 = self.items[-1] if self.items else None
         if key and 上 is not None and 上.get("key") == key:
+            # 合并的这一行如果本来就是未读，就不该再 +1 —— 未读数是"面板里有几行
+            # 是新消息"，不是"add 被调用过几次"（合并三次仍是一行）。
             self.items[-1] = {"t": time.time(), "level": level or "info",
                               "text": 文, "旧": False, "key": key,
-                              "n": int(上.get("n") or 1) + 1}
-            self.未读 += 1
+                              "n": int(上.get("n") or 1) + 1, "未读": True}
+            if not 上.get("未读"):
+                self.未读 += 1
             if (level or "info") in _重要级别:
                 self._写盘()
             return
         self.items.append({"t": time.time(), "level": level or "info",
-                           "text": 文, "旧": False, "key": key, "n": 1})
+                           "text": 文, "旧": False, "key": key, "n": 1,
+                           "未读": True})
         if len(self.items) > self.上限:
             del self.items[:-self.上限]
         self.未读 += 1
@@ -127,6 +132,9 @@ class MessageStore:
             pass
 
     def 标记已读(self):
+        for x in self.items:
+            if x.get("未读"):
+                x["未读"] = False
         self.未读 = 0
 
 
@@ -207,6 +215,7 @@ class _抽屉:
         self.弱 = self.theme.get("muted_fg", "#888888")
         self.文本底 = self.theme.get("text_bg", "#ffffff")
         self._job = None
+        self._关闭中 = False      # 关闭动画进行中（close 幂等 + 防止滑入动画回抢）
         self._configure_bind = None
         self.win = None
 
@@ -242,6 +251,10 @@ class _抽屉:
         内缩 = 半径 + 2           # 内容必须整体缩进圆角里，否则方角会盖住圆弧
 
         win = tk.Toplevel(self.父窗)
+        # ⚠ withdraw 必须是**第一个**动作：下面 overrideredirect / attributes 都会
+        # 触发 Tk 的 idle 更新，窗口会被 map 出来一瞬间 —— 那一刻它就是默认尺寸、
+        # 默认底色的一个方块，正是用户看到的"打开时闪一下"。
+        win.withdraw()
         win.overrideredirect(True)
         # 圆角靠"键色 = 透明"实现：窗口四角是键色 → 真透明，露出下面的界面。
         # （Tk 控件没有真透明，圆角只能这么做；和吐司是同一套思路。）
@@ -257,6 +270,7 @@ class _抽屉:
         # "根本不是从边框出来"）。窗口不动、内容在窗口内右→左滑入，超出部分由 Tk
         # 自动裁掉，看起来才是"从右边框里被拉出来"。
         win.geometry("%dx%d+%d+%d" % (宽, 高, 目标x, 目标y))
+        win.withdraw()          # 属性设完再收一次，保险
         self._目标 = (宽, 高, 目标x, 目标y)
 
         # 内容容器：整体右→左平移，实现"从边框滑出"
@@ -296,17 +310,67 @@ class _抽屉:
         tk.Label(顶, text=trp("消息中心"), bg=装, fg=self.字,
                  font=("微软雅黑", 11, "bold")).pack(side="left")
 
+        # ⚠ 底栏必须**先** pack：列表画布是 fill="both", expand=True，先 pack 它就会
+        # 把剩余空间全吃掉，后 pack 的底栏高度变成 0（按钮直接看不见）。
+        # 左右留白跟卡片对齐，否则"关闭"按钮会贴到圆角上，看起来像被裁掉。
         底栏 = tk.Frame(内, bg=装)
-        底栏.pack(side="bottom", fill="x", padx=px(12), pady=(px(6), px(10)))
+        底栏.pack(side="bottom", fill="x", padx=(内缩 + px(12), px(24)),
+                  pady=(px(6), px(10)))
 
-        # 列表去掉描边（现代面板靠留白分层，不靠框线），内边距加大
-        文 = tk.Text(内, bg=装, fg=self.字, bd=0, highlightthickness=0,
-                     wrap="word", font=("微软雅黑", 9),
-                     padx=px(12), pady=px(10), spacing1=px(2), spacing3=px(4))
-        # 滚动条**自己画**：tk.Scrollbar 用的是系统原生渲染，bg/troughcolor 被忽略，
-        # 在这块深色面板上就是一条 (240,240,240) 的浅灰柱子（用户截图里那条白杠）。
+        # 列表改用 Canvas 自己排行：Text 控件只能给整行铺一块**方形**底色，
+        # 想要"每条消息是一张圆角卡片"就只能自己画（PIL 圆角底图 + 原生文字）。
+        行底 = self.theme.get("row_bg") or ("#2f2f2f" if self.深 else "#f5f5f5")
+        卡半径 = int(px(10))
+        内边 = int(px(11))
+        图标列 = int(px(17))
+        行宽 = 宽 - 2 * 内缩 - px(12) - px(14) - px(6)   # 左右留白 + 滚动条 + 间隙
+        文本宽 = max(px(80), 行宽 - 2 * 内边 - 图标列)
+        字号 = ("微软雅黑", 9)
+        元号 = ("微软雅黑", 8)
+        芯片号 = ("微软雅黑", 8, "bold")
+
         滚 = tk.Canvas(内, width=px(6), bg=装, highlightthickness=0, bd=0)
-        滚.pack(side="right", fill="y", padx=(px(2), px(2)), pady=(px(6), px(6)))
+        滚.pack(side="right", fill="y", padx=(px(2), px(4)), pady=(px(6), px(8)))
+        列表 = tk.Canvas(内, bg=装, highlightthickness=0, bd=0, takefocus=0)
+        列表.pack(side="left", fill="both", expand=True, padx=(px(12), 0),
+                  pady=(px(2), px(8)))
+        self._列表 = 列表
+
+        图缓存 = {}
+        引住 = []          # ImageTk 对象必须有人引用，否则被 GC 掉就变白块
+
+        def 圆角图(w, h, r, 色):
+            键 = (int(w), int(h), int(r), 色)
+            图 = 图缓存.get(键)
+            if 图 is None:
+                try:
+                    from utils.helpers import _圆角矩形
+                    图 = _圆角矩形((max(1, 键[0]), max(1, 键[1])), max(1, 键[2]), 色)
+                except Exception:
+                    图 = None
+                图缓存[键] = 图
+            return 图
+
+        def 贴底(x, y, w, h, r, 色, 置底=False):
+            try:
+                from PIL import ImageTk
+                图 = 圆角图(w, h, r, 色)
+                if 图 is None:
+                    return None
+                照 = ImageTk.PhotoImage(图)
+                引住.append(照)
+                号 = 列表.create_image(int(x), int(y), anchor="nw", image=照)
+                if 置底:
+                    列表.tag_lower(号)
+                return 号
+            except Exception:
+                return None
+
+        def 圆角滑块(上, 下):
+            """滚动条也做成圆头（系统滚动条是方的，在这一版里很扎眼）。"""
+            色 = self.theme.get("border") or "#555555"
+            高 = max(int(px(18)), int(下) - int(上))
+            贴底(0, int(上), px(6), 高, px(3), 色)
 
         def _同步(第一, 最后):
             try:
@@ -323,73 +387,22 @@ class _抽屉:
             try:
                 滚.delete("all")
                 if b - a < 0.999:          # 全部可见时不画滑块
-                    滚.create_rectangle(0, 上, px(6), min(下, 高),
-                                        fill=self.theme.get("border") or "#555555",
-                                        outline="")
+                    圆角滑块(上, min(下, 高))
             except Exception:
                 pass
 
-        文.configure(yscrollcommand=_同步)
+        列表.configure(yscrollcommand=_同步)
 
-        def _拖(e):
-            try:
-                文.yview_moveto(max(0.0, min(1.0, e.y / max(1, 滚.winfo_height()))))
-            except Exception:
-                pass
-
-        滚.bind("<Button-1>", _拖)
-        滚.bind("<B1-Motion>", _拖)
-        滚.bind("<Configure>", lambda e: 文.yview())
-        文.pack(side="left", fill="both", expand=True, padx=(px(12), 0),
-                  pady=(px(4), px(4)))
-        self.文 = 文
-
-        for 级, (图, 色) in _外观.items():
-            文.tag_configure("级_" + 级, foreground=色)
-        文.tag_configure("时", foreground=self.弱)
-        文.tag_configure("元", foreground=self.弱, font=("微软雅黑", 8))
-        # 每条消息做成一条**行带**：自带底色 + 左右内缩 + 上下留白。
-        # 原来所有行同底色连成一片，9 条挤在一起像一整块（用户截图）。
-        # 间隙露出面板底色，就自然分成了"条"。
-        行底 = self.theme.get("row_bg") or ("#2f2f2f" if self.深 else "#f5f5f5")
-        文.tag_configure("条", background=行底, lmargin1=px(10), lmargin2=px(10),
-                         rmargin=px(10), spacing1=px(6), spacing3=px(0))
-        文.tag_configure("条元", background=行底, foreground=self.弱,
-                         font=("微软雅黑", 8), lmargin1=px(10), lmargin2=px(14),
-                         rmargin=px(10), spacing1=px(0), spacing3=px(2))
-        # ⚠ 分隔不能靠 spacing1/3：Tk 会把那段留白也涂上标签底色，整块还是连在一起。
-        # 只能插入一条**面板底色的小行**当真正的空隙。
-        文.tag_configure("隔", background=装, font=("微软雅黑", 4),
-                         spacing1=px(1), spacing3=px(1))
-        文.tag_configure("空图", foreground=self.弱, font=("微软雅黑", 20),
-                         justify="center", spacing1=px(8))
-        文.tag_configure("空字", foreground=self.字, font=("微软雅黑", 10),
-                         justify="center", spacing1=px(6))
-        文.tag_configure("空提", foreground=self.弱, font=("微软雅黑", 8),
-                         justify="center", spacing1=px(4))
-
-        def _重画():
-            try:
-                文.configure(state="normal")
-                文.delete("1.0", "end")
-            except Exception:
-                return
-            项 = self.store.全部()
-            if not 项:
-                # 空状态居中（原来是一句灰字贴在左上角，像出错了）
-                文.insert("end", "\n\n\n")
-                文.insert("end", "🔔\n", "空图")
-                文.insert("end", trp("还没有消息") + "\n", "空字")
-                文.insert("end", trp("操作提示会记在这里，吐司消失后也能回看"), "空提")
-            # 连续重复的折叠成一条（末尾显示 ×N）：反复开关同一个设置时，
-            # 面板会被十条一模一样的消息糊满，真正的内容反而看不见。
+        # 连续重复的折叠成一条（末尾显示 ×N）：反复开关同一个设置时，
+        # 面板会被十条一模一样的消息糊满，真正的内容反而看不见。
+        # 带 key 的消息文案会随开/关变，但仍是"同一条"，也折进来。
+        def _分组(项):
             组 = []
             for x in 项:
                 上 = 组[-1][-1] if 组 else None
                 同 = False
                 if 上 is not None:
                     if x.get("key"):
-                        # 带 key 的开关消息：文案会随开/关变，但仍是同一条
                         同 = 上.get("key") == x.get("key")
                     else:
                         同 = (not 上.get("key")
@@ -399,41 +412,95 @@ class _抽屉:
                     组[-1].append(x)
                 else:
                     组.append([x])
-            for 序号, 一组 in enumerate(组):
-                if 序号:
-                    文.insert("end", "\n", "隔")   # 行与行之间的空隙
-                x = 一组[-1]                     # 用最后一条的时间
+            return 组
+
+        self._可见条数 = 0
+
+        def _重画():
+            列表.delete("all")
+            del 引住[:]
+            组 = _分组(self.store.全部())
+            self._可见条数 = len(组)
+            if not 组:
+                cw = 列表.winfo_width()
+                cw = cw if cw > 1 else (行宽 + px(24))
+                ch = 列表.winfo_height()
+                ch = ch if ch > 1 else px(240)
+                列表.create_text(cw // 2, ch // 2 - px(28), text="🔔",
+                                 font=("微软雅黑", 20), fill=self.弱)
+                列表.create_text(cw // 2, ch // 2 + px(8), text=trp("还没有消息"),
+                                 font=("微软雅黑", 10), fill=self.字)
+                列表.create_text(cw // 2, ch // 2 + px(32),
+                                 text=trp("操作提示会记在这里，吐司消失后也能回看"),
+                                 font=("微软雅黑", 8), fill=self.弱)
+                列表.configure(scrollregion=(0, 0, cw, ch))
+                return
+            y = 0
+            for 一组 in 组:
+                x = 一组[-1]                    # 用最后一条的时间与文案
                 级 = x.get("level") if x.get("level") in _外观 else "info"
-                图, _色 = _外观[级]
+                图符, 色 = _外观[级]
                 try:
                     时 = time.strftime("%H:%M", time.localtime(float(x.get("t") or 0)))
                 except Exception:
                     时 = ""
-                # 两行一条：正文一行，下面一行灰色小字（级别 · 时间 · 次数）。
-                # 挤成一行的"时间 图标 正文"读起来像日志文件，不像通知。
-                文.insert("end", " " + 图 + " ", ("条", "级_" + 级))
-                文.insert("end", str(x.get("text") or ""), "条")
-                文.insert("end", "\n", "条")
+                次 = sum(int(v.get("n") or 1) for v in 一组)
                 元 = 时 + "  " + _级别名.get(级, "")
-                次 = sum(int(y.get("n") or 1) for y in 一组)
+                # 先让 Tk 按宽度折行，再拿 bbox 量出正文高度，卡片高度才准
+                正 = 列表.create_text(内边 + 图标列, y + 内边, anchor="nw",
+                                      width=文本宽, text=str(x.get("text") or ""),
+                                      font=字号, fill=self.字)
+                bb = 列表.bbox(正)
+                文高 = (bb[3] - bb[1]) if bb else px(16)
+                卡高 = 内边 + 文高 + px(5) + int(px(13)) + 内边
+                贴底(0, y, 行宽, 卡高, 卡半径, 行底, 置底=True)
+                列表.coords(正, 内边 + 图标列, y + 内边)
+                列表.create_text(内边 + int(px(4)), y + 内边 - px(2), anchor="nw",
+                                 text=图符, font=("微软雅黑", 10, "bold"), fill=色)
+                列表.create_text(内边 + 图标列, y + 内边 + 文高 + px(5), anchor="nw",
+                                 text=元, font=元号, fill=self.弱)
                 if 次 > 1:
-                    元 += "  ×%d" % 次
-                文.insert("end", 元, "条元")
-                文.insert("end", "\n", ("条元", "gap"))
-            文.configure(state="disabled")
+                    # ×N 做成实心色块（只当灰字太小了，用户："×5 不够明显"）
+                    芯高 = int(px(16))
+                    芯宽 = int(px(10) + px(7) * len(str(次)))
+                    芯y = y + 内边 + 文高 + px(3)
+                    贴底(行宽 - 内边 - 芯宽, 芯y, 芯宽, 芯高, 芯高 // 2, 色)
+                    列表.create_text(行宽 - 内边 - 芯宽 // 2, 芯y + 芯高 // 2,
+                                     text="×%d" % 次, font=芯片号,
+                                     fill="#1b1b1b" if 色 in ("#ffa000", "#8bc34a") else "#ffffff")
+                y += 卡高 + px(6)
+            列表.configure(scrollregion=(0, 0, 行宽 + px(2), y))
             try:
-                文.see("end")
+                列表.yview_moveto(1.0)      # 最新的在下面：打开就停在最新一条
             except Exception:
                 pass
 
-        self._重画 = _重画
+        def _轮(e):
+            try:
+                列表.yview_scroll(-1 if int(getattr(e, "delta", 0)) > 0 else 1, "units")
+            except Exception:
+                pass
+            return "break"
+
+        列表.bind("<MouseWheel>", _轮)
+        列表.bind("<Configure>", lambda e: _重画())
+
+        def _拖(e):
+            try:
+                列表.yview_moveto(max(0.0, min(1.0, e.y / max(1, 滚.winfo_height()))))
+            except Exception:
+                pass
+
+        滚.bind("<Button-1>", _拖)
+        滚.bind("<B1-Motion>", _拖)
+        滚.bind("<Configure>", lambda e: 列表.yview())
 
         def _清空():
             self.store.clear()
             self._重画()
 
-        # 底栏：左边一句脚注（原来是标题下面那行灰字），右边两个按钮 ——
-        # 「清空」是次要操作，做成幽灵按钮（无底色），「关闭」保留实心。
+        # 底栏：左边一句脚注，右边两个按钮 ——「清空」是次要操作做成幽灵按钮，
+        # 「关闭」保留实心（和主界面同一套自绘渐变按钮）
         tk.Label(底栏, text=trp("灰字为上次运行留下"), bg=装, fg=self.弱,
                  font=("微软雅黑", 8)).pack(side="left")
 
@@ -451,19 +518,22 @@ class _抽屉:
             create_gradient_button(底栏, trp("关闭"), self.close,
                                    colors=("#42a5f5", "#1565c0"), width=px(58),
                                    height=px(24), font=("微软雅黑", 9)).pack(side="right")
-            _幽灵(trp("清空"), _清空)
         except Exception:
-            钮 = tk.Label(底栏, text=trp("关闭"), bg=self.theme.get("button_bg", "#e0e0e0"),
-                          fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
-                          font=("微软雅黑", 9), padx=px(12), pady=px(3))
-            钮.pack(side="right")
-            钮.bind("<Button-1>", lambda e: self.close())
-            _幽灵(trp("清空"), _清空)
+            for 标, 命令, side in ((trp("清空"), _清空, "left"),
+                                   (trp("关闭"), self.close, "right")):
+                钮 = tk.Label(底栏, text=标, bg=self.theme.get("button_bg", "#e0e0e0"),
+                              fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
+                              font=("微软雅黑", 9), padx=px(12), pady=px(3))
+                钮.pack(side=side)
+                钮.bind("<Button-1>", lambda e, f=命令: f())
+        _幽灵(trp("清空"), _清空)
 
         def _刷新徽标():
+            # 徽标显示的是**列表里真正有几行**（合并后的行数），不是原始条数：
+            # 原来显示 len(store.items)，合并过的消息就会"5 条却只看到 3 行"。
             try:
-                项 = self.store.全部()
-                徽标.config(text=(trp("{0} 条").format(len(项)) if 项 else ""))
+                n = int(getattr(self, "_可见条数", 0) or 0)
+                徽标.config(text=(trp("{0} 条").format(n) if n else ""))
             except Exception:
                 pass
 
@@ -507,8 +577,22 @@ class _抽屉:
         except Exception:
             pass
 
+    def _当前x(self, 默认=0):
+        try:
+            值 = self._容器.place_info().get("x") or 默认
+            return int(float(值))
+        except Exception:
+            return int(默认)
+
     def slide_in(self):
         宽, 高 = self._目标[0], self._目标[1]
+        self._关闭中 = False
+        # 显示之前把容器钉死在窗口外：deiconify 渲的第一帧就只能是"空的"，
+        # 不会先整块露一下再被挪走（那就是"闪一下"）
+        try:
+            self._容器.place_configure(x=宽)
+        except Exception:
+            pass
         try:
             self.win.deiconify()
             self.win.lift()
@@ -518,12 +602,24 @@ class _抽屉:
         # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
         # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
         _圆角化窗口(self.win, 宽, 高, int(px(_圆角)))
-        # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动
-        self._animate(宽, 0)
+        # 从"整块在窗口右侧外面"的位置滑到 0：窗口本身不动。
+        # 用 after(0) 把动画丢到这一帧之后：先让窗口以空内容完成 map，
+        # 第一帧用户看到的就已经是滑入中的画面。
+        def 起滑():
+            # 这一帧之前就被关掉了（铃铛连点）：别再起滑入动画，让关闭动画接管
+            if not self._关闭中:
+                self._animate(self._当前x(宽), 0)
+
+        try:
+            self.win.after(0, 起滑)
+        except Exception:
+            self._animate(宽, 0)
 
     def slide_out_and_close(self):
         宽 = self._目标[0]
-        self._animate(0, 宽, 结束后=self._destroy)
+        # 起点取**当前**位置：滑入还没走完就被关掉时，从当前位置往回抽，
+        # 而不是先跳回 0 再抽走（那样会看到一下弹跳）
+        self._animate(self._当前x(0), 宽, 结束后=self._destroy)
 
     def _animate(self, 起, 终, 结束后=None):
         宽 = self._目标[0]
@@ -576,6 +672,10 @@ class _抽屉:
             open_message_center._抽屉 = None
 
     def close(self):
+        """任何关闭路径都走这里：统一成滑出动画，不再有瞬间消失。"""
+        if getattr(self, "_关闭中", False) or self.win is None:
+            return
+        self._关闭中 = True
         try:
             if self._job is not None:
                 self.win.after_cancel(self._job)
@@ -592,7 +692,7 @@ def open_message_center(父窗, store, theme):
         try:
             if 旧.win.winfo_exists():
                 旧.close()
-                return None
+                return None      # 正在收起时再点铃铛：先让它收完，不开第二个窗口
         except Exception:
             pass
     抽 = _抽屉(父窗, store, theme)
