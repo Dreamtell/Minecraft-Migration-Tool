@@ -68,6 +68,10 @@ class MigrationGUI(
         # 点窗口空白处是否顺手退出「主界面编辑」（设置 →「🎨 外观与启动」可关）
         self.blank_exit_edit = tk.BooleanVar(
             value=self.config.get("blank_exit_edit", True))
+        # 消息中心（右侧抽屉）开着时，点主界面任意位置是否就把它收回。
+        # 默认关：抽屉一直留着，只有 ✕ / Esc / 再点铃铛能收（用户报「太敏感」）。
+        self.msg_click_outside_close = tk.BooleanVar(
+            value=self.config.get("msg_click_outside_close", False))
         # 「其它文件」清单遇到目标已有同名文件时怎么办：overwrite（先备份）/ skip
         self.extra_conflict = tk.StringVar(
             value=str(self.config.get("extra_conflict", "overwrite") or "overwrite"))
@@ -172,13 +176,6 @@ class MigrationGUI(
         if ToastHost is not None:
             try:
                 self._toast_host = ToastHost(self.root, self.theme)
-                # 吐司自己报告"这一帧被主线程推迟了多久"→ 进执行日志。
-                # 正常用着卡的时候，靠这条就能分清是吐司慢还是主线程忙。
-                try:
-                    self._toast_host.stall_log = (
-                        lambda 文: self.log(文, level="WARNING"))
-                except Exception:
-                    pass
             except Exception:
                 self._toast_host = None
 
@@ -444,6 +441,11 @@ class MigrationGUI(
         except Exception:
             pass
         try:
+            # 抽屉里只有根窗口，读不到主窗口的属性；「点外部收回」开关先挂上去
+            try:
+                self.root.msg_click_outside_close = self.msg_click_outside_close
+            except Exception:
+                pass
             from ui.message_center import open_message_center as _开
             窗 = _开(self.root, _存, self.theme)
             self._refresh_msg_badge()
@@ -506,6 +508,7 @@ class MigrationGUI(
             "extra_conflict": self.extra_conflict.get(),
             "edit_enabled": self._edit_enabled_for_config(),
             "blank_exit_edit": self.blank_exit_edit.get(),
+            "msg_click_outside_close": self.msg_click_outside_close.get(),
             "close_action": self.close_action,
             "splash": bool(getattr(self, "splash_enabled", True)),
             "silent_background": bool(getattr(self, "silent_background", False)),

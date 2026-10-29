@@ -320,6 +320,15 @@ class SettingsMixin:
         self.settings_blank_exit_sw.pack(fill="x", pady=(10, 0))
         self.settings_blank_exit_sw.set(self.blank_exit_edit.get())
 
+        # 消息中心抽屉：点主界面别处要不要顺手收回（默认关，开了一眼就想收的人才开）。
+        self.settings_msg_outside_sw = SwitchRow(
+            box1, self.theme, "点消息中心以外就收回",
+            desc="关闭后只有 ✕ / Esc / 再点铃铛能收",
+            command=self._toggle_msg_outside, compact=True,
+            accent="switch_on")
+        self.settings_msg_outside_sw.pack(fill="x", pady=(10, 0))
+        self.settings_msg_outside_sw.set(self.msg_click_outside_close.get())
+
         # 右下角消息提示（吐司）总开关。关掉后 self.toast() 一个字都不弹，
         # 日志照旧 —— 想安静的用户只会失去这个补充通道。
         self.settings_toast_var = tk.BooleanVar(
@@ -1330,6 +1339,17 @@ class SettingsMixin:
         self.toast(trp("点空白取消焦点已{0}",
                        i18n.tr("开启" if self.blank_exit_edit.get() else "关闭")),
                    level="ok", key="blank_exit")
+
+    def _toggle_msg_outside(self):
+        """设置页里「点消息中心以外就收回」开关：同步变量 + 存配置。"""
+        try:
+            self.msg_click_outside_close.set(self.settings_msg_outside_sw.get())
+        except Exception:
+            return
+        self.save_config()
+        self.toast(trp("点外部收回消息中心已{0}",
+                       i18n.tr("开启" if self.msg_click_outside_close.get() else "关闭")),
+                   level="ok", key="msg_outside")
 
     def _on_dry_run_switch(self):
         """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""

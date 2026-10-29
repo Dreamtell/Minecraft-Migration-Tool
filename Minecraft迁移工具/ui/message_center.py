@@ -221,6 +221,7 @@ class _抽屉:
         self._关闭中 = False      # 关闭动画进行中（close 幂等 + 防止滑入动画回抢）
         self._unmap_bind = None
         self._configure_bind = None
+        self._外点 = None          # 「点外部收回」的全局点击绑定
         self.win = None
 
     # ---------------------------------------------------------------- 尺寸/位置
@@ -650,6 +651,7 @@ class _抽屉:
             起滑()
         except Exception:
             self._animate(宽, 0)
+        self._装外点()
 
     def slide_out_and_close(self):
         宽 = self._目标[0]
@@ -724,6 +726,14 @@ class _抽屉:
         except Exception:
             pass
         self._unmap_bind = None
+        if getattr(self, "_外点", None):
+            # bind_all 是解释器级的：这里一起摘掉（全项目只有这一处用 <Button-1> 的
+            # 全局绑定，整条摘掉不会误伤别的窗口）
+            try:
+                self.父窗.unbind_all("<Button-1>")
+            except Exception:
+                pass
+        self._外点 = None
         try:
             self.win.destroy()
         except Exception:
@@ -731,6 +741,34 @@ class _抽屉:
         self.win = None
         if getattr(open_message_center, "_抽屉", None) is self:
             open_message_center._抽屉 = None
+
+    # ------------------------------------------------------------ 点外部收回
+    def _装外点(self):
+        """「点消息中心以外就收回」：默认关，开了才挂这个全局点击监听。"""
+        开关 = getattr(self.父窗, "msg_click_outside_close", None)
+        开 = False
+        try:
+            开 = bool(开关.get()) if 开关 is not None else False
+        except Exception:
+            开 = False
+        if not 开 or self.win is None:
+            return
+        try:
+            self._外点 = self.win.bind_all("<Button-1>", self._外点点击, add="+")
+        except Exception:
+            self._外点 = None
+
+    def _外点点击(self, e):
+        """点到了抽屉以外的控件（bind_all 能看到整个程序里的点击）。"""
+        if getattr(self, "_关闭中", False) or self.win is None:
+            return
+        try:
+            w = e.widget
+            if w is not None and w.winfo_toplevel() is self.win:
+                return          # 点在自己身上（卡片、滚动条、✕ 都算）
+        except Exception:
+            return
+        self.close()
 
     def close(self):
         """任何关闭路径都走这里：统一成滑出动画，不再有瞬间消失。"""
