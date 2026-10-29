@@ -282,7 +282,7 @@ class PagesMixin:
             取路径=self._pack_warning_paths,
             已收起=bool(getattr(self, "pack_warning_collapsed", False)),
             收起回调=self._on_pack_warning_collapsed,
-            提示=self.create_tooltip)
+            形态回调=self._pack_warning_layout)
         self.pack_warning_bar.pack(fill="x", padx=5, pady=(0, 4))
         self._stage()
 
@@ -294,6 +294,8 @@ class PagesMixin:
         self._create_modlist_page(page_mod)
         self._create_config_page(page_cfg)
         self._create_extra_page(page_extra)
+        # 标签行建好之后落一次形态（收起状态在启动时就要生效）
+        self._pack_warning_layout(bool(getattr(self, "pack_warning_collapsed", False)))
         # 出错条目在清单里标红（迁移日志报错时自动打上；配置也放这儿，三个页共用）
         for _框 in (self.mod_text, self.config_text, self.extra_text):
             try:
@@ -319,12 +321,38 @@ class PagesMixin:
         return 源, 标
 
     def _on_pack_warning_collapsed(self, 收起):
-        """提醒条收成 ⚠ 图标 / 展开回横幅：记住形态，下次启动保持。"""
+        """提醒条收成 ⚠ 药丸 / 展开回横幅：记住形态，下次启动保持。"""
         self.pack_warning_collapsed = bool(收起)
         try:
             self.save_config()
         except Exception:
             pass
+
+    def _pack_warning_layout(self, 收起):
+        """按形态摆位：横幅挂在标签行上面；收起时整条摘掉，改成标签行右端的 ⚠。
+
+        收起后的入口用 RoundedTabs.set_tail_button 画在标签条里 —— 和三个标签
+        同一行、同一种药丸样式，比另画一个直角方块协调。
+        """
+        收起 = bool(收起)
+        bar = getattr(self, "pack_warning_bar", None)
+        tabs = getattr(self, "list_tabs", None)
+        if bar is not None:
+            try:
+                if 收起:
+                    bar.pack_forget()
+                elif tabs is not None:
+                    bar.pack(fill="x", padx=5, pady=(0, 4), before=tabs)
+                else:
+                    bar.pack(fill="x", padx=5, pady=(0, 4))
+            except Exception:
+                pass
+        if tabs is not None:
+            try:
+                tabs.set_tail_button("⚠ 更新提醒" if 收起 else None,
+                                     command=(bar._开弹窗 if bar is not None else None))
+            except Exception:
+                pass
 
     def _create_modlist_page(self, parent):
         """模组清单页：每行一个 .jar 文件名。"""

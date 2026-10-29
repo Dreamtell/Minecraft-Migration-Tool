@@ -46,13 +46,13 @@ class PackWarning(tk.Frame):
     """红色警示条 / 收起后的 ⚠ 图标按钮。两个形态都在这个 Frame 里重画。"""
 
     def __init__(self, parent, root, theme, *, 取路径, 已收起=False,
-                 收起回调=None, 提示=None):
+                 收起回调=None, 形态回调=None):
         super().__init__(parent, bg=theme.get("bg", "#ffffff"))
         self.应用根 = root
         self.theme = theme
         self._取路径 = 取路径
         self._收起回调 = 收起回调
-        self._提示 = 提示
+        self._形态回调 = 形态回调
         self.已收起 = bool(已收起)
         self._弹窗 = None
         # 红色是"警示语义色"，不是主题色：不让通用主题迁移碰这棵子树
@@ -88,18 +88,17 @@ class PackWarning(tk.Frame):
             self.configure(bg=self.theme.get("bg", "#ffffff"))
         except Exception:
             pass
-        if self.已收起:
-            self._建图标()
-        else:
+        if not self.已收起:
             self._建横幅()
+        # 收起时自己不画东西：交给形态回调把整个横幅摘掉，改成标签行右端的 ⚠ 药丸
+        if self._形态回调:
+            try:
+                self._形态回调(self.已收起)
+            except Exception:
+                pass
 
     def _建横幅(self):
         坏 = self._配色()
-        # 收起时把自己压成小图标（fill="none"），展开时恢复成整条
-        try:
-            self.pack_configure(fill="x", anchor="w")
-        except Exception:
-            pass
         框 = tk.Frame(self, bg=坏["底"], highlightthickness=1,
                       highlightbackground=坏["边"], highlightcolor=坏["边"])
         框.pack(fill="x")
@@ -112,29 +111,9 @@ class PackWarning(tk.Frame):
         右 = tk.Frame(框, bg=坏["底"])
         右.pack(side="right", padx=(px(8), px(10)))
         self._建链接(右, 坏, "复制 AI 提示词", self._复制)
-        self._建链接(右, 坏, "收起 ▴", lambda: self._设收起(True),
-                     弱=True, 提示="缩成一个 ⚠ 图标（提醒不会消失）")
+        self._建链接(右, 坏, "收起 ▴", lambda: self._设收起(True), 弱=True)
 
-    def _建图标(self):
-        坏 = self._配色()
-        try:
-            self.pack_configure(fill="none", anchor="w")
-        except Exception:
-            pass
-        标 = tk.Label(self, text="⚠", font=("微软雅黑", 15), bg=坏["底"], fg=坏["图"],
-                     cursor="hand2", padx=px(9), pady=px(1),
-                     highlightthickness=1, highlightbackground=坏["边"], bd=0)
-        标.pack(side="left")
-        标.bind("<Button-1>", lambda e: self._开弹窗())
-        标.bind("<Enter>", lambda e: 标.configure(bg=坏["悬"]))
-        标.bind("<Leave>", lambda e: 标.configure(bg=坏["底"]))
-        if self._提示:
-            try:
-                self._提示(标, 标题 + "（点击查看完整说明）")
-            except Exception:
-                pass
-
-    def _建链接(self, 父, 坏, 文字, 命令, 弱=False, 提示=None):
+    def _建链接(self, 父, 坏, 文字, 命令, 弱=False):
         标 = tk.Label(父, text=文字, bg=坏["底"], fg=坏["弱"] if 弱 else 坏["主"],
                      cursor="hand2", font=("微软雅黑", 9, "underline"),
                      padx=px(4), pady=px(2), bd=0, highlightthickness=0)
@@ -142,11 +121,6 @@ class PackWarning(tk.Frame):
         标.bind("<Button-1>", lambda e: 命令())
         标.bind("<Enter>", lambda e: 标.configure(bg=坏["悬"]))
         标.bind("<Leave>", lambda e: 标.configure(bg=坏["底"]))
-        if 提示 and self._提示:
-            try:
-                self._提示(标, 提示)
-            except Exception:
-                pass
         return 标
 
     def _设收起(self, 收起):

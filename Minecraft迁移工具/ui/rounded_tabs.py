@@ -17,7 +17,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 
-from utils.helpers import _rounded_gradient, lighten_color
+from utils.helpers import _rounded_gradient, is_dark_theme, lighten_color
 
 PAD_X = 22          # 标签左右内边距
 GAP = 4             # 标签之间的间隙
@@ -48,6 +48,8 @@ class RoundedTabs(tk.Frame):
         self._tabs = []            # [{"label","page","x","w","pill","text","hover"}]
         self._photos = {}          # (宽, 种类) -> PhotoImage（留住引用）
         self._cur = -1
+        self._tail = None          # 标签条右端的小按钮（跟标签同款药丸）
+        self._tail_photos = {}
         self._anim = None
         self._page_anim = None
         self._sel_item = None
@@ -85,6 +87,62 @@ class RoundedTabs(tk.Frame):
 
     def labels(self):
         return [t["label"] for t in self._tabs]
+
+    def set_tail_button(self, text=None, command=None):
+        """在标签条右端挂一个小按钮（跟标签同款药丸），传 None 摘掉。
+
+        主界面用它挂「整合包更新提醒」收起后的 ⚠ 入口：和三个标签同一行、
+        长得也一模一样，而不是另画一个直角方块吊在上面。
+        """
+        if not text:
+            self._tail = None
+        else:
+            self._tail = {"text": str(text), "command": command, "hover": False,
+                          "x": 0, "w": 0, "pill": None, "label": None}
+        self._layout_bar()
+
+    # ---- 尾按钮配色：警示红是语义色，不跟主题底色走 ----
+    def _tail_dark(self):
+        try:
+            return is_dark_theme(self.theme)
+        except Exception:
+            return False
+
+    def _tail_color(self, kind):
+        深 = self._tail_dark()
+        if kind == "hover":
+            return "#5f1b1e" if 深 else "#f8cfc9"
+        return "#4d1517" if 深 else "#fde5e1"
+
+    def _tail_fg(self):
+        return "#ff6b70" if self._tail_dark() else "#c5221f"
+
+    def _tail_photo(self, w, kind):
+        from PIL import ImageTk
+        w = max(8, int(w))
+        key = (w, kind)
+        hit = self._tail_photos.get(key)
+        if hit is None:
+            c = self._tail_color(kind)
+            imgs = _rounded_gradient(w, PILL_H, (c, c), (c, c), RADIUS, self)
+            hit = ImageTk.PhotoImage(imgs["normal"])
+            self._tail_photos[key] = hit
+        return hit
+
+    def _refresh_tail(self):
+        t = self._tail
+        if not t:
+            return
+        c = self.bar
+        kind = "hover" if t["hover"] else "normal"
+        try:
+            if self._use_images:
+                c.itemconfigure(t["pill"], image=self._tail_photo(t["w"], kind))
+            else:
+                c.itemconfigure(t["pill"], fill=self._tail_color(kind))
+            c.itemconfigure(t["label"], fill=self._tail_fg())
+        except Exception:
+            pass
 
     def current_page(self):
         """当前显示的那一页的容器（设置窗做"页内滚动"时要用它）。"""
@@ -150,6 +208,7 @@ class RoundedTabs(tk.Frame):
         for t in self._tabs:
             t["page"].configure(bg=self.theme["bg"])
         self._photos.clear()
+        self._tail_photos.clear()
         cur = self._cur
         self._cur = -1
         self._layout_bar()
@@ -176,6 +235,21 @@ class RoundedTabs(tk.Frame):
                                                width=0)
             t["text_main"], t["text_num"] = self._draw_label(t, x, tw)
             x += tw + GAP
+        if self._tail is not None:
+            tail = self._tail
+            tw = self._font.measure(tail["text"]) + PAD_X * 2
+            tail["x"], tail["w"] = x + GAP, tw
+            ty = PILL_Y + PILL_H // 2
+            if self._use_images:
+                tail["pill"] = c.create_image(x + GAP, PILL_Y, anchor="nw",
+                                              image=self._tail_photo(tw, "normal"))
+            else:
+                tail["pill"] = c.create_rectangle(x + GAP, PILL_Y, x + GAP + tw,
+                                                  PILL_Y + PILL_H, width=0,
+                                                  fill=self._tail_color("normal"))
+            tail["label"] = c.create_text(x + GAP + tw // 2, ty, text=tail["text"],
+                                          font=self._font, fill=self._tail_fg())
+            x = x + GAP + tw
         c.configure(width=x + 6)
         # 选中块：压在普通药丸上面、所有文字下面
         self._sel_item = c.create_image(0, PILL_Y, anchor="nw")
@@ -184,6 +258,8 @@ class RoundedTabs(tk.Frame):
             for item in (t.get("text_main"), t.get("text_num")):
                 if item:
                     c.tag_raise(item)
+        if self._tail is not None:
+            c.tag_raise(self._tail["label"])
         self._refresh_pills()
         # 重排（新加了一页 / 换了主题）之后，选中块要重新贴回当前页 ——
         # 否则它会停在 canvas 左上角（新 item 默认在 0,0）
@@ -341,10 +417,22 @@ class RoundedTabs(tk.Frame):
                 return i
         return -1
 
+    def _hit_tail(self, x):
+        t = self._tail
+        return bool(t) and t["x"] <= x < t["x"] + t["w"]
+
     def _on_click(self, event):
         # 迁移/扫描进行中：切页会当场构建没建过的那一页（377 个模组 = 377 个卡片控件），
         # 主线程会卡好几秒 —— 直接忽略这次点击。
         if getattr(self, "locked", False):
+            return
+        if self._hit_tail(event.x):
+            cmd = (self._tail or {}).get("command")
+            if cmd:
+                try:
+                    cmd()
+                except Exception:
+                    pass
             return
         i = self._hit(event.x)
         if i >= 0:
@@ -355,10 +443,14 @@ class RoundedTabs(tk.Frame):
             self.bar.configure(cursor="")
             return
         i = self._hit(event.x)
-        self.bar.configure(cursor="hand2" if i >= 0 else "")
+        尾 = self._hit_tail(event.x)
+        self.bar.configure(cursor="hand2" if (i >= 0 or 尾) else "")
+        if self._tail is not None and self._tail["hover"] != 尾:
+            self._tail["hover"] = 尾
+            self._refresh_tail()
         changed = False
         for j, t in enumerate(self._tabs):
-            want = (j == i)
+            want = (j == i) and not 尾
             if t["hover"] != want:
                 t["hover"] = want
                 changed = True
@@ -367,6 +459,9 @@ class RoundedTabs(tk.Frame):
 
     def _on_leave(self, _event):
         self.bar.configure(cursor="")
+        if self._tail is not None and self._tail["hover"]:
+            self._tail["hover"] = False
+            self._refresh_tail()
         changed = False
         for t in self._tabs:
             if t["hover"]:
