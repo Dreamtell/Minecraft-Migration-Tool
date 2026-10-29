@@ -320,6 +320,13 @@ class ThemeMixin:
                 self.edit_switch.set_theme(self.theme)     # 开关卡片是自绘的，重出图
             except Exception:
                 pass
+        # 整合包更新提醒挡住了通用主题迁移（红色是语义色），改由它自己重出图
+        _pw = getattr(self, "pack_warning_bar", None)
+        if _pw is not None:
+            try:
+                _pw.set_theme(self.theme)
+            except Exception:
+                pass
         # 右下角的吐司也要换配色：它是自绘控件（圆角卡图 + 进度条），
         # 只喂主题不会自己变，得显式调一次（host 会把已显示的整批按新配色重建）
         _toast = getattr(self, "_toast_host", None)

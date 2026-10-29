@@ -401,10 +401,6 @@ class SettingsMixin:
         create_gradient_button(row_scroll, "－", lambda: self._bump_scroll_speed(-1),
                                width=px(46), height=px(26)).pack(side="right", padx=(0, px(6)))
 
-        self.settings_pack_warn_var = tk.BooleanVar(value=getattr(self, "pack_warning", True))
-        开关(box_m, "显示「整合包更新提醒」（模组可能被作者删除/替换）",
-             self.settings_pack_warn_var, self._toggle_pack_warning, 名="packwarn").pack(fill="x")
-
         # ---------- 模组分类标签 ----------
         box_t = section("tags", page_mig)
         self.settings_tags_var = tk.BooleanVar(value=getattr(self, "online_tags", False))
@@ -895,23 +891,6 @@ class SettingsMixin:
                 pass
         self.toast(trp("✨ 贴边特效已{0}", i18n.tr("开启" if 开 else "关闭")),
                    level="ok", key="float_edgefx")
-
-    def _toggle_pack_warning(self):
-        """开关：主界面的「整合包更新提醒」是否显示（立即生效）。"""
-        try:
-            开 = bool(self.settings_pack_warn_var.get())
-        except Exception:
-            开 = True
-        try:
-            self.set_pack_warning(开)
-        except Exception:
-            self.pack_warning = 开
-            try:
-                self.save_config()
-            except Exception:
-                pass
-        self.toast(trp("📣 整合包更新提醒已{0}", i18n.tr("开启" if 开 else "关闭")),
-                   level="ok", key="pack_warning")
 
     def _toggle_toast(self):
         """开关：右下角的吐司消息是否显示（立即生效，顺便落盘）。"""

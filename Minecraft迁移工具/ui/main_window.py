@@ -286,7 +286,8 @@ class MigrationGUI(
             SmoothScroller.set_speed(self.scroll_speed)
         except Exception:
             self.scroll_speed = 3
-        self.pack_warning = bool(self.config.get("pack_warning", True))
+        # 整合包更新提醒只能收起、不能关：只记形态（False = 整条横幅，True = 仅 ⚠ 图标）
+        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", False))
         self.float_edge_fx = bool(self.config.get("float_edge_fx", True))
         self.net_float_shadow = bool(self.config.get("net_float_shadow", True))
         self.net_float_dock = bool(self.config.get("net_float_dock", True))
@@ -536,7 +537,7 @@ class MigrationGUI(
             # 浮标直径（设计像素，40~96）；界面里按 DPI 再乘一次
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
             "history_limit": int(getattr(self, "history_limit", 10) or 10),
-            "pack_warning": bool(getattr(self, "pack_warning", True)),
+            "pack_warning_collapsed": bool(getattr(self, "pack_warning_collapsed", False)),
             # 右下角吐司消息的总开关（缺省开）。不写进来，用户下次改任何设置都会把它抹掉
             "toast_on": bool(getattr(self, "toast_on", True)),
             "scroll_speed": int(getattr(self, "scroll_speed", 3) or 3),
