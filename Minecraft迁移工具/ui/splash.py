@@ -148,7 +148,7 @@ class SplashScreen:
     """无边框圆角卡片闪屏：缩放弹出，close() 时缩放收起。"""
 
     def __init__(self, parent, icon_path=None, title="Minecraft 整合包迁移工具",
-                 subtitle="增强版 v4"):
+                 subtitle="增强版 v5"):
         self._alive = True
         self._closing = False
         self._out_t = 0.0

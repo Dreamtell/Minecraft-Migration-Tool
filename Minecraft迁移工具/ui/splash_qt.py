@@ -106,7 +106,7 @@ def run_child():                      # pragma: no cover - 在子进程里跑
             self._f_title.setBold(True)
             self._f_sub = QtGui.QFont("Microsoft YaHei UI", 10)
             self._title = "Minecraft 整合包迁移工具"
-            self._subtitle = "增强版 v4"
+            self._subtitle = "增强版 v5"
 
         @staticmethod
         def _spawn():

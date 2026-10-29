@@ -1012,8 +1012,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "{0} mods · {1} config · {2} other ｜ {3} files / {4:.1f} MB in total",
 
     # ---------- 第 5 批：剩下的界面文案（迁移/回滚确认、清单选择窗、托盘、锁屏…）----------
-    "Minecraft 整合包迁移工具 - 增强版 v4":
-        "Minecraft Modpack Migration Tool - Enhanced v4",
+    "Minecraft 整合包迁移工具 - 增强版 v5":
+        "Minecraft Modpack Migration Tool - Enhanced v5",
     "请先选择目标实例根目录": "Pick the target instance root folder first",
     "请先选择源和目标路径": "Pick the source and target paths first",
     "请选择源和目标实例根目录": "Pick the source and target instance root folders",
@@ -1324,7 +1324,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "Minecraft 整合包迁移工具": "Minecraft Modpack Migration Tool",
     "Minecraft 整合包迁移工具（后台运行中，点这里打开）":
         "Minecraft Modpack Migration Tool (running in the background — click to open)",
-    "增强版 v4": "Enhanced v4",
+    "增强版 v5": "Enhanced v5",
     "选择文件夹（可多选）": "Choose folders (multi-select)",
     # 锁屏方式 / 关闭方式那几个卡片（画布上自绘的标题与说明）
     "迁移时锁定界面": "Lock the interface while migrating",

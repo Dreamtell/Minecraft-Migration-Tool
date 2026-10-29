@@ -58,7 +58,7 @@ class MigrationGUI(
         """
         self.root = root
         self._on_stage = on_stage
-        self.root.title("Minecraft 整合包迁移工具 - 增强版 v4")
+        self.root.title("Minecraft 整合包迁移工具 - 增强版 v5")
         # 尺寸/位置统一走 utils.dpi：DPI 感知之后写死 1000x1080 会被缩放后的字撑爆，
         # 而 1080 * 1.5 又比屏幕高，需要一起适配（见 utils/dpi.py）。
         self.root.geometry(window_geometry(self.root, 1000, 1080))

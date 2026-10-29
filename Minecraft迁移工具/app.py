@@ -119,7 +119,7 @@ def main():
         if not _tray_mod.request_show_existing():
             try:
                 hwnd = ctypes.windll.user32.FindWindowW(
-                    None, "Minecraft 整合包迁移工具 - 增强版 v4")
+                    None, "Minecraft 整合包迁移工具 - 增强版 v5")
                 if hwnd:
                     force_foreground(hwnd)      # 提到最前（不只是 SetForegroundWindow）
             except Exception:
@@ -133,7 +133,7 @@ def main():
     except Exception:
         root = tk.Tk()
     root.withdraw()
-    root.title("Minecraft 整合包迁移工具 - 增强版 v4")
+    root.title("Minecraft 整合包迁移工具 - 增强版 v5")
     # 字号跟着 UI_SCALE 走（Tk 的 scaling 是"每磅多少像素"，96dpi 基准 = 4/3）
     try:
         root.tk.call("tk", "scaling", 4.0 / 3.0 * UI_SCALE)
