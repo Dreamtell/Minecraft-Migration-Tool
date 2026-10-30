@@ -37,6 +37,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from utils import helpers as _h
+from utils import anim as _anim
 from utils import i18n
 
 try:
@@ -73,7 +74,8 @@ _SWEEP_PEAK = 80        # 扫光 alpha 峰值（原型 int(80*hv)）
 # 不能照抄 110 这个**绝对像素**：这颗按钮只有 110 宽，110 的半宽等于整面被灌满，
 # 悬停就变成"整块刷白"，而原型里它始终只是一条带子。所以按比例取，比例本身照抄。
 _SWEEP_HALF_RATIO = 110.0 / 420.0
-_SWEEP_PHASES = 24      # 扫光相位表长度（780/24 = 32.5ms ≈ 30fps）
+_SWEEP_PHASES = 96      # 扫光相位表长度（780/96 = 8.1ms ≈ 124fps；原来 24 是 32.5ms，
+                        # 144Hz 屏上光带一格一格跳，看着像掉帧）
 
 _STRIPE_ALPHA = 26      # 背面斜纹 alpha（原型 stripes.setAlpha(26)）
 _STRIPE_W = 6.0         # 斜纹线宽
@@ -125,8 +127,16 @@ FEEL_LABELS = {"crisp": "干脆", "standard": "标准", "heavy": "沉"}
 FEEL_KEY = "start_btn_feel"        # 配置文件里的键（main_window.py 默认值 + 存档）
 
 _TEXT_PAD = 18          # 左右内边距，和 helpers._BTN_TEXT_PAD 一致
-_FRAME_MS = 16          # 目标帧间隔（60fps）
+_FRAME_MS = 16          # 目标帧间隔（60fps）—— 现在只当兜底值用，见 _TABLE_MS
+
+# 帧表密度：**按显示器刷新周期烤**（144Hz → 7ms，320ms 的手感 = 47 帧）。原来按固定
+# 16ms 烤只有 21 帧，就算 tick 跑到 240fps，屏幕上 16ms 才换一张图，看着还是「一卡一卡」；
+# 固定 8ms 也不行 —— 144Hz 下每帧要显示 1.75 个刷新周期，运动分辨率对不上。
+# 帧图缓存在 _frames 里（key 带状态）：47 帧 × 2 方向 × 3 档手感 ≈ 280 张 ≈ 5.6MB。
+_TABLE_MS_MIN = 4       # 帧表密度的下限（240Hz 屏）
+_TABLE_MS_MAX = 16      # 上限（60Hz 屏），再密就是白烤帧
 _MAX_FRAMES = 900       # 图缓存上限（翻转帧 + 静止帧 + 相位表）
+_PREWARM_MS_PER_TICK = 0.006   # 预热每轮最多占用主线程 6ms，然后让出
 
 # 字体：PIL 里 CJK 用微软雅黑粗体，emoji 只能单独用 Segoe UI Emoji 画
 _CJK_FONTS = ("C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyh.ttc",
@@ -317,6 +327,7 @@ class FlipButton(tk.Canvas):
         self._animating = False
         self._anim_target = 0
         self._job = None
+        self._hr = False                     # 是否已 anim.hold()
         self._prewarm_job = None
         self._ui_job = None                  # 持续动画（扫光 / 背面斜纹）的 tick
         self._ui_last = 0.0
@@ -667,10 +678,17 @@ class FlipButton(tk.Canvas):
         return img
 
     # ------------------------------------------------------------ 帧表 / 单帧
+    def _table_ms(self):
+        """帧表密度 = 这块屏的刷新周期（毫秒），夹在 _TABLE_MS_MIN.._TABLE_MS_MAX。"""
+        try:
+            return max(_TABLE_MS_MIN, min(_TABLE_MS_MAX, int(_anim.frame_ms(self))))
+        except Exception:
+            return _FRAME_MS
+
     def _frame_table(self, feel, direction):
         """某一档手感、某个方向的 f 表（缓动+过冲先算好，帧才可缓存）。"""
         p = PRESETS.get(feel) or PRESETS[DEFAULT_FEEL]
-        n = max(9, int(round(p["ms"] / float(_FRAME_MS))) + 1)
+        n = max(9, int(round(p["ms"] / float(self._table_ms()))) + 1)
         tab = []
         for i in range(n):
             e = _ease_out_back(i / float(n - 1), p["over"])
@@ -786,6 +804,26 @@ class FlipButton(tk.Canvas):
             except Exception:
                 pass
             self._job = None
+        self._rel_hr()
+
+    # 定时器精度（anim.hold/release 是引用计数，必须配平，否则整机一直 1ms 空转）
+    def _hold_hr(self):
+        if getattr(self, "_hr", False):
+            return
+        try:
+            _anim.hold()
+            self._hr = True
+        except Exception:
+            self._hr = False
+
+    def _rel_hr(self):
+        if not getattr(self, "_hr", False):
+            return
+        self._hr = False
+        try:
+            _anim.release()
+        except Exception:
+            pass
 
     def _animate(self, direction):
         """direction=+1 翻到背面、-1 翻回正面；按时间推进，帧号量化后取缓存。"""
@@ -796,8 +834,15 @@ class FlipButton(tk.Canvas):
         n = len(tab)
         ms = (PRESETS.get(feel) or PRESETS[DEFAULT_FEEL])["ms"]
         dur = ms / 1000.0
-        interval = max(8, int(round(ms / float(max(1, n - 1)))))
+        # 帧间隔跟显示器刷新率走（anim.delay 会顺手把失焦/最小化降到 30fps），
+        # 但不要慢于帧表自身的密度，否则会跳帧。
+        spacing = max(1, int(round(ms / float(max(1, n - 1)))))
+        try:
+            interval = max(1, min(int(_anim.delay(self)), spacing))
+        except Exception:
+            interval = max(1, min(_FRAME_MS, spacing))
         self._animating = True
+        self._hold_hr()          # 不 raise 定时器精度，after(16) 实测只有 42fps
         self._anim_target = direction
         self.itemconfigure(self._txt_id, state="hidden")
         if self._dots_id is not None:
@@ -822,6 +867,7 @@ class FlipButton(tk.Canvas):
                     pass
             if over:
                 self._animating = False
+                self._rel_hr()
                 self._at_back = direction > 0
                 self._draw_rest()
                 return
@@ -857,6 +903,19 @@ class FlipButton(tk.Canvas):
     def _back_phase(self):
         return int((time.perf_counter() - self._t0) / _BACK_DT) % _BACK_PHASES
 
+    def _tick_ms(self):
+        """持续动画的帧间隔。
+
+        正面扫光/悬停淡入是「一小段动完就停」，跟刷新率走；背面斜纹是迁移期间一直跑的
+        （可能几分钟），给 30fps 就够了 —— 别让整机一直挂在 1ms 定时器上。
+        """
+        if self._at_back:
+            return _UI_MS
+        try:
+            return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
+        except Exception:
+            return _UI_MS
+
     def _tick_wanted(self):
         """现在还需不需要 tick：翻转中不要（动画独占）、背面要（斜纹在流）、
         正面只在悬停（含淡出过程）且未禁用时要。"""
@@ -872,8 +931,10 @@ class FlipButton(tk.Canvas):
         if not self._tick_wanted():
             return
         self._ui_last = time.perf_counter()
+        if not self._at_back:
+            self._hold_hr()
         try:
-            self._ui_job = self.after(_UI_MS, self._ui_tick)
+            self._ui_job = self.after(self._tick_ms(), self._ui_tick)
         except Exception:
             self._ui_job = None
 
@@ -885,6 +946,8 @@ class FlipButton(tk.Canvas):
             except Exception:
                 pass
             self._ui_job = None
+        if not self._at_back:
+            self._rel_hr()
 
     def _ui_tick(self):
         """30fps 的持续动画：只换相位表里的图（itemconfigure），不现画整面。"""
@@ -927,7 +990,7 @@ class FlipButton(tk.Canvas):
                 self.itemconfigure(self._img_id, image=photo)
         except Exception:
             pass
-        self._ui_job = self.after(_UI_MS, self._ui_tick)
+        self._ui_job = self.after(self._tick_ms(), self._ui_tick)
 
     def _tick_dots(self, now):
         """背面标题的三个点：固定槽位里 1→2→3 循环（原型 int(t*3)%3）。"""
@@ -1139,15 +1202,20 @@ class FlipButton(tk.Canvas):
             rests.append(("back", "search", FACE_SEARCH, phase))
 
         def step(pos=0, rpos=0):
+            # 按**时间预算**搬，不按张数：单张约 4.5ms，原来固定搬 6 张 / 1 张静止帧，
+            # 等于每 27ms 卡一下主线程 —— 帧表按刷新率加密后这个卡顿更明显。现在每轮
+            # 最多干 6ms 就让出，启动后台预热不再抢界面。
             self._prewarm_job = None
             if not self.winfo_exists() or self._feel != feel:
                 return
-            for i in range(pos, min(pos + 6, len(jobs))):
+            t_end = time.perf_counter() + _PREWARM_MS_PER_TICK
+            while pos < len(jobs) and time.perf_counter() < t_end:
                 try:
-                    self._frame_photo(feel, jobs[i][0], jobs[i][1])
+                    self._frame_photo(feel, jobs[pos][0], jobs[pos][1])
                 except Exception:
                     pass
-            if rpos < len(rests):
+                pos += 1
+            while rpos < len(rests) and time.perf_counter() < t_end:
                 kind, _p, _pal, arg = rests[rpos]
                 try:
                     if kind == "rest":
@@ -1159,8 +1227,8 @@ class FlipButton(tk.Canvas):
                 except Exception:
                     pass
                 rpos += 1
-            if pos + 6 < len(jobs) or rpos < len(rests):
-                self._prewarm_job = self.after(1, lambda: step(pos + 6, rpos))
+            if pos < len(jobs) or rpos < len(rests):
+                self._prewarm_job = self.after(1, lambda: step(pos, rpos))
 
         self._prewarm_job = self.after(30, step)
 
