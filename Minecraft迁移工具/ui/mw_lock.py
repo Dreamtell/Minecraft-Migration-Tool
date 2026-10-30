@@ -543,6 +543,50 @@ class LockMixin:
             except Exception:
                 pass
 
+    def _set_edit_lock(self, locked):
+        """把"现在不能改东西"落到输入控件上：路径框 / 存档名 / 两个开关 / 清单文本框。
+
+        只管"能不能改"，不管"能不能点"——按钮的禁用由 _refresh_busy_state 负责。
+        解锁时交给 _sync_edit_lock 决定编辑开关该不该恢复（镜像窗口还开着就不能恢复）。
+        """
+        locked = bool(locked)
+        if getattr(self, "_ui_locked", None) == locked:
+            return
+        self._ui_locked = locked
+        state = "disabled" if locked else "normal"
+        for 名 in ("source_entry", "target_entry", "world_entry"):
+            框 = getattr(self, 名, None)
+            try:
+                if 框 is not None:
+                    # RoundedEntry 是 Frame + 内层 tk.Entry：state 只有内层认
+                    # （直接对 Frame configure(state=...) 会抛 unknown option -state，
+                    #  被 except 吞掉 → 看着"锁了"，其实没锁）。
+                    getattr(框, "entry", 框).configure(state=state)
+            except Exception as e:
+                trace_exc("main_window/锁输入框 %s" % 名, e)
+        for 名 in ("dry_run_sw", "overwrite_sw"):
+            开 = getattr(self, 名, None)
+            try:
+                if 开 is not None:
+                    开.set_enabled(not locked)
+            except Exception as e:
+                trace_exc("main_window/锁开关 %s" % 名, e)
+        编 = getattr(self, "edit_switch", None)
+        try:
+            if locked and 编 is not None:
+                编.set_enabled(False)
+        except Exception as e:
+            trace_exc("main_window/锁编辑开关", e)
+        try:
+            self._update_text_states()
+        except Exception as e:
+            trace_exc("main_window/刷新文本状态", e)
+        if not locked:
+            try:
+                self._sync_edit_lock()
+            except Exception as e:
+                trace_exc("main_window/恢复编辑开关", e)
+
     def _refresh_busy_state(self):
         """迁移/扫描进行中时禁用主界面所有操作/内容变更类按钮，防止连点或误操作。
 
@@ -587,6 +631,12 @@ class LockMixin:
                 btn.state(state)
             except Exception:
                 pass
+        # 按钮之外，输入类也要跟着锁：路径框、存档名、两个开关、清单文本框。
+        # 倒计时那几秒用户完全可能正在改路径或往清单里粘贴，不锁就会带着改动开跑。
+        try:
+            self._set_edit_lock(busy)
+        except Exception as e:
+            trace_exc("main_window/锁定输入", e)
         # 倒计时期间把「开始迁移」点亮：再点一下就是取消（start_migration 里判断）。
         if getattr(self, "_countdown_running", False):
             try:

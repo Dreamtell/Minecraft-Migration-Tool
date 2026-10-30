@@ -119,7 +119,11 @@ class EditMixin:
     def _update_text_states(self):
         # 放大查看 / 模组差异开着时**强制只读**：它们手里是清单快照（还会往回写），
         # 两边同时改就是互相盖（见 _lock_edit）
-        state = (tk.NORMAL if self.edit_mode.get() and not self._edit_locked()
+        # 第三种"不能改"：倒计时 / 迁移进行中（_ui_locked 由 mw_lock._set_edit_lock 维护）。
+        # 只锁按钮不够 —— 光标还能点进清单文本框里打字，那几秒的改动会在迁移开始时
+        # 被当成"最终清单"读走。
+        state = (tk.NORMAL if (self.edit_mode.get() and not self._edit_locked()
+                               and not getattr(self, "_ui_locked", False))
                  else tk.DISABLED)
         self.mod_text.configure(state=state)
         self.config_text.configure(state=state)
