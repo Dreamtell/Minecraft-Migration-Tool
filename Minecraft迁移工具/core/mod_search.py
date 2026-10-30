@@ -73,8 +73,10 @@ def _带重试(动作, 说明="请求"):
                     # 别把 URLError 的包装再套一层（"<urlopen error <urlopen
                     # error timed out>>" 这种东西不该出现在界面上），只取原因。
                     原因 = getattr(e, "reason", None) or e
-                    raise RuntimeError("%s（已自动重试 %d 次仍然失败）"
-                                       % (原因, _最大尝试 - 1)) from e
+                    from utils import secrets
+                    raise RuntimeError(secrets.redact(
+                        "%s（已自动重试 %d 次仍然失败）"
+                        % (原因, _最大尝试 - 1))) from e
                 raise
             用过重试 = True
             time.sleep(_重试间隔)
@@ -90,9 +92,11 @@ def _json_get(url, timeout=15):
     from utils import netmeter
     netmeter.add_request()
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    netmeter.add_sent(len(url) + sum(len(k) + len(v) for k, v in req.headers.items()))
-
     def 发():
+        # 上行也放进 发() 里：重试一次就再记一次（否则重试那次的字节白丢，
+        # 而 add_recv/add_event 是按次记的，三个数会对不上）。
+        netmeter.add_sent(len(url) + sum(len(k) + len(v)
+                                          for k, v in req.headers.items()))
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             内容 = resp.read()
         netmeter.add_recv(len(内容))
@@ -497,8 +501,8 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
         上行 = len(url) + sum(len(kk) + len(str(vv))
                              for kk, vv in req.headers.items()
                              if kk.lower() != "x-api-key")
-        netmeter.add_sent(上行)
         def 发():
+            netmeter.add_sent(上行)     # 同 _json_get：按次记
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 内容 = resp.read()
             netmeter.add_recv(len(内容))
@@ -520,6 +524,10 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
         if 500 <= e.code < 600:
             raise RuntimeError("CurseForge 服务端出错（HTTP %d），稍后重试" % e.code)
         raise RuntimeError("CurseForge 请求失败（HTTP %d）" % e.code)
+    except RuntimeError:
+        # _带重试 拼好的文字已经是给人看的（也脱敏过了），别再用
+        # redact_exc 套一层"RuntimeError: "前缀。
+        raise
     except Exception as e:
         raise RuntimeError(secrets.redact_exc(e))
 
