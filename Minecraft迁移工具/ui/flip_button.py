@@ -694,13 +694,13 @@ class FlipButton(tk.Canvas):
         except Exception:
             pass
 
-    def _back_layer(self, t):
+    def _back_layer(self, t, hv=0.0):
         """背面整层（不含底色、不含底部进度条）：红面 + 斜纹。翻转帧和静止帧共用。
 
         底部进度条不在这里合成 —— 它是独立画布项（见 _apply_bar），否则进度一变就要
         重烤一整张面。
         """
-        face = self._face_rgba("search", self._pal["search"], 0.0, False)
+        face = self._face_rgba("search", self._pal["search"], hv, False)
         return _Image.alpha_composite(face, self._stripe_layer(t))
 
     # ------------------------------------------------------------ 贴图：底 + 面 + 图标
@@ -741,10 +741,22 @@ class FlipButton(tk.Canvas):
                                        self._sweep_layer(phase))
         return self._photo(key, layer)
 
-    def _back_photo(self, phase):
-        """背面静止帧：第 phase 相位的斜纹 + 进度条。"""
-        key = ("back", phase) + self._stem()
-        return self._photo(key, self._back_layer(phase * _BACK_DT))
+    def _back_photo(self, phase, hv=0.0):
+        """背面静止帧：第 phase 相位的斜纹 + 面（hv = 悬停亮度，0 是常色）。"""
+        key = ("back", phase, round(hv, 3)) + self._stem()
+        return self._photo(key, self._back_layer(phase * _BACK_DT, hv))
+
+    def _back_hover_photo(self, sweep):
+        """背面悬停到位后的帧：亮面 + 斜纹 + 扫光（和正面悬停同一套观感）。
+
+        斜纹相位固定用 0 —— 缓存键里只留扫光相位（96 档），一轮扫光就能全缓存住；
+        要是把斜纹相位也带进键里（72×96 = 6912 种组合），每帧都是新图、每帧都要
+        现烤一整面（实测掉到 40ms 一帧）。悬停期间斜纹本来就该"定住"，让扫光去走。
+        """
+        key = ("backhover", sweep) + self._stem()
+        layer = _Image.alpha_composite(self._back_layer(0.0, 1.0),
+                                       self._sweep_layer(sweep))
+        return self._photo(key, layer)
 
 
     # ------------------------------------------------------------ 文字层（翻转动效里烤进图）
@@ -1033,8 +1045,11 @@ class FlipButton(tk.Canvas):
         （可能几分钟），给 30fps 就够了 —— 别让整机一直挂在 1ms 定时器上。
         """
         if self._at_back:
-            if self._prog_override is not None:
-                # 有条真进度在跑：条要跟刷新率走（换的是一张 w×3 的裁剪图，很便宜）。
+            # 悬停淡入的那一小段要跟刷新率走（否则 33ms 一格，25 档要 0.8 秒，
+            # 看着是一跳一跳地亮起来）；淡完之后仍回到 30fps，别一直挂着快定时器。
+            在追 = abs((1.0 if self._hover else 0.0) - self._hv) > 0.02
+            if self._prog_override is not None or 在追:
+                # 有条真进度在跑 / 正在淡入：要跟刷新率走。
                 try:
                     return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
                 except Exception:
@@ -1102,7 +1117,18 @@ class FlipButton(tk.Canvas):
             return
         try:
             if self._at_back:
-                self.itemconfigure(self._img_id, image=self._back_photo(self._back_phase()))
+                # 背面也要悬停高亮：和正面同一套指数逼近，只是亮面换成红色的
+                target = 1.0 if self._hover else 0.0
+                dur = _HV_IN if target > self._hv else _HV_OUT
+                if abs(target - self._hv) > 0.02:
+                    self._hv += (target - self._hv) * min(1.0, dt / dur)
+                else:
+                    self._hv = target
+                if self._hv >= 0.99:
+                    photo = self._back_hover_photo(self._sweep_phase())
+                else:
+                    photo = self._back_photo(self._back_phase(), self._hv_q())
+                self.itemconfigure(self._img_id, image=photo)
                 self._apply_bar(self._bar_u())
                 self._tick_dots(now)
             else:
@@ -1159,7 +1185,10 @@ class FlipButton(tk.Canvas):
             else:
                 photo = self._rest_photo(pid, pal, self._hv_q())
         else:
-            photo = self._back_photo(self._back_phase())
+            if self._hv >= 0.99:
+                photo = self._back_hover_photo(self._sweep_phase())
+            else:
+                photo = self._back_photo(self._back_phase(), self._hv_q())
         self.itemconfigure(self._img_id, image=photo)
         self._apply_bar(None if front else self._bar_u())
         if self._icon is not None:
@@ -1479,16 +1508,13 @@ class FlipButton(tk.Canvas):
         if flag == self._hover:
             return
         self._hover = flag
-        #   · 背面（迁移中 / 倒计时）**完全不参与悬停**，而且连状态都不记：它是个状态显示，
-        #     不是"可以点的按钮"，鼠标压上去不该有任何反应（用户报过"翻转后的红色按钮
-        #     也有触碰高亮"）。
-        #   · 禁用同理。
-        #   · 翻转途中 —— 那一帧该由动画 tick 决定，塞一张整面图进去就是一次闪。
-        if self._at_back or self._disabled:
-            self._hover = False
-            self._hv = 0.0
-            return
-        if self._animating:
+        # 三种情况不接管画面：
+        #   · 翻转途中 —— 那一帧该由动画 tick 决定，塞一张整面图进去就是一次闪；
+        #   · 背面 / 禁用 —— 交给 _ui_tick（背面也有悬停高亮，由 tick 追 _hv 再换图）。
+        # 状态本身照记（不是丢弃）：后续 _draw_rest 一律按它出图 —— 动画收尾、state 切回
+        # normal 都会自己走一次 _draw_rest，所以"点下去翻面、翻回来时指针还在按钮上"
+        # 会回到悬停配色，而不是停在常色。
+        if self._animating or self._at_back or self._disabled:
             return
         self._draw_rest()
 
