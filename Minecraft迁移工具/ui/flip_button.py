@@ -311,7 +311,8 @@ class FlipButton(tk.Canvas):
     def __init__(self, parent, text="🚀 开始迁移", command=None,
                  colors=_FRONT_GREEN, height=38, font=("微软雅黑", 12, "bold"),
                  feel=DEFAULT_FEEL, dry_run=False, back_text="⏳ 迁移中...",
-                 back_colors=_BACK_RED, width=None, click_guard_ms=300):
+                 back_colors=_BACK_RED, width=None, click_guard_ms=300,
+                 extra_w=0):
         self._font = font
         self._texts = {"front": i18n.tr(text), "front_dry": i18n.tr("🚀 模拟运行"),
                        "back": i18n.tr(back_text), "back_dry": i18n.tr("⏳ 模拟中...")}
@@ -347,8 +348,9 @@ class FlipButton(tk.Canvas):
         # 取四张面里最宽的那个 —— 否则切到"模拟运行"时按钮会跟着变窄，整排按钮乱跳。
         need = 44
         try:
+            # extra_w：在「文字宽 + 两侧内边距」之外再补一点（调用方要按钮比文字长一些时给）。
             need = max(44, max(_h._btn_text_width(t, font) for t in self._texts.values())
-                       + _TEXT_PAD)
+                       + _TEXT_PAD + max(0, int(extra_w or 0)))
         except Exception:
             need = 44
         self._cw = int(max(int(width or 0), need))
@@ -1298,7 +1300,7 @@ class FlipButton(tk.Canvas):
 def create_flip_button(parent, text="🚀 开始迁移", command=None, colors=_FRONT_GREEN,
                        height=38, font=("微软雅黑", 12, "bold"), feel=DEFAULT_FEEL,
                        dry_run=False, back_text="⏳ 迁移中...", back_colors=_BACK_RED,
-                       width=None, click_guard_ms=300):
+                       width=None, click_guard_ms=300, extra_w=0):
     """工厂函数（用法对齐 create_gradient_button）。
 
     没有 Pillow 或者建控件时出任何意外，都退回旧的 create_gradient_button ——
@@ -1309,7 +1311,8 @@ def create_flip_button(parent, text="🚀 开始迁移", command=None, colors=_F
             return FlipButton(parent, text=text, command=command, colors=colors,
                               height=height, font=font, feel=feel, dry_run=dry_run,
                               back_text=back_text, back_colors=back_colors,
-                              width=width, click_guard_ms=click_guard_ms)
+                              width=width, click_guard_ms=click_guard_ms,
+                              extra_w=extra_w)
         except Exception:
             pass
     return _h.create_gradient_button(parent=parent, text=text, command=command,

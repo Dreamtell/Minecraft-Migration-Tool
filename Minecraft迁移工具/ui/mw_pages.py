@@ -698,6 +698,8 @@ class PagesMixin:
             font=font_main,
             feel=self.start_btn_feel.get(),
             dry_run=bool(self.dry_run.get()),
+            # 比文字再长一点（用户要求「稍微拉长」）：只加宽这一个，不影响别的按钮。
+            extra_w=14,
         )
         self.start_btn.pack(side="right", padx=5)
         self._stage()
