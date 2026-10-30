@@ -189,6 +189,7 @@ def _裁可见(win, 可见宽, 高):
     一点不露，也不需要 alpha 兜。
     """
     try:
+        import ctypes      # 这个文件一直是"用到才 import"（非 Windows 不该碰这些）
         hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
         全宽 = int(win.winfo_width())
         可见宽 = int(max(0, min(int(可见宽), 全宽)))
