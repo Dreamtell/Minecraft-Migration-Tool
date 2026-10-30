@@ -678,6 +678,11 @@ class PagesMixin:
         self._stage()
 
         # 右侧按钮组（普通 Frame：三个按钮横排、贴右，维持原样）
+        # 三个按钮统一放大：原来 38 高 / 主 12pt、副 11pt。高度和字号按同一比例（约 1.16 倍）
+        # 一起放，保留「开始迁移最大、另两个略小」的层级，避免只有主按钮变大、旁边两个显得发虚。
+        btn_h = 44
+        font_main = ("微软雅黑", 14, "bold")
+        font_aux = ("微软雅黑", 13, "bold")
         btn_group = tk.Frame(self.opt_frame, bg=self.theme["bg"])
         btn_group.pack(side="right")
 
@@ -689,8 +694,8 @@ class PagesMixin:
             text="🚀 开始迁移",
             command=self.start_migration,
             colors=("#00c853", "#00e676"),
-            height=38,
-            font=("微软雅黑", 12, "bold"),
+            height=btn_h,
+            font=font_main,
             feel=self.start_btn_feel.get(),
             dry_run=bool(self.dry_run.get()),
         )
@@ -702,8 +707,8 @@ class PagesMixin:
             text="⚠️ 回滚",
             command=self.action_rollback,
             colors=("#e53935", "#ff7043"),
-            height=38,
-            font=("微软雅黑", 11, "bold")
+            height=btn_h,
+            font=font_aux
         )
         self.rollback_btn.pack(side="right", padx=5)
         self._stage()
@@ -713,8 +718,8 @@ class PagesMixin:
             text="📋 查看历史",
             command=self.action_show_history,
             colors=("#00acc1", "#26c6da"),
-            height=38,
-            font=("微软雅黑", 11, "bold")
+            height=btn_h,
+            font=font_aux
         )
         self.history_btn.pack(side="right", padx=5)
         self._btn_widgets.update({
