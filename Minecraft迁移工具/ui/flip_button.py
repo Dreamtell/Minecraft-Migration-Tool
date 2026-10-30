@@ -1479,13 +1479,16 @@ class FlipButton(tk.Canvas):
         if flag == self._hover:
             return
         self._hover = flag
-        # 三种情况不接管画面：
-        #   · 翻转途中 —— 那一帧该由动画 tick 决定，塞一张整面图进去就是一次闪；
-        #   · 背面 / 禁用 —— 本来就不参与 hover，重绘也是同一张图。
-        # 状态本身照记（不是丢弃）：后续 _draw_rest 一律按它出图 —— 动画收尾、state 切回
-        # normal 都会自己走一次 _draw_rest，所以"点下去翻面、翻回来时指针还在按钮上"
-        # 会回到悬停配色，而不是停在常色。
-        if self._animating or self._at_back or self._disabled:
+        #   · 背面（迁移中 / 倒计时）**完全不参与悬停**，而且连状态都不记：它是个状态显示，
+        #     不是"可以点的按钮"，鼠标压上去不该有任何反应（用户报过"翻转后的红色按钮
+        #     也有触碰高亮"）。
+        #   · 禁用同理。
+        #   · 翻转途中 —— 那一帧该由动画 tick 决定，塞一张整面图进去就是一次闪。
+        if self._at_back or self._disabled:
+            self._hover = False
+            self._hv = 0.0
+            return
+        if self._animating:
             return
         self._draw_rest()
 
