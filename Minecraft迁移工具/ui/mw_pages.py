@@ -1196,7 +1196,13 @@ class PagesMixin:
         过渡秒 = 0.35
         状态 = {"bg": None, "span": None, "ylim": None, "stop": False,
                 "cap": None, "hover_x": None}
-        帧间隔 = 10
+        # 墙钟偏移：现在t 用 perf_counter 算（time.time() 在本机只有 15.6ms 粒度，
+        # 拿它当"现在"会让曲线/小圆点的横坐标一格一格跳，看着就是抖的）。
+        偏 = time.time() - time.perf_counter()
+        try:
+            from utils import anim as _anim
+        except Exception:
+            _anim = None
         _定时器 = {"on": False}
         try:
             ctypes.windll.winmm.timeBeginPeriod(1)
@@ -1286,7 +1292,8 @@ class PagesMixin:
                 if not 顶.winfo_exists():
                     return
                 from ui import mw_net
-                现在t = time.time()
+                帧起 = time.perf_counter()
+                现在t = 帧起 + 偏
                 表 = mw_net.rtt_series()
 
                 # 公共时间基准：所有平台里最早的那个样本，保证两条线时刻对齐
@@ -1465,13 +1472,19 @@ class PagesMixin:
                                 int(sum(ys) / len(ys)), int(max(ys))))
                     信息.config(text="    ｜    ".join(段))
 
-                间隔 = 帧间隔
+                # 帧间隔跟显示器刷新率（anim.frame_ms：144Hz → 7ms），失焦时降一半。
+                try:
+                    目标 = max(8, min(33, int(_anim.frame_ms(self)))) if _anim else 16
+                except Exception:
+                    目标 = 16
                 try:
                     if int(ctypes.windll.user32.GetForegroundWindow()) != int(顶.wm_frame(), 16):
-                        间隔 = 33      # 不在前台时 30fps，省一半 CPU
+                        目标 = max(16, 目标 * 2)      # 不在前台时省 CPU
                 except Exception:
                     pass
-                顶.after(间隔, 帧)
+                # 扣掉本帧已经花掉的时间，否则每帧都多等一个完整间隔（实测 16ms 变 22ms）
+                用了 = (time.perf_counter() - 帧起) * 1000.0
+                顶.after(max(1, int(round(目标 - 用了))), 帧)
             except Exception:
                 try:
                     顶.after(200, 帧)
