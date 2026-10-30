@@ -393,6 +393,100 @@ class LogMixin:
                         indent_from=26, indent_to=0,
                         on_done=lambda: setattr(self, "_log_fading", False))
 
+    def _请求刷底(self):
+        """把「滚到底 + 刷一次界面」合并成一次调度。
+
+        为什么需要它：`log()` 在主线程里是 `root.after(0, _log)`，一行一个回调。
+        迁移时一秒几百行就是几百个回调，每个都 `see(END)` + `update_idletasks()`
+        —— 实测把主线程按住 300ms 以上（看门狗抓到过 21 秒的未响应）。
+        合并之后：谁先到谁排一次 33ms 后的刷新，期间再多的行都只改文字。
+        """
+        if getattr(self, "_刷底已排", False):
+            return
+        self._刷底已排 = True
+
+        def 刷一次():
+            self._刷底已排 = False
+            if getattr(self, "_批处理中", False):
+                return          # 批量收尾会统一刷，别插队
+            # 修剪 + 跟随到底部也一起挪到这儿：逐行做的话每条日志要 2ms 左右，
+            # 主线程一秒几百条就是几秒的白屏。
+            for 控件, 上限 in ((self.log_text, 2000),
+                               (getattr(self, "_lock_log_text", None), 400)):
+                if 控件 is None:
+                    continue
+                try:
+                    总行 = int(控件.index("end-1c").split(".")[0])
+                    if 总行 > 上限:
+                        # ⚠ 只读（disabled）的 Text 会**静默忽略** delete —— 不报错、
+                        # 也不删（踩过：行数一直停在 900 行，看着像上限没生效）。
+                        控件.configure(state="normal")
+                        控件.delete("1.0", "%d.0" % (总行 - 上限))
+                        控件.configure(state="disabled")
+                except Exception:
+                    pass
+                try:
+                    if 控件 is self.log_text:
+                        if getattr(self, "_log_follow", True):
+                            self._see_log_end()
+                    else:
+                        控件.see(tk.END)
+                except Exception:
+                    pass
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
+
+        try:
+            self.root.after(33, 刷一次)
+        except Exception:
+            self._刷底已排 = False
+
+    def _日志批次开始(self):
+        """批量写日志之前调用：把两个 Text 一次开到 normal。
+
+        泵（ui/mw_migration.py::_ui_pump）每轮会连续写几十条日志，逐条
+        `configure(state="normal"/"disabled")` 的代价比写字本身还高；整批只做
+        一次，逐行的活儿只剩 insert。
+        """
+        self._批处理中 = True
+        for 控件 in (self.log_text, getattr(self, "_lock_log_text", None)):
+            if 控件 is None:
+                continue
+            try:
+                控件.configure(state="normal")
+            except Exception:
+                pass
+
+    def _日志批次结束(self):
+        """批量写完之后调用：统一修剪行数、统一 see(END)、恢复只读、刷一次界面。"""
+        self._批处理中 = False
+        for 控件, 上限 in ((self.log_text, 2000),
+                           (getattr(self, "_lock_log_text", None), 400)):
+            if 控件 is None:
+                continue
+            try:
+                总行 = int(控件.index("end-1c").split(".")[0])
+                if 总行 > 上限:
+                    控件.delete("1.0", "%d.0" % (总行 - 上限))
+                if 控件 is self.log_text:
+                    if getattr(self, "_log_follow", True):
+                        self._see_log_end()
+                else:
+                    控件.see(tk.END)
+                控件.configure(state="disabled")
+            except Exception:
+                pass
+        try:
+            self.log_text.event_generate("<<LogChanged>>")
+        except Exception:
+            pass
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
     def log(self, message, level="INFO", save=True):
         # 所有日志的唯一入口：先脱敏再往下走。日志会同时进主界面、锁屏日志和第二视图，
         # 最后按批写进 ~/.minecraft_migrate_last_log.txt ——（用户报障时会把那个文件发过来）
@@ -404,40 +498,36 @@ class LogMixin:
         message = i18n.tr(message)
 
         def _log():
-            self.log_text.configure(state="normal")
+            # 批处理（后台线程灌日志）里由 _日志批次开始/结束 统一做 configure、
+            # 修剪、see 和重绘，这里逐行只负责 insert。
+            批 = getattr(self, "_批处理中", False)
+            if not 批:
+                self.log_text.configure(state="normal")
             start = self.log_text.index("end-1c")
             self.log_text.insert(tk.END, message + "\n", level)
             end = self.log_text.index("end-1c")
             # 行数上限：迁移几百个模组会灌进上千行，无上限地涨下去，重绘和内存都越来越贵。
             # 留最近 2000 行足够回看，老日志仍在文件里（save）。
-            try:
-                总行 = int(self.log_text.index("end-1c").split(".")[0])
-                if 总行 > 2000:
-                    self.log_text.delete("1.0", "%d.0" % (总行 - 2000))
-            except Exception:
-                pass
+            # 行数上限也挪到 _请求刷底（逐行 delete 在长 Text 上很贵）
             # 用户手动往上翻的时候别把他拽回底部（滚回底部会自动恢复跟随）
             # ⚠ 而且**节流**：迁移时一秒几百条，每条都 see 会不断触发滚动（配合平滑滚动
             #   就是一条永不结束的动画链）。80ms 一次足够跟手，肉眼看不出来。
-            if getattr(self, "_log_follow", True):
-                self._see_log_end()
-            self.log_text.configure(state="disabled")
+            if not 批:
+                self.log_text.configure(state="disabled")
+                # see(END) + 全量重绘合并成 33ms 一次（主线程逐条 after 那条路也受益）
+                self._请求刷底()
             # 锁屏里那份日志是"第二个视图"：主日志照常记，这里同步追加一份
             lock_log = getattr(self, "_lock_log_text", None)
             if lock_log is not None:
                 try:
-                    lock_log.configure(state="normal")
+                    if not 批:
+                        lock_log.configure(state="normal")
                     lock_log.insert(tk.END, message + "\n", level)
                     # 行数上限：迁移时几百条日志刷进来，Text 越大重绘越贵（实测
                     # 1200 行时每条日志要 5.6ms），把锁屏那份掐在 400 行，成本就恒定
-                    try:
-                        总行 = int(lock_log.index("end-1c").split(".")[0])
-                        if 总行 > 400:
-                            lock_log.delete("1.0", "%d.0" % (总行 - 400))
-                    except Exception:
-                        pass
-                    lock_log.configure(state="disabled")
-                    lock_log.see(tk.END)
+                    if not 批:
+                        # 修剪与 see 都交给 _请求刷底 合并做（逐行做每条要 2ms）
+                        lock_log.configure(state="disabled")
                 except Exception:
                     self._lock_log_text = None
             # ⚠ 每行一个"淡入"after 链。迁移时一秒几百条日志 → 几百个并发动画 →
@@ -465,13 +555,15 @@ class LogMixin:
             # 每条都刷：节流会把几百个挂起的重绘攒成一大批，一次跑完更卡（试过，更糟）。
             # 现在改成"整批刷"：_ui_pump 批量执行后台排进来的日志时置 _批处理中，
             # 这一批跑完由泵统一 update_idletasks() 一次（不然几千条日志就是几千次重绘）。
-            if not getattr(self, "_批处理中", False):
-                self.root.update_idletasks()
-            # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
-            try:
-                self.log_text.event_generate("<<LogChanged>>")
-            except Exception:
-                pass
+            if not getattr(self, "_批处理中", False) and not 批:
+                self._请求刷底()
+            # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新。
+            # 批处理里逐行发没有意义（监听方每行都要重画一次），整批结束统一发一次。
+            if not 批:
+                try:
+                    self.log_text.event_generate("<<LogChanged>>")
+                except Exception:
+                    pass
 
         # 抑制连续完全相同的记录（避免"请勿频繁操作"等警告/重复信息刷屏）
         key = (level, message)

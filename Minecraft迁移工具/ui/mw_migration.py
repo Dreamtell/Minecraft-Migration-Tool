@@ -1101,11 +1101,19 @@ class MigrationMixin:
         超预算的一律留给下一轮：积压几秒的日志，好过窗口假死。
         """
         队列 = getattr(self, "_ui_calls", None)
-        if 队列 is not None:
+        # 队列空的时候**不能**开始批次：开始会置 _批处理中 = True，而没有条目时
+        # finally 里那句 `if 已处理:` 不会执行 —— 标志就一直挂着，之后主线程自己
+        # 逐条写日志（root.after(0, _log) 那条路）全被当成"批内"，不修剪、不跟随
+        # 到底部（实测：锁屏日志涨到 900 行还停在顶部）。
+        if 队列 is not None and not 队列.empty():
             起 = time.perf_counter()
             已处理 = 0
-            # 告诉 _log：这一批里别逐条 update_idletasks，整批完了统一刷一次
-            self._批处理中 = True
+            # 告诉日志：这一批里别逐条 configure / see / 修剪，整批完了统一收尾。
+            # 锁屏态实测过：2500 条日志逐条走这套，最长一次卡 357.7ms、30 秒排不完。
+            try:
+                self._日志批次开始()
+            except Exception:
+                self._批处理中 = True
             try:
                 while 已处理 < _UI_PUMP_MAX_ITEMS:
                     try:
@@ -1120,12 +1128,15 @@ class MigrationMixin:
                     if (time.perf_counter() - 起) * 1000.0 >= _UI_PUMP_BUDGET_MS:
                         break
             finally:
-                self._批处理中 = False
                 if 已处理:
                     try:
-                        self.root.update_idletasks()      # 整批只刷这一次
+                        self._日志批次结束()          # 修剪 + see + 恢复只读 + 刷一次
                     except Exception:
-                        pass
+                        self._批处理中 = False
+                        try:
+                            self.root.update_idletasks()
+                        except Exception:
+                            pass
         try:
             self._ui_pump_id = self.root.after(_UI_PUMP_MS, self._ui_pump)
         except Exception:
