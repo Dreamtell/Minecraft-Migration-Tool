@@ -23,6 +23,7 @@
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -156,7 +157,67 @@ _滑入ms = 260      # 170ms 太快，位移 372px 时一眼就是"啪"地出现
 _圆角 = 16
 
 
-_键色 = "#010203"        # 透明键色（和吐司同一套路）
+_键色 = "#010203"        # 透明键色（和吐司同一套路；Win10 那条路线才用）
+
+# ---------------------------------------------------------------- 圆角
+# Win11 的 DWM 自己会给窗口画**抗锯齿**圆角（DWMWA_WINDOW_CORNER_PREFERENCE）。
+# 以前这里是纯 SetWindowRgn 手工裁圆角：区域是 1-bit 的掩码，圆角只能一格一格
+# 切出来 —— 用户看到的就是"消息栏圆角化有锯齿"。能用 DWM 就把形状交给它，
+# 圆角是真的平滑；Win10 及更早没有这个效果，退回原来的裁区域路线。
+_DWM角档 = 2            # 2 = DWMWCP_ROUND；3 = ROUNDSMALL（更小的圆角）
+_圆角px_DWM = 8         # DWM 圆角大约 8px：面板图按它画，区域裁也按它，才不会一大一小
+
+
+def _探测DWM圆角():
+    """Win11（build ≥ 22000）才有窗口圆角；顺便试一下接口在不在。"""
+    try:
+        v = sys.getwindowsversion()
+        return int(getattr(v, "build", 0) or 0) >= 22000
+    except Exception:
+        return False
+
+
+_WIN11 = _探测DWM圆角()
+
+
+def _设DWM圆角(win, 档=None):
+    """让 DWM 给这个窗口画抗锯齿圆角；成功返回 True。
+
+    无边框窗也能吃这条（实测 overrideredirect + -alpha 的分层窗照样出圆角）。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        dwmapi = ctypes.windll.dwmapi
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        hwnd = user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
+        值 = ctypes.c_int(int(_DWM角档 if 档 is None else 档))
+        r = dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd), 33, ctypes.byref(值), ctypes.sizeof(值))
+        return r == 0
+    except Exception:
+        return False
+
+
+def _撤区域(win):
+    """撤掉 SetWindowRgn，把形状还给 DWM。
+
+    区域留着的话，DWM 画的圆角会被它按 1-bit 形状切掉 —— 又回到楼梯了。
+    展开动画期间仍然用区域（每帧一个完整圆角矩形），展开完就撤。
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
+        hwnd = user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
+        user32.SetWindowRgn(ctypes.c_void_p(hwnd), None, True)
+        return True
+    except Exception:
+        return False
 
 
 def _裁区域(win, 左, 卡宽, 高, 半径):
@@ -236,26 +297,32 @@ class _抽屉:
             return int(px(_宽)) + int(px(_边距)), int(px(_高上限)), 0, 0
         边距 = int(px(_边距))
         卡宽 = int(min(px(_宽), max(px(180), mw - 2 * 边距)))
-        宽 = 卡宽 + 边距                       # 窗口 = 卡片 + 右侧留白（留白透明）
+        # Win11：形状交给 DWM，窗口就**等于卡片**，不再用键色留白；
+        # 「悬浮」的观感改由窗口外的真实空隙来做（x 里那 10px）。
+        宽 = 卡宽 + (0 if _WIN11 else 边距)
         高 = int(min(px(_高上限), max(px(160), mh - 2 * 边距)))
         # 悬浮卡片：右侧和底部各留一个边距，不贴边。底部对齐（不是顶部）：
         # 铃铛在底部状态栏，卡片从它上面长出来才连得上；窗口很高时上方留白。
-        x = rx + mw - 宽
+        x = rx + mw - 卡宽 - 边距
         y = ry + mh - 高 - 边距
         return 宽, 高, int(x), int(y)
 
     def _卡宽(self):
         """卡片宽度 = 窗口宽度 - 右侧留白。"""
         try:
-            return max(2, int(self._目标[0]) - int(px(_边距)))
+            return max(2, int(self._目标[0]) - (0 if _WIN11 else int(px(_边距))))
         except Exception:
             return int(px(_宽))
+
+    def _半径(self):
+        """窗口圆角半径：Win11 跟 DWM 对齐（约 8px），否则用设计值 16 交给区域裁。"""
+        return int(px(_圆角px_DWM)) if _WIN11 else int(px(_圆角))
 
     def build(self):
         宽, 高, 目标x, 目标y = self._目标几何()
         装 = self.theme.get("card_bg") or ("#262626" if self.深 else "#ffffff")
         边 = self.theme.get("border") or ("#3c3c3c" if self.深 else "#d8d8d8")
-        半径 = int(px(_圆角))
+        半径 = self._半径()
         内缩 = 半径 + 2           # 内容必须整体缩进圆角里，否则方角会盖住圆弧
 
         win = tk.Toplevel(self.父窗)
@@ -271,13 +338,18 @@ class _抽屉:
         except Exception:
             pass
         win.overrideredirect(True)
-        # 圆角靠"键色 = 透明"实现：窗口四角是键色 → 真透明，露出下面的界面。
-        # （Tk 控件没有真透明，圆角只能这么做；和吐司是同一套思路。）
-        try:
-            win.attributes("-transparentcolor", _键色)
-            win.configure(bg=_键色)
-        except Exception:
+        if _WIN11:
+            # Win11：窗口就是卡片，形状交给 DWM —— 它画的圆角是真抗锯齿的。
+            # （以前四角靠键色透明 + SetWindowRgn 裁，那条边是 1-bit 的，必然是楼梯。）
             win.configure(bg=装)
+            self._dwm = _设DWM圆角(win)
+        else:
+            # Win10：没有 DWM 圆角，退回"键色 = 透明"那一套（圆角仍由区域裁）。
+            try:
+                win.attributes("-transparentcolor", _键色)
+                win.configure(bg=_键色)
+            except Exception:
+                win.configure(bg=装)
         win.withdraw()
         self.win = win
         # 窗口**固定在最终位置**，动画既不挪窗口也不挪内容：只改窗口区域
@@ -291,11 +363,12 @@ class _抽屉:
         self._左 = 宽            # 收拢初值：区域整体在卡片右侧之外 → 不可见
 
         # 内容容器钉死在 0：内容静止，动画期间不重排也不重画
-        容器 = tk.Frame(win, bg=_键色, bd=0, highlightthickness=0)
+        窗底 = 装 if _WIN11 else _键色
+        容器 = tk.Frame(win, bg=窗底, bd=0, highlightthickness=0)
         容器.place(x=0, y=0, width=卡宽, height=高)
         self._容器 = 容器
 
-        画 = tk.Canvas(容器, bg=_键色, highlightthickness=0, bd=0)
+        画 = tk.Canvas(容器, bg=窗底, highlightthickness=0, bd=0)
         画.place(x=0, y=0, width=卡宽, height=高)
         try:
             from PIL import ImageTk
@@ -602,7 +675,7 @@ class _抽屉:
             self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, y))
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
-            _裁区域(self.win, self._当前左(0), 卡宽, 高, int(px(_圆角)))
+            _裁区域(self.win, self._当前左(0), 卡宽, 高, self._半径())
         except Exception:
             pass
 
@@ -617,7 +690,7 @@ class _抽屉:
         # 不会先整块露一下再从右边长出来（那就是"闪一下"）
         self._左 = 宽
         try:
-            _裁区域(self.win, 宽, 卡宽, 高, int(px(_圆角)))
+            _裁区域(self.win, 宽, 卡宽, 高, self._半径())
         except Exception:
             pass
         try:
@@ -625,11 +698,14 @@ class _抽屉:
             self.win.lift()
         except Exception:
             pass
+        if _WIN11:
+            # deiconify 可能重建 HWND，窗口一换角偏好就没了 —— 这里补一次。
+            _设DWM圆角(self.win)
         # ⚠ 显示之后**立刻**再裁一次（不是延迟 80ms）：withdraw 状态的 Toplevel 被
         # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
         # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
         try:
-            _裁区域(self.win, self._左, 卡宽, 高, int(px(_圆角)))
+            _裁区域(self.win, self._左, 卡宽, 高, self._半径())
         except Exception:
             pass
         # 关键顺序：deiconify → 先让 Tk 把客户区**真 paint 一遍**（填键色）→ 再放开 alpha。
@@ -666,7 +742,7 @@ class _抽屉:
         圆角矩形，连展开时的前缘那条边也是。
         """
         卡宽, 高 = self._卡宽(), self._目标[1]
-        半径 = int(px(_圆角))
+        半径 = self._半径()
         t0 = time.perf_counter()
         try:
             anim.hold()
@@ -703,6 +779,14 @@ class _抽屉:
                     self._job = None
             else:
                 self._job = None
+                if _WIN11 and not 收:
+                    # 展开了：撤掉区域，圆角重新交给 DWM（留着会把 DWM 的圆角
+                    # 按 1-bit 形状切掉，又变回楼梯）。
+                    # ⚠ 必须在撤完**再下一次**属性：deiconify 会重建 HWND、
+                    # SetWindowRgn 之后 DWM 也可能丢掉角偏好，不下就会变成直角
+                    # （第一次就踩了：build 里设过，展开完还是方的）。
+                    _撤区域(self.win)
+                    _设DWM圆角(self.win)
                 try:
                     anim.release()
                 except Exception:
