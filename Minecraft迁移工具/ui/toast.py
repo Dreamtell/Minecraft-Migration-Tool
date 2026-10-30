@@ -40,6 +40,7 @@ def _u(v):
     """按界面缩放系数换算设计像素（px 已含 DPI，这里再乘内容比例）。"""
     return px(float(v) * _UI)
 from utils.layered import LayeredSurface
+from utils import piltext as _piltext
 
 _LEVELS = {
     "info":  ("i", "#4c9aff"),
@@ -52,57 +53,21 @@ _字体缓存 = {}
 
 
 def _字体(号):
-    """按字号取一个中文字体（缓存）。找不到就退回 PIL 内置位图字体。"""
-    if 号 in _字体缓存:
-        return _字体缓存[号]
-    形 = None
-    for 名 in (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc",
-               r"C:\Windows\Fonts\simhei.ttf"):
-        try:
-            形 = ImageFont.truetype(名, 号)
-            break
-        except Exception:
-            continue
-    if 形 is None:
-        try:
-            形 = ImageFont.load_default()
-        except Exception:
-            形 = None
-    _字体缓存[号] = 形
-    return 形
+    """正文那支字体（雅黑）。真正的逐字符挑字体在 utils/piltext 里。"""
+    return _piltext.主字体(号)
 
 
-_字体缓存 = {}
 _表情缓存 = {}
-
-# 表情符号的码位范围。微软雅黑里**没有 emoji 字形**，混在一起画会变成空白或豆腐块；
-# 这些字符要单独用 Segoe UI Emoji 画（而且要 embedded_color=True，否则是单色剪影）。
-_表情区段 = ((0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF))
-_表情单字 = {0x2139, 0x2328, 0x2705, 0x274C, 0x2764, 0x203C, 0xFE0F, 0x200D}
 
 
 def _是表情(ch):
-    cp = ord(ch)
-    if cp in _表情单字:
-        return True
-    for a, b in _表情区段:
-        if a <= cp <= b:
-            return True
-    return False
+    """这个字符是不是「优先当表情画」（只影响挑字体的顺序）。"""
+    return _piltext.是表情(ch)
 
 
 def _表情字体(号):
-    if 号 in _表情缓存:
-        return _表情缓存[号]
-    形 = None
-    for 名 in (r"C:\Windows\Fonts\seguiemj.ttf",):
-        try:
-            形 = ImageFont.truetype(名, 号)
-            break
-        except Exception:
-            continue
-    _表情缓存[号] = 形
-    return 形
+    """彩色表情那支（Segoe UI Emoji）。"""
+    return _piltext.表情字体(号)
 
 
 # 文案开头常自带一个和等级图标重复的符号（"⚠️ 警告：…"）。等级本来就由左侧图标 +
@@ -120,7 +85,7 @@ def _去级别符号(文本):
         变 = False
         for 符 in _级别符号:
             if 文本.startswith(符):
-                剩 = 文本[len(符):].lstrip(" \u3000\t")
+                剩 = 文本[len(符):].lstrip("　\t ")
                 if 剩:                      # 整条只有一个符号时留着，别画成空卡
                     文本 = 剩
                     变 = True
@@ -128,28 +93,14 @@ def _去级别符号(文本):
     return 文本
 
 
-def _分段(文本):
-    """把文本切成"表情段 / 文字段"，相邻同类合并。"""
-    段 = []
-    for ch in 文本:
-        e = _是表情(ch)
-        if 段 and 段[-1][1] == e:
-            段[-1][0].append(ch)
-        else:
-            段.append([[ch], e])
-    return [("".join(t), e) for t, e in 段]
+def _分段(文本, 号):
+    """按「该用哪支字体」切段：谁真有这个字形就用谁（见 utils/piltext）。"""
+    return _piltext.分段(文本, 号)
 
 
 def _量文本(文本, 号):
     """按字体实际测宽（表情和文字各用各的字体）。"""
-    宽 = 0.0
-    for t, e in _分段(文本):
-        形 = _表情字体(号) if e else _字体(号)
-        try:
-            宽 += 形.getlength(t) if 形 is not None else len(t) * 号
-        except Exception:
-            宽 += len(t) * 号
-    return 宽
+    return _piltext.量文本(文本, 号)
 
 
 def _截断(文本, 号, 最大宽):
@@ -169,28 +120,8 @@ def _截断(文本, 号, 最大宽):
 
 
 def _画文本(画, x, y, 文本, 字色, 号):
-    """逐段画：文字用雅黑、表情用 Segoe UI Emoji（带 embedded_color）。"""
-    for t, e in _分段(文本):
-        形 = _表情字体(号) if e else _字体(号)
-        if 形 is None:
-            continue
-        try:
-            if e:
-                画.text((x, y), t, font=形, fill=字色, anchor="lm",
-                        embedded_color=True)
-            else:
-                画.text((x, y), t, font=形, fill=字色, anchor="lm")
-        except Exception:
-            try:
-                画.text((x, y), t, font=形, fill=字色, anchor="lm")
-            except Exception:
-                pass
-        try:
-            x += 形.getlength(t)
-        except Exception:
-            x += len(t) * 号
-
-
+    """逐段画：雅黑 / Segoe UI Symbol（★ ☑ ⚙）/ 彩色 emoji，按字形挑。"""
+    return _piltext.画文本(画, x, y, 文本, 字色, 号)
 def _hex(v, 缺="#888888"):
     """'#rrggbb' → (r,g,b)。"""
     try:
