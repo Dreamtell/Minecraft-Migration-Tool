@@ -85,6 +85,12 @@ class MigrationGUI(
         self.world_name = tk.StringVar(value=self.config.get("world", "老子的世界"))
         self.dry_run = tk.BooleanVar(value=self.config.get("dry_run", True))
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
+        # 「开始迁移」按钮的翻转手感：crisp（干脆）/ standard（标准）/ heavy（沉）。
+        # 参数表在 ui/flip_button.py 的 PRESETS；设置 →「🎨 外观与启动」里能改。
+        self.start_btn_feel = tk.StringVar(
+            value=str(self.config.get("start_btn_feel", "standard") or "standard"))
+        if self.start_btn_feel.get() not in ("crisp", "standard", "heavy"):
+            self.start_btn_feel.set("standard")
         # 正式迁移前再确认一次（默认开；设置里可以关）
         self.confirm_migrate = tk.BooleanVar(value=self.config.get("confirm_migrate", True))
         # 关闭窗口时的行为：ask（每次问）/ tray（收进托盘）/ exit（直接退出）
@@ -498,6 +504,7 @@ class MigrationGUI(
             "world": self.world_name.get(),
             "dry_run": self.dry_run.get(),
             "overwrite": self.overwrite_mods.get(),
+            "start_btn_feel": self.start_btn_feel.get(),
             "confirm_migrate": self.confirm_migrate.get(),
             "theme": self.current_theme,
             # 界面语言（下次启动生效）。i18n 是"文案入口查表"，打包层不持有语言状态，

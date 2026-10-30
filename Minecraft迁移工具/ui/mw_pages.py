@@ -18,6 +18,8 @@ from utils.helpers import (
     LiquidProgress, RoundedTextArea, SegmentedControl, SmoothScroller, SwitchRow,
     bind_text_scroll, create_gradient_button, is_dark_theme, style_window,
 )
+# 「开始迁移」一个按钮换成 3D 翻转组件（视觉取自 特效2.py 原型）；其余按钮不动。
+from ui.flip_button import create_flip_button
 
 
 from utils import i18n as _i18n
@@ -679,13 +681,18 @@ class PagesMixin:
         btn_group = tk.Frame(self.opt_frame, bg=self.theme["bg"])
         btn_group.pack(side="right")
 
-        self.start_btn = create_gradient_button(
+        # 只有「开始迁移」用翻转按钮：点下去立刻翻到背面（⏳ 迁移中...）再执行
+        # command，迁移结束由 mw_migration 翻回正面。dry_run 开着时正面是黄底
+        # 「🚀 模拟运行」，关掉恢复绿色。
+        self.start_btn = create_flip_button(
             parent=btn_group,
             text="🚀 开始迁移",
             command=self.start_migration,
             colors=("#00c853", "#00e676"),
             height=38,
-            font=("微软雅黑", 12, "bold")
+            font=("微软雅黑", 12, "bold"),
+            feel=self.start_btn_feel.get(),
+            dry_run=bool(self.dry_run.get()),
         )
         self.start_btn.pack(side="right", padx=5)
         self._stage()

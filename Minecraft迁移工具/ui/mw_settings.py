@@ -253,6 +253,17 @@ class SettingsMixin:
              (("light", "浅色"), ("dark", "深色")),
              lambda v: self.choose_theme(v), 名="theme")
 
+        # 「开始迁移」按钮的翻转手感（参数在 ui/flip_button.py 的 PRESETS）。
+        # 换完立刻生效（不用重启），并且当场写进配置。
+        self.settings_feel_var = tk.StringVar(value=self.start_btn_feel.get())
+        row_feel = tk.Frame(box1, bg=self.theme["bg"])
+        row_feel.pack(fill="x", pady=(10, 0))
+        tk.Label(row_feel, text="开始迁移按钮手感：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        分段(row_feel, self.settings_feel_var,
+             (("crisp", "干脆"), ("standard", "标准"), ("heavy", "沉")),
+             lambda v: self._set_start_btn_feel(v), 名="btnfeel")
+
         # 界面语言（中文 / English）。文案是**启动时定下来**的（见 utils/i18n.py），
         # 这里只负责记下选择，并提示重启 —— 界面是一次性建好的，运行中换不干净。
         self.settings_lang_var = tk.StringVar(value=i18n.language())
@@ -1330,9 +1341,32 @@ class SettingsMixin:
                        i18n.tr("开启" if self.msg_click_outside_close.get() else "关闭")),
                    level="ok", key="msg_outside")
 
+    def _set_start_btn_feel(self, 值):
+        """「开始迁移」按钮的翻转手感：立即生效 + 立刻存盘（下次启动还是它）。"""
+        值 = str(值 or "").lower()
+        if 值 not in ("crisp", "standard", "heavy"):
+            值 = "standard"
+        self.start_btn_feel.set(值)
+        btn = getattr(self, "start_btn", None)
+        换 = getattr(btn, "set_feel", None)
+        if 换 is not None:
+            try:
+                换(值)
+            except Exception:
+                pass
+        self.save_config()
+
     def _on_dry_run_switch(self):
         """开关只翻了自己的状态，这里同步到业务变量再照旧保存配置。"""
         self.dry_run.set(self.dry_run_sw.get())
+        # 正面配色/文案跟着 dry_run 走：绿「开始迁移」↔ 黄「模拟运行」，立即重绘
+        btn = getattr(self, "start_btn", None)
+        刷新 = getattr(btn, "set_dry_run", None)
+        if 刷新 is not None:
+            try:
+                刷新(self.dry_run.get())
+            except Exception:
+                pass
         self.save_config()
         # 这两个开关以前是**完全静默**的（既没日志也没吐司），用户点了不知道生效没。
         开 = bool(self.dry_run.get())

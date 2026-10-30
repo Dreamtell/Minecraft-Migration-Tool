@@ -1171,6 +1171,21 @@ class MigrationMixin:
         self._file_task = None
         self._refresh_busy_state()
 
+    def _flip_start_btn(self, front=True):
+        """把「开始迁移」按钮翻回正面（front=False 则翻到背面）。
+
+        组件见 ui/flip_button.py。旧按钮（helpers.create_gradient_button）没有这
+        两个方法 —— 翻转组件构造失败时会降级回旧按钮，所以这里全程 getattr 兜着。
+        """
+        btn = getattr(self, "start_btn", None)
+        方法 = getattr(btn, "flip_to_front" if front else "flip_to_back", None)
+        if 方法 is None:
+            return
+        try:
+            方法()
+        except Exception:
+            pass
+
     def start_migration(self):
         """开始迁移（按钮入口）。
 
@@ -1195,6 +1210,7 @@ class MigrationMixin:
             self._starting = False
             if not self._migration_running:
                 # 提前返回（校验没过/磁盘不足/备份失败…）：把按钮恢复
+                self._flip_start_btn()      # 点击时它已经自己翻到背面了，这里翻回来
                 self._refresh_busy_state()
 
     def _start_migration_locked(self):
@@ -1486,6 +1502,8 @@ class MigrationMixin:
             # 这里是**迁移线程**，不能直接碰 Tk —— 丢给主线程的 UI 泵执行。
             self._ui_post(self._finish_migration_lock)
             self._ui_post(self._refresh_busy_state)
+            # 迁移结束（成功/失败/取消都走这个 finally）：把「开始迁移」翻回正面
+            self._ui_post(self._flip_start_btn)
             # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
             if getattr(self, "_silent_notify_on_finish", False):
                 self._silent_notify_on_finish = False

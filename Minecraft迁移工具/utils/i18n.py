@@ -109,6 +109,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "界面语言": "Language",
     "界面语言：": "Language:",
     "主题：": "Theme:",
+    # 「开始迁移」按钮翻转手感（设置 →「🎨 外观与启动」）
+    "开始迁移按钮手感：": "Start button feel:",
+    "干脆": "Crisp",
+    "标准": "Standard",
+    "沉": "Heavy",
     "浅色": "Light",
     "深色": "Dark",
     "语言在下次启动程序时生效。": "Takes effect the next time you start the app.",
@@ -141,6 +146,10 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
 
     # ---------- 主界面：自绘按钮（文字画在 Canvas 上，靠 get_text() 收集） ----------
     "🚀 开始迁移": "🚀 Start migration",
+    # 「开始迁移」按钮翻面后的文案（见 ui/flip_button.py）
+    "🚀 模拟运行": "🚀 Dry run",
+    "⏳ 迁移中...": "⏳ Migrating...",
+    "⏳ 模拟中...": "⏳ Simulating...",
     "⚠️ 回滚": "⚠️ Roll back",
     "📋 查看历史": "📋 History",
     "📂 放大查看": "📂 Big view",
