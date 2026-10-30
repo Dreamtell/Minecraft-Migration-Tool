@@ -61,6 +61,8 @@ from utils.i18n import tr, trf                                      # noqa: E402
 # 滚轮缓动的帧节奏：跟随显示器刷新率（本机 4ms），动画期间把系统定时器精度提到 1ms。
 # 只 import 模块、不 from ... import frame_ms：测试里要 monkeypatch 它做 12ms/4ms 对照。
 from utils import anim                                              # noqa: E402
+# 页签：设置窗口那套圆角药丸的 Qt 版（两边长得一样，才是同一套控件）
+from ui.qt_tabs import PillTabs                                      # noqa: E402
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
 CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
@@ -663,6 +665,63 @@ def _style_view_palette(view, th: dict):
     view.setPalette(pal)
 
 
+def _边的颜色(th):
+    """描边色：主题里没有 border 键，从底色往字色混 20% 推一个（深浅都合适）。"""
+    bg = QtGui.QColor(th.get("bg") or "#2e2e2e")
+    fg = QtGui.QColor(th.get("fg") or "#ffffff")
+    if not bg.isValid():
+        bg = QtGui.QColor("#2e2e2e")
+    if not fg.isValid():
+        fg = QtGui.QColor("#ffffff")
+    c = QtGui.QColor(int(bg.red() + (fg.red() - bg.red()) * 0.20),
+                     int(bg.green() + (fg.green() - bg.green()) * 0.20),
+                     int(bg.blue() + (fg.blue() - bg.blue()) * 0.20))
+    return c.name()
+
+
+def _输入底色(th):
+    """输入框/下拉框的底色：主题里有 entry_bg 就用它（浅色是 #ffffff，深色 #3e3e3e）。"""
+    return th.get("entry_bg") or th.get("card_bg") or "#2a2a2a"
+
+
+def _entry_qss(th):
+    """搜索框：圆角、留内边距、无 3D 边框（Qt 默认那种立体边太旧）。"""
+    return (
+        "QLineEdit {"
+        "  background: %s; color: %s;"
+        "  border: 1px solid %s; border-radius: 8px;"
+        "  padding-left: 12px; padding-right: 10px;"
+        "  selection-background-color: %s;"
+        "}"
+        "QLineEdit:focus { border: 1px solid %s; }"
+    ) % (_输入底色(th),
+         th.get("fg", "#eaeaea"),
+         _边的颜色(th),
+         th.get("card_sel_bg", "#d4e6f8"),
+         th.get("card_sel_bar") or th.get("accent_bg", "#2f7fd1"))
+
+
+def _combo_qss(th):
+    """下拉框：和搜索框同一套圆角 / 边框，别一个圆的一个方的一个立体的。"""
+    return (
+        "QComboBox {"
+        "  background: %s; color: %s;"
+        "  border: 1px solid %s; border-radius: 8px;"
+        "  padding: 2px 10px;"
+        "}"
+        "QComboBox:hover { border: 1px solid %s; }"
+        "QComboBox QAbstractItemView {"
+        "  background: %s; color: %s; outline: 0;"
+        "  selection-background-color: %s;"
+        "}"
+    ) % (_输入底色(th),
+         th.get("fg", "#eaeaea"),
+         _边的颜色(th),
+         th.get("card_sel_bar") or th.get("accent_bg", "#2f7fd1"),
+         _输入底色(th), th.get("fg", "#eaeaea"),
+         th.get("card_sel_bg", "#d4e6f8"))
+
+
 def _header_qss(th: dict) -> str:
     return ("QHeaderView::section{background:%s;color:%s;border:none;"
             "border-right:1px solid %s;padding:4px 6px;}"
@@ -2316,24 +2375,31 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(8)
 
-        head = QtWidgets.QLabel(tr("🌐 联网搜索（Modrinth + CurseForge）· %s") % title)
+        head = QtWidgets.QLabel(tr("🌐 联网搜索"))
         f = head.font()
-        f.setPointSize(11)
+        f.setPointSize(14)
         f.setBold(True)
         head.setFont(f)
-        head.setStyleSheet("color:%s;" % th.get("fg"))
+        head.setStyleSheet("color:%s; background:transparent;" % th.get("fg"))
         lay.addWidget(head)
+        # 副标题：原来那行「联网搜索（Modrinth + CurseForge）· 模组名」又长又挤，
+        # 12 号字里塞了三件事；拆成"标题说干什么、副标题说搜的是谁"。
+        self.sub = QtWidgets.QLabel(tr("Modrinth + CurseForge · 正在搜：%s") % title)
+        self.sub.setStyleSheet("color:%s; background:transparent;" % th.get("muted_fg"))
+        lay.addWidget(self.sub)
 
         row = QtWidgets.QHBoxLayout()
-        row.setSpacing(6)
+        row.setSpacing(8)
         self.entry = QtWidgets.QLineEdit(query)
-        self.entry.setPlaceholderText(tr("搜索词（模组名 / Mod ID）"))
-        self.entry.setFixedHeight(30)
+        # 占位文字直接顶替原来那个"搜索词:"标签 —— 少一个控件，输入框还能宽 60 像素
+        self.entry.setPlaceholderText(tr("搜模组名、Mod ID，或者 jar 文件名"))
+        self.entry.setFixedHeight(34)
         self.entry.setClearButtonEnabled(True)
         self.entry.setMinimumWidth(320)
+        self.entry.setStyleSheet(_entry_qss(th))
         self.btn = AnimButton(tr("🔍 联网搜索"), "#00bcd4", "#0097a7", th)
-        self.btn.setFixedWidth(120)
-        row.addWidget(QtWidgets.QLabel(tr("搜索词:")))
+        self.btn.setFixedWidth(132)
+        self.btn.setFixedHeight(34)
         row.addWidget(self.entry, 1)
         row.addWidget(self.btn)
         lay.addLayout(row)
@@ -2344,6 +2410,16 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                                        "双击一行打开项目主页。")
         self.status.setStyleSheet("color:%s;" % th.get("muted_fg"))
         lay.addWidget(self.status)
+
+        # 表格 / 卡片：页签样式和设置窗口同一套（圆角药丸 + 选中块滑过去）
+        self.tabs = PillTabs(th, self)
+        self.tabs.add(tr("📋 表格"))
+        self.tabs.add(tr("🗂 卡片"))
+        _tab_row = QtWidgets.QHBoxLayout()
+        _tab_row.setContentsMargins(0, 2, 0, 0)
+        _tab_row.addWidget(self.tabs)
+        _tab_row.addStretch(1)
+        lay.addLayout(_tab_row)
 
         self.model = SearchModel(th, local_version, self)
         self.table = SmoothTable()
@@ -2438,14 +2514,17 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.btn_dl = AnimButton(tr("⬇️ 打开下载页"), "#3f8ae0", "#2f6fd0", th)
         self.btn_copy = AnimButton(tr("📋 复制下载链接"), "#6b7280", "#4b5563", th)
         self.btn_close = AnimButton(tr("关闭"), "#e53935", "#c62828", th)
-        for b in (self.btn_page, self.btn_dl, self.btn_copy, self.btn_close):
+        for b in (self.btn_page, self.btn_dl, self.btn_copy):
+            b.setFixedHeight(32)
             act.addWidget(b)
         act.addStretch(1)
+        self.btn_close.setFixedHeight(32)
+        act.addWidget(self.btn_close)
         lay.addLayout(act)
 
         self.btn.clicked.connect(self.search)
         self.entry.returnPressed.connect(self.search)
-        self.btn_view.clicked.connect(self._toggle_view)
+        self.tabs.changed.connect(self._on_tab)
         self.btn_page.clicked.connect(self._open_project_page)
         self.btn_dl.clicked.connect(self._open_download_page)
         self.btn_copy.clicked.connect(self._copy_download)
@@ -2490,6 +2569,9 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             self.cb_loader.addItem(显示, 值)
         探测_loader = str(self.env.get("loader") or "").strip()
         self.cb_loader.setCurrentIndex(max(0, self.cb_loader.findData(探测_loader)))
+        for _cb in (self.cb_mc, self.cb_loader):
+            _cb.setFixedHeight(30)
+            _cb.setStyleSheet(_combo_qss(th))
         行.addWidget(self.cb_loader)
         行.addStretch(1)
 
@@ -2500,11 +2582,9 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         else:
             self.lbl_filter.setText(tr("没认出你的实例版本，可手动选"))
         行.addWidget(self.lbl_filter)
-        # 表格 / 卡片切换放这一行最右（和"放大查看""差异窗口"那颗按钮同一套语义）
-        self.btn_view = AnimButton(tr("🗂 卡片视图"), "#607d8b", "#90a4ae", th)
-        self.btn_view.setFixedWidth(120)
-        行.addWidget(self.btn_view)
-        # 本工具的网络用量折线图（只统计我们自己的请求，数据在 utils.netmeter 里）
+        # 表格 / 卡片改成页签（放在结果区正上方，和设置窗口同一套药丸），
+        # 这一行只留过滤条件和用量图。
+        # 本工具的网络用量折线图（只统计我们自己的请求，数据在 utils/netmeter 里）
         self.btn_net = AnimButton(tr("📈 用量"), "#8e6bd8", "#6f4fbd", th)
         self.btn_net.setFixedWidth(84)
         self.btn_net.setToolTip(tr("本工具的网络用量（最近 60 秒折线图）"))
@@ -2599,11 +2679,16 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         布局.addLayout(底)
         dlg.exec()
 
-    def _toggle_view(self):
-        """表格 ↔ 卡片（和放大查看/差异窗口同一套按钮语义）。"""
-        to_cards = self.stack.currentIndex() == 0
+    def _on_tab(self, idx):
+        """页签切换：表格 ↔ 卡片。页签自己会滑动并高亮，这里只管换页。"""
+        idx = int(idx)
+        # 程序里别处也可能直接调这个函数换页（测试、快捷键），
+        # 这时把页签的高亮跟上，免得"页面换了、页签还停在原来那个"。
+        # set_current 会再发一次 changed，所以先比对再调，不会递归。
+        if self.tabs.current() != idx:
+            self.tabs.set_current(idx, animate=False)
+        to_cards = idx == 1
         self.stack.setCurrentIndex(1 if to_cards else 0)
-        self.btn_view.setText(tr("📋 表格视图") if to_cards else tr("🗂 卡片视图"))
         if to_cards:
             # 把表格当前的选中行带过去（卡片没有 Qt 选中态，用 sel_t 自己画）
             idx = self.table.currentIndex()

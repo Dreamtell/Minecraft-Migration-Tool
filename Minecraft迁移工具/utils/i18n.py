@@ -517,6 +517,12 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "没有可用版本": "No usable version",
     "🆔 项目ID": "🆔 Project ID",
     "🌐 联网搜索": "🌐 Online search",
+    "Modrinth + CurseForge · 正在搜：%s":
+        "Modrinth + CurseForge · searching for %s",
+    "搜模组名、Mod ID，或者 jar 文件名":
+        "Search a mod name, mod ID, or jar file name",
+    "📋 表格": "📋 Table",
+    "🗂 卡片": "🗂 Cards",
     "💾 大小KB": "💾 Size KB",
     "📁 完整路径": "📁 Full path",
     "🔄 全选更新": "🔄 Select all updated",
