@@ -342,6 +342,24 @@ class _抽屉:
         # 以前这里只肯给 10px 的缝，结果就是「没有打开动画」。
         return max(1, int(卡宽))
 
+    def _可露右缘(self):
+        """卡片最多能露到哪（屏幕坐标）：主界面右缘往里收 6px，且不超过屏幕。
+
+        收这 6px 是因为主界面自己那圈边框有 1~2px 宽，卡片边缘正好压在边框上时
+        看着就像"从边框里冒出来"。宁可早一点被切掉，也不要贴着边框切。
+        另外再跟屏幕右缘取小：主界面最大化时两者相等，万一有别的窗口盖住边缘，
+        也不会露出到屏幕外。
+        """
+        try:
+            父右 = int(self.父窗.winfo_rootx()) + int(self.父窗.winfo_width())
+        except Exception:
+            父右 = 10 ** 6
+        try:
+            屏右 = int(self.win.winfo_screenwidth())
+        except Exception:
+            屏右 = 10 ** 6
+        return min(父右, 屏右) - 6
+
     def _卡宽(self):
         """卡片宽度 = 窗口宽度 - 右侧留白。"""
         try:
@@ -726,8 +744,7 @@ class _抽屉:
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
             if _WIN11:
-                父右 = self.父窗.winfo_rootx() + self.父窗.winfo_width()
-                _裁可见(self.win, int(父右) - (x + 左), 高)
+                _裁可见(self.win, int(self._可露右缘()) - (x + 左), 高)
             else:
                 _裁区域(self.win, 左, 卡宽, 高, self._半径())
         except Exception:
@@ -849,7 +866,7 @@ class _抽屉:
                         # 先裁再挪：区域是"窗口坐标"，和位置无关，所以可以先按
                         # 目标位置算出可见宽度。反过来的话，挪动那一帧窗口比区域
                         # 新，主界面右缘外会漏出一条 19px 宽的卡片边（实测抓到过）。
-                        父右 = self.父窗.winfo_rootx() + self.父窗.winfo_width()
+                        父右 = self._可露右缘()
                         _裁可见(self.win, int(父右) - (目标x + 左), 高)
                         self.win.geometry("%dx%d+%d+%d"
                                           % (self._目标[0], 高, 目标x + 左,
