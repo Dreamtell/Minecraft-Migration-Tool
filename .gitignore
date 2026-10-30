@@ -29,3 +29,8 @@ desktop.ini
 
 # 本轮排查用的临时脚本与截图（真建界面、真发鼠标事件那批）
 /_dctest/
+# 早前图标/配色调试的产物（p_*.png 是打包图标候选的预览图，e2.txt 是空文件）
+/_probe_shots/
+/p_*.png
+/e2.txt
+/tools/diag_icon.py
