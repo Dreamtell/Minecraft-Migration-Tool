@@ -396,7 +396,12 @@ class _抽屉:
             if not 几:
                 return False
             左 = int(左物理)
-            可见宽 = max(0, min(int(几["宽"]), int(几["父右"]) - 6 - 左))
+            # 裁切线落在**卡片落位后的右缘**（父右 - 留白）上，不是主界面边框上：
+            # 贴着边框切的话，动画期间看着就是卡片"从边框里冒出来"，用户会说
+            # "跑出窗口边框"（实测用户截图里就是这样）。落在落位右缘，看起来才像
+            # 卡片从自己该在的位置后面被推出来。
+            可见宽 = max(0, min(int(几["宽"]),
+                            int(几["父右"]) - int(px(_边距)) - 左))
             user32.SetWindowPos(wintypes.HWND(几["hwnd"]), None, 左, 几["y"],
                                 0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE|NOZORDER|NOACTIVATE
             区域 = gdi32.CreateRectRgn(0, 0, 可见宽, 几["高"] + 1)
