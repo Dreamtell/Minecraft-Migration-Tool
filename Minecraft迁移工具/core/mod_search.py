@@ -185,7 +185,10 @@ _VER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)+(?:[-_]?(?:pre|beta|alpha|rc|snapshot)
                            re.I)
 # "1.20" / "1.20.1" 这种几乎一定是 **Minecraft 版本**，不是模组版本。
 # 所以挑版本号时要把它排除掉（"AdvancementPlaques-1.20.1-2.2.8.jar" 里第一个匹配是 1.20.1）。
-_MC_VER_ONLY = re.compile(r"^1\.\d{1,2}(?:\.\d{1,2})?$")
+# 小版本只认 7~21：MC 从 1.7 到 1.21（含 1.7.10 / 1.12.2 这种补丁号）。
+# 放开成 \d{1,2} 会把模组版本 1.4.12（"applestat-1.4.12bfabric1.20.1.jar"）
+# 也当成 MC 版本排除掉，最后反而把 MC 版本 1.20.1 当成了模组版本。
+_MC_VER_ONLY = re.compile(r"^1\.(?:[7-9]|1\d|2[01])(?:\.\d{1,2})?$")
 
 
 def _pick_version(s):
@@ -202,7 +205,15 @@ def _pick_version(s):
     for c in reversed(候选):
         if not _MC_VER_ONLY.match(c):
             return c
-    return 候选[-1]
+    # 全都被判成"像 MC 版本"了。两种真实情况要分开：
+    #   · 只有一段（"AppleStats … 1.20.1" 这种 displayName）→ 那一段其实就是 MC 版本，
+    #     认不出模组版本，返回空让界面留白（以前退化成 候选[-1]，界面上就把
+    #     "1.20.1" 当成这个模组的最新版本，比空着更误导人）；
+    #   · 有两段以上（"FTBQuestPlaques-1.20.1-1.0.2.jar"）→ 规矩还是取最后一段，
+    #     因为模组版本本来就可能长成 1.0.2 这种和 MC 版本撞脸的样子。
+    if len(候选) >= 2:
+        return 候选[-1]
+    return ""
 
 
 def normalize_online_version(v):
@@ -230,6 +241,9 @@ def normalize_online_version(v):
         m = _pick_version(s)
         if m:
             return m
+        # 认不出模组版本：返回空，让界面那一格留白。绝不能把整串长名字
+        # （"AppleStats :timmer+ AppleSkin+ …"）当版本号显示出去。
+        return ""
     return s
 
 
@@ -431,13 +445,14 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
         # 顺带记流量（上行不含 key 本身：只按头名字长度算，值不参与统计）
         from utils import netmeter
         netmeter.add_request()
-        netmeter.add_sent(len(url) + sum(len(kk) + len(str(vv))
-                                        for kk, vv in req.headers.items()
-                                        if kk.lower() != "x-api-key"))
+        上行 = len(url) + sum(len(kk) + len(str(vv))
+                             for kk, vv in req.headers.items()
+                             if kk.lower() != "x-api-key")
+        netmeter.add_sent(上行)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             原始 = resp.read()
         netmeter.add_recv(len(原始))
-        netmeter.add_event(上, len(原始))
+        netmeter.add_event(上行, len(原始))
         return json.loads(原始.decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -500,7 +515,11 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
     def _解析(data):
         结果 = []
         for m in (data.get("data") or []):
-            slug = str((m.get("links") or {}).get("slug") or "").strip()
+            # slug 是接口返回的**顶层字段**；links 里那个只有少数项目才带。以前只看
+            # links，结果几乎全是空、退化成一串数字 id —— 界面上文件名那列显示
+            # "248787" 这种号码，拼出来的项目页 .../mc-mods/248787 还会 404。
+            slug = str(m.get("slug")
+                       or (m.get("links") or {}).get("slug") or "").strip()
             作者 = (m.get("authors") or [{}])[0].get("name", "")
             结果.append({
                 "title": m.get("name", ""),
