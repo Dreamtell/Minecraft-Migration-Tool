@@ -960,6 +960,10 @@ class FlipButton(tk.Canvas):
         except Exception:
             interval = max(1, min(_FRAME_MS, spacing))
         self._animating = True
+        # 翻面用的是常色帧，所以这里把悬停亮度归零：否则「点一下开始 → 取消 → 翻回正面」
+        # 时 _hv 还是点之前的 1.0，第一帧就是满亮的高亮面，看着像"啪一下亮了"。
+        # 归零之后翻回正面会从 0 开始一格格涨上去（25 档，约 170ms）。
+        self._hv = 0.0
         self._hold_hr()          # 不 raise 定时器精度，after(16) 实测只有 42fps
         self._anim_target = direction
         self.itemconfigure(self._txt_id, state="hidden")
