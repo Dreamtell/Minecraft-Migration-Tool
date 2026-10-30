@@ -312,6 +312,14 @@ class _抽屉:
         y = ry + mh - 高 - 边距
         return 宽, 高, int(x), int(y)
 
+    def _可滑距离(self, 目标x, 卡宽):
+        """窗口还能往右挪多少而不跑出主界面（抽屉离右边框本来就有 _边距 的间隙）。"""
+        try:
+            父右 = int(self.父窗.winfo_rootx()) + int(self.父窗.winfo_width())
+            return max(0, min(int(卡宽), 父右 - (int(目标x) + int(卡宽))))
+        except Exception:
+            return 0
+
     def _卡宽(self):
         """卡片宽度 = 窗口宽度 - 右侧留白。"""
         try:
@@ -388,8 +396,14 @@ class _抽屉:
         内.place(x=内缩, y=内缩, width=卡宽 - 2 * 内缩, height=高 - 2 * 内缩)
         self._内 = 内
         self._内缩 = 内缩
-        # 展开/收回时内容横着飘的距离：不能超过内缩留白，否则会被窗口边缘切掉。
-        self._漂移 = max(0, min(int(px(14)), 内缩 + 4))
+        # 展开/收回时的位移分两半：
+        #   ① 整个窗口往右挪 —— 这才是真"滑进来"，但只许在**主界面内部**滑，
+        #      不许跑到窗口外面（用户报过"收回动画都跑出窗口边框了"）。抽屉本身
+        #      离右边框有 _边距 的间隙，所以窗口能滑的距离就是那点间隙；
+        #   ② 挪不动的那部分，让内容横着飘补上，保证位移量足够看得出来。
+        self._漂移 = max(0, min(int(px(26)), 内缩 + 20))
+        self._滑 = self._可滑距离(目标x, 卡宽)
+        self._漂 = max(0, self._漂移 - self._滑)
 
         # 顶栏：标题 + 条数徽标 + 关闭（原来还挂一行灰色副标题，把标题区压成三层，
         # 视觉上很挤；提示文字挪到底部做脚注）
@@ -681,7 +695,12 @@ class _抽屉:
                 return
             宽, 高, x, y = self._目标几何()
             self._目标 = (宽, 高, x, y)
-            偏移 = 0          # Win11 下动画不挪窗口，见 _animate 里的注释
+            # 跟着主窗动的时候也要保持在"动画当前进度"对应的位置上，
+            # 否则拖窗口会看到卡片先跳回终点、动画一结束又跳回去。
+            self._滑 = self._可滑距离(x, self._卡宽())
+            self._漂 = max(0, self._漂移 - self._滑)
+            比 = self._当前左(0) / float(max(1, self._目标[0]))
+            偏移 = int(round(self._滑 * 比)) if _WIN11 else 0
             self.win.geometry("%dx%d+%d+%d" % (宽, 高, x + 偏移, y))
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
@@ -700,9 +719,17 @@ class _抽屉:
         # 显示之前把区域收成"零宽"：deiconify 渲的第一帧只能是空的，
         # 不会先整块露一下再从右边长出来（那就是"闪一下"）
         self._左 = 宽
-        # Win11：既不挪窗口也不裁区域 —— 窗口就是卡片，形状和圆角全交给 DWM。
-        # （挪窗口在窗口最大化时会跑到屏幕外：实测"打开动画没了、收回跑出边框"；
-        #  裁区域又会留一条没抗锯齿的硬边。两条都不走。）
+        # Win11：不裁区域（那条边没有抗锯齿，就是"边框立在那"），改成挪窗口。
+        # 起点只能摆到"屏幕右缘还容得下整张卡"的地方 —— 再往右就被屏幕切掉，
+        # 那正是上一版"打开动画没了、收回跑出边框"的原因。滑不动的距离由
+        # 内容轻飘补（见 _animate）。
+        if _WIN11:
+            try:
+                self.win.geometry("%dx%d+%d+%d"
+                                  % (宽, 高, self._目标[2] + int(self._滑),
+                                     self._目标[3]))
+            except Exception:
+                pass
         if not _WIN11:
             try:
                 _裁区域(self.win, 宽, 卡宽, 高, self._半径())
@@ -790,8 +817,16 @@ class _抽屉:
                     # 飘一点点，卡片四条边从头到尾一动不动，靠 alpha 撑起"从右侧
                     # 进来"的观感。
                     总 = max(1, max(abs(起), abs(终)))
-                    漂 = int(round(self._漂移 * (float(左) / float(总))))
-                    self._移内容(漂)
+                    比 = float(左) / float(总)
+                    滑 = int(round(self._滑 * 比))
+                    if 滑:
+                        try:
+                            self.win.geometry("%dx%d+%d+%d"
+                                              % (self._目标[0], 高, 目标x + 滑,
+                                                 self._目标[3]))
+                        except Exception:
+                            pass
+                    self._移内容(int(round(getattr(self, "_漂", 0) * 比)))
                 else:
                     try:
                         _裁区域(self.win, 左, 卡宽, 高, 半径)
@@ -820,6 +855,12 @@ class _抽屉:
                 self._job = None
                 if _WIN11:
                     self._移内容(0)
+                    try:
+                        self.win.geometry("%dx%d+%d+%d"
+                                          % (self._目标[0], self._目标[1],
+                                             目标x, self._目标[3]))
+                    except Exception:
+                        pass
                 if _WIN11 and not 收:
                     # 展开了：撤掉区域，圆角重新交给 DWM（留着会把 DWM 的圆角
                     # 按 1-bit 形状切掉，又变回楼梯）。
