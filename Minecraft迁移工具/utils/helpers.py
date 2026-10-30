@@ -2496,6 +2496,28 @@ def get_icon_path():
     # 4. 都没找到，返回 None
     return None
 
+def show_window(win):
+    """把「先藏起来构建」的窗口放出来：update_idletasks → deiconify → lift。
+
+    Tk 的 Toplevel 一创建就是可见的。如果建完内容、算完位置再改 geometry，
+    用户会先看到它出现在默认位置（左上/层叠），然后**跳到**中间 —— 这就是
+    「窗口弹出居中有过渡异常」。正确顺序是：withdraw → 建内容 → 算位置 → show。
+    窗口本身要自己先 withdraw()，这里只负责显示那一步。
+    """
+    try:
+        win.update_idletasks()
+    except Exception:
+        pass
+    try:
+        win.deiconify()
+    except Exception:
+        pass
+    try:
+        win.lift()
+    except Exception:
+        pass
+
+
 def set_window_icon(window):
     icon_path = get_icon_path()
     if icon_path:

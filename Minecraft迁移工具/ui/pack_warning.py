@@ -12,7 +12,8 @@ Frame / Label 刷成主题底色，红色警示条会被刷没。这里挂 _skip
 import tkinter as tk
 
 from utils.dpi import px
-from utils.helpers import create_gradient_button, is_dark_theme, set_window_icon
+from utils.helpers import (create_gradient_button, is_dark_theme,
+                           set_window_icon, show_window)
 
 标题 = "整合包更新提醒"
 
@@ -180,6 +181,9 @@ class PackWarning(tk.Frame):
         坏 = self._配色()
         th = self.theme
         窗 = tk.Toplevel(self.应用根)
+        # 先藏起来：内容建完、位置算好再显示。不藏的话会先出现在默认位置
+        # 再跳到中间（用户报「窗口弹出居中有过渡异常」）。
+        窗.withdraw()
         窗.title(标题)
         窗.configure(bg=th.get("bg", "#ffffff"))
         # 不设图标的话这个窗口显示的是 Tk 默认的羽毛图标（用户报「ico 异常」）；
@@ -243,6 +247,7 @@ class PackWarning(tk.Frame):
             窗.geometry("+%d+%d" % (rx + max(0, (rw - w) // 2), ry + max(0, (rh - h) // 3)))
         except Exception:
             pass
+        show_window(窗)
         try:
             窗.grab_set()
             窗.focus_force()
