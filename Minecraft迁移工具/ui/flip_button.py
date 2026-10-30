@@ -53,7 +53,13 @@ _PIL_OK = bool(getattr(_h, "_PIL_OK", False) and _Image is not None
 
 # ---------------------------------------------------------------- 视觉常量（原型口径）
 _RADIUS = 8             # 圆角：见模块说明（原型 12/96 高，这里 38 高，取按钮族既定的 8）
-_ACCENT_W = 4           # 左侧竖条宽度（原型 fillRect(0,0,4,h)）
+_ACCENT_W = 3.0         # 左侧竖条宽度（原型 fillRect(0,0,4,h)，贴边满高；见下）
+# 竖条**不贴边**：原型按钮高 96，4px 只占 4%，贴边满高也看不出来；这里高 38，4px 占
+# 10.5%，而静止态 hv=0 时竖条颜色 = lerp(edge, accent, 0) = edge = 描边色，于是左边读作
+# 「4px 粗描边」、右边只有 1.2px —— 用户原话「左边比右边厚」。改成内缩胶囊：外圈描边
+# 四边一致，竖条缩进来当独立小元素（同 HANDOFF 里吐司左侧色条的结论）。
+_ACCENT_INSET_X = 4.0   # 竖条离左边框的距离
+_ACCENT_INSET_Y = 6.0   # 竖条上下缩进（38 高 -> 26 高的胶囊）
 _BORDER_W = 1.2         # 描边线宽（原型 pen.setWidthF(1.2)）
 _BORDER_INSET = 0.8     # 描边内缩（原型 _face_path(face, 0.8)）
 _SS = 4                 # 超采样倍数（同 helpers._BTN_SS）：渐变/描边/斜纹都先画大再缩
@@ -463,9 +469,15 @@ class FlipButton(tk.Canvas):
         img = col.resize((W, H)).convert("RGBA")
         mask = _round_mask(W, H, r)
         if front:
+            # 内缩胶囊（原来贴边满高，静止态会看成 4px 粗左描边，左右不对称）
             bar = _Image.new("L", (W, H), 0)
-            _ImageDraw.Draw(bar).rectangle(
-                [0, 0, max(1, int(round(_ACCENT_W * _SS))) - 1, H], fill=255)
+            bx0 = _ACCENT_INSET_X * _SS
+            by0 = _ACCENT_INSET_Y * _SS
+            bw_bar = max(2.0, _ACCENT_W * _SS)
+            bx1 = bx0 + bw_bar
+            by1 = H - by0
+            _ImageDraw.Draw(bar).rounded_rectangle(
+                [bx0, by0, bx1, by1], radius=bw_bar / 2.0, fill=255)
             img.paste(_rgb(_mix(pal["edge"], pal["accent"], hv)), (0, 0),
                       _ImageChops.multiply(bar, mask))
         bw = max(1, int(round(_BORDER_W * _SS)))
