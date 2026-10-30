@@ -153,7 +153,7 @@ _外观 = {
 _宽 = 372          # 抽屉卡片宽度（设计像素）
 _边距 = 10         # 卡片离主窗右/上/下的留白（设计像素），留白透明
 _高上限 = 560      # 抽屉最高
-_滑入ms = 260      # 170ms 太快，位移 372px 时一眼就是"啪"地出现
+_滑入ms = 170      # 整张卡 372px 滑入；260ms 显拖，170ms 利落（用户要「快一点」）
 _圆角 = 16
 
 
@@ -178,6 +178,29 @@ def _探测DWM圆角():
 
 
 _WIN11 = _探测DWM圆角()
+
+
+def _裁可见(win, 可见宽, 高):
+    """把窗口区域裁成左边 `可见宽` 那一条。
+
+    抽屉要"从主界面右缘滑进来"，就得让窗口真的往右挪出去 —— 但整窗户挪出去
+    会浮在桌面上（用户：「收回动画都跑出窗口边框了」）。所以窗口照挪，同时用
+    区域把超出主界面右缘的那半挡掉：看到的永远是"卡片从右边被推进来"，外面
+    一点不露，也不需要 alpha 兜。
+    """
+    try:
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        全宽 = int(win.winfo_width())
+        可见宽 = int(max(0, min(int(可见宽), 全宽)))
+        if 可见宽 <= 0:
+            rgn = ctypes.windll.gdi32.CreateRectRgn(0, 0, 0, 0)      # 空区域 = 看不见
+        else:
+            rgn = ctypes.windll.gdi32.CreateRectRgn(0, 0, 可见宽, int(高) + 1)
+        ctypes.windll.user32.SetWindowRgn(ctypes.c_void_p(hwnd),
+                                          ctypes.c_void_p(rgn), True)
+        return True
+    except Exception:
+        return False
 
 
 def _设DWM圆角(win, 档=None):
@@ -313,12 +336,10 @@ class _抽屉:
         return 宽, 高, int(x), int(y)
 
     def _可滑距离(self, 目标x, 卡宽):
-        """窗口还能往右挪多少而不跑出主界面（抽屉离右边框本来就有 _边距 的间隙）。"""
-        try:
-            父右 = int(self.父窗.winfo_rootx()) + int(self.父窗.winfo_width())
-            return max(0, min(int(卡宽), 父右 - (int(目标x) + int(卡宽))))
-        except Exception:
-            return 0
+        """窗口往右挪多少：整张卡（超出主界面右缘的那半由 _裁可见 挡掉）。"""
+        # 整张卡都挪出去：超出主界面右缘的那半由 _裁可见 挡掉，不会浮到桌面上。
+        # 以前这里只肯给 10px 的缝，结果就是「没有打开动画」。
+        return max(1, int(卡宽))
 
     def _卡宽(self):
         """卡片宽度 = 窗口宽度 - 右侧留白。"""
@@ -699,13 +720,15 @@ class _抽屉:
             # 否则拖窗口会看到卡片先跳回终点、动画一结束又跳回去。
             self._滑 = self._可滑距离(x, self._卡宽())
             self._漂 = max(0, self._漂移 - self._滑)
-            比 = self._当前左(0) / float(max(1, self._目标[0]))
-            偏移 = int(round(self._滑 * 比)) if _WIN11 else 0
-            self.win.geometry("%dx%d+%d+%d" % (宽, 高, x + 偏移, y))
+            左 = self._当前左(0)
+            self.win.geometry("%dx%d+%d+%d" % (宽, 高, x + (左 if _WIN11 else 0), y))
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
-            if not _WIN11:
-                _裁区域(self.win, self._当前左(0), 卡宽, 高, self._半径())
+            if _WIN11:
+                父右 = self.父窗.winfo_rootx() + self.父窗.winfo_width()
+                _裁可见(self.win, int(父右) - (x + 左), 高)
+            else:
+                _裁区域(self.win, 左, 卡宽, 高, self._半径())
         except Exception:
             pass
 
@@ -728,6 +751,7 @@ class _抽屉:
                 self.win.geometry("%dx%d+%d+%d"
                                   % (宽, 高, self._目标[2] + int(self._滑),
                                      self._目标[3]))
+                _裁可见(self.win, 0, 高)
             except Exception:
                 pass
         if not _WIN11:
@@ -741,8 +765,13 @@ class _抽屉:
         except Exception:
             pass
         if _WIN11:
-            # deiconify 可能重建 HWND，窗口一换角偏好就没了 —— 这里补一次。
+            # deiconify 可能重建 HWND，窗口一换角偏好就没了 —— 这里补一次；
+            # 区域也要重新裁一遍（重建后区域同样会丢）。
             _设DWM圆角(self.win)
+            try:
+                _裁可见(self.win, 0, 高)
+            except Exception:
+                pass
         # ⚠ 显示之后**立刻**再裁一次（不是延迟 80ms）：withdraw 状态的 Toplevel 被
         # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
         # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
@@ -811,22 +840,21 @@ class _抽屉:
                 上次[0] = 左
                 self._左 = 左
                 if _WIN11:
-                    # 几何一律不动。挪窗口在父窗最大化时会跑到屏幕外（实测：
-                    # 「打开动画没了，收回动画都跑出窗口边框」）；裁区域又会留下
-                    # 一条没有抗锯齿的硬边（「边框还立在那」）。所以只让内容横着
-                    # 飘一点点，卡片四条边从头到尾一动不动，靠 alpha 撑起"从右侧
-                    # 进来"的观感。
-                    总 = max(1, max(abs(起), abs(终)))
-                    比 = float(左) / float(总)
-                    滑 = int(round(self._滑 * 比))
-                    if 滑:
-                        try:
-                            self.win.geometry("%dx%d+%d+%d"
-                                              % (self._目标[0], 高, 目标x + 滑,
-                                                 self._目标[3]))
-                        except Exception:
-                            pass
-                    self._移内容(int(round(getattr(self, "_漂", 0) * 比)))
+                    # 整张卡从主界面右缘滑进来：窗口真的往右挪 左 像素，再用
+                    # 区域把越过主界面右缘的部分挡掉。这样既有实打实的位移
+                    # （以前只有 10px 的缝，等于没有动画），又不会浮到桌面上
+                    # （以前整窗户挪出去，用户说"跑出窗口边框"）。
+                    try:
+                        # 先裁再挪：区域是"窗口坐标"，和位置无关，所以可以先按
+                        # 目标位置算出可见宽度。反过来的话，挪动那一帧窗口比区域
+                        # 新，主界面右缘外会漏出一条 19px 宽的卡片边（实测抓到过）。
+                        父右 = self.父窗.winfo_rootx() + self.父窗.winfo_width()
+                        _裁可见(self.win, int(父右) - (目标x + 左), 高)
+                        self.win.geometry("%dx%d+%d+%d"
+                                          % (self._目标[0], 高, 目标x + 左,
+                                             self._目标[3]))
+                    except Exception:
+                        pass
                 else:
                     try:
                         _裁区域(self.win, 左, 卡宽, 高, 半径)
@@ -835,9 +863,9 @@ class _抽屉:
             # alpha：开 前 45% 淡到 1；收 后 40% 淡到 0。
             # 区域边是硬的（SetWindowRgn 没有抗锯齿），淡一下才不显得是在"跳"。
             if _WIN11:
-                # Win11 没有位移可看，淡入就摊到整段时长（不然 117ms 就到 1，
-                # 剩下 140ms 什么都没发生，看着像"卡了一下才出现"）。
-                a = max(0.0, 1.0 - k) if 收 else min(1.0, k)
+                # 位移本身已经够明显，开启就**不要**淡入：以前整段 alpha 从 0
+                # 涨到 1，头一半等于看不见，用户感受就是"没有打开动画"。
+                a = max(0.0, 1.0 - k) if 收 else 1.0
             else:
                 a = max(0.0, 1.0 - (k - 0.6) / 0.4) if 收 else min(1.0, k / 0.45)
             if 上次[1] is None or abs(a - 上次[1]) > 0.04 or k >= 1.0:
