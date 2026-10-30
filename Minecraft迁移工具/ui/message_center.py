@@ -342,6 +342,100 @@ class _抽屉:
         # 以前这里只肯给 10px 的缝，结果就是「没有打开动画」。
         return max(1, int(卡宽))
 
+    def _物理几何(self):
+        """读父窗右缘、卡片物理宽高和 y：全部 Win32 物理像素。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            父 = int(self.父窗.winfo_id())
+            父 = user32.GetParent(父) or 父
+            子 = int(self.win.winfo_id())
+            子 = user32.GetParent(子) or 子
+            甲 = wintypes.RECT()
+            乙 = wintypes.RECT()
+            客 = wintypes.RECT()
+            user32.GetWindowRect(wintypes.HWND(子), ctypes.byref(乙))
+            # 父窗的**客户区**右缘（Tk 的 winfo_width 就是客户区，用它才和
+            # self._目标[2] 那套坐标对得上；GetWindowRect 含边框会差几个像素）
+            user32.GetClientRect(wintypes.HWND(父), ctypes.byref(客))
+            点 = wintypes.POINT(0, 0)
+            user32.ClientToScreen(wintypes.HWND(父), ctypes.byref(点))
+            客右 = int(点.x) + int(客.right)
+            屏右 = int(user32.GetSystemMetrics(0))
+            return {
+                "父右": min(客右, 屏右),
+                "宽": max(1, int(乙.right) - int(乙.left)),
+                "高": max(1, int(乙.bottom) - int(乙.top)),
+                "y": int(乙.top),
+                "hwnd": 子,
+            }
+        except Exception:
+            return None
+
+    def _末左(self):
+        """卡片落位后的窗口物理左：父窗右缘 - 留白 - 卡片宽。"""
+        几 = self._物理几何()
+        if not 几:
+            return None
+        return int(几["父右"]) - int(px(_边距)) - int(几["宽"])
+
+    def _摆到(self, 左物理):
+        """把窗口摆到 左物理 这个物理横坐标，并按"父窗右缘再往里 6px"裁出可见部分。
+
+        用 SetWindowPos 而不是 wm geometry：这扇无边框 + 分层 + 带区域的窗上，
+        wm geometry 经常不生效（实测连调几十次、GetWindowRect 一动不动）；
+        SetWindowPos 直接对 HWND 下命令，绕开 Tk 的几何缓存。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            几 = self._物理几何()
+            if not 几:
+                return False
+            左 = int(左物理)
+            可见宽 = max(0, min(int(几["宽"]), int(几["父右"]) - 6 - 左))
+            user32.SetWindowPos(wintypes.HWND(几["hwnd"]), None, 左, 几["y"],
+                                0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE|NOZORDER|NOACTIVATE
+            区域 = gdi32.CreateRectRgn(0, 0, 可见宽, 几["高"] + 1)
+            user32.SetWindowRgn(wintypes.HWND(几["hwnd"]), 区域, True)
+            return True
+        except Exception:
+            return False
+
+    def _裁父右(self):
+        """把卡片裁到「主界面右缘再往里 6px」：全部用 Win32 的**物理**坐标算。
+
+        为什么不用 Tk 的 winfo_rootx/winfo_width：Windows 上 Tk 的几何单位会随
+        tk scaling / DPI 感知方式变化，一旦它和 SetWindowRgn 用的物理像素不是同一
+        套，算出来的可见宽度就会偏大，卡片就会"跑出窗口边框"。这里直接读两扇窗的
+        GetWindowRect —— 左边界取子窗、右边界取父窗，天然同一坐标系，跟缩放无关。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            父 = int(self.父窗.winfo_id())
+            父 = user32.GetParent(父) or 父
+            子 = int(self.win.winfo_id())
+            子 = user32.GetParent(子) or 子
+            甲 = wintypes.RECT()
+            乙 = wintypes.RECT()
+            user32.GetWindowRect(wintypes.HWND(父), ctypes.byref(甲))
+            user32.GetWindowRect(wintypes.HWND(子), ctypes.byref(乙))
+            屏右 = int(user32.GetSystemMetrics(0))
+            右 = min(int(甲.right), 屏右) - 6
+            宽 = max(0, 右 - int(乙.left))
+            高 = max(1, int(乙.bottom) - int(乙.top))
+            区域 = gdi32.CreateRectRgn(0, 0, 宽, 高 + 1)
+            user32.SetWindowRgn(wintypes.HWND(子), 区域, True)
+            return True
+        except Exception:
+            return False
+
     def _可露右缘(self):
         """卡片最多能露到哪（屏幕坐标）：主界面右缘往里收 6px，且不超过屏幕。
 
@@ -744,7 +838,7 @@ class _抽屉:
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
             if _WIN11:
-                _裁可见(self.win, int(self._可露右缘()) - (x + 左), 高)
+                self._裁父右()
             else:
                 _裁区域(self.win, 左, 卡宽, 高, self._半径())
         except Exception:
@@ -766,10 +860,9 @@ class _抽屉:
         # 内容轻飘补（见 _animate）。
         if _WIN11:
             try:
-                self.win.geometry("%dx%d+%d+%d"
-                                  % (宽, 高, self._目标[2] + int(self._滑),
-                                     self._目标[3]))
-                _裁可见(self.win, 0, 高)
+                末 = self._末左()
+                if 末 is not None:
+                    self._摆到(末 + self._物理几何()["宽"])
             except Exception:
                 pass
         if not _WIN11:
@@ -787,7 +880,7 @@ class _抽屉:
             # 区域也要重新裁一遍（重建后区域同样会丢）。
             _设DWM圆角(self.win)
             try:
-                _裁可见(self.win, 0, 高)
+                self._裁父右()
             except Exception:
                 pass
         # ⚠ 显示之后**立刻**再裁一次（不是延迟 80ms）：withdraw 状态的 Toplevel 被
@@ -848,6 +941,8 @@ class _抽屉:
             pass
         收 = 终 > 起                 # 收回
         上次 = [None, None]
+        几 = self._物理几何() or {}
+        self._物宽 = int(几.get("宽") or 卡宽)
 
         def 帧():
             k = min(1.0, (time.perf_counter() - t0) * 1000.0 / _滑入ms)
@@ -863,14 +958,11 @@ class _抽屉:
                     # （以前只有 10px 的缝，等于没有动画），又不会浮到桌面上
                     # （以前整窗户挪出去，用户说"跑出窗口边框"）。
                     try:
-                        # 先裁再挪：区域是"窗口坐标"，和位置无关，所以可以先按
-                        # 目标位置算出可见宽度。反过来的话，挪动那一帧窗口比区域
-                        # 新，主界面右缘外会漏出一条 19px 宽的卡片边（实测抓到过）。
-                        父右 = self._可露右缘()
-                        _裁可见(self.win, int(父右) - (目标x + 左), 高)
-                        self.win.geometry("%dx%d+%d+%d"
-                                          % (self._目标[0], 高, 目标x + 左,
-                                             self._目标[3]))
+                        # 左 = 0 时整张卡露出来，左 = 卡宽 时一点不露。用比例算可见
+                        # 宽度，交给我 _摆到（SetWindowPos + 区域，都是物理像素）。
+                        末 = self._末左()
+                        if 末 is not None:
+                            self._摆到(末 + int(左))
                     except Exception:
                         pass
                 else:
@@ -902,9 +994,9 @@ class _抽屉:
                 if _WIN11:
                     self._移内容(0)
                     try:
-                        self.win.geometry("%dx%d+%d+%d"
-                                          % (self._目标[0], self._目标[1],
-                                             目标x, self._目标[3]))
+                        末 = self._末左()
+                        if 末 is not None:
+                            self._摆到(末)
                     except Exception:
                         pass
                 if _WIN11 and not 收:
