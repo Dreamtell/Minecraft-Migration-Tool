@@ -400,6 +400,15 @@ class _抽屉:
             # 贴着边框切的话，动画期间看着就是卡片"从边框里冒出来"，用户会说
             # "跑出窗口边框"（实测用户截图里就是这样）。落在落位右缘，看起来才像
             # 卡片从自己该在的位置后面被推出来。
+            # 动一下 DWM 这圈边：窗口没落位时把圆角关掉。
+            # 不开的话 DWM 会按**整个窗口矩形**画那圈边框和阴影，而 SetWindowRgn
+            # 只裁内容 —— 结果区域外会留一条边跟着窗口一路滑进来，用户看到的就是
+            # "边框（只有边框）从外面移动到里面"（受控实验：圆角档区域外 10739 个
+            # 异常像素，关掉圆角后 0 个）。
+            档 = _DWM角档 if int(左) == int(self._末左()) else 1
+            if getattr(self, "_角档", None) != 档:
+                _设DWM圆角(self.win, 档)
+                self._角档 = 档
             可见宽 = max(0, min(int(几["宽"]),
                             int(几["父右"]) - int(px(_边距)) - 左))
             user32.SetWindowPos(wintypes.HWND(几["hwnd"]), None, 左, 几["y"],
@@ -495,6 +504,7 @@ class _抽屉:
             # （以前四角靠键色透明 + SetWindowRgn 裁，那条边是 1-bit 的，必然是楼梯。）
             win.configure(bg=装)
             self._dwm = _设DWM圆角(win)
+            self._角档 = _DWM角档      # 和下面所有改档位的地方保持一致，别让缓存撒谎
         else:
             # Win10：没有 DWM 圆角，退回"键色 = 透明"那一套（圆角仍由区域裁）。
             try:
@@ -883,7 +893,9 @@ class _抽屉:
         if _WIN11:
             # deiconify 可能重建 HWND，窗口一换角偏好就没了 —— 这里补一次；
             # 区域也要重新裁一遍（重建后区域同样会丢）。
-            _设DWM圆角(self.win)
+            # 此刻窗口还在画面外，先按「关圆角」补，落位时再打开
+            _设DWM圆角(self.win, 1)
+            self._角档 = 1
             try:
                 self._裁父右()
             except Exception:
@@ -1012,6 +1024,7 @@ class _抽屉:
                     # （第一次就踩了：build 里设过，展开完还是方的）。
                     _撤区域(self.win)
                     _设DWM圆角(self.win)
+                    self._角档 = _DWM角档
                 try:
                     anim.release()
                 except Exception:
