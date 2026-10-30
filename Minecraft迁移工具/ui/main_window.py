@@ -475,6 +475,15 @@ class MigrationGUI(
             self._hide_tooltip()
         except Exception:
             pass
+        # 还在屏幕上飘着的吐司立即回收：抽屉一开，它们要么被卡片压住、要么飘在
+        # 卡片旁边，看着像两个人同时说话。消息本身在 store 里已经记档了，抽屉
+        # 打开就能看到，所以这里直接清掉不丢内容（badge 下面会跟着刷新）。
+        try:
+            _吐司 = getattr(self, "_toast_host", None)
+            if _吐司 is not None:
+                _吐司.clear()
+        except Exception:
+            pass
         try:
             # 抽屉里只有根窗口，读不到主窗口的属性；「点外部收回」开关先挂上去
             try:

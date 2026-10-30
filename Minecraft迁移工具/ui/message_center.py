@@ -677,10 +677,12 @@ class _抽屉:
                 return
             宽, 高, x, y = self._目标几何()
             self._目标 = (宽, 高, x, y)
-            self.win.geometry("%dx%d+%d+%d" % (宽, 高, x, y))
+            偏移 = self._当前左(0) if _WIN11 else 0
+            self.win.geometry("%dx%d+%d+%d" % (宽, 高, x + 偏移, y))
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
-            _裁区域(self.win, self._当前左(0), 卡宽, 高, self._半径())
+            if not _WIN11:
+                _裁区域(self.win, self._当前左(0), 卡宽, 高, self._半径())
         except Exception:
             pass
 
@@ -694,10 +696,19 @@ class _抽屉:
         # 显示之前把区域收成"零宽"：deiconify 渲的第一帧只能是空的，
         # 不会先整块露一下再从右边长出来（那就是"闪一下"）
         self._左 = 宽
-        try:
-            _裁区域(self.win, 宽, 卡宽, 高, self._半径())
-        except Exception:
-            pass
+        # Win11 走"移窗口"，不裁区域：设了区域等于把整块裁没，窗口再滑过来也是空的。
+        # 但得先把它摆到屏幕外（否则 deiconify 那一帧会整张卡闪一下再滑）。
+        if _WIN11:
+            try:
+                self.win.geometry("%dx%d+%d+%d"
+                                  % (宽, 高, self._目标[2] + 宽, self._目标[3]))
+            except Exception:
+                pass
+        if not _WIN11:
+            try:
+                _裁区域(self.win, 宽, 卡宽, 高, self._半径())
+            except Exception:
+                pass
         try:
             self.win.deiconify()
             self.win.lift()
@@ -709,10 +720,11 @@ class _抽屉:
         # ⚠ 显示之后**立刻**再裁一次（不是延迟 80ms）：withdraw 状态的 Toplevel 被
         # deiconify 时 HWND 可能被重建，区域会跟着丢；延迟补裁的话，动画前几帧
         # 就是方的（用户："动画时没有圆角化"）。这里同步补，第一帧就是圆的。
-        try:
-            _裁区域(self.win, self._左, 卡宽, 高, self._半径())
-        except Exception:
-            pass
+        if not _WIN11:
+            try:
+                _裁区域(self.win, self._左, 卡宽, 高, self._半径())
+            except Exception:
+                pass
         # 关键顺序：deiconify → 先让 Tk 把客户区**真 paint 一遍**（填键色）→ 再放开 alpha。
         # 少了这一步，窗口可能"已经 alpha=1，但客户区还没被 paint"，系统对未初始化的
         # 表面不做键色匹配，于是把一块近黑矩形原样端上去 —— 就是用户看到的黑方块。
@@ -748,6 +760,7 @@ class _抽屉:
         """
         卡宽, 高 = self._卡宽(), self._目标[1]
         半径 = self._半径()
+        目标x = self._目标[2]
         t0 = time.perf_counter()
         try:
             anim.hold()
@@ -764,10 +777,21 @@ class _抽屉:
             if 左 != 上次[0]:
                 上次[0] = 左
                 self._左 = 左
-                try:
-                    _裁区域(self.win, 左, 卡宽, 高, 半径)
-                except Exception:
-                    pass
+                if _WIN11:
+                    # 整张卡（连右边框）一起从右边滑进来。
+                    # 以前是"窗口不动、用区域把卡片从左边一点点切出来"，结果卡片
+                    # 自己的右边框钉在屏幕右边一动不动 —— 用户看到的就是"动画里
+                    # 边框还立在那"。
+                    try:
+                        self.win.geometry("%dx%d+%d+%d"
+                                          % (self._目标[0], 高, 目标x + 左, self._目标[3]))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        _裁区域(self.win, 左, 卡宽, 高, 半径)
+                    except Exception:
+                        pass
             # alpha：开 前 45% 淡到 1；收 后 40% 淡到 0。
             # 区域边是硬的（SetWindowRgn 没有抗锯齿），淡一下才不显得是在"跳"。
             a = max(0.0, 1.0 - (k - 0.6) / 0.4) if 收 else min(1.0, k / 0.45)
@@ -785,6 +809,12 @@ class _抽屉:
             else:
                 self._job = None
                 if _WIN11 and not 收:
+                    try:
+                        self.win.geometry("%dx%d+%d+%d"
+                                          % (self._目标[0], self._目标[1],
+                                             目标x, self._目标[3]))
+                    except Exception:
+                        pass
                     # 展开了：撤掉区域，圆角重新交给 DWM（留着会把 DWM 的圆角
                     # 按 1-bit 形状切掉，又变回楼梯）。
                     # ⚠ 必须在撤完**再下一次**属性：deiconify 会重建 HWND、
