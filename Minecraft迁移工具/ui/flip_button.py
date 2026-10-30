@@ -114,6 +114,46 @@ FACE_DISABLED = {"face_top": "#262626", "face_bot": "#111111",
                  "edge": "#4a4a4a", "edge_hot": "#4a4a4a", "accent": "#6e6e6e",
                  "title": "#9a9a9a"}
 
+# 浅色主题：上面那四套是照原型（深色界面）调的，face_top #1b2a20 这种近乎黑，
+# 放到浅色窗口里就是一块黑方块（用户报「浅色主题下这个好黑」）。
+# 这里另出一套：色相不变，面换成同族的浅色（top 比 bot 亮的关系照抄），
+# 字和竖条换成深色，edge_hot/accent 加深以保证在浅底上看得清。
+FACE_IDLE_L = {"face_top": "#e9f6ee", "face_bot": "#cde7d8",
+               "face_top_hover": "#f3fbf6", "face_bot_hover": "#d8eee1",
+               "edge": "#9dbfab", "edge_hot": "#1f9d55", "accent": "#1f9d55",
+               "title": "#0d2a19"}
+FACE_SEARCH_L = {"face_top": "#fbebeb", "face_bot": "#f5d3d3",
+                 "face_top_hover": "#fdf5f5", "face_bot_hover": "#f8dede",
+                 "edge": "#d9a3a3", "edge_hot": "#cc2b2b", "accent": "#c62828",
+                 "title": "#4a0f0e"}
+FACE_DRY_L = {"face_top": "#fbf4e2", "face_bot": "#f2e4c3",
+              "face_top_hover": "#fdfaf0", "face_bot_hover": "#f7ecd2",
+              "edge": "#d3c39a", "edge_hot": "#b8791a", "accent": "#b8791a",
+              "title": "#3b2b09"}
+FACE_DISABLED_L = {"face_top": "#f2f2f2", "face_bot": "#e4e4e4",
+                   "face_top_hover": "#f2f2f2", "face_bot_hover": "#e4e4e4",
+                   "edge": "#cfcfcf", "edge_hot": "#cfcfcf", "accent": "#bdbdbd",
+                   "title": "#8a8a8a"}
+
+_SCHEMES = {
+    "dark": {"idle": FACE_IDLE, "search": FACE_SEARCH, "dry": FACE_DRY,
+             "off": FACE_DISABLED},
+    "light": {"idle": FACE_IDLE_L, "search": FACE_SEARCH_L, "dry": FACE_DRY_L,
+              "off": FACE_DISABLED_L},
+}
+
+
+def _is_light_bg(color):
+    """按底色亮度判断该用浅色面还是深色面（阈值 0.62：白/浅灰/浅黄都算浅）。"""
+    try:
+        c = str(color).strip().lstrip("#")
+        if len(c) == 3:
+            c = "".join(ch * 2 for ch in c)
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    except Exception:
+        return False
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0 > 0.62
+
 _FRONT_GREEN = ("#00c853", "#00e676")     # 只作 _btn_colors 标记 / 兼容旧调用（面走 FACE_IDLE）
 _FRONT_YELLOW = ("#f9a825", "#ffd54f")    # 同上（面走 FACE_DRY）
 _BACK_RED = ("#e53935", "#ff7043")        # 同上（面走 FACE_SEARCH）
@@ -358,6 +398,11 @@ class FlipButton(tk.Canvas):
             bg = parent.cget("bg")
         except Exception:
             bg = "#f0f0f0"
+        # 深浅两套面：按**父控件底色**判（深色主题 #1e1e1e 一类，浅色主题 #f5f5f5 一类）。
+        # 切主题由 set_theme() 显式喂进来 —— 自绘控件吃不到 apply_theme_to_widget_tree。
+        self._bg_now = bg
+        self._scheme = "light" if _is_light_bg(bg) else "dark"
+        self._pal = _SCHEMES[self._scheme]
         tk.Canvas.__init__(self, parent, width=self._cw, height=self._ch,
                            highlightthickness=0, bd=0, bg=bg)
         self.pack_propagate(False)
@@ -366,7 +411,8 @@ class FlipButton(tk.Canvas):
 
         self._img_id = self.create_image(0, 0, anchor="nw", tags="face")
         self._txt_id = self.create_text(self._cw // 2, self._ch // 2, text="",
-                                        fill=FACE_IDLE["title"], font=self._txt_font_pick(),
+                                        fill=self._pal["idle"]["title"],
+                                        font=self._txt_font_pick(),
                                         anchor="center", tags="text")
         self._icon_img_id = None
         self.bind("<Button-1>", self._on_click)
@@ -393,13 +439,14 @@ class FlipButton(tk.Canvas):
            前半程会从绿突然变灰，看着像闪一下。
         """
         if not front:
-            pid, pal = "search", FACE_SEARCH
+            pid = "search"
         elif self._disabled and not self._animating:
-            pid, pal = "off", FACE_DISABLED
+            pid = "off"
         elif self._dry_on():
-            pid, pal = "dry", FACE_DRY
+            pid = "dry"
         else:
-            pid, pal = "idle", FACE_IDLE
+            pid = "idle"
+        pal = self._pal[pid]        # 深浅主题各一套，见 _SCHEMES
         if front:
             text = self._texts["front_dry"] if self._dry_on() else self._texts["front"]
         else:
@@ -466,7 +513,10 @@ class FlipButton(tk.Canvas):
         全部在 _SS 倍尺寸下画完再 LANCZOS 缩小 —— 1x 直画的话 1.2px 描边和左侧竖条
         的圆角都是硬边，看着像贴纸。
         """
-        key = ("face", self._cw, self._ch, pid, round(hv, 3), bool(front))
+        # 键里必须带方案：pid 在深浅两套里同名（都是 "dry"），只按 pid 缓存会把
+        # 深色面直接复用给浅色主题（第一次就撞了这个，浅色下还是一块黑）。
+        key = ("face", self._cw, self._ch, pid, round(hv, 3), bool(front),
+               self._scheme)
         hit = _face_cache.get(key)
         if hit is not None:
             return hit
@@ -514,7 +564,7 @@ class FlipButton(tk.Canvas):
         原型是一条从 (x-110, 0) 到 (x+110, h) 的线性渐变（所以带子微微倾斜）。这里按
         列算出 profile，再按行做亚像素横移 —— 逐像素算 2D 投影要 4ms，这样是 0.2ms。
         """
-        key = ("sweep", self._cw, self._ch, phase)
+        key = ("sweep", self._cw, self._ch, phase, self._scheme)
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
@@ -544,13 +594,13 @@ class FlipButton(tk.Canvas):
     def _stripe_layer(self, t):
         """背面斜纹：accent、alpha 26、线宽 6、间距 28，沿 55px/s 往下流。"""
         off = (t * _STRIPE_SPEED) % _STRIPE_STEP
-        key = ("stripe", self._cw, self._ch, round(off, 2))
+        key = ("stripe", self._cw, self._ch, round(off, 2), self._scheme)
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
         w, h = self._cw, self._ch
         W, H = w * _SS, h * _SS
-        acc = _rgb(FACE_SEARCH["accent"])
+        acc = _rgb(self._pal["search"]["accent"])
         ov = _Image.new("RGBA", (W, H), acc + (0,))
         d = _ImageDraw.Draw(ov)
         lw = max(1, int(round(_STRIPE_W * _SS)))
@@ -571,13 +621,14 @@ class FlipButton(tk.Canvas):
         u = 0.5 - 0.5 * math.cos(t * 2.6)
         w, h = self._cw, self._ch
         pw = max(1, int(round(w * max(_PROGRESS_MIN, u))))
-        key = ("prog", w, h, pw)
+        key = ("prog", w, h, pw, self._scheme)
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
         ov = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
         _ImageDraw.Draw(ov).rectangle(
-            [0, h - _PROGRESS_H, pw - 1, h - 1], fill=_rgb(FACE_SEARCH["accent"]) + (255,))
+            [0, h - _PROGRESS_H, pw - 1, h - 1],
+            fill=_rgb(self._pal["search"]["accent"]) + (255,))
         ov.putalpha(_ImageChops.multiply(ov.getchannel("A"), _clip_mask(w, h)))
         if len(_layer_cache) > 220:
             _layer_cache.clear()
@@ -586,7 +637,7 @@ class FlipButton(tk.Canvas):
 
     def _back_layer(self, t):
         """背面整层（不含底色）：红面 + 斜纹 + 进度条。翻转帧和静止帧共用。"""
-        face = self._face_rgba("search", FACE_SEARCH, 0.0, False)
+        face = self._face_rgba("search", self._pal["search"], 0.0, False)
         return _Image.alpha_composite(
             _Image.alpha_composite(face, self._stripe_layer(t)), self._progress_layer(t))
 
@@ -1015,7 +1066,7 @@ class FlipButton(tk.Canvas):
             return
         try:
             self._dots_id = self.create_text(0, 0, text="", anchor="w",
-                                             fill=FACE_SEARCH["title"],
+                                             fill=self._pal["search"]["title"],
                                              font=self._txt_font_pick(), tags="text")
         except Exception:
             self._dots_id = None
@@ -1026,7 +1077,7 @@ class FlipButton(tk.Canvas):
         pid, pal, text = self._face_spec(front)
         if front:
             if self._disabled:
-                photo = self._rest_photo("off", FACE_DISABLED, 0.0)
+                photo = self._rest_photo("off", self._pal["off"], 0.0)
             elif self._hover and self._hv >= 0.99:
                 photo = self._hover_photo(pid, pal, self._sweep_phase())
             else:
@@ -1090,6 +1141,41 @@ class FlipButton(tk.Canvas):
             pass
 
     # ------------------------------------------------------------ 对外接口
+    def set_theme(self, theme=None):
+        """主题切换：深浅两套面重算、重画、重烤缓存。
+
+        自绘控件吃不到 apply_theme_to_widget_tree（它只刷普通控件的 bg/fg），
+        主窗口切主题时必须显式喂进来，否则浅色主题下这颗按钮还是黑方块。
+        传 theme 字典就用它的底色判深浅；不传就按父控件当前底色判。
+        """
+        bg = None
+        if isinstance(theme, dict):
+            bg = theme.get("btn_bg") or theme.get("card") or theme.get("bg")
+        if not bg:
+            try:
+                bg = self.master.cget("bg")
+            except Exception:
+                bg = None
+        scheme = "light" if _is_light_bg(bg) else "dark"
+        if bg and bg != self._bg_now:
+            self._bg_now = bg
+            try:
+                self.configure(bg=bg)
+            except Exception:
+                pass
+        if scheme == self._scheme:
+            return
+        self._scheme = scheme
+        self._pal = _SCHEMES[scheme]
+        try:
+            self._frames.clear()
+        except Exception:
+            pass
+        self._drop_photos()
+        if not self._animating:
+            self._draw_rest()
+        self.prewarm()
+
     def set_feel(self, feel):
         """换手感：立即生效（帧表按手感分表，缓存 key 里就带手感，不用清表）。"""
         feel = str(feel or "").lower()
@@ -1204,7 +1290,7 @@ class FlipButton(tk.Canvas):
             for phase in range(_SWEEP_PHASES):
                 rests.append(("hover", pid, pal, phase))
         for phase in range(_BACK_PHASES):
-            rests.append(("back", "search", FACE_SEARCH, phase))
+            rests.append(("back", "search", self._pal["search"], phase))
 
         def step(pos=0, rpos=0):
             # 按**时间预算**搬，不按张数：单张约 4.5ms，原来固定搬 6 张 / 1 张静止帧，

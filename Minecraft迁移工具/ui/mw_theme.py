@@ -106,6 +106,15 @@ class ThemeMixin:
         )
         apply_theme_to_widget_tree(self.root, self.theme)
 
+        # 自绘控件不吃树刷：翻转按钮深浅主题是两套面，必须显式喂进去
+        # （浅色主题下不喂就是一块黑方块，用户报过「浅色主题下这个好黑」）。
+        try:
+            _sb = getattr(self, "start_btn", None)
+            if _sb is not None and hasattr(_sb, "set_theme"):
+                _sb.set_theme(self.theme)
+        except Exception:
+            pass
+
         # 同步"放大查看"结果表的配色
         alive_tables = []
         for tv in getattr(self, '_big_view_tables', []):
