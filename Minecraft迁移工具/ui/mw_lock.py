@@ -549,7 +549,11 @@ class LockMixin:
         注意 `_starting` 也要算"忙"：准备阶段（统计文件那几秒）按钮必须一直是灰的，
         否则轮询收尾的 _watch_migration_end 会把它当成"没在跑"而重新点亮。
         """
-        busy = bool(self._busy_task_name()) or bool(getattr(self, "_starting", False))
+        # 开始前倒计时也算"忙"：那几秒里别的按钮不该能点，
+        # 唯一还能点的是「开始迁移」—— 它就是取消键（见下面那段恢复 normal）。
+        busy = (bool(self._busy_task_name())
+                or bool(getattr(self, "_starting", False))
+                or bool(getattr(self, "_countdown_running", False)))
         state = "disabled" if busy else "normal"
         # 标签栏**必须一起锁**：切到一个还没建过的页会当场构建整页（377 个模组 =
         # 377 个卡片控件），主线程卡好几秒 —— 用户"点几下标签就弹未响应"就是这么来的。
@@ -560,7 +564,9 @@ class LockMixin:
             pass
         # 两个复选开关（模拟运行 / 覆盖已存在的模组）由下面的 switch 树兜底处理
         btns = (
-            self.start_btn, self.rollback_btn, self.scan_btn,
+            self.start_btn, self.rollback_btn,
+            # 「查看历史」原来漏在名单外：迁移/倒计时期间它一直亮着（用户要求全部禁用）
+            getattr(self, "history_btn", None), self.scan_btn,
             self.btn_changelog, self.mod_magnify_btn, self.add_mods_btn,
             self.clear_mods_btn, self.check_mods_btn, self.config_magnify_btn,
             self.add_config_dir_btn, self.add_config_file_btn, self.clear_config_btn,
@@ -579,5 +585,11 @@ class LockMixin:
                 continue
             try:
                 btn.state(state)
+            except Exception:
+                pass
+        # 倒计时期间把「开始迁移」点亮：再点一下就是取消（start_migration 里判断）。
+        if getattr(self, "_countdown_running", False):
+            try:
+                self.start_btn.state("normal")
             except Exception:
                 pass

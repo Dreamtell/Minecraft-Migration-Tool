@@ -266,6 +266,22 @@ class SettingsMixin:
              (("crisp", "干脆"), ("standard", "标准"), ("heavy", "沉")),
              lambda v: self._set_start_btn_feel(v), 名="btnfeel")
 
+        # 点「开始迁移」后的倒计时秒数（1~10）。用滑杆：1~10 只有十档，拖到哪就是哪，
+        # 比「＋/－」少点很多下；倒计时期间再点一下按钮就是取消（见 mw_migration）。
+        row_count = tk.Frame(box1, bg=self.theme["bg"])
+        row_count.pack(fill="x", pady=(10, 0))
+        tk.Label(row_count, text=trp("开始前倒计时"), bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
+        tk.Label(row_count, text=trp("秒（1–10，点开始后再点一下可取消）"),
+                 bg=self.theme["bg"],
+                 fg=self.theme.get("muted_fg", "#888888"),
+                 font=("微软雅黑", 8)).pack(side="left", padx=(px(8), 0))
+        self.countdown_slider = SliderRow(
+            box1, self.theme, 1, 10, value=getattr(self, "start_countdown", 3),
+            release=self._set_start_countdown, height=px(34))
+        self.countdown_slider.pack(fill="x", pady=(px(4), 0))
+        self._settings_sliders.append(self.countdown_slider)
+
         # 界面语言（中文 / English）。文案是**启动时定下来**的（见 utils/i18n.py），
         # 这里只负责记下选择，并提示重启 —— 界面是一次性建好的，运行中换不干净。
         self.settings_lang_var = tk.StringVar(value=i18n.language())
@@ -940,6 +956,22 @@ class SettingsMixin:
             self.save_config()
         except Exception:
             pass
+
+    def _set_start_countdown(self, 值):
+        """开始前倒计时秒数：夹到 1~10、回写滑杆、当场存配置。"""
+        try:
+            新 = max(1, min(10, int(值)))
+        except Exception:
+            新 = 3
+        if 新 == int(getattr(self, "start_countdown", 3)):
+            return
+        self.start_countdown = 新
+        try:
+            if self.countdown_slider.get() != 新:
+                self.countdown_slider.set(新)
+        except Exception:
+            pass
+        self.save_config()
 
     def _set_history_limit(self, 值):
         """滑杆落定：迁移历史保存上限 1~15，超出后删最旧的档案。"""

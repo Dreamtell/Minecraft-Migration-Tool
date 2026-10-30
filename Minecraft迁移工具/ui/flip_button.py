@@ -382,15 +382,23 @@ class FlipButton(tk.Canvas):
         self._tk_font = None
         self._frames = {}                    # 帧图/静止图缓存（key 里带状态，见各处）
         self._t0 = time.perf_counter()
+        # 开始前倒计时要用：背面临时文案（「⏳ 3 秒后开始」）和真实进度（0..1）。
+        # 都留 None = 保持原来的样子（省略号动画 + 来回扫的装饰条）。
+        self._back_txt_custom = None
+        self._prog_override = None
 
         self._ch = int(height)
         # 宽度：和旧按钮同一套量法（helpers._btn_text_width + _BTN_TEXT_PAD），
         # 取四张面里最宽的那个 —— 否则切到"模拟运行"时按钮会跟着变窄，整排按钮乱跳。
+        # 倒计时文案（「⏳ 10 秒后开始」）是运行时才换上去的第五种文案，比现有四张面都长：
+        # 不预先算进宽度，10 秒那一档就会被裁掉半个字（中文实测 139px > 可用 127px）。
+        self._countdown_ref = i18n.trp("⏳ {0} 秒后开始", 10)
         need = 44
         try:
             # extra_w：在「文字宽 + 两侧内边距」之外再补一点（调用方要按钮比文字长一些时给）。
-            need = max(44, max(_h._btn_text_width(t, font) for t in self._texts.values())
-                       + _TEXT_PAD + max(0, int(extra_w or 0)))
+            最宽 = max([_h._btn_text_width(t, font) for t in self._texts.values()]
+                       + [_h._btn_text_width(self._countdown_ref, font)])
+            need = max(44, 最宽 + _TEXT_PAD + max(0, int(extra_w or 0)))
         except Exception:
             need = 44
         self._cw = int(max(int(width or 0), need))
@@ -450,7 +458,10 @@ class FlipButton(tk.Canvas):
         if front:
             text = self._texts["front_dry"] if self._dry_on() else self._texts["front"]
         else:
-            text = self._texts["back_dry"] if self._dry_on() else self._texts["back"]
+            # 倒计时会临时换掉背面文案（set_back_text），没换就用默认的「⏳ 迁移中...」
+            text = (self._back_txt_custom
+                    or (self._texts["back_dry"] if self._dry_on()
+                        else self._texts["back"]))
         return pid, pal, text
 
     def _state_key(self):
@@ -617,11 +628,30 @@ class FlipButton(tk.Canvas):
         return ov
 
     def _progress_layer(self, t):
-        """底部 3px 进度条：宽 = w*max(0.06, 0.5-0.5cos(t*2.6))，来回扫。"""
-        u = 0.5 - 0.5 * math.cos(t * 2.6)
+        """底部 3px 条。
+
+        默认是装饰性的来回扫（宽 = w*max(0.06, 0.5-0.5cos(t*2.6))）—— 它只表示"在忙"，
+        和时间无关。倒计时/真实迁移进度会通过 set_back_progress() 把 _prog_override 设成
+        0..1，那时这条就是真进度（从左往右涨），不再是来回扫。
+        """
         w, h = self._cw, self._ch
-        pw = max(1, int(round(w * max(_PROGRESS_MIN, u))))
-        key = ("prog", w, h, pw, self._scheme)
+        if self._prog_override is None:
+            u = 0.5 - 0.5 * math.cos(t * 2.6)
+            pw = max(1, int(round(w * max(_PROGRESS_MIN, u))))
+            key = ("prog", w, h, pw, self._scheme)
+        else:
+            u = max(0.0, min(1.0, float(self._prog_override)))
+            pw = int(round(w * u))
+            # 量化到 1/200：进度回调每秒几十次，不量化会每帧烤一张新图。
+            key = ("prog", w, h, "o%d" % int(round(u * 200)), self._scheme)
+            if pw <= 0:
+                # 0 = 一点都没走，干脆不画（返回一张全透明的层，缓存里也存它）
+                hit = _layer_cache.get(key)
+                if hit is not None:
+                    return hit
+                blank = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                _layer_cache[key] = blank
+                return blank
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
@@ -1052,6 +1082,8 @@ class FlipButton(tk.Canvas):
         """背面标题的三个点：固定槽位里 1→2→3 循环（原型 int(t*3)%3）。"""
         if self._dots_id is None or self._icon is not None:
             return
+        if self._back_txt_custom:
+            return          # 倒计时文案是完整的，不加省略号
         n = 1 + int((now - self._t0) * 3.0) % 3
         if n != self._dots_n:
             self._dots_n = n
@@ -1114,6 +1146,14 @@ class FlipButton(tk.Canvas):
         base = text.rstrip(".．… ")
         if not base:
             base = text
+        if self._back_txt_custom:
+            # 倒计时文案整行居中（"..." 槽位在 set_back_text 里已经藏起来了）
+            if self._dots_id is not None:
+                self.itemconfigure(self._dots_id, state="hidden")
+            self.itemconfigure(self._txt_id, text=base, anchor="center", fill=title,
+                               state="normal")
+            self.coords(self._txt_id, self._cw // 2, self._ch // 2)
+            return
         self._ensure_dots_item()
         tw = self._text_w(base)
         slot = self._text_w("...")
@@ -1203,6 +1243,39 @@ class FlipButton(tk.Canvas):
         if not self._animating:
             self._draw_rest()
         self.prewarm()               # 先把新配色的相位表烤上，首次悬停才不会现画
+
+    def set_back_text(self, text=None):
+        """临时换掉背面文案（倒计时要用：「⏳ 3 秒后开始」）。
+
+        传 None 恢复默认的「⏳ 迁移中...」/「⏳ 模拟中...」。自定义文案不加省略号动画、
+        整行居中 —— 倒计时那几个字不该像加载动画一样一顿一顿地闪。
+        """
+        新 = None
+        if text is not None:
+            文案 = str(text).strip()
+            新 = i18n.tr(文案) if 文案 else None
+        if 新 == self._back_txt_custom:
+            return
+        self._back_txt_custom = 新
+        if self._at_back and not self._animating:
+            self._draw_rest()
+
+    def set_back_progress(self, value=None):
+        """背面底部那条 3px 条：0..1 = 真实进度，None = 回到默认的来回扫。
+
+        倒计时用它同步"还剩几秒"，迁移真跑起来后由进度队列推给它。
+        """
+        新 = None
+        if value is not None:
+            try:
+                新 = max(0.0, min(1.0, float(value)))
+            except Exception:
+                新 = None
+        if 新 == self._prog_override:
+            return
+        self._prog_override = 新
+        if self._at_back and not self._animating:
+            self._draw_rest()
 
     def state(self, new_state=None):
         """像 tk.Button 一样切 normal/disabled（禁用时整颗按钮变暗灰、点击无效）。"""

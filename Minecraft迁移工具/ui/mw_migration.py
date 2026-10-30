@@ -955,11 +955,19 @@ class MigrationMixin:
                             self.root.after_cancel(self.after_id)
                             self.after_id = None
                         self._migration_running = False
+                        self._flip_progress(None)   # 条回到"在忙"的默认扫法
                         self._unlock_main_window()      # 进度窗口关掉时同步解锁
                         self._notify_task_done(
                             "迁移", "任务已结束，点托盘图标打开主界面查看日志")
                         return
                     self.progress_window.update_progress(*msg)
+                    # 顺手把进度同步到背面那条 3px 条（copied_bytes / 总量）
+                    try:
+                        总 = float(getattr(self, "_mig_total_size", 0) or 0)
+                        if 总 > 0:
+                            self._flip_progress(min(1.0, float(msg[2]) / 总))
+                    except Exception:
+                        pass
             except queue.Empty:
                 pass
             if self.progress_window and self.progress_window.cancelled:
@@ -1186,18 +1194,160 @@ class MigrationMixin:
         except Exception:
             pass
 
+    # ---------- 开始前倒计时 ----------
+    def _countdown_seconds(self):
+        """设置里的倒计时秒数（1~10）。0 = 关掉，点了就直接开跑。"""
+        try:
+            return max(0, min(10, int(getattr(self, "start_countdown", 3))))
+        except Exception:
+            return 3
+
+    def _flip_back_text(self, text=None):
+        """换背面文案（倒计时用）；旧按钮没有这个方法，getattr 兜着。"""
+        btn = getattr(self, "start_btn", None)
+        方法 = getattr(btn, "set_back_text", None)
+        if 方法 is None:
+            return
+        try:
+            方法(text)
+        except Exception:
+            pass
+
+    def _flip_progress(self, value=None):
+        """背面那条 3px 条：0..1 = 真进度，None = 默认的来回扫。"""
+        btn = getattr(self, "start_btn", None)
+        方法 = getattr(btn, "set_back_progress", None)
+        if 方法 is None:
+            return
+        try:
+            方法(value)
+        except Exception:
+            pass
+
+    def _close_child_windows(self):
+        """关掉主窗口以外所有真子窗口（设置 / 差异 / 历史 / 大视图 / 进度窗…）。
+
+        overrideredirect 的那几个不算：吐司、桌面浮标、锁屏遮罩都没有标题栏，
+        浮标更是要一直挂在桌面上（迁移期间也得在），关掉它等于关掉一个功能。
+        """
+        try:
+            import tkinter as tk
+            子窗 = [w for w in self.root.winfo_children()
+                    if isinstance(w, tk.Toplevel)]
+        except Exception:
+            return
+        for w in 子窗:
+            try:
+                if int(w.overrideredirect()):
+                    continue
+            except Exception:
+                pass
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+    def _warn_file_task_busy(self, task):
+        """别的文件任务在跑时的统一拦截（倒计时前 / 真正开跑前都用这一份）。"""
+        messagebox.showwarning(
+            "提示",
+            trp("正在执行「{0}」，为避免两个任务同时改动同一批文件，请等它结束后再开始迁移（模拟运行同样需要等待）。", task))
+        self.log(trp("⚠️ 已拦截：{0} 进行中，暂不允许启动迁移", task),
+                 level="WARNING")
+
     def start_migration(self):
         """开始迁移（按钮入口）。
+
+        点下去先翻到背面倒数几秒（设置里可调 1~10 秒，模拟运行同样），
+        数完才走真正的准备+执行逻辑；倒计时期间再点一下按钮就取消。
+        为什么要倒计时：翻转本身就是"已经开始"的信号，误点一次没有回头路，
+        只能等它跑完再回滚 —— 留几秒后悔时间比事后回滚便宜得多。
+        """
+        if self._migration_running or getattr(self, "_starting", False):
+            self.log("⚠️ 已有迁移在进行中（或正在准备），这次点击已忽略",
+                     level="WARNING", save=False)
+            return
+        # 倒计时期间再点一下 = 取消（这时它是唯一亮着的按钮）
+        if getattr(self, "_countdown_running", False):
+            self._cancel_start_countdown()
+            return
+        # 别的文件任务在跑就别先倒数几秒再弹警告了，当下拦住
+        task = self._busy_task_name()
+        if task:
+            self._warn_file_task_busy(task)
+            self._flip_start_btn()      # 点击时已经翻到背面，这里翻回来
+            return
+        秒 = self._countdown_seconds()
+        if 秒 <= 0:
+            self._run_migration_entry()
+            return
+        self._begin_start_countdown(秒)
+
+    def _begin_start_countdown(self, 秒):
+        self._countdown_running = True
+        self._countdown_total = float(秒)
+        self._countdown_end = time.perf_counter() + self._countdown_total
+        self._countdown_job = None
+        self._countdown_txt = None
+        self._refresh_busy_state()      # 别的按钮先灰掉
+        self._close_child_windows()     # 子窗口全关（设置窗/差异窗/大视图）
+        self._flip_start_btn(front=False)
+        self._flip_progress(0.0)
+        self.log(trp("⏳ 开始前倒计时 {0} 秒：期间再点一下「开始迁移」可取消", 秒),
+                 level="INFO")
+        self._countdown_tick()
+
+    def _countdown_tick(self):
+        if not getattr(self, "_countdown_running", False):
+            return
+        剩 = self._countdown_end - time.perf_counter()
+        if 剩 <= 0:
+            self._finish_start_countdown()
+            return
+        总 = self._countdown_total or 1.0
+        self._flip_progress(1.0 - max(0.0, 剩) / 总)
+        秒数 = max(1, int(剩 + 0.9999))
+        文案 = trp("⏳ {0} 秒后开始", 秒数)
+        if 文案 != self._countdown_txt:
+            self._countdown_txt = 文案
+            self._flip_back_text(文案)
+        self._countdown_job = self.root.after(40, self._countdown_tick)
+
+    def _finish_start_countdown(self):
+        self._countdown_job = None
+        self._countdown_running = False
+        self._countdown_txt = None
+        self._flip_back_text(None)      # 换回「⏳ 迁移中...」
+        # 真迁移：条归零，接下来由进度队列推真值；模拟运行没有进度队列，
+        # 让它回到默认的来回扫（否则整段时间都停在 0，像死了）。
+        self._flip_progress(None if self.dry_run.get() else 0.0)
+        self._run_migration_entry()
+
+    def _cancel_start_countdown(self):
+        """倒计时期间再点一下：撤销，什么都不动。"""
+        if self._countdown_job is not None:
+            try:
+                self.root.after_cancel(self._countdown_job)
+            except Exception:
+                pass
+        self._countdown_job = None
+        self._countdown_running = False
+        self._countdown_txt = None
+        self._flip_back_text(None)
+        self._flip_progress(None)
+        self._flip_start_btn()
+        self._refresh_busy_state()
+        self.log(trp("ℹ️ 已取消：倒计时期间又点了一下「开始迁移」，没有动任何文件。"),
+                 level="INFO")
+
+    def _run_migration_entry(self):
+        """真正开始（倒计时数完 / 倒计时关掉时直接走这里）。
 
         两段式：先挡住重入、立刻把按钮变灰，再走原来的准备+执行逻辑。
         为什么必须这样：准备阶段（校验清单 / 统计文件大小 / 磁盘检查）可能要几秒，
         期间只要出现过弹窗（messagebox 会开嵌套事件循环），排队的那次点击就会被派发，
         而那时 _migration_running 还没置位 —— 于是一次点击变两次迁移。
         """
-        if self._migration_running or getattr(self, "_starting", False):
-            self.log("⚠️ 已有迁移在进行中（或正在准备），这次点击已忽略",
-                     level="WARNING", save=False)
-            return
         self._starting = True
         # 立刻禁用：既是视觉反馈，也让"点了没反应"变成"按钮本来就是灰的"
         try:
@@ -1221,10 +1371,7 @@ class MigrationMixin:
         # 而且用户容易把"模拟"当成安全的并行操作，实际它和真迁移共用同一套流程）。
         task = self._busy_task_name()
         if task:
-            messagebox.showwarning(
-                "提示",
-                trp("正在执行「{0}」，为避免两个任务同时改动同一批文件，请等它结束后再开始迁移（模拟运行同样需要等待）。", task))
-            self.log(trp("⚠️ 已拦截：{0} 进行中，暂不允许启动迁移", task), level="WARNING")
+            self._warn_file_task_busy(task)
             return
 
         src = self.source_path.get().strip()
@@ -1362,6 +1509,8 @@ class MigrationMixin:
             self._silent_notify_on_finish = True
         else:
             self.progress_queue = queue.Queue()
+            # 背面那条 3px 条按真实进度走，换算要用到总量
+            self._mig_total_size = float(total_size or 0)
             self.progress_window = ProgressWindow(self.root, total_files, total_size)
             if self.after_id is None:
                 self._poll_progress()

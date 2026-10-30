@@ -1051,6 +1051,13 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "平滑滚动速度": "Smooth scrolling speed",
     "迁移历史最多保存": "Migration history limit",
     "份（1–15，超出的删最旧）": "(1–15 saves, oldest deleted when over)",
+    "开始前倒计时": "Start countdown",
+    "秒（1–10，点开始后再点一下可取消）": "seconds (1–10, click again to cancel)",
+    "⏳ {0} 秒后开始": "⏳ Starting in {0}s",
+    "⏳ 开始前倒计时 {0} 秒：期间再点一下「开始迁移」可取消":
+        "⏳ Starting in {0}s — click the button again to cancel",
+    "ℹ️ 已取消：倒计时期间又点了一下「开始迁移」，没有动任何文件。":
+        "ℹ️ Cancelled: clicked again during the countdown. Nothing was touched.",
     # 设置 →「🎨 外观与启动」→ 右下角消息提示的开关
     "显示消息提示（右下角弹出的小卡片）":
         "Show message toasts (small cards in the bottom-right corner)",
