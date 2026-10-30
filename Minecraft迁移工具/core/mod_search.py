@@ -8,10 +8,14 @@
     key 的存放与脱敏全部交给 utils/secrets.py —— 程序不携带 key，也不让它进
     日志 / 报错 / 子进程参数 / 仓库。
 """
+import http.client
 import json
 import os
 import re
+import socket
+import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -33,6 +37,49 @@ MODRINTH_SEARCH = "https://api.modrinth.com/v2/search?query={query}&limit={limit
 # （该接口默认按 date_published 倒序，versions[0] 就是最新）。
 MODRINTH_VERSIONS = "https://api.modrinth.com/v2/project/{project_id}/version?limit=1"
 
+# 网络抖动（连接被重置 / TLS 握手超时 / DNS 抽风）在实测里是偶发的：6 次搜索会挂 1 次
+# 报 "_ssl.c:983: The handshake operation timed out"。这种情况重试一次基本就好了，
+# 而让用户自己再点一次"搜索"很容易被当成"这功能坏了"。
+#
+# 只重试**网络层**的错：HTTP 4xx/5xx 是服务端明确表态，重试只会白烧配额
+# （CurseForge 还会计入每日额度），所以 HTTPError 一律直接抛，不重试。
+_最大尝试 = 2          # 一共试几次（2 = 失败后再试一次）
+_重试间隔 = 0.6        # 两次之间停多久（秒）
+_可重试异常 = (urllib.error.URLError, TimeoutError, socket.timeout,
+               ConnectionError, ssl.SSLError, http.client.HTTPException,
+               OSError)
+
+
+def _像是网络抖动(e):
+    """HTTPError 是 URLError 的子类，必须先排掉它。"""
+    if isinstance(e, urllib.error.HTTPError):
+        return False
+    return isinstance(e, _可重试异常)
+
+
+def _带重试(动作, 说明="请求"):
+    """跑一次 动作()；遇到网络抖动就隔 _重试间隔 再跑，最多 _最大尝试 次。
+
+    全部失败时抛最后一次的异常，并在文字后面补一句「已自动重试」，让界面上的
+    报错能解释为什么比平时慢了一拍。
+    """
+    用过重试 = False
+    for 次 in range(_最大尝试):
+        try:
+            return 动作()
+        except Exception as e:
+            if not _像是网络抖动(e) or 次 + 1 >= _最大尝试:
+                if 用过重试:
+                    # 别把 URLError 的包装再套一层（"<urlopen error <urlopen
+                    # error timed out>>" 这种东西不该出现在界面上），只取原因。
+                    原因 = getattr(e, "reason", None) or e
+                    raise RuntimeError("%s（已自动重试 %d 次仍然失败）"
+                                       % (原因, _最大尝试 - 1)) from e
+                raise
+            用过重试 = True
+            time.sleep(_重试间隔)
+    raise RuntimeError("%s 失败" % 说明)
+
 
 def _json_get(url, timeout=15):
     """带 UA 的 GET，返回解析后的 JSON。失败时抛异常。
@@ -43,15 +90,17 @@ def _json_get(url, timeout=15):
     from utils import netmeter
     netmeter.add_request()
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        netmeter.add_sent(len(url) + sum(len(k) + len(v) for k, v in req.headers.items()))
+    netmeter.add_sent(len(url) + sum(len(k) + len(v) for k, v in req.headers.items()))
+
+    def 发():
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            原始 = resp.read()
-        netmeter.add_recv(len(原始))
-        netmeter.add_event(len(url), len(原始))
-        return json.loads(原始.decode("utf-8", errors="replace"))
-    except Exception:
-        raise
+            内容 = resp.read()
+        netmeter.add_recv(len(内容))
+        netmeter.add_event(len(url), len(内容))
+        return 内容
+
+    原始 = _带重试(发, "搜索请求")
+    return json.loads(原始.decode("utf-8", errors="replace"))
 
 
 def _search_url(query, limit, mc_version="", loader=""):
@@ -449,10 +498,14 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
                              for kk, vv in req.headers.items()
                              if kk.lower() != "x-api-key")
         netmeter.add_sent(上行)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            原始 = resp.read()
-        netmeter.add_recv(len(原始))
-        netmeter.add_event(上行, len(原始))
+        def 发():
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                内容 = resp.read()
+            netmeter.add_recv(len(内容))
+            netmeter.add_event(上行, len(内容))
+            return 内容
+
+        原始 = _带重试(发, "CurseForge 请求")
         return json.loads(原始.decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
