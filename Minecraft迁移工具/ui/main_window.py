@@ -404,7 +404,7 @@ class MigrationGUI(
             pass
 
     # ---------- 消息提示（吐司）----------
-    def toast(self, 文本, level="info", ms=3000, sticky=None, 弹入=True, key=None):
+    def toast(self, 文本, level="info", ms=None, sticky=None, 弹入=True, key=None):
         """整个程序统一的消息入口：右下角弹一条吐司（不写日志、不弹 messagebox）。
 
         文本先过 i18n.tr —— 和 log() 一样，词条表里有的才翻得到；
@@ -412,6 +412,14 @@ class MigrationGUI(
         绝不抛异常：吐司是锦上添花，不能把调用它的功能弄崩。
         """
         文 = i18n.tr(文本)
+        # 停留时长：调用方没指定就按字数算（长文案多赖一会儿，才读得完）。
+        # 指定了 ms 的（有些提示刻意要短/要长）尊重原值。
+        try:
+            from ui.toast import 停留时长
+            ms = 停留时长(文, ms)
+        except Exception:
+            if ms is None:
+                ms = 3000
         # 文案开头自带 ⚠️/✅/❌ 这类符号时，会和左侧的等级图标**重复画成两个图标**
         # （用户报"警告图标左边还有个奇怪的符号"）。等级本来就由图标+色条表达，
         # 所以在这个唯一入口把开头那几个符号剥掉；消息中心存的是同一份干净文案。
