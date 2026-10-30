@@ -72,6 +72,8 @@
 
 ### 开始迁移按钮（3D 翻转）`ui/flip_button.py`（1234 行）
 
+详细交接（任务来源、取舍、自测步骤）：`docs/HANDOFF-flip-button.md`
+
 - 只换了「开始迁移」这一个按钮（`mw_pages.py:687` 把 `create_gradient_button` 换成
   `create_flip_button`）；其余 86 个按钮仍是 `helpers.py:1684` 的老工厂
 - **视觉语言照抄 `特效2.py` 原型**（用户原话「我想要原特效文件一模一样的按钮，不要模仿
