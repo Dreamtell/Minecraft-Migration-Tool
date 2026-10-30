@@ -58,6 +58,9 @@ class RoundedTabs(tk.Frame):
         # （377 个模组就是 377 个卡片控件），主线程会卡好几秒 —— 用户点几下标签就
         # 弹出"未响应"，就是这么来的（`_refresh_busy_state` 禁用了所有按钮，却漏了标签栏）。
         self.locked = False
+        # 切页回调（收到 index）。主界面用它记住"上次停在哪一页"；
+        # 设置窗那几个标签不需要，留 None 就行。
+        self.on_change = None
 
         self.bar.bind("<Button-1>", self._on_click)
         self.bar.bind("<Motion>", self._on_motion)
@@ -198,6 +201,26 @@ class RoundedTabs(tk.Frame):
             self._slide_sel(x0, tgt["x"])
         else:
             self.bar.coords(self._sel_item, tgt["x"], PILL_Y)
+
+        # 页、选中块都摆好了再通知。回调里如果又去 select() 也不会打架
+        # （select 开头有 index == self._cur 的早退）。
+        cb = getattr(self, "on_change", None)
+        if cb is not None:
+            try:
+                cb(index)
+            except Exception:
+                from utils.helpers import trace_exc
+                trace_exc()
+
+        # 页、选中块都摆好了再通知。回调里如果又去 select() 也不会打架
+        # （select 开头有 index == self._cur 的早退）。
+        cb = getattr(self, "on_change", None)
+        if cb is not None:
+            try:
+                cb(index)
+            except Exception:
+                from utils.helpers import trace_exc
+                trace_exc()
 
     def set_theme(self, theme):
         """换主题：重出图、重画（设置窗一般整窗重建，这个留给以后复用）。"""

@@ -296,6 +296,10 @@ class PagesMixin:
         self._create_modlist_page(page_mod)
         self._create_config_page(page_cfg)
         self._create_extra_page(page_extra)
+        # 建页过程中 page() 会调一次 select(0)，那会儿挂回调会白写一次盘，
+        # 所以等全部就位后再挂。真正"跳回上次那一页"由 _restore_list_tab() 做 ——
+        # 它必须等配置读完才能调（界面先建、配置后读）。
+        self.list_tabs.on_change = self._on_list_tab_changed
         # 标签行建好之后落一次形态（收起状态在启动时就要生效）
         self._pack_warning_layout(bool(getattr(self, "pack_warning_collapsed", False)))
         # 出错条目在清单里标红（迁移日志报错时自动打上；配置也放这儿，三个页共用）
@@ -321,6 +325,38 @@ class PagesMixin:
         except Exception:
             pass
         return 源, 标
+
+    def _restore_list_tab(self):
+        """跳回上次停的那一页（0 模组 / 1 config / 2 其它）。
+
+        必须在配置读完之后调：界面是先建的、配置是后读的，建设期还拿不到 list_tab。
+        """
+        try:
+            页签 = getattr(self, "list_tabs", None)
+            if 页签 is None:
+                return
+            页 = max(0, min(len(页签.labels()) - 1,
+                          int(getattr(self, "list_tab", 0) or 0)))
+            if 页 > 0:
+                页签.select(页, animate=False)
+        except Exception:
+            from utils.helpers import trace_exc
+            trace_exc()
+
+    def _on_list_tab_changed(self, 索引):
+        """记住用户停在三份清单的哪一页（下次启动直接回到这里）。"""
+        try:
+            页 = max(0, min(2, int(索引)))
+        except Exception:
+            return
+        if int(getattr(self, "list_tab", 0) or 0) == 页:
+            return
+        self.list_tab = 页
+        try:
+            self.save_config()
+        except Exception:
+            from utils.helpers import trace_exc
+            trace_exc()
 
     def _on_pack_warning_collapsed(self, 收起):
         """提醒条收成 ⚠ 药丸 / 展开回横幅：记住形态，下次启动保持。"""

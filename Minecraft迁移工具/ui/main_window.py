@@ -64,6 +64,13 @@ class MigrationGUI(
         self.root.geometry(window_geometry(self.root, 1000, 1080))
 
         self.config = self.load_config()
+        # 上次停在三份清单的哪一页（0 模组 / 1 config / 2 其它）。
+        # **必须在这儿读**：界面建完之后、正式配置段之前，别处可能已经调过
+        # save_config()，那时这个键还不存在，会把用户上次的位置写成 0。
+        try:
+            self.list_tab = max(0, min(2, int(self.config.get("list_tab", 0))))
+        except Exception:
+            self.list_tab = 0
         self.edit_mode = tk.BooleanVar(value=self.config.get("edit_enabled", False))
         # 点窗口空白处是否顺手退出「主界面编辑」（设置 →「🎨 外观与启动」可关）
         self.blank_exit_edit = tk.BooleanVar(
@@ -291,6 +298,11 @@ class MigrationGUI(
             self.start_countdown = max(1, min(10, int(self.config.get("start_countdown", 5))))
         except Exception:
             self.start_countdown = 5
+        # 界面已经建好了，把页签跳回上次那一页
+        try:
+            self._restore_list_tab()
+        except Exception:
+            pass
         # 平滑滚动速度档位（1 最慢 … 5 最快，默认 3 = 原版标定）
         try:
             from utils.helpers import SmoothScroller
@@ -560,6 +572,8 @@ class MigrationGUI(
             "history_limit": int(getattr(self, "history_limit", 10) or 10),
             # 开始前倒计时秒数（1~10）。不写进来，下次改任何设置都会把它抹回默认
             "start_countdown": int(getattr(self, "start_countdown", 5) or 5),
+            # 上次停在三份清单的哪一页（0/1/2）
+            "list_tab": int(getattr(self, "list_tab", 0) or 0),
             "pack_warning_collapsed": bool(getattr(self, "pack_warning_collapsed", False)),
             # 右下角吐司消息的总开关（缺省开）。不写进来，用户下次改任何设置都会把它抹掉
             "toast_on": bool(getattr(self, "toast_on", True)),
