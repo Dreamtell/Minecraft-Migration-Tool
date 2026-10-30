@@ -908,10 +908,17 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         return result_items.get(iid) if iid else None
 
     def on_row_click(event):
-        """点击结果行 -> 该行单独标绿色选中标签，其余恢复基础标签（不触发 ttk 灰色选中态）。"""
+        """点击结果行 -> 该行单独标绿色选中标签；**再点一次同一行 = 取消选中**。"""
         try:
             row = tree.identify_row(event.y)
             if not row:
+                return
+            if current_sel[0] == row:
+                # 第二次点同一行：取消选中，所有行恢复本来颜色
+                current_sel[0] = None
+                for iid in tree.get_children():
+                    bt = base_tag.get(iid, "")
+                    tree.item(iid, tags=(bt,) if bt else ())
                 return
             current_sel[0] = row
             for iid in tree.get_children():

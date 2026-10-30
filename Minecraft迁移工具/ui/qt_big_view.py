@@ -2474,6 +2474,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             hh.setSectionResizeMode(i, QtWidgets.QHeaderView.Interactive)
         hh.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.table.doubleClicked.connect(self._open_project_page)
+        # 再点一次同一行 = 取消选中（用户要求：选中的高亮要能再点一下点掉）
+        self.table.clicked.connect(self._on_row_clicked)
 
         # ---- 卡片视图：和放大查看/差异窗口同一套自绘卡片 ----
         # 数据源是同一个 SearchModel.rows，所以两个视图永远一致（不会各存一份）
@@ -2541,6 +2543,13 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.btn_dl.clicked.connect(self._open_download_page)
         self.btn_copy.clicked.connect(self._copy_download)
         self.btn_close.clicked.connect(self.close)
+        # 表格的选中态一变就重算那三个按钮的亮/灰（刚打开、没结果时是灰的）
+        try:
+            self.table.selectionModel().selectionChanged.connect(
+                lambda *_a: self._update_row_buttons())
+        except Exception:
+            pass
+        self._update_row_buttons()
 
     # ---------------- 版本 / 加载器过滤 ----------------
     def _build_filter_row(self, lay, th):
@@ -2645,6 +2654,15 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                 if t == QtCore.QEvent.MouseMove:
                     idx = self.table.indexAt(ev.pos())
                     self._set_hover(idx.row() if idx.isValid() else -1)
+                elif t == QtCore.QEvent.MouseButtonPress:
+                    # 按下去的这一瞬间 Qt 还没改选中态，正好用来记"这行原来选中没有"；
+                    # 松手后 clicked 里据此判断"是不是第二次点同一行"。
+                    idx = self.table.indexAt(ev.pos())
+                    self._按下前行 = idx.row() if idx.isValid() else -1
+                    _选择 = self.table.selectionModel()
+                    self._按下前已选 = bool(
+                        idx.isValid() and _选择 is not None
+                        and _选择.isRowSelected(idx.row(), QtCore.QModelIndex()))
                 elif t == QtCore.QEvent.Leave:
                     self._set_hover(-1)
             elif obj is self.cards.viewport():
@@ -2707,6 +2725,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             self._select_card(idx.row() if idx.isValid() else -1)
         elif self._sel_row >= 0:
             self.table.selectRow(self._sel_row)
+        self._update_row_buttons()
 
     def _select_card(self, row):
         """卡片视图里"选中哪一行" —— 底部那几个按钮作用在它上面。"""
@@ -2719,9 +2738,26 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         if hasattr(self, "cards"):
             self.cards.viewport().update()
 
+    def _on_row_clicked(self, index):
+        """表格里点一下选中、再点同一下取消。"""
+        if not index.isValid():
+            return
+        row = index.row()
+        if row == getattr(self, "_按下前行", -1) and getattr(self, "_按下前已选", False):
+            self.table.clearSelection()
+            # currentIndex 也得清：不清的话它仍指着那一行，_current() 会继续把它
+            # 当"选中的"，底部按钮就还能拿它开刀。
+            self.table.setCurrentIndex(QtCore.QModelIndex())
+            self._按下前已选 = False
+            self._update_row_buttons()
+
     def _on_card_click(self, index):
-        if index.isValid():
-            self._select_card(index.row())
+        if not index.isValid():
+            return
+        # 再点一次已经选中的卡片 = 取消选中（和表格那边一致）
+        row = index.row()
+        self._select_card(-1 if row == self._sel_row else row)
+        self._update_row_buttons()
 
     def _set_hover(self, row):
         """只重绘换过的那两行（划出去的和划进来的），整表刷一帧太亏。"""
@@ -2828,6 +2864,11 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.model.set_results(results, modid, name)
         self.card_store.rebuild()          # 卡片视图看的是同一批 rows
         self._sel_row = -1
+        # 新结果默认选中第一行：底部那三个按钮立刻能用（不然得先自己点一行才知道
+        # 它们能点）。"再点一次取消选中"照样有效 —— 想清掉高亮就再点它一下。
+        if self.model.rows:
+            self.table.selectRow(0)
+        self._update_row_buttons()
         n = len(self.model.rows)
         if not n:
             过滤 = self.model.filter_text()
@@ -2910,14 +2951,33 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             return False
 
     def _current(self) -> dict:
-        """当前选中的那一行（表格看 Qt 选中，卡片看 _sel_row）—— 底部按钮作用在它上面。"""
-        idx = self.table.currentIndex()
-        row = idx.row() if idx.isValid() else 0
-        if self._card_mode() and self._sel_row >= 0:
-            row = self._sel_row
+        """当前选中的那一行（表格看 Qt 选中，卡片看 _sel_row）—— 底部按钮作用在它上面。
+
+        什么都没选中就返回空字典。以前这里 `else 0` 兜底成第 0 行，于是"再点一次
+        取消选中"之后按「打开下载页」还会偷偷去开第一条 —— 高亮没了却还在操作它。
+        """
         if not self.model.rows:
             return {}
+        if self._card_mode():
+            row = self._sel_row
+        else:
+            idx = self.table.currentIndex()
+            row = idx.row() if idx.isValid() else -1
+        if row < 0:
+            return {}
         return self.model.item(max(0, min(row, len(self.model.rows) - 1)))
+
+    def _update_row_buttons(self):
+        """底部三个操作按钮跟着"有没有选中行"亮/灰 —— 没选中就没有操作对象。"""
+        有 = bool(self._current())
+        for 名 in ("btn_page", "btn_dl", "btn_copy"):
+            钮 = getattr(self, 名, None)
+            if 钮 is None:
+                continue
+            try:
+                钮.setEnabled(有)
+            except Exception:
+                pass
 
     def _open_project_page(self, *_a):
         r = self._current()
