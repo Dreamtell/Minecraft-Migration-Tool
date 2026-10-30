@@ -561,7 +561,15 @@ class LockMixin:
                     # RoundedEntry 是 Frame + 内层 tk.Entry：state 只有内层认
                     # （直接对 Frame configure(state=...) 会抛 unknown option -state，
                     #  被 except 吞掉 → 看着"锁了"，其实没锁）。
-                    getattr(框, "entry", 框).configure(state=state)
+                    内 = getattr(框, "entry", 框)
+                    if locked:
+                        # tk.Entry 一旦 disabled，Windows 会拿系统的"灰底灰字"来画，
+                        # 落在深色圆角框里就是一块亮灰色砖头（用户截图："难看"）。
+                        # readonly 也一样走系统色，没用。正解是把 disabled 的两套颜色
+                        # 指回它自己的底色/字色 —— 看不出变化，但改不动了。
+                        内.configure(disabledbackground=内.cget("bg"),
+                                    disabledforeground=内.cget("fg"))
+                    内.configure(state=state)
             except Exception as e:
                 trace_exc("main_window/锁输入框 %s" % 名, e)
         for 名 in ("dry_run_sw", "overwrite_sw"):
