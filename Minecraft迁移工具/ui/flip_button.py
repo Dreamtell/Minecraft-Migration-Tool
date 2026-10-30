@@ -418,6 +418,12 @@ class FlipButton(tk.Canvas):
         self._base_colors = tuple(self._front_colors)
 
         self._img_id = self.create_image(0, 0, anchor="nw", tags="face")
+        # 底部那条进度单独做一个画布项：倒计时时它每秒要变上百次，跟整面一起合成的话
+        # 每变一次都得重烤一整张面（实测 ~4.5ms），看着就是一顿一顿的。拆出来之后
+        # 面只在斜纹相位变化时换图（还都命中相位表），条只换一张 w×3 的裁剪图。
+        self._bar_id = self.create_image(0, 0, anchor="nw", tags="bar",
+                                         state="hidden")
+        self._bar_cache = {}
         self._txt_id = self.create_text(self._cw // 2, self._ch // 2, text="",
                                         fill=self._pal["idle"]["title"],
                                         font=self._txt_font_pick(),
@@ -627,49 +633,75 @@ class FlipButton(tk.Canvas):
         _layer_cache[key] = ov
         return ov
 
-    def _progress_layer(self, t):
-        """底部 3px 条。
+    def _decor_u(self, t):
+        """装饰性的来回扫宽度（只表示在忙，与时间无关）：6% → 100% → 6%。"""
+        return max(_PROGRESS_MIN, 0.5 - 0.5 * math.cos(t * 2.6))
 
-        默认是装饰性的来回扫（宽 = w*max(0.06, 0.5-0.5cos(t*2.6))）—— 它只表示"在忙"，
-        和时间无关。倒计时/真实迁移进度会通过 set_back_progress() 把 _prog_override 设成
-        0..1，那时这条就是真进度（从左往右涨），不再是来回扫。
-        """
-        w, h = self._cw, self._ch
-        if self._prog_override is None:
-            u = 0.5 - 0.5 * math.cos(t * 2.6)
-            pw = max(1, int(round(w * max(_PROGRESS_MIN, u))))
-            key = ("prog", w, h, pw, self._scheme)
-        else:
-            u = max(0.0, min(1.0, float(self._prog_override)))
-            pw = int(round(w * u))
-            # 量化到 1/200：进度回调每秒几十次，不量化会每帧烤一张新图。
-            key = ("prog", w, h, "o%d" % int(round(u * 200)), self._scheme)
-            if pw <= 0:
-                # 0 = 一点都没走，干脆不画（返回一张全透明的层，缓存里也存它）
-                hit = _layer_cache.get(key)
-                if hit is not None:
-                    return hit
-                blank = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
-                _layer_cache[key] = blank
-                return blank
+    def _bar_u(self):
+        """这一帧该画的条宽：真进度优先，没有就回到装饰性的来回扫。"""
+        if self._prog_override is not None:
+            return self._prog_override
+        return self._decor_u(self._back_phase() * _BACK_DT)
+
+    def _bar_strip(self):
+        """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
+        key = ("barstrip", self._cw, self._ch, self._scheme)
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
-        ov = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        _ImageDraw.Draw(ov).rectangle(
-            [0, h - _PROGRESS_H, pw - 1, h - 1],
-            fill=_rgb(self._pal["search"]["accent"]) + (255,))
-        ov.putalpha(_ImageChops.multiply(ov.getchannel("A"), _clip_mask(w, h)))
+        w, h = self._cw, self._ch
+        strip = _Image.new("RGBA", (w, _PROGRESS_H),
+                           _rgb(self._pal["search"]["accent"]) + (255,))
+        strip.putalpha(_ImageChops.multiply(
+            strip.getchannel("A"), _clip_mask(w, h).crop((0, h - _PROGRESS_H, w, h))))
         if len(_layer_cache) > 220:
             _layer_cache.clear()
-        _layer_cache[key] = ov
-        return ov
+        _layer_cache[key] = strip
+        return strip
+
+    def _bar_photo(self, u):
+        """宽度 u（0..1）那一段的条贴图。裁剪是 C 层操作，比重新合成整面便宜得多。"""
+        w = self._cw
+        try:
+            pw = int(round(w * max(0.0, min(1.0, float(u)))))
+        except Exception:
+            pw = 0
+        pw = max(0, min(w, pw))
+        if pw in self._bar_cache:
+            return self._bar_cache[pw]
+        photo = None
+        if pw > 0:
+            try:
+                photo = _ImageTk.PhotoImage(self._bar_strip().crop((0, 0, pw, _PROGRESS_H)))
+            except Exception:
+                photo = None
+        if len(self._bar_cache) > 400:
+            self._bar_cache.clear()
+        self._bar_cache[pw] = photo
+        return photo
+
+    def _apply_bar(self, u=None):
+        """刷底部那条：u=None 就藏起来（正面 / 翻转中）。"""
+        if not _PIL_OK:
+            return
+        try:
+            photo = None if u is None else self._bar_photo(u)
+            if photo is None:
+                self.itemconfigure(self._bar_id, state="hidden")
+            else:
+                self.coords(self._bar_id, 0, self._ch - _PROGRESS_H)
+                self.itemconfigure(self._bar_id, image=photo, state="normal")
+        except Exception:
+            pass
 
     def _back_layer(self, t):
-        """背面整层（不含底色）：红面 + 斜纹 + 进度条。翻转帧和静止帧共用。"""
+        """背面整层（不含底色、不含底部进度条）：红面 + 斜纹。翻转帧和静止帧共用。
+
+        底部进度条不在这里合成 —— 它是独立画布项（见 _apply_bar），否则进度一变就要
+        重烤一整张面。
+        """
         face = self._face_rgba("search", self._pal["search"], 0.0, False)
-        return _Image.alpha_composite(
-            _Image.alpha_composite(face, self._stripe_layer(t)), self._progress_layer(t))
+        return _Image.alpha_composite(face, self._stripe_layer(t))
 
     # ------------------------------------------------------------ 贴图：底 + 面 + 图标
     def _photo(self, key, layer):
@@ -931,6 +963,7 @@ class FlipButton(tk.Canvas):
         self._hold_hr()          # 不 raise 定时器精度，after(16) 实测只有 42fps
         self._anim_target = direction
         self.itemconfigure(self._txt_id, state="hidden")
+        self._apply_bar(None)
         if self._dots_id is not None:
             self.itemconfigure(self._dots_id, state="hidden")
         if self._icon_img_id is not None:
@@ -996,6 +1029,12 @@ class FlipButton(tk.Canvas):
         （可能几分钟），给 30fps 就够了 —— 别让整机一直挂在 1ms 定时器上。
         """
         if self._at_back:
+            if self._prog_override is not None:
+                # 有条真进度在跑：条要跟刷新率走（换的是一张 w×3 的裁剪图，很便宜）。
+                try:
+                    return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
+                except Exception:
+                    return _UI_MS
             return _UI_MS
         try:
             return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
@@ -1060,6 +1099,7 @@ class FlipButton(tk.Canvas):
         try:
             if self._at_back:
                 self.itemconfigure(self._img_id, image=self._back_photo(self._back_phase()))
+                self._apply_bar(self._bar_u())
                 self._tick_dots(now)
             else:
                 target = 1.0 if self._hover else 0.0
@@ -1117,6 +1157,7 @@ class FlipButton(tk.Canvas):
         else:
             photo = self._back_photo(self._back_phase())
         self.itemconfigure(self._img_id, image=photo)
+        self._apply_bar(None if front else self._bar_u())
         if self._icon is not None:
             if self._icon_img_id is None:
                 self._icon_img_id = self.create_image(
@@ -1275,7 +1316,8 @@ class FlipButton(tk.Canvas):
             return
         self._prog_override = 新
         if self._at_back and not self._animating:
-            self._draw_rest()
+            self._apply_bar(self._bar_u())
+            self._ensure_tick()     # 条在动，tick 得活着（也是提速的依据）
 
     def state(self, new_state=None):
         """像 tk.Button 一样切 normal/disabled（禁用时整颗按钮变暗灰、点击无效）。"""

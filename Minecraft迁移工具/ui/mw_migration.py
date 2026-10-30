@@ -1198,7 +1198,7 @@ class MigrationMixin:
     def _countdown_seconds(self):
         """设置里的倒计时秒数（1~10）。0 = 关掉，点了就直接开跑。"""
         try:
-            return max(0, min(10, int(getattr(self, "start_countdown", 3))))
+            return max(0, min(10, int(getattr(self, "start_countdown", 5))))
         except Exception:
             return 3
 
@@ -1311,7 +1311,8 @@ class MigrationMixin:
         if 文案 != self._countdown_txt:
             self._countdown_txt = 文案
             self._flip_back_text(文案)
-        self._countdown_job = self.root.after(40, self._countdown_tick)
+        # 16ms：条单独画了之后刷新很便宜，25 次/秒看着会一格一格跳
+        self._countdown_job = self.root.after(16, self._countdown_tick)
 
     def _finish_start_countdown(self):
         self._countdown_job = None

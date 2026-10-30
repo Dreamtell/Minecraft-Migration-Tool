@@ -277,7 +277,7 @@ class SettingsMixin:
                  fg=self.theme.get("muted_fg", "#888888"),
                  font=("微软雅黑", 8)).pack(side="left", padx=(px(8), 0))
         self.countdown_slider = SliderRow(
-            box1, self.theme, 1, 10, value=getattr(self, "start_countdown", 3),
+            box1, self.theme, 1, 10, value=getattr(self, "start_countdown", 5),
             release=self._set_start_countdown, height=px(34))
         self.countdown_slider.pack(fill="x", pady=(px(4), 0))
         self._settings_sliders.append(self.countdown_slider)
@@ -963,7 +963,7 @@ class SettingsMixin:
             新 = max(1, min(10, int(值)))
         except Exception:
             新 = 3
-        if 新 == int(getattr(self, "start_countdown", 3)):
+        if 新 == int(getattr(self, "start_countdown", 5)):
             return
         self.start_countdown = 新
         try:

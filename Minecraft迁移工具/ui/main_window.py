@@ -288,9 +288,9 @@ class MigrationGUI(
         # 点「开始迁移」后先倒数几秒（1~10，默认 3）。误点有后悔窗口，
         # 倒计时期间再点一下按钮就取消。模拟运行走同一套。
         try:
-            self.start_countdown = max(1, min(10, int(self.config.get("start_countdown", 3))))
+            self.start_countdown = max(1, min(10, int(self.config.get("start_countdown", 5))))
         except Exception:
-            self.start_countdown = 3
+            self.start_countdown = 5
         # 平滑滚动速度档位（1 最慢 … 5 最快，默认 3 = 原版标定）
         try:
             from utils.helpers import SmoothScroller
@@ -551,7 +551,7 @@ class MigrationGUI(
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
             "history_limit": int(getattr(self, "history_limit", 10) or 10),
             # 开始前倒计时秒数（1~10）。不写进来，下次改任何设置都会把它抹回默认
-            "start_countdown": int(getattr(self, "start_countdown", 3) or 3),
+            "start_countdown": int(getattr(self, "start_countdown", 5) or 5),
             "pack_warning_collapsed": bool(getattr(self, "pack_warning_collapsed", False)),
             # 右下角吐司消息的总开关（缺省开）。不写进来，用户下次改任何设置都会把它抹掉
             "toast_on": bool(getattr(self, "toast_on", True)),
