@@ -386,6 +386,10 @@ class _抽屉:
         # 内容层：place 内缩，四角的圆弧由下面的面板图显示
         内 = tk.Frame(容器, bg=装)
         内.place(x=内缩, y=内缩, width=卡宽 - 2 * 内缩, height=高 - 2 * 内缩)
+        self._内 = 内
+        self._内缩 = 内缩
+        # 展开/收回时内容横着飘的距离：不能超过内缩留白，否则会被窗口边缘切掉。
+        self._漂移 = max(0, min(int(px(14)), 内缩 + 4))
 
         # 顶栏：标题 + 条数徽标 + 关闭（原来还挂一行灰色副标题，把标题区压成三层，
         # 视觉上很挤；提示文字挪到底部做脚注）
@@ -677,7 +681,7 @@ class _抽屉:
                 return
             宽, 高, x, y = self._目标几何()
             self._目标 = (宽, 高, x, y)
-            偏移 = self._当前左(0) if _WIN11 else 0
+            偏移 = 0          # Win11 下动画不挪窗口，见 _animate 里的注释
             self.win.geometry("%dx%d+%d+%d" % (宽, 高, x + 偏移, y))
             卡宽 = self._卡宽()
             self._容器.place_configure(width=卡宽, height=高)
@@ -696,14 +700,9 @@ class _抽屉:
         # 显示之前把区域收成"零宽"：deiconify 渲的第一帧只能是空的，
         # 不会先整块露一下再从右边长出来（那就是"闪一下"）
         self._左 = 宽
-        # Win11 走"移窗口"，不裁区域：设了区域等于把整块裁没，窗口再滑过来也是空的。
-        # 但得先把它摆到屏幕外（否则 deiconify 那一帧会整张卡闪一下再滑）。
-        if _WIN11:
-            try:
-                self.win.geometry("%dx%d+%d+%d"
-                                  % (宽, 高, self._目标[2] + 宽, self._目标[3]))
-            except Exception:
-                pass
+        # Win11：既不挪窗口也不裁区域 —— 窗口就是卡片，形状和圆角全交给 DWM。
+        # （挪窗口在窗口最大化时会跑到屏幕外：实测"打开动画没了、收回跑出边框"；
+        #  裁区域又会留一条没抗锯齿的硬边。两条都不走。）
         if not _WIN11:
             try:
                 _裁区域(self.win, 宽, 卡宽, 高, self._半径())
@@ -752,6 +751,13 @@ class _抽屉:
         # 而不是先跳回 0 再抽走（那样会看到一下弹跳）
         self._animate(self._当前左(0), 宽, 结束后=self._destroy)
 
+    def _移内容(self, 漂):
+        """Win11 下动画只动内容：卡片本身（四条边 + 圆角）一动不动。"""
+        try:
+            self._内.place_configure(x=self._内缩 + int(漂))
+        except Exception:
+            pass
+
     def _animate(self, 起, 终, 结束后=None):
         """只改两样东西：窗口区域（展开/收拢）+ alpha（淡入淡出）。
 
@@ -778,15 +784,14 @@ class _抽屉:
                 上次[0] = 左
                 self._左 = 左
                 if _WIN11:
-                    # 整张卡（连右边框）一起从右边滑进来。
-                    # 以前是"窗口不动、用区域把卡片从左边一点点切出来"，结果卡片
-                    # 自己的右边框钉在屏幕右边一动不动 —— 用户看到的就是"动画里
-                    # 边框还立在那"。
-                    try:
-                        self.win.geometry("%dx%d+%d+%d"
-                                          % (self._目标[0], 高, 目标x + 左, self._目标[3]))
-                    except Exception:
-                        pass
+                    # 几何一律不动。挪窗口在父窗最大化时会跑到屏幕外（实测：
+                    # 「打开动画没了，收回动画都跑出窗口边框」）；裁区域又会留下
+                    # 一条没有抗锯齿的硬边（「边框还立在那」）。所以只让内容横着
+                    # 飘一点点，卡片四条边从头到尾一动不动，靠 alpha 撑起"从右侧
+                    # 进来"的观感。
+                    总 = max(1, max(abs(起), abs(终)))
+                    漂 = int(round(self._漂移 * (float(左) / float(总))))
+                    self._移内容(漂)
                 else:
                     try:
                         _裁区域(self.win, 左, 卡宽, 高, 半径)
@@ -794,7 +799,12 @@ class _抽屉:
                         pass
             # alpha：开 前 45% 淡到 1；收 后 40% 淡到 0。
             # 区域边是硬的（SetWindowRgn 没有抗锯齿），淡一下才不显得是在"跳"。
-            a = max(0.0, 1.0 - (k - 0.6) / 0.4) if 收 else min(1.0, k / 0.45)
+            if _WIN11:
+                # Win11 没有位移可看，淡入就摊到整段时长（不然 117ms 就到 1，
+                # 剩下 140ms 什么都没发生，看着像"卡了一下才出现"）。
+                a = max(0.0, 1.0 - k) if 收 else min(1.0, k)
+            else:
+                a = max(0.0, 1.0 - (k - 0.6) / 0.4) if 收 else min(1.0, k / 0.45)
             if 上次[1] is None or abs(a - 上次[1]) > 0.04 or k >= 1.0:
                 上次[1] = a
                 try:
@@ -808,13 +818,9 @@ class _抽屉:
                     self._job = None
             else:
                 self._job = None
+                if _WIN11:
+                    self._移内容(0)
                 if _WIN11 and not 收:
-                    try:
-                        self.win.geometry("%dx%d+%d+%d"
-                                          % (self._目标[0], self._目标[1],
-                                             目标x, self._目标[3]))
-                    except Exception:
-                        pass
                     # 展开了：撤掉区域，圆角重新交给 DWM（留着会把 DWM 的圆角
                     # 按 1-bit 形状切掉，又变回楼梯）。
                     # ⚠ 必须在撤完**再下一次**属性：deiconify 会重建 HWND、
