@@ -71,6 +71,10 @@ class MigrationGUI(
             self.list_tab = max(0, min(2, int(self.config.get("list_tab", 0))))
         except Exception:
             self.list_tab = 0
+        # 整合包更新提醒只能收起、不能关：只记形态（False = 整条横幅，True = 仅 ⚠ 图标）。
+        # **同样必须在这儿读** —— 提醒条是建界面时按这个值摆位的（mw_pages 里
+        # 建条时读一次、随后又调一次 _pack_warning_layout），读晚了就永远是展开态。
+        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", False))
         self.edit_mode = tk.BooleanVar(value=self.config.get("edit_enabled", False))
         # 点窗口空白处是否顺手退出「主界面编辑」（设置 →「🎨 外观与启动」可关）
         self.blank_exit_edit = tk.BooleanVar(
@@ -310,8 +314,6 @@ class MigrationGUI(
             SmoothScroller.set_speed(self.scroll_speed)
         except Exception:
             self.scroll_speed = 3
-        # 整合包更新提醒只能收起、不能关：只记形态（False = 整条横幅，True = 仅 ⚠ 图标）
-        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", False))
         self.float_edge_fx = bool(self.config.get("float_edge_fx", True))
         self.net_float_shadow = bool(self.config.get("net_float_shadow", True))
         self.net_float_dock = bool(self.config.get("net_float_dock", True))
