@@ -21,6 +21,7 @@ from ui.mw_common import (
 from utils import i18n
 from utils import secrets
 from utils.dpi import px
+from ui.slider_row import SliderRow
 from utils.helpers import (
     DataText, OptionCards, RoundedEntry, SegmentedControl, SmoothScroller, SwitchRow,
     center_window, create_gradient_button, focus_window, set_window_icon,
@@ -138,6 +139,7 @@ class SettingsMixin:
         self._settings_segs = []
         self._settings_cards = []
         self._settings_sws = []
+        self._settings_sliders = []
         # 名字 → 控件：同一个选项组（比如 _BIG_VIEW_BACKENDS 被两处复用）光按"值"找
         # 会找错，所以起个名，验证脚本和自己要回头取的时候都靠它。
         self._settings_seg_map = {}
@@ -374,23 +376,21 @@ class SettingsMixin:
         self.settings_confirm_sw.pack(fill="x", pady=(10, 0))
         self.settings_confirm_sw.set(self.confirm_migrate.get())
 
-        # ---------- 迁移历史保存上限 ----------
+        # ---------- 迁移历史保存上限（滑杆） ----------
+        # 原来是「－ 数字 ＋」三个控件：1~15 要点十几次才到顶，还得先数清点了几下。
+        # 换成一条滑杆：点轨道任意位置直接跳，拖动、滚轮、左右方向键都能改。
         row_hist = tk.Frame(box_m, bg=self.theme["bg"])
         row_hist.pack(fill="x", pady=(10, 0))
-        tk.Label(row_hist, text="迁移历史最多保存", bg=self.theme["bg"],
+        tk.Label(row_hist, text=trp("迁移历史最多保存"), bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
-        self.history_limit_lbl = tk.Label(
-            row_hist, text=str(getattr(self, "history_limit", 10)),
-            bg=self.theme["bg"], fg=self.theme.get("data_num_fg", "#1565c0"),
-            font=("微软雅黑", 11, "bold"), width=3)
-        self.history_limit_lbl.pack(side="left", padx=(px(8), px(2)))
-        tk.Label(row_hist, text="份（1–15，超出的删最旧）", bg=self.theme["bg"],
+        tk.Label(row_hist, text=trp("份（1–15，超出的删最旧）"), bg=self.theme["bg"],
                  fg=self.theme.get("muted_fg", "#888888"),
-                 font=("微软雅黑", 8)).pack(side="left")
-        create_gradient_button(row_hist, "＋", lambda: self._bump_history_limit(1),
-                               width=px(46), height=px(26)).pack(side="right")
-        create_gradient_button(row_hist, "－", lambda: self._bump_history_limit(-1),
-                               width=px(46), height=px(26)).pack(side="right", padx=(0, px(6)))
+                 font=("微软雅黑", 8)).pack(side="left", padx=(px(8), 0))
+        self.history_slider = SliderRow(
+            box_m, self.theme, 1, 15, value=getattr(self, "history_limit", 10),
+            release=self._set_history_limit, height=px(34))
+        self.history_slider.pack(fill="x", pady=(px(4), 0))
+        self._settings_sliders.append(self.history_slider)
 
         # ---------- 平滑滚动速度 ----------
         # 速度不该由帧率隐式决定（帧率提到 229 后同样一格滚轮快过 28%，实测），
@@ -941,17 +941,23 @@ class SettingsMixin:
         except Exception:
             pass
 
-    def _bump_history_limit(self, 增量):
-        """迁移历史保存上限：1~15，超出后删最旧的档案。"""
+    def _set_history_limit(self, 值):
+        """滑杆落定：迁移历史保存上限 1~15，超出后删最旧的档案。"""
         try:
             from utils import history_store
         except Exception:
             return
-        当前 = int(getattr(self, "history_limit", 10) or 10)
-        新 = history_store.set_limit(max(1, min(15, 当前 + int(增量))))
+        新 = max(1, min(15, int(值)))
+        try:
+            新 = history_store.set_limit(新)    # 顺手把超出的旧档案删掉
+        except Exception:
+            pass
+        if 新 == int(getattr(self, "history_limit", 10) or 10):
+            return
         self.history_limit = 新
         try:
-            self.history_limit_lbl.config(text=str(新))
+            if self.history_slider.get() != 新:
+                self.history_slider.set(新)     # set_limit 可能夹过值，回写一次
         except Exception:
             pass
         self.toast(trp("🗂️ 迁移历史最多保留 {0} 份", 新), level="ok", key="history_limit")

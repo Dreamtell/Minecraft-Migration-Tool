@@ -318,7 +318,8 @@ class ThemeMixin:
                 except Exception:
                     pass
         # 设置里那批自绘选项控件（分段选择 / 选择卡片 / 紧凑开关）也要跟着换肤
-        for _列表 in ("_settings_segs", "_settings_cards", "_settings_sws"):
+        for _列表 in ("_settings_segs", "_settings_cards", "_settings_sws",
+                       "_settings_sliders"):
             for _sw in (getattr(self, _列表, None) or []):
                 try:
                     _sw.set_theme(self.theme)

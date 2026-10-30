@@ -1049,6 +1049,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⏳ 解析中...": "⏳ Parsing...",
     "迁移历史记录": "Migration history",
     "平滑滚动速度": "Smooth scrolling speed",
+    "迁移历史最多保存": "Migration history limit",
+    "份（1–15，超出的删最旧）": "(1–15 saves, oldest deleted when over)",
     # 设置 →「🎨 外观与启动」→ 右下角消息提示的开关
     "显示消息提示（右下角弹出的小卡片）":
         "Show message toasts (small cards in the bottom-right corner)",
