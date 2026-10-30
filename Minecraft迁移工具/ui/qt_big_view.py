@@ -2131,10 +2131,18 @@ class SearchModel(QtCore.QAbstractTableModel):
         scored.sort(key=lambda t: (-t[0], t[1]))
         self.rows = []
         best = scored[0][0] if scored else 0
+        # 每个来源各挑一条最相似的（阈值和 Tk 版一致）。
+        # 只标全局第一名的话，Modrinth 那条一旦命中，CurseForge 里**一模一样**的
+        # 那个项目就永远拿不到 ★（用户报的：「curseforge 平台也要筛出最相似一项」）。
+        各源最优 = {}
+        for pos, (score, _i, r) in enumerate(scored):
+            if score >= 20:
+                各源最优.setdefault(str(r.get("source") or "modrinth"), pos)
+        标记位 = set(各源最优.values())
         for pos, (score, _i, r) in enumerate(scored):
             r = dict(r)
             r["score"] = score
-            r["is_match"] = (pos == 0 and best >= 20)     # 阈值和 Tk 版一致
+            r["is_match"] = pos in 标记位
             self.rows.append(r)
         self.endResetModel()
 
@@ -2230,9 +2238,14 @@ class SearchModel(QtCore.QAbstractTableModel):
             if row == self.hover_row:
                 return QtGui.QColor(th.get("hover_bg", "#eef3f8"))
             if r.get("is_match"):
-                return QtGui.QColor(th.get("highlight_bg", "#cce5ff"))
-            if r.get("updatable"):
-                return QtGui.QColor(th.get("warn_bg", "#ffeaa7"))
+                # 「最相似」只给一层很淡的品牌色带：选中那行是实心品牌蓝 + 白字，
+                # 必须一眼分得出「我点的是这行」。原来两者都用主题里的 muted 色
+                # （highlight_bg / card_sel_bg 一个钢蓝一个近灰），实拍长得几乎一样，
+                # 等于没有「选中」这个反馈。
+                return QtGui.QColor(_mix(th.get("bg", "#ffffff"),
+                                         th.get("card_sel_bar", "#2f7fd1"), 0.22))
+            # 「可更新」不再整行铺底色（那块琥珀底比选中蓝还抢眼，浅色主题下
+            # #ffeaa7 甚至更亮）：改成只在版本列显示「⬆ 可更新」并用橙色字。
             return None
         if role == QtCore.Qt.ForegroundRole:
             th = self.theme
@@ -2243,10 +2256,8 @@ class SearchModel(QtCore.QAbstractTableModel):
             row = index.row()
             if row == self.hover_row:
                 return QtGui.QColor(th.get("hover_fg") or th.get("fg", "#000000"))
-            if r.get("is_match"):
-                return QtGui.QColor(th.get("highlight_fg", "#000000"))
-            if r.get("updatable"):
-                return QtGui.QColor(th.get("warn_fg", "#000000"))
+            if r.get("updatable") and not r.get("is_match"):
+                return QtGui.QColor(th.get("warn_fg", "#e65100"))
         return None
 
 
@@ -2448,10 +2459,11 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         # 系统灰，跟主题里那支选中蓝对不上（看起来像"没选中"）
         pal = self.table.palette()
         for _grp in (QtGui.QPalette.Active, QtGui.QPalette.Inactive):
+            # 选中用**品牌蓝实心**（不是 card_sel_bg 那个近灰的淡色）：三套状态里
+            # 它最亮最实，才对得起「我点的是这一行」。白字保证对比度。
             pal.setColor(_grp, QtGui.QPalette.Highlight,
-                         QtGui.QColor(th.get("card_sel_bg", "#d4e6f8")))
-            pal.setColor(_grp, QtGui.QPalette.HighlightedText,
-                         QtGui.QColor(th.get("card_sel_fg", "#0d3d63")))
+                         QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))
+            pal.setColor(_grp, QtGui.QPalette.HighlightedText, QtGui.QColor("#ffffff"))
         self.table.setPalette(pal)
         hh = self.table.horizontalHeader()
         hh.setStyleSheet(_header_qss(th))
@@ -2824,7 +2836,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                                 % (tr("（当前只看 %s）") % 过滤 if 过滤 else ""))
             return
         best = self.model.rows[0].get("score", 0)
-        extra = tr("★为最相似项，已置顶。") if best >= 20 else tr("未找到相似度足够的候选。")
+        extra = (tr("★为各平台各自最相似的那条。") if best >= 20
+                 else tr("未找到相似度足够的候选。"))
         过滤 = self.model.filter_text()
         前缀 = tr("（已按 %s 过滤）") % 过滤 if 过滤 else ""
         self.status.setText(("%s " % 备注 if 备注 else "")

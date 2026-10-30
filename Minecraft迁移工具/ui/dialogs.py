@@ -1015,9 +1015,16 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         scored.sort(key=lambda t: (-t[0], t[1]))
         best = scored[0][0] if scored else 0
         MIN = 20  # 相似度阈值：达到才标记为"最相似"
+        # 每个来源各标一条：Modrinth 命中的同时，CurseForge 里同名那个也能拿到 ★。
+        # 只标全局第一名的话，另一平台的同款项目永远是普通行。
+        各源最优 = {}
+        for pos, (score, _i, r) in enumerate(scored):
+            if score >= MIN:
+                各源最优.setdefault(str(r.get("source") or "modrinth"), pos)
+        标记位 = set(各源最优.values())
         for pos, (score, orig_i, r) in enumerate(scored):
             iid = str(pos)
-            is_match = (pos == 0 and best >= MIN)
+            is_match = pos in 标记位
             tag = "match" if is_match else ("odd" if pos % 2 else "")
             title = ("★ " + r["title"]) if is_match else r["title"]
             # 来源列：Tk 的 Treeview **没法给单格上色**（tag 是整行生效），
@@ -1038,7 +1045,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             threading.Thread(target=lambda pid=pid, i=pos, f=过滤,
                              src=r.get("source"), sl=r.get("slug", ""), wu=r.get("project_url", ""):
                              _fetch_version_for(pid, i, f, src, sl, wu), daemon=True).start()
-        extra = "★为最相似项，已置顶。" if best >= MIN else "未找到相似度足够的候选。"
+        extra = "★为各平台各自最相似的那条。" if best >= MIN else "未找到相似度足够的候选。"
         # 按来源计数：这样"看不到 CurseForge"时能立刻分清是**没查**还是**查了 0 条**
         # （前者会伴随"部分来源没查成"的提示，后者这里就是 0 条）。
         _计数 = {"curseforge": 0, "modrinth": 0}
