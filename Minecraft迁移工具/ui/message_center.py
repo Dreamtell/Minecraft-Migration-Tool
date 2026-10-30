@@ -257,12 +257,17 @@ def _裁区域(win, 左, 卡宽, 高, 半径):
 
 
 def _面板图(宽, 高, 半径, 填充, 描边):
-    """圆角面板图（PIL，抗锯齿）：底色圆角矩形 + 1px 描边环。"""
+    """圆角面板图（PIL，抗锯齿）：底色圆角矩形 + 1px 描边环。
+
+    ⚠ 以前是「先铺一层描边色的圆角矩形，再把填充色的内矩形 alpha_composite 上去」，
+    但内矩形贴在 (0, 0) 而不是 (1, 1)，于是描边只剩右边和下边各 2px，上边和左边
+    一点都没有 —— 四条边不对称。描边统一交给 helpers._圆角描边。
+    """
     from PIL import Image
-    from utils.helpers import _圆角矩形
-    底 = _圆角矩形((宽, 高), 半径, 描边)
-    内 = _圆角矩形((max(1, 宽 - 2), max(1, 高 - 2)), max(1, 半径 - 1), 填充)
-    return Image.alpha_composite(底, 内)
+    from utils.helpers import _圆角矩形, _圆角描边
+    底 = _圆角矩形((宽, 高), 半径, 填充)
+    环 = _圆角描边((宽, 高), 半径, 描边, 1)
+    return Image.alpha_composite(底, 环)
 
 
 class _抽屉:

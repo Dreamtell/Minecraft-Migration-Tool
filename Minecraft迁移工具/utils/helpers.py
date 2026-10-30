@@ -2592,6 +2592,24 @@ def _圆角遮罩(尺寸, 半径, 超采样=None):
     return 图.copy()
 
 
+def _圆角描边(尺寸, 半径, 边色, 粗=1):
+    """一张只有圆角描边的抗锯齿图（中间是透明的）。
+
+    ⚠ 别用「实心圆角矩形 + paste 一张透明内孔」的写法掏中间：内孔那张图的
+    **框外也是透明的**，不带遮罩的 paste 会把描边的四段圆弧一起写成透明，
+    描边就在圆角处断开、直边和弧还错开几像素（用户报的「高亮边框异常」）。
+    这里把内孔的 alpha 当遮罩去填透明：遮罩里 255 的地方才擦掉。
+    """
+    宽, 高 = max(1, int(尺寸[0])), max(1, int(尺寸[1]))
+    粗 = max(1, int(粗))
+    半径 = max(1, int(半径))
+    图 = _圆角矩形((宽, 高), 半径, tuple(边色) + (255,))
+    内 = _圆角矩形((max(1, 宽 - 2 * 粗), max(1, 高 - 2 * 粗)),
+                  max(1, 半径 - 粗), (0, 0, 0, 255))
+    图.paste((0, 0, 0, 0), (粗, 粗), 内.split()[3])
+    return 图
+
+
 class LiquidProgress(tk.Canvas):
     """一条"液态"进度条：从左往右填充，填充段上有一道柔光循环流过。
 
@@ -3662,12 +3680,7 @@ class OptionCards(tk.Canvas):
         粗 = 2 if (选中 and self._enabled) else 1
         图 = _圆角矩形((宽, 高), 半径, 底)
         if 边色 != 底:
-            边 = _PILImage.new("RGBA", (宽, 高), (0, 0, 0, 0))
-            边.paste(_圆角矩形((宽, 高), 半径, tuple(边色) + (255,)), (0, 0))
-            内 = _圆角矩形((max(1, 宽 - 2 * 粗), max(1, 高 - 2 * 粗)),
-                          max(1, 半径 - 粗), (0, 0, 0, 0))
-            边.paste(内, (粗, 粗))
-            图.alpha_composite(边)
+            图.alpha_composite(_圆角描边((宽, 高), 半径, 边色, 粗))
         self._cache[键] = 图
         return 图
 
@@ -3699,9 +3712,8 @@ class OptionCards(tk.Canvas):
             if 选中:
                 底.alpha_composite(_圆角矩形((self.DOT, self.DOT), r, self._rgb(强调)), (int(cx - r), int(cy - r)))
             else:
-                环 = _圆角矩形((self.DOT, self.DOT), r, self._rgb(self.theme.get("muted_fg", "#9e9e9e")))
-                内 = _圆角矩形((max(1, self.DOT - 4), max(1, self.DOT - 4)), max(1, r - 2), (0, 0, 0, 0))
-                环.paste(内, (2, 2))
+                环 = _圆角描边((self.DOT, self.DOT), r,
+                                self._rgb(self.theme.get("muted_fg", "#9e9e9e")), 2)
                 底.alpha_composite(环, (int(cx - r), int(cy - r)))
             tx = self.INSET + self.GAP + 14
             self.create_text(tx, cy, anchor="w", text=标题,
