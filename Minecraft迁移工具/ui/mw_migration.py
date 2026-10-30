@@ -19,7 +19,8 @@ from pathlib import Path
 from tkinter import messagebox
 from ui.dialogs import ProgressWindow, ScanProgressWindow, ask_migrate_confirm
 from ui.mw_common import (
-    _SCAN_DONE, _UI_PUMP_MS, _center_window, _file_task_lock, _grad_width,
+    _SCAN_DONE, _UI_PUMP_BUDGET_MS, _UI_PUMP_MAX_ITEMS, _UI_PUMP_MS,
+    _center_window, _file_task_lock, _grad_width,
 )
 from ui.virtual_table import VirtualTable
 from utils import anim            # 帧节奏（跟随显示器刷新率）—— 只用来问"多久排下一帧"
@@ -1092,18 +1093,39 @@ class MigrationMixin:
         self._ui_calls.put((fn, args))
 
     def _ui_pump(self):
-        """主线程：执行后台线程排下的 UI 调用，然后继续等下一批。"""
+        """主线程：执行后台线程排下的 UI 调用，然后继续等下一批。
+
+        **每轮都有预算**（条数 + 耗时）。迁移时后台一秒能塞几百条日志进来，要是
+        一轮就把队列清空，主线程会被几百次"插文字 + 重绘"按住 —— 看门狗抓到过
+        21.45 秒的未响应（栈：_ui_pump → mw_log._log → update_idletasks）。
+        超预算的一律留给下一轮：积压几秒的日志，好过窗口假死。
+        """
         队列 = getattr(self, "_ui_calls", None)
         if 队列 is not None:
-            while True:
-                try:
-                    fn, args = 队列.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    fn(*args)
-                except Exception:
-                    pass
+            起 = time.perf_counter()
+            已处理 = 0
+            # 告诉 _log：这一批里别逐条 update_idletasks，整批完了统一刷一次
+            self._批处理中 = True
+            try:
+                while 已处理 < _UI_PUMP_MAX_ITEMS:
+                    try:
+                        fn, args = 队列.get_nowait()
+                    except queue.Empty:
+                        break
+                    try:
+                        fn(*args)
+                    except Exception:
+                        pass
+                    已处理 += 1
+                    if (time.perf_counter() - 起) * 1000.0 >= _UI_PUMP_BUDGET_MS:
+                        break
+            finally:
+                self._批处理中 = False
+                if 已处理:
+                    try:
+                        self.root.update_idletasks()      # 整批只刷这一次
+                    except Exception:
+                        pass
         try:
             self._ui_pump_id = self.root.after(_UI_PUMP_MS, self._ui_pump)
         except Exception:

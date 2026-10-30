@@ -463,7 +463,10 @@ class LogMixin:
             # （看门狗日志抓到的就是这里：mw_log.py:467 → update_idletasks）。
             # 节流到 100ms 一次，肉眼仍然"实时"。
             # 每条都刷：节流会把几百个挂起的重绘攒成一大批，一次跑完更卡（试过，更糟）。
-            self.root.update_idletasks()
+            # 现在改成"整批刷"：_ui_pump 批量执行后台排进来的日志时置 _批处理中，
+            # 这一批跑完由泵统一 update_idletasks() 一次（不然几千条日志就是几千次重绘）。
+            if not getattr(self, "_批处理中", False):
+                self.root.update_idletasks()
             # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新
             try:
                 self.log_text.event_generate("<<LogChanged>>")
