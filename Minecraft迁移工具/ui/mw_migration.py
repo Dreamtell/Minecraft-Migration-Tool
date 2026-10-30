@@ -926,20 +926,50 @@ class MigrationMixin:
             return
 
         self.log("✅ 用户确认回滚，开始执行...", level="SUCCESS")
-        success = do_restore(tgt_path, log_func=self.log)
-        if success:
-            if mark_rollback(tgt_path):
-                self.log("📝 已标记本次回滚到历史记录", level="INFO")
+        # 回滚要读写成千上万个文件，绝不能跑在主线程上：do_restore 同步跑的话整个
+        # 界面会冻住，Windows 给窗口标"未响应"，用户一慌就强杀进程 —— 目标目录
+        # 正好停在一半，既不是迁移后的样子、也不是迁移前的样子。
+        # 登记成"文件类任务"：期间按钮全灰、开始迁移会被劝住、关窗口也拦得住。
+        self._begin_file_task("回滚")
+        threading.Thread(target=self._run_rollback_thread, args=(tgt_path,),
+                         daemon=True).start()
+
+    def _run_rollback_thread(self, tgt_path):
+        """后台执行回滚。do_restore 的日志回调通过 _ui_post 排回主线程。"""
+        def 日志(文本, level="INFO"):
+            self._ui_post(self.log, 文本, level)
+
+        success = False
+        try:
+            success = bool(do_restore(tgt_path, log_func=日志))
+        except Exception as e:
+            self._ui_post(self.log, trp("❌ 回滚过程中出现异常：{0}", e), "ERROR")
+        self._ui_post(self._finish_rollback, tgt_path, success)
+
+    def _finish_rollback(self, tgt_path, success):
+        """回滚收尾（主线程）：标记历史、解除锁定、弹结果。"""
+        try:
+            if success:
+                if mark_rollback(tgt_path):
+                    self.log("📝 已标记本次回滚到历史记录", level="INFO")
+                else:
+                    self.log("ℹ️ 历史记录里没有可标记的迁移记录（可能已经回滚过了）",
+                             level="WARNING")
             else:
-                self.log("ℹ️ 历史记录里没有可标记的迁移记录（可能已经回滚过了）", level="WARNING")
+                self.log("❌ 回滚操作失败，目标实例可能处于不完整状态，"
+                         "备份仍然保留，可重新执行回滚", level="ERROR")
+        except Exception:
+            self.log("❌ 回滚收尾时出错（备份仍保留，可以重新执行回滚）", level="ERROR")
+        finally:
+            self._end_file_task()       # 解除"在忙"：按钮恢复、关闭保护解除
+        self.log("=" * 50, level="INFO")
+        if success:
             messagebox.showinfo("回滚完成", "目标实例已恢复到迁移前的状态。")
+            self._notify_task_done("回滚", "目标实例已恢复到迁移前的状态")
         else:
-            self.log("❌ 回滚操作失败，目标实例可能处于不完整状态，"
-                     "备份仍然保留，可重新执行回滚", level="ERROR")
             messagebox.showerror("回滚失败",
                                  "回滚未能完整完成，详情见日志。\n"
                                  "备份目录仍然保留，可以再次尝试回滚。")
-        self.log("=" * 50, level="INFO")
 
     # ---------- 进度轮询 ----------
     def _poll_progress(self):

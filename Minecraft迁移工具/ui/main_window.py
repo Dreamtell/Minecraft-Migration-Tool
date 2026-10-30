@@ -382,12 +382,26 @@ class MigrationGUI(
             pass
 
     def busy_task_name(self):
-        """当前正在跑的任务名："迁移" / "扫描模组差异"；没有任务就返回 None。"""
-        if getattr(self, "_migration_running", False):
-            return "迁移"
-        if getattr(self, "_scanning", False):
-            return "扫描模组差异"
-        return None
+        """当前正在跑的任务名；没有任务就返回 None。
+
+        关闭窗口（app.py 的 on_closing）和托盘退出都问这一句，所以它必须覆盖
+        **所有**正在读写文件的状态。这里以前另写了一份判断，只认迁移和扫描，
+        于是「检查模组是否存在」「回滚」这类同样在动文件的任务跑着的时候点 ❌，
+        会被当成"没任务"，直接问"退出还是收托盘" —— 选退出就把线程 kill 在半路。
+
+        现在统一走 _busy_task_name()（迁移 / 扫描模组差异 / 其它文件任务），
+        再补两件它不管、但关闭时必须拦住的事：正在准备迁移、开始前倒计时。
+        """
+        try:
+            task = self._busy_task_name()
+        except Exception:
+            task = None
+        if not task:
+            if getattr(self, "_starting", False):
+                task = "迁移准备"
+            elif getattr(self, "_countdown_running", False):
+                task = "开始前倒计时"
+        return i18n.tr(task) if task else None
 
     def _in_tray(self):
         """窗口现在是不是收在系统托盘里。"""

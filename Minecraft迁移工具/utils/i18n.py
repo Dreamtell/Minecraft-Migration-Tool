@@ -91,6 +91,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "覆盖已存在的模组": "Overwrite existing mods",
     "查看历史": "History",
     "回滚": "Roll back",
+    "迁移": "Migration",
+    "迁移准备": "Preparing migration",
     "开始迁移": "Start migration",
     "执行日志": "Log",
     "双击日志行可定位到清单里的那条": "Double-click a log line to locate it in the lists",
