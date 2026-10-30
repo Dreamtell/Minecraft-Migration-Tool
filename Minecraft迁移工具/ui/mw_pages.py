@@ -1264,11 +1264,26 @@ class PagesMixin:
                 基准 = min(跨度, 窗口固定)
 
                 所有y = []
+                截止 = 现在t - 窗口固定
                 for s in 系列:
                     xs, ys, ts = [], [], []
+                    # 滚出窗口的那个样本不能一丢了之：丢掉之后，窗口里最老的那个样本
+                    # 离左边界还差几秒，曲线就从半空中开始画（用户报的「左边消失」）。
+                    # 这里把"刚出窗"和"窗内第一个"之间按时间线性插值，补一个正好落在
+                    # x=0 上的点，曲线才贴得到纵轴上。
+                    出窗 = None
                     for t0, v in s["样本"]:
-                        if 现在t - t0 > 窗口固定:
+                        if t0 < 截止:
+                            出窗 = (t0, v)
                             continue
+                        if 出窗 is not None and 基准 >= 窗口固定 - 1e-6:
+                            跨 = t0 - 出窗[0]
+                            比例 = 0.5 if 跨 <= 0 else (截止 - 出窗[0]) / 跨
+                            比例 = max(0.0, min(1.0, 比例))
+                            xs.append(0.0)
+                            ys.append(出窗[1] + (v - 出窗[1]) * 比例)
+                            ts.append(截止)
+                        出窗 = None
                         xs.append(基准 - (现在t - t0))
                         ys.append(v)
                         ts.append(t0)
@@ -1345,7 +1360,10 @@ class PagesMixin:
                     except Exception:
                         pass
 
-                    mx = np.asarray(ts, dtype=float) - 现在t
+                    # 采样点的横坐标和曲线**同一套映射**（相对"基准"算），
+                    # 原来写成 ts - 现在t，等于 -1.7e9 那种数，全落在坐标区外面，
+                    # 于是这两个 artist 一直是隐形的（末端那个大圆点也一起没画）。
+                    mx = np.asarray(ts, dtype=float) - 现在t + 基准
                     if len(mx) <= 40:
                         s["点"].set_data(mx, np.asarray(ys, dtype=float))
                     else:
