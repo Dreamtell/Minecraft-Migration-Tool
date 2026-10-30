@@ -746,17 +746,17 @@ class FlipButton(tk.Canvas):
         key = ("back", phase, round(hv, 3)) + self._stem()
         return self._photo(key, self._back_layer(phase * _BACK_DT, hv))
 
-    def _back_hover_photo(self, sweep):
-        """背面悬停到位后的帧：亮面 + 斜纹 + 扫光（和正面悬停同一套观感）。
+    def _back_hover_photo(self, phase, sweep):
+        """背面悬停到位后的帧：亮面 + 斜纹（第 phase 相）+ 扫光（第 sweep 相）。
 
-        斜纹相位固定用 0 —— 缓存键里只留扫光相位（96 档），一轮扫光就能全缓存住；
-        要是把斜纹相位也带进键里（72×96 = 6912 种组合），每帧都是新图、每帧都要
-        现烤一整面（实测掉到 40ms 一帧）。悬停期间斜纹本来就该"定住"，让扫光去走。
+        斜纹必须继续走 —— 停住的话看着像"高亮之后画面卡死了"（用户报的）。
+        这里不靠 `_photo` 的键缓存（72×96 = 6912 种组合，等于每帧都是新图），
+        而是靠下层三张图各自命中缓存：`_face_rgba` 按 hv 缓存、`_stripe_layer`
+        按相位缓存、`_sweep_layer` 按相位缓存，每帧只做两次 alpha 合成。
         """
-        key = ("backhover", sweep) + self._stem()
-        layer = _Image.alpha_composite(self._back_layer(0.0, 1.0),
+        layer = _Image.alpha_composite(self._back_layer(phase * _BACK_DT, 1.0),
                                        self._sweep_layer(sweep))
-        return self._photo(key, layer)
+        return self._photo(("backhover", phase, sweep) + self._stem(), layer)
 
 
     # ------------------------------------------------------------ 文字层（翻转动效里烤进图）
@@ -1125,7 +1125,7 @@ class FlipButton(tk.Canvas):
                 else:
                     self._hv = target
                 if self._hv >= 0.99:
-                    photo = self._back_hover_photo(self._sweep_phase())
+                    photo = self._back_hover_photo(self._back_phase(), self._sweep_phase())
                 else:
                     photo = self._back_photo(self._back_phase(), self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
@@ -1186,7 +1186,7 @@ class FlipButton(tk.Canvas):
                 photo = self._rest_photo(pid, pal, self._hv_q())
         else:
             if self._hv >= 0.99:
-                photo = self._back_hover_photo(self._sweep_phase())
+                photo = self._back_hover_photo(self._back_phase(), self._sweep_phase())
             else:
                 photo = self._back_photo(self._back_phase(), self._hv_q())
         self.itemconfigure(self._img_id, image=photo)
