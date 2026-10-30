@@ -12,7 +12,7 @@ Frame / Label 刷成主题底色，红色警示条会被刷没。这里挂 _skip
 import tkinter as tk
 
 from utils.dpi import px
-from utils.helpers import create_gradient_button, is_dark_theme
+from utils.helpers import create_gradient_button, is_dark_theme, set_window_icon
 
 标题 = "整合包更新提醒"
 
@@ -180,6 +180,9 @@ class PackWarning(tk.Frame):
         窗 = tk.Toplevel(self.应用根)
         窗.title(标题)
         窗.configure(bg=th.get("bg", "#ffffff"))
+        # 不设图标的话这个窗口显示的是 Tk 默认的羽毛图标（用户报「ico 异常」）；
+        # 主界面和别的弹窗都设了，漏的是这一处。
+        set_window_icon(窗)
         try:
             窗.resizable(False, False)
             窗.transient(self.应用根)
