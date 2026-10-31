@@ -361,10 +361,11 @@ def get_backup_path(target_path):
 # 目录形如 <目标>/.migrate_backup/rec_<档案id>/，老的单一备份（.migrate_backup 本身）
 # 继续认，回滚时没指定就用它（兼容旧版本留下的备份）。
 _KEEP_RECORD_BACKUPS = 5
+_RECORD_PREFIX = "rec_"
 
 
 def get_record_backup_path(target_path, record_id):
-    return get_backup_path(target_path) / ("rec_" + str(record_id))
+    return get_backup_path(target_path) / (_RECORD_PREFIX + str(record_id))
 
 
 def list_record_backups(target_path):
@@ -372,8 +373,8 @@ def list_record_backups(target_path):
     出 = {}
     try:
         for p in get_backup_path(target_path).iterdir():
-            if p.is_dir() and p.name.startswith("rec_"):
-                出[p.name[4:]] = p
+            if p.is_dir() and p.name.startswith(_RECORD_PREFIX):
+                出[p.name[len(_RECORD_PREFIX):]] = p
     except Exception:
         pass
     return 出
@@ -388,6 +389,41 @@ def _prune_record_backups(target_path, keep=_KEEP_RECORD_BACKUPS):
             shutil.rmtree(旧, ignore_errors=True)
     except Exception:
         pass
+
+
+def prune_legacy_backup(target_path, log_func=None):
+    """清掉旧版留下的那一份单一备份（顶层那些，不动 rec_ 子目录）。
+
+    只在新备份写成功之后调用 —— 那会儿旧备份才真的多余。
+    返回删掉了几项（0 表示本来就没有旧的）。
+    """
+    根 = get_backup_path(target_path)
+    删了 = 0
+    # 旧版写盘时先写 .migrate_backup.tmp 再换名，异常时可能留个临时目录
+    try:
+        临时 = Path(str(根) + ".tmp")
+        if 临时.is_dir():
+            shutil.rmtree(临时, ignore_errors=True)
+            删了 += 1
+    except Exception:
+        pass
+    try:
+        项们 = list(根.iterdir())
+    except Exception:
+        return 删了
+    for 项 in 项们:
+        if 项.is_dir() and 项.name.startswith(_RECORD_PREFIX):
+            continue
+        try:
+            if 项.is_dir():
+                shutil.rmtree(项)
+            else:
+                项.unlink()
+            删了 += 1
+        except Exception as e:
+            if log_func:
+                log_func(trp("⚠️ 旧的单一备份没清掉：{0}", e), "WARNING")
+    return 删了
 
 
 def _norm_rel(rel):

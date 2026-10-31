@@ -92,6 +92,10 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "查看历史": "History",
     "回滚": "Roll back",
     "🔒 迁移期间主界面按钮全部禁用（锁屏遮罩已移除）": "🔒 Buttons are disabled during migration (the lock overlay was removed)",
+    "🧹 已清理旧版留下的单一备份（{0} 项）":
+        "🧹 Removed the old single backup ({0} items)",
+    "⚠️ 旧的单一备份没清掉：{0}":
+        "⚠️ Could not remove the old single backup: {0}",
     "旧版目录（源）": "Source folder",
     "新版目录（目标）": "Target folder",
     "{0}不存在：{1}": "{0} does not exist: {1}",

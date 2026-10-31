@@ -15,7 +15,8 @@ import tkinter as tk
 from core import precheck
 from core.migrator import (
     _is_safe_path, do_backup, do_restore, get_backup_path, get_record_backup_path,
-    list_record_backups, load_history, mark_rollback, match_mod, run_migration,
+    list_record_backups, load_history, mark_rollback, match_mod,
+    prune_legacy_backup, run_migration,
 )
 from core.scanner import scan_mod_differences
 from pathlib import Path
@@ -1832,6 +1833,14 @@ class MigrationMixin:
             self._unlock_main_window()
             self._refresh_busy_state()
             return
+        # 新备份已经落盘，旧版那一份单一备份就没用了（不然一直占着几百兆）
+        try:
+            清掉 = _打桩优先("prune_legacy_backup", prune_legacy_backup)(
+                tgt_path, log_func=self.log)
+            if 清掉:
+                self.log(trp("🧹 已清理旧版留下的单一备份（{0} 项）", 清掉), level="INFO")
+        except Exception as e:
+            trace_exc("main_window/清理旧备份", e)
 
         if self.silent_background:
             # 后台静默执行：不弹进度窗口，也不建队列/轮询，全过程只写日志
