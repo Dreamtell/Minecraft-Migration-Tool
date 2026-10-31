@@ -2250,8 +2250,9 @@ class SearchModel(QtCore.QAbstractTableModel):
                 # 必须一眼分得出「我点的是这行」。原来两者都用主题里的 muted 色
                 # （highlight_bg / card_sel_bg 一个钢蓝一个近灰），实拍长得几乎一样，
                 # 等于没有「选中」这个反馈。
-                return QtGui.QColor(_mix(th.get("bg", "#ffffff"),
-                                         th.get("card_sel_bar", "#2f7fd1"), 0.22))
+                # "最相似"用**实心品牌蓝**（和选中那行同一个颜色）：两条 ★ 一定
+                # 长得一模一样，不会出现"同是 ★ 却深浅不同"的怪现象。
+                return QtGui.QColor(th.get("card_sel_bar", "#2f7fd1"))
             # 「可更新」不再整行铺底色（那块琥珀底比选中蓝还抢眼，浅色主题下
             # #ffeaa7 甚至更亮）：改成只在版本列显示「⬆ 可更新」并用橙色字。
             return None
@@ -2259,6 +2260,9 @@ class SearchModel(QtCore.QAbstractTableModel):
             th = self.theme
             # 来源列那格是品牌色实心底，必须用白字（否则深色主题下糊成一片）
             if key == "source" and r.get("source") in ("curseforge", "modrinth"):
+                return QtGui.QColor("#ffffff")
+            if r.get("is_match"):
+                # 整行是实心品牌蓝（见上面 BackgroundRole），字必须白
                 return QtGui.QColor("#ffffff")
             # 文字色得跟着底走：悬停底是深灰（深色主题）时，蓝/黄行原来的那支字色会糊掉
             row = index.row()
@@ -2953,6 +2957,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     def _on_results(self, results, modid, name):
         self._searching = False
+        self._停止搜索动画()
         try:
             self.busy.hide()
         except Exception:
@@ -2977,10 +2982,10 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.model.set_results(results, modid, name)
         self.card_store.rebuild()          # 卡片视图看的是同一批 rows
         self._sel_row = -1
-        # 新结果默认选中第一行：底部那三个按钮立刻能用（不然得先自己点一行才知道
-        # 它们能点）。"再点一次取消选中"照样有效 —— 想清掉高亮就再点它一下。
-        if self.model.rows:
-            self.table.selectRow(0)
+        # 不再自动选中第一行：两条 ★ 都应该是"实心品牌蓝"这一种样子，
+        # 一旦自动选中，选中那行会被选择色再盖一层（连来源色块都被盖掉），
+        # 看上去就像"同是 ★ 却深浅不同"。要操作时自己点一行即可。
+        self.table.clearSelection()
         self._update_row_buttons()
         n = len(self.model.rows)
         if not n:
@@ -3005,6 +3010,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     def _on_error(self, msg):
         self._searching = False
+        self._停止搜索动画()
         try:
             self.busy.hide()
         except Exception:
