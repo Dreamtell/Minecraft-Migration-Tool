@@ -989,9 +989,10 @@ class MigrationMixin:
                             self.root.after_cancel(self.after_id)
                             self.after_id = None
                         self._migration_running = False
-                        # 停在满格：日志还在滚的这段不要退回装饰性地来回扫，
-                        # 否则看着像又从头开始了。
-                        self._flip_progress(1.0)
+                        # 停在 85%：剩下的 15% 交给"日志滚完"那一段推（用户要的是
+                        # 日志滚完条才满，不是活儿干完就满）。
+                        self._flip_progress(0.85)
+                        self._日志尾巴起步()
                         # 收尾中不解锁：否则完成态被这条抢掉
                         if not getattr(self, "_mig_finish_pending", False):
                             self._unlock_main_window()  # 进度窗口关掉时同步解锁
@@ -1004,7 +1005,8 @@ class MigrationMixin:
                     try:
                         总 = float(getattr(self, "_mig_total_size", 0) or 0)
                         if 总 > 0:
-                            self._flip_progress(min(1.0, float(msg[2]) / 总))
+                            # 只推到 85%：剩下 15% 留给"日志还在一行行滚"那一段
+                            self._flip_progress(min(1.0, float(msg[2]) / 总) * 0.85)
                     except Exception:
                         pass
             except queue.Empty:
@@ -1015,6 +1017,34 @@ class MigrationMixin:
             self.after_id = self.root.after(100, self._poll_progress)
         else:
             self.after_id = None
+
+    def _日志尾巴起步(self):
+        """迁移活儿干完了，但日志还在往外滚：条从 85% 推到 100%，和日志一个节奏。
+
+        用剩余日志像素（`_log_remain_px`）当尺子 —— 它减到 0 的那一刻，正好是
+        用户看到日志停在最底下的那一刻，条也刚好满。
+        """
+        if getattr(self, "_log_tail_job", None) is not None:
+            return
+        self._log_tail_from = None
+        self._log_tail_job = -1          # 占位，防重入
+        self.root.after(50, self._日志尾巴步)
+
+    def _日志尾巴步(self):
+        self._log_tail_job = None
+        try:
+            剩余 = float(self._log_remain_px())
+        except Exception:
+            剩余 = 0.0
+        if not getattr(self, "_log_tail_from", None):
+            self._log_tail_from = max(1.0, 剩余)
+        比 = 1.0 - min(1.0, 剩余 / max(1.0, float(self._log_tail_from)))
+        self._flip_progress(0.85 + 0.15 * 比)
+        # 日志滚到底、或者收尾已经把按钮翻回正面了 —— 两种都收手
+        if 剩余 > 0.5 and getattr(self, "_ending_wait_log", False):
+            self._log_tail_job = self.root.after(60, self._日志尾巴步)
+        else:
+            self._flip_progress(1.0)
 
     # ---------- 扫描相关 ----------
     def action_scan_mod_diff(self):
@@ -1748,6 +1778,12 @@ class MigrationMixin:
             # 会觉得「我还没看完就结束了」。
             def _收尾():
                 # 迁移结束（成功/失败/取消都走这里）：把「开始迁移」翻回正面
+                if getattr(self, "_log_tail_job", None) is not None:
+                    try:
+                        self.root.after_cancel(self._log_tail_job)
+                    except Exception:
+                        pass
+                    self._log_tail_job = None
                 self._flip_progress(None)     # 条复位，翻回正面后不再显示
                 self._ending_wait_log = False
                 self._flip_start_btn()
