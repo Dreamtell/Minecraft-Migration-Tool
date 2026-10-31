@@ -882,6 +882,25 @@ class SettingsMixin:
         分段选项是建窗时定的，所以干脆整窗重建一次。
         """
         旧 = i18n.language()
+        # 真程序里：先问一句再换（问的时候还是**当前**语言，别用新语言问）。
+        # 探针直接建 MigrationGUI 时没有 重启程序，仍走"当场翻"，不受影响。
+        重启 = getattr(self, "重启程序", None)
+        要换 = str(值) != str(旧) and callable(重启)
+        if 要换:
+            名 = dict(i18n.CHOICES).get(str(值), str(值))
+            要重启 = True
+            try:
+                from ui.precheck_dialog import 确认 as _确认
+                要重启 = _确认(
+                    getattr(self, "settings_win", None) or self.root,
+                    self.theme,
+                    trp("切换界面语言"),
+                    trp("改成「{0}」后需要重启程序才会生效。现在重启吗？", 名),
+                    主按钮=trp("现在重启"), 次按钮=trp("稍后再说"))
+            except Exception as e:
+                trace_exc("settings/切语言确认", e)
+            if not 要重启:
+                return                      # 什么都没动：语言、控件、配置都保持原样
         try:
             值 = i18n.set_language(值)
         except Exception:
@@ -898,33 +917,6 @@ class SettingsMixin:
             重启 = getattr(self, "重启程序", None)
             if callable(重启):
                 名 = dict(i18n.CHOICES).get(值, 值)
-                # 先问一句：切语言要重启窗口，不能让人莫名其妙掉一次
-                要重启 = True
-                try:
-                    from ui.precheck_dialog import 确认 as _确认
-                    要重启 = _确认(
-                        getattr(self, "settings_win", None) or self.root,
-                        self.theme,
-                        trp("切换界面语言"),
-                        trp("改成「{0}」后需要重启程序才会生效。现在重启吗？", 名),
-                        主按钮=trp("现在重启"), 次按钮=trp("稍后再说"))
-                except Exception as e:
-                    trace_exc("settings/切语言确认", e)
-                    要重启 = True
-                if not 要重启:
-                    # 退回去：语言、变量、分段控件都回到原来那个
-                    try:
-                        i18n.set_language(旧)
-                    except Exception:
-                        pass
-                    try:
-                        self.settings_lang_var.set(旧)
-                        段 = getattr(self, "_settings_seg_map", {}).get("lang")
-                        if 段 is not None:
-                            段.set(旧, animate=False)
-                    except Exception as e:
-                        trace_exc("settings/切语言回退", e)
-                    return
                 try:
                     self.toast(trp("🌐 界面语言已改成「{0}」，正在重启…", 名),
                                level="ok", key="lang")

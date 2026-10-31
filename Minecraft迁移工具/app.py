@@ -425,9 +425,9 @@ def main():
     # 设置页切语言时要能调到它；探针直接建 MigrationGUI 时没有这个属性，
     # 所以验证脚本仍然走"当场翻"，不会把测试进程重启掉
     try:
-        gui.重启程序 = restart_app
-    except Exception:
-        pass
+        app.重启程序 = restart_app
+    except Exception as e:
+        trace_exc("app/挂重启入口", e)
 
     def request_quit():
         """请求退出：先跳出主循环，存盘和销毁统一放到 mainloop 之后做。
