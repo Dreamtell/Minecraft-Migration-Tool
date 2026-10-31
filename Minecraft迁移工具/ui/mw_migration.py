@@ -1026,10 +1026,9 @@ class MigrationMixin:
 
         self.log(trp("📁 找到备份目录：{0}", backup_root), level="INFO")
 
-        if not messagebox.askyesno(
-                "⚠️ 确认回滚",
-                trp("即将把目标实例恢复到迁移前的状态，此操作将覆盖当前所有内容！\n\n目标路径：{0}\n备份路径：{1}\n\nmods / config / saves 以及「其它文件」清单里复制过的东西都会还原；\n迁移前不存在的部分会被删掉。\n\n此操作不可撤销！\n确定要继续吗？", tgt, backup_root)
-        ):
+        # 回滚到底还原哪些 —— 让用户勾（带「记住我的选择」，设置里也能改默认）
+        选了 = self._ask_rollback_parts(backup_root)
+        if not 选了:
             self.log(trp("❌ 用户取消了回滚操作"), level="WARNING")
             return
 
@@ -1040,17 +1039,52 @@ class MigrationMixin:
         # 登记成"文件类任务"：期间按钮全灰、开始迁移会被劝住、关窗口也拦得住。
         self._begin_file_task("回滚")
         threading.Thread(target=self._run_rollback_thread,
-                         args=(tgt_path, str(backup_root), 记录id),
+                         args=(tgt_path, str(backup_root), 记录id, 选了),
                          daemon=True).start()
 
-    def _run_rollback_thread(self, tgt_path, backup_dir=None, record_id=""):
+    def _ask_rollback_parts(self, backup_root):
+        """问用户这次还原哪些类别；返回集合，取消返回 None。
+
+        「记住我的选择」勾上就把这份选择写进配置（设置页也能改默认）。
+        """
+        try:
+            from core.migrator import backup_parts_available, _RESTORE_PARTS
+            有无 = backup_parts_available(backup_root)
+        except Exception as e:
+            trace_exc("mw_migration/读备份内容", e)
+            有无 = {}
+        try:
+            默认 = list(getattr(self, "rollback_parts", None) or _RESTORE_PARTS)
+        except Exception:
+            默认 = None
+        记住 = bool(getattr(self, "rollback_parts_remember", False))
+        try:
+            from ui.rollback_pick import pick_parts
+            选, 记住 = pick_parts(self.root, self.theme, 有无, 默认, 记住)
+        except Exception as e:
+            trace_exc("mw_migration/回滚选择框", e)
+            # 对话框起不来就退回"全都还原"，别把回滚功能卡死
+            return set(_RESTORE_PARTS)
+        if 选 is None:
+            return None
+        if 记住:
+            self.rollback_parts = sorted(选)
+            self.rollback_parts_remember = True
+            try:
+                self.save_config()
+            except Exception as e:
+                trace_exc("mw_migration/记住回滚选择", e)
+        return set(选)
+
+    def _run_rollback_thread(self, tgt_path, backup_dir=None, record_id="", parts=None):
         """后台执行回滚。do_restore 的日志回调通过 _ui_post 排回主线程。"""
         def 日志(文本, level="INFO"):
             self._ui_post(self.log, 文本, level)
 
         success = False
         try:
-            success = bool(do_restore(tgt_path, log_func=日志, backup_dir=backup_dir))
+            success = bool(do_restore(tgt_path, log_func=日志, backup_dir=backup_dir,
+                                      parts=parts))
         except Exception as e:
             self._ui_post(self.log, trp("❌ 回滚过程中出现异常：{0}", e), "ERROR")
         self._ui_post(self._finish_rollback, tgt_path, success, record_id)

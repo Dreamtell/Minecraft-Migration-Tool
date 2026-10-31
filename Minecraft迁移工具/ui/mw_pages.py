@@ -386,19 +386,33 @@ class PagesMixin:
                     bar.pack(fill="x", padx=5, pady=(0, 4))
             except Exception:
                 pass
-        if tabs is not None:
-            try:
-                # 右端两个小药丸：更新提醒（常驻，点开说明）+ 一键应用上次记录
-                尾们 = [{"text": trp("⚠ 更新提醒"),
-                         "command": (bar._开弹窗 if bar is not None else None),
-                         "kind": "warn"}]
-                if hasattr(self, "_apply_last_record"):
-                    尾们.append({"text": trp("🔁 应用上次记录"),
-                                 "command": self._apply_last_record,
-                                 "kind": "apply"})
-                tabs.set_tail_buttons(尾们)
-            except Exception:
-                pass
+        self._refresh_tail_buttons()
+
+    def _refresh_tail_buttons(self):
+        """标签条右端的两个小药丸：⚠ 更新提醒 +（应用 / 撤销应用）。
+
+        「应用上次记录」点过之后，这里换成「↩ 还原到应用前」——用户点错了能退回来。
+        """
+        tabs = getattr(self, "list_tabs", None)
+        if tabs is None:
+            return
+        bar = getattr(self, "pack_warning_bar", None)
+        尾们 = [{"text": trp("⚠ 更新提醒"),
+                 "command": (bar._开弹窗 if bar is not None else None),
+                 "kind": "warn"}]
+        if hasattr(self, "_apply_last_record"):
+            if getattr(self, "_apply_undo", None):
+                尾们.append({"text": trp("↩ 还原到应用前"),
+                             "command": self._undo_apply_record,
+                             "kind": "apply"})
+            else:
+                尾们.append({"text": trp("🔁 应用上次记录"),
+                             "command": self._apply_last_record,
+                             "kind": "apply"})
+        try:
+            tabs.set_tail_buttons(尾们)
+        except Exception:
+            pass
 
     def _mod_hint_text(self):
         """模组清单那行说明：基础说明 +（拿不到 tkinterdnd2 时）拖放不可用提示。"""

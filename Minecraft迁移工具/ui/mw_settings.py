@@ -385,6 +385,27 @@ class SettingsMixin:
         self.settings_marker_preview.pack(anchor="w", pady=(4, 0))
         self._update_marker_preview()
 
+        # ---------- 回滚默认还原哪些 ----------
+        # 回滚可以只还原一部分（比如只把 mods 退回去、config 保留现状）。
+        # 这里设"默认勾哪些"；回滚对话框里还有「记住我的选择」可以就地改。
+        self.settings_rollback_vars = {}
+        tk.Label(box_m, text="回滚时默认还原：", bg=self.theme["bg"],
+                 fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 0))
+        _回滚项 = (("mods", "模组（mods/）"),
+                   ("config", "配置（config/）"),
+                   ("saves", "存档（saves/）"),
+                   ("files", "根目录文件（options.txt 等）"),
+                   ("extras", "「其它文件」清单里的条目"))
+        当前回滚 = set(getattr(self, "rollback_parts", None) or [k for k, _ in _回滚项])
+        for _键, _文字 in _回滚项:
+            _v = tk.BooleanVar(value=(_键 in 当前回滚))
+            self.settings_rollback_vars[_键] = _v
+            开关(box_m, _文字, _v, lambda k=_键: self._toggle_rollback_part(k),
+                 名="rollback_" + _键).pack(fill="x")
+        tk.Label(box_m, text="注：回滚对话框里勾「记住我的选择」会用那一次的选择覆盖这里。",
+                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
+                 font=("微软雅黑", 8), justify="left").pack(anchor="w", pady=(4, 0))
+
         # 正式迁移前的二次确认（默认开；关掉就点了按钮直接开跑）
         self.settings_confirm_sw = SwitchRow(
             box_m, self.theme, "正式迁移前再确认一次",
@@ -1378,6 +1399,39 @@ class SettingsMixin:
         self.toast(trp("同名文件：{0}",
                        trp("覆盖（先备份）") if value == "overwrite" else trp("跳过")),
                    level="ok", key="extra_conflict")
+
+    def _toggle_rollback_part(self, 键):
+        """回滚默认还原的某一项被切换：更新 self.rollback_parts 并落盘。"""
+        变量 = (getattr(self, "settings_rollback_vars", {}) or {}).get(键)
+        if 变量 is None:
+            return
+        壳 = (getattr(self, "_settings_sw_map", {}) or {}).get("rollback_" + 键)
+        try:
+            开 = 壳.get() if 壳 is not None else bool(变量.get())
+        except Exception:
+            开 = bool(变量.get())
+        变量.set(开)
+        现在 = set(getattr(self, "rollback_parts", None) or [])
+        if 开:
+            现在.add(键)
+        else:
+            现在.discard(键)
+        if not 现在:
+            # 一个都不留就没意义了（回滚会退化成"什么都不做"），至少留 mods
+            现在 = {键}
+            变量.set(True)
+            if 壳 is not None:
+                try:
+                    壳.set(True)
+                except Exception:
+                    pass
+        from core.migrator import _RESTORE_PARTS as _RP
+        self.rollback_parts = [p for p in _RP if p in 现在]
+        try:
+            self.save_config()
+        except Exception:
+            pass
+        self.toast(trp("回滚默认还原已更新"), level="ok", key="rollback_parts")
 
     def _toggle_confirm_migrate(self):
         """设置页里那个"迁移前再确认"开关：同步变量 + 存配置（开关只翻自己的状态）。"""

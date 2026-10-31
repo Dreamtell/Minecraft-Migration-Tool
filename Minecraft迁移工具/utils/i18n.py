@@ -2137,6 +2137,66 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "⚠ This record has no list content",
     "历史里选中的那份档案":
         "the record selected in history",
+    "↩ 还原到应用前":
+        "↩ Undo restore",
+    "回滚：这次还原哪些":
+        "Rollback: what to restore",
+    "勾掉的类别这次不动（迁移后的内容会原样留着）。":
+        "Unchecked categories stay as they are now (post-migration).",
+    "🧩 模组（mods/）":
+        "🧩 Mods (mods/)",
+    "把 mods 目录整个还原成迁移前的样子":
+        "Restore the whole mods folder to its pre-migration state",
+    "⚙️ 配置（config/）":
+        "⚙️ Config (config/)",
+    "把 config 目录整个还原成迁移前的样子":
+        "Restore the whole config folder to its pre-migration state",
+    "💾 存档（saves/）":
+        "💾 Saves (saves/)",
+    "把 saves 目录整个还原成迁移前的样子":
+        "Restore the whole saves folder to its pre-migration state",
+    "📄 根目录文件":
+        "📄 Root files",
+    "options.txt 这类直接放在实例根目录的文件":
+        "Files such as options.txt that sit directly in the instance root",
+    "📦 「其它文件」清单":
+        "📦 \"Other files\" list",
+    "你在「其它文件」页里列的那些条目":
+        "The entries you listed on the \"Other files\" tab",
+    "记住我的选择（以后回滚都按这个，可在设置里改）":
+        "Remember my choice (use it for future rollbacks; can change in Settings)",
+    "↩ 开始回滚":
+        "↩ Start rollback",
+    "回滚时默认还原：":
+        "Rollback restores by default:",
+    "注：回滚对话框里勾「记住我的选择」会用那一次的选择覆盖这里。":
+        "Note: ticking \"remember my choice\" in the rollback dialog overrides this.",
+    "回滚默认还原已更新":
+        "Rollback defaults updated",
+    "没有可以还原的状态":
+        "Nothing to undo",
+    "↩ 已还原":
+        "↩ Undone",
+    "↩ 已还原到应用记录之前的状态":
+        "↩ Reverted to the state before applying the record",
+    "⚠ 还原失败":
+        "⚠ Undo failed",
+    "⏭️ 按你的选择跳过：{0}":
+        "⏭️ Skipped by your choice: {0}",
+    "⏭️ 按你的选择跳过：根目录文件（options.txt 等）":
+        "⏭️ Skipped by your choice: root files (options.txt etc.)",
+    "⏭️ 按你的选择跳过：「其它文件」清单里的条目":
+        "⏭️ Skipped by your choice: entries in the \"Other files\" list",
+    "模组（mods/）":
+        "Mods (mods/)",
+    "配置（config/）":
+        "Config (config/)",
+    "存档（saves/）":
+        "Saves (saves/)",
+    "根目录文件（options.txt 等）":
+        "Root files (options.txt etc.)",
+    "「其它文件」清单里的条目":
+        "Entries in the \"Other files\" list",
 }
 
 

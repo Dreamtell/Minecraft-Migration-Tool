@@ -135,6 +135,87 @@ class ListsMixin:
             return
         self._apply_record(档案们[0])
 
+    def _snapshot_ui(self):
+        """记下当前主界面的可回填状态（路径 / 存档名 / 三个清单原文）。"""
+        def _取(控件):
+            内 = getattr(控件, "text", 控件)
+            try:
+                return str(内.get("1.0", "end-1c"))
+            except Exception:
+                return ""
+
+        return {
+            "source": self.source_path.get() if hasattr(self, "source_path") else "",
+            "target": self.target_path.get() if hasattr(self, "target_path") else "",
+            "world": self.world_name.get() if hasattr(self, "world_name") else "",
+            "mods": _取(getattr(self, "mod_text", None)),
+            "configs": _取(getattr(self, "config_text", None)),
+            "extras": _取(getattr(self, "extra_text", None)),
+        }
+
+    def _restore_ui(self, 快照):
+        """把 `_snapshot_ui()` 存下的状态放回去。"""
+        if not isinstance(快照, dict):
+            return False
+
+        def _填(控件, 文本):
+            内 = getattr(控件, "text", 控件)
+            if 内 is None:
+                return
+            try:
+                内.configure(state="normal")
+            except Exception:
+                pass
+            内.delete("1.0", "end")
+            if 文本:
+                内.insert("1.0", 文本)
+            try:
+                内.configure(state="disabled")
+            except Exception:
+                pass
+
+        try:
+            for 键, 变量 in (("source", "source_path"), ("target", "target_path"),
+                            ("world", "world_name")):
+                if hasattr(self, 变量):
+                    getattr(self, 变量).set(快照.get(键) or "")
+            _填(getattr(self, "mod_text", None), 快照.get("mods") or "")
+            _填(getattr(self, "config_text", None), 快照.get("configs") or "")
+            _填(getattr(self, "extra_text", None), 快照.get("extras") or "")
+        except Exception as e:
+            trace_exc("mw_lists/还原应用前状态", e)
+            return False
+        for 步 in ("_schedule_badge_refresh", "_update_text_states"):
+            方 = getattr(self, 步, None)
+            if callable(方):
+                try:
+                    方()
+                except Exception:
+                    pass
+        return True
+
+    def _undo_apply_record(self):
+        """撤销上一次「应用记录」：把界面还原成应用之前的样子。"""
+        快照 = getattr(self, "_apply_undo", None)
+        if not 快照:
+            self.toast(trp("没有可以还原的状态"), level="warn")
+            return False
+        ok = self._restore_ui(快照)
+        if ok:
+            self._apply_undo = None
+            try:
+                self.log(trp("↩ 已还原到应用记录之前的状态"), level="INFO")
+            except Exception:
+                pass
+            self.toast(trp("↩ 已还原"), level="ok")
+        else:
+            self.toast(trp("⚠ 还原失败"), level="warn")
+        try:
+            self._refresh_tail_buttons()
+        except Exception:
+            pass
+        return ok
+
     def _apply_record(self, 最近, 来源="上一次的迁移记录"):
         """把某份迁移档案的路径、存档名、三个清单全部回填到主界面。
 
@@ -143,6 +224,7 @@ class ListsMixin:
         if not isinstance(最近, dict):
             self.toast("⚠ 这份档案读不出来", level="warn")
             return False
+        快照 = self._snapshot_ui()      # 反悔用：应用失败就不算数
         清单 = 最近.get("lists") or {}
         模组们 = [str(x) for x in (清单.get("mods") or []) if str(x).strip()]
         配置们 = [str(x) for x in (清单.get("configs") or []) if str(x).strip()]
@@ -192,6 +274,11 @@ class ListsMixin:
         try:
             self.log(trp("🔁 已应用{0}（模组 {1} / config {2} / 其它 {3}）",
                          来源, len(模组们), len(配置们), len(其它们)), level="INFO")
+        except Exception:
+            pass
+        self._apply_undo = 快照           # 方便"反悔"：按钮会变成「↩ 还原到应用前」
+        try:
+            self._refresh_tail_buttons()
         except Exception:
             pass
         self.toast(trp("🔁 已回填{0}", 来源), level="ok")

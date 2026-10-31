@@ -75,6 +75,14 @@ class MigrationGUI(
         # **同样必须在这儿读** —— 提醒条是建界面时按这个值摆位的（mw_pages 里
         # 建条时读一次、随后又调一次 _pack_warning_layout），读晚了就永远是展开态。
         self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", False))
+        # 回滚默认还原哪些（设置页可改；「记住我的选择」勾上时由回滚对话框写这里）
+        try:
+            from core.migrator import _RESTORE_PARTS as _RP
+            存的 = self.config.get("rollback_parts")
+            self.rollback_parts = [p for p in (存的 or _RP) if p in _RP] or list(_RP)
+        except Exception:
+            self.rollback_parts = ["mods", "config", "saves", "files", "extras"]
+        self.rollback_parts_remember = bool(self.config.get("rollback_parts_remember", False))
         self.edit_mode = tk.BooleanVar(value=self.config.get("edit_enabled", False))
         # 点窗口空白处是否顺手退出「主界面编辑」（设置 →「🎨 外观与启动」可关）
         self.blank_exit_edit = tk.BooleanVar(
@@ -655,6 +663,9 @@ class MigrationGUI(
             "online_tags": bool(getattr(self, "online_tags", False)),
             "lock_mode": str(getattr(self, "lock_mode", "all")),
             "lock_wait_key": bool(getattr(self, "lock_wait_key", True)),
+            # 回滚默认还原哪些（键见 core.migrator._RESTORE_PARTS）
+            "rollback_parts": list(getattr(self, "rollback_parts", []) or []),
+            "rollback_parts_remember": bool(getattr(self, "rollback_parts_remember", False)),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
             "qt_enabled": bool(getattr(self, "qt_enabled", True)),

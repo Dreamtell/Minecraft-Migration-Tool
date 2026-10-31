@@ -350,6 +350,17 @@ _BACKUP_DIRS = ("mods", "config", "saves")
 _BACKUP_ROOT_FILES = ("options.txt",)
 _BACKUP_FILES_SUBDIR = "_files"
 _BACKUP_EXTRAS_SUBDIR = "_extras"      # 「其它文件」清单里各条目的备份（保持相对结构）
+# 回滚时允许"只还原一部分"：这五个键就是用户可勾选的类别。
+#   mods/config/saves = 三个固定目录；files = 根目录那几个文件（options.txt 等）；
+#   extras = 「其它文件」清单里用户自己加的那些。
+_RESTORE_PARTS = ("mods", "config", "saves", "files", "extras")
+_RESTORE_PART_NAMES = {
+    "mods": "模组（mods/）",
+    "config": "配置（config/）",
+    "saves": "存档（saves/）",
+    "files": "根目录文件（options.txt 等）",
+    "extras": "「其它文件」清单里的条目",
+}
 _BACKUP_MANIFEST = "manifest.json"
 
 
@@ -579,7 +590,37 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
         log_func(trp("✅ 备份完成，已备份：{0}", done if done else trp("无")), "SUCCESS")
 
 
-def do_restore(target_path, log_func=None, backup_dir=None):
+def backup_parts_available(backup_root):
+    """这份备份里实际存在哪些类别（给"回滚选哪些"的对话框用）。
+
+    返回 {键: 数量}，键见 `_RESTORE_PARTS`；数量对目录类就是目录数，对文件类就是文件数。
+    """
+    backup_root = Path(backup_root)
+    出 = {}
+    try:
+        manifest = read_manifest(backup_root) or {}
+    except Exception:
+        manifest = {}
+    for folder in _BACKUP_DIRS:
+        try:
+            目 = backup_root / folder
+            出[folder] = sum(1 for _ in 目.iterdir()) if 目.is_dir() else 0
+        except Exception:
+            出[folder] = 0
+    try:
+        文件们 = backup_root / _BACKUP_FILES_SUBDIR
+        出["files"] = sum(1 for n in _BACKUP_ROOT_FILES
+                          if (文件们 / n).is_file())
+    except Exception:
+        出["files"] = 0
+    try:
+        出["extras"] = len((manifest.get("extras") or {}))
+    except Exception:
+        出["extras"] = 0
+    return 出
+
+
+def do_restore(target_path, log_func=None, backup_dir=None, parts=None):
     """
     从备份恢复目标实例
     返回: 是否成功
@@ -599,6 +640,15 @@ def do_restore(target_path, log_func=None, backup_dir=None):
       · 删目录/删文件都先摘掉只读属性（copy2 会保留只读，Windows 上直接删会失败）；
       · 单文件恢复走原子替换，失败不会留下半截文件。
     """
+    # parts=None 表示"全都还原"（旧行为）；给了就只动列表里的类别。
+    # 传给它的键必须是 `_RESTORE_PARTS` 里的，别的忽略。
+    if parts is None:
+        选 = set(_RESTORE_PARTS)
+    else:
+        选 = {str(x) for x in parts} & set(_RESTORE_PARTS)
+        if not 选:
+            选 = set(_RESTORE_PARTS)      # 空集合当"没选"处理，免得点一下什么都没发生
+
     target_path = Path(target_path)
     # backup_dir 给了就用它（历史窗口里"回滚到这一次"），否则用老的单份备份
     backup_root = Path(backup_dir) if backup_dir else get_backup_path(target_path)
@@ -616,7 +666,13 @@ def do_restore(target_path, log_func=None, backup_dir=None):
 
     restored, cleaned, failed = [], [], []
 
+    跳过 = [f for f in _BACKUP_DIRS if f not in 选]
+    if 跳过 and log_func:
+        log_func(trp("⏭️ 按你的选择跳过：{0}", " / ".join(f + "/" for f in 跳过)), "INFO")
+
     for folder in _BACKUP_DIRS:
+        if folder not in 选:
+            continue
         target_folder = target_path / folder
         backup_folder = backup_root / folder
         try:
@@ -647,7 +703,9 @@ def do_restore(target_path, log_func=None, backup_dir=None):
                 log_func(trp("❌ 恢复 {0} 失败: {1}", folder, e), "ERROR")
 
     files_root = backup_root / _BACKUP_FILES_SUBDIR
-    for name in _BACKUP_ROOT_FILES:
+    if "files" not in 选 and log_func:
+        log_func(trp("⏭️ 按你的选择跳过：根目录文件（options.txt 等）"), "INFO")
+    for name in (() if "files" not in 选 else _BACKUP_ROOT_FILES):
         target_file = target_path / name
         backup_file = files_root / name
         try:
@@ -674,7 +732,10 @@ def do_restore(target_path, log_func=None, backup_dir=None):
     # 「其它文件」清单里的条目（用户自己选的）：迁移前存在的要还原，迁移前没有的要删掉
     # —— 只恢复固定三目录+options.txt 的话，用户清单里的东西被覆盖了就回不来。
     extras_root = backup_root / _BACKUP_EXTRAS_SUBDIR
-    for rel, 原来有 in sorted((manifest or {}).get("extras", {}).items()):
+    if "extras" not in 选 and log_func:
+        log_func(trp("⏭️ 按你的选择跳过：「其它文件」清单里的条目"), "INFO")
+    for rel, 原来有 in (sorted((manifest or {}).get("extras", {}).items())
+                        if "extras" in 选 else []):
         rel = _norm_rel(rel)
         if not rel:
             continue
