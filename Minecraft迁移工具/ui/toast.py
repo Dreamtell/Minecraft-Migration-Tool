@@ -513,7 +513,11 @@ class ToastHost:
     def _ensure_tick(self):
         if self._tick_job is None and self._items and not self._closed:
             try:
-                self._tick_job = self.win.after(16, self._tick)
+                try:
+                    间隔 = max(1, int(anim.frame_ms(self.win)))
+                except Exception:
+                    间隔 = 8
+                self._tick_job = self.win.after(间隔, self._tick)
             except Exception:
                 self._tick_job = None
 

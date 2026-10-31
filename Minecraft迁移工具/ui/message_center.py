@@ -749,6 +749,16 @@ class _抽屉:
         def _夹(目标):
             return max(0.0, min(1.0 - _可视比(), 目标))
 
+        def _帧间隔():
+            """跟显示器刷新率走；滚动这段要毫秒级定时器（见 utils/anim.py 文件头）。"""
+            try:
+                # 用 frame_ms 而不是 delay()：抽屉是独立 Toplevel，focus_displayof()
+                # 常年为 None，delay() 会把它当"失焦"降到 30fps —— 正在滚的时候它明明
+                # 就在眼前。（滚动期间我们用 hold() 顶住了定时器精度）
+                return max(1, int(anim.frame_ms(列表)))
+            except Exception:
+                return 6
+
         def _帧():
             平滑["job"] = None
             目标 = 平滑["目标"]
@@ -765,12 +775,18 @@ class _抽屉:
                 except Exception:
                     pass
                 平滑["目标"] = None
+                if 平滑.get("持有"):
+                    try:
+                        anim.release()
+                    except Exception:
+                        pass
+                    平滑["持有"] = False
                 return
             try:
                 列表.yview_moveto(当前 + 差 * 0.28)
             except Exception:
                 return
-            平滑["job"] = 列表.after(12, _帧)
+            平滑["job"] = 列表.after(_帧间隔(), _帧)
 
         def _轮(e):
             try:
@@ -786,6 +802,11 @@ class _抽屉:
             平滑["目标"] = 目标
             if 平滑["job"] is None:
                 平滑["job"] = 列表.after(1, _帧)
+                try:
+                    anim.hold()
+                    平滑["持有"] = True
+                except Exception:
+                    平滑["持有"] = False
             return "break"
 
         列表.bind("<MouseWheel>", _轮)

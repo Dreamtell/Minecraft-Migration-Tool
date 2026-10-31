@@ -1372,6 +1372,13 @@ class PagesMixin:
         def 帧():
             if 状态["stop"]:
                 return
+            # 循环一开就把定时器精度顶上去（15.6ms 粒度会把 8ms 的目标帧卡成 64fps）
+            if not 状态.get("hr"):
+                try:
+                    _anim.hold()
+                    状态["hr"] = True
+                except Exception:
+                    pass
             # 正在拖浮标：让路（曲线图推迟 16ms，肉眼看不出来，但拖动会顺很多 ——
             # 两边都在抢 60fps 主循环时，实测拖动帧间隔 p95 会明显变差）
             if getattr(self, "_net_float_dragging", False):
@@ -1599,6 +1606,12 @@ class PagesMixin:
 
         def _关闭():
             状态["stop"] = True
+            if 状态.get("hr"):
+                try:
+                    _anim.release()
+                except Exception:
+                    pass
+                状态["hr"] = False
             if _定时器["on"]:
                 try:
                     ctypes.windll.winmm.timeEndPeriod(1)
