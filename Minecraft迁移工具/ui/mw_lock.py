@@ -10,6 +10,14 @@ from utils import anim
 from utils.helpers import trace_exc
 
 
+# 锁屏整体停用开关（2026-10-31）：用户反馈迁移期间仍然卡顿，要求先把锁屏拔掉、
+# 由他自己重写一套。这里做成"入口全部直接返回"，而不是删代码：
+#   - 遮罩、流动边框、内嵌日志、完成态、看门狗轮询 全部不启动；
+#   - 但 _refresh_busy_state（按钮禁用）与 _set_edit_lock（输入框只读）照旧生效 ——
+#     那是安全逻辑，和遮罩没有关系，拔掉遮罩也必须有。
+_锁屏已停用 = True
+
+
 class LockMixin:
     """锁屏遮罩：流动边框、迁移期间的锁与解锁。"""
 
@@ -227,6 +235,15 @@ class LockMixin:
         （那是 _refresh_busy_state 的职责）。内嵌日志是“第二个视图”：主日志照常记录，
         这里同步追加，锁屏期间不用去关窗口也能看进度。
         """
+        if _锁屏已停用:
+            # 锁屏停用期间：不盖遮罩，但按钮禁用 / 输入锁仍要按"在忙"刷新一次。
+            try:
+                self.log("🔒 锁屏已停用（按钮仍全部禁用），迁移照常进行",
+                         level="INFO", save=False)
+            except Exception:
+                pass
+            self._refresh_busy_state()
+            return
         if getattr(self, "_lock_overlay", None) is not None:
             return
         # 还没到完成态：任何"按任意键关闭"都不该生效（见 _lock_any_key 的说明）
@@ -391,6 +408,15 @@ class LockMixin:
         失败 = 0
         开始 = getattr(self, "_mig_t0", None)
         计划 = getattr(self, "_mig_plan", None)
+        if _锁屏已停用:
+            # 没有完成态可建：把收尾标记清掉，让按钮/输入恢复正常即可。
+            self._mig_finish_pending = False
+            self._refresh_busy_state()
+            try:
+                self.log("🏁 迁移结束（锁屏已停用，完成态不再显示）", level="INFO", save=False)
+            except Exception:
+                pass
+            return
         # 收尾期间由本函数主导流程：先把"盯迁移结束"的兜底轮询停掉。
         # 它看到 _migration_running 已经是 False 就会立刻解锁 —— 那样完成态会
         # “啪”一下消失，用户根本来不及看总结。
