@@ -526,6 +526,17 @@ class MigrationGUI(
         except Exception:
             return None
 
+    def _再翻一遍界面(self):
+        """补翻一遍：切语言时晚建出来的控件（延迟布局的路径行、提示行）也能跟上。"""
+        try:
+            i18n.翻树(self.root)
+        except Exception:
+            pass
+        try:
+            i18n.翻自绘()
+        except Exception:
+            pass
+
     def 重新翻译界面(self):
         """运行中切语言：把主界面整棵树按当前语言重刷一遍。
 
@@ -541,6 +552,13 @@ class MigrationGUI(
             改 = i18n.翻树(self.root)
         except Exception as e:
             trace_exc("main_window/重翻界面-翻树", e)
+        # 有些控件是"晚一步建出来的"（比如窗口第一次 Configure 才布局的路径行、
+        # 延迟创建的提示行）：一次翻树扫不到它们，等一两帧再补两遍。
+        for 延迟 in (150, 420):
+            try:
+                self.root.after(延迟, self._再翻一遍界面)
+            except Exception:
+                pass
         try:
             i18n.翻自绘()
         except Exception as e:

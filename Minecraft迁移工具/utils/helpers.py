@@ -2086,10 +2086,20 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
 
     def set_text(new_text):
         """动态改按钮文字（替代 tk.Button 的 config(text=...)）。"""
+        nonlocal width
         # 动态改文字也要过 tr()：按钮文字经常带状态（「正在扫描…」之类）
         new_text = i18n.tr(new_text)
         state["text"] = new_text
         state["icon"] = None      # 回到文字模式
+        # 宽度跟着文字重算：切语言后英文比中文长（或短），不重算就会出现
+        # 「按钮还是中文时的长度、字被挤掉/两边留一大截」。
+        try:
+            需要 = max(44, _btn_text_width(new_text, font) + _BTN_TEXT_PAD)
+            if int(需要) != int(width):
+                width = int(需要)
+                canvas.configure(width=width)
+        except Exception:
+            pass
         draw_content()
     canvas.set_text = set_text
 
