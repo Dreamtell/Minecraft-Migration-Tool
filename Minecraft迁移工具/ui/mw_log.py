@@ -832,7 +832,17 @@ class LogMixin:
         剩 = self._log_remain_px()
         if 剩 <= 0.5:
             return
-        步 = int(min(self._FOLLOW_MAX_PX, 剩))
+        视口 = max(1, int(self.log_text.winfo_height()))
+        # 落后超过一屏半：多半是收尾那一大批（迁移结束时的总结、出错清单）。
+        # 这时候再一帧 24px 地爬，就成了「进度早完了、日志还在滚」，直接对齐到底。
+        if 剩 > 视口 * 1.5:
+            try:
+                self.log_text.see(tk.END)
+            except Exception:
+                pass
+            return
+        # 追的时候按比例加速（最多走到 0.6 屏），追完自然回到每帧 24px 的平滑速度。
+        步 = int(min(max(self._FOLLOW_MAX_PX, 剩 * 0.35), 视口 * 0.6, 剩))
         if 步 < 1:
             步 = 1
         try:
