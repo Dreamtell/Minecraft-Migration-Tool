@@ -734,11 +734,58 @@ class _抽屉:
             except Exception:
                 pass
 
+        # 平滑滚动：滚轮不再"一格一跳"，而是逐帧朝目标位置滑过去。
+        # Canvas 的 yview_scroll(units) 一格就是一大截，看着很硬；这里自己按
+        # "每格 60px / 内容总高" 换算成比例，再用 after 逐帧缓动。
+        平滑 = {"目标": None, "job": None}
+
+        def _可视比():
+            try:
+                a, b = 列表.yview()
+                return max(0.0, min(1.0, b - a))
+            except Exception:
+                return 1.0
+
+        def _夹(目标):
+            return max(0.0, min(1.0 - _可视比(), 目标))
+
+        def _帧():
+            平滑["job"] = None
+            目标 = 平滑["目标"]
+            if 目标 is None:
+                return
+            try:
+                当前 = 列表.yview()[0]
+            except Exception:
+                return
+            差 = 目标 - 当前
+            if abs(差) < 0.0006:
+                try:
+                    列表.yview_moveto(目标)
+                except Exception:
+                    pass
+                平滑["目标"] = None
+                return
+            try:
+                列表.yview_moveto(当前 + 差 * 0.28)
+            except Exception:
+                return
+            平滑["job"] = 列表.after(12, _帧)
+
         def _轮(e):
             try:
-                列表.yview_scroll(-1 if int(getattr(e, "delta", 0)) > 0 else 1, "units")
+                reg = 列表.cget("scrollregion")
+                总 = float(str(reg).split()[3]) if reg else 0.0
+                if 总 <= 1.0:
+                    总 = float(列表.bbox("all")[3]) if 列表.bbox("all") else 1.0
             except Exception:
-                pass
+                总 = 0.0
+            格 = 1 if int(getattr(e, "delta", 0)) < 0 else -1
+            基准 = 列表.yview()[0] if 平滑["目标"] is None else 平滑["目标"]
+            目标 = _夹(基准 + (格 * 60.0) / max(1.0, 总))
+            平滑["目标"] = 目标
+            if 平滑["job"] is None:
+                平滑["job"] = 列表.after(1, _帧)
             return "break"
 
         列表.bind("<MouseWheel>", _轮)
