@@ -251,7 +251,7 @@ class PagesMixin:
                     pass
             try:
                 self._reflow_job = self.root.after(
-                    260, lambda: self._reflow_once())
+                    260, lambda: _reflow_once())
             except Exception:
                 self._reflow_job = None
 
