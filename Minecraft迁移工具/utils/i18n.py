@@ -124,6 +124,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "迁移前自检有提醒": "Pre-migration check has warnings",
     "这些不影响运行，但结果可能不是你要的：": "These will not block the run, but the result may not be what you expect:",
     "还是要现在开始吗？": "Start anyway?",
+    "知道了": "Got it",
+    "先不开始": "Not now",
     "✅ 自检通过（{0} 项提示）": "✅ Pre-migration check passed ({0} notes)",
     "迁移": "Migration",
     "迁移准备": "Preparing migration",

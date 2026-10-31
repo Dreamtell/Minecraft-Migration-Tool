@@ -8,6 +8,8 @@ import os
 import queue
 import shutil
 import threading
+
+NL = chr(10)  # 拼多行文案用（补丁脚本写反斜杠n容易被二次转义）
 import time
 import tkinter as tk
 from core import precheck
@@ -1450,19 +1452,29 @@ class MigrationMixin:
         if 错误:
             self.log(trp("⛔ 自检没通过（{0} 项错误），已拦下，没有动任何文件", len(错误)),
                      level="ERROR")
-            messagebox.showerror(
-                trp("迁移前自检没通过"),
-                trp("下面这些不解决，迁移跑不起来：") + "\n\n"
-                + "\n".join("· " + x for x in 错误[:8]))
+            try:
+                from ui import precheck_dialog as _pd
+                _pd.ask_errors(self.root, self.theme, 错误[:12])
+            except Exception as _e:
+                trace_exc("main_window/自检错误弹窗", _e)
+                messagebox.showerror(
+                    trp("迁移前自检没通过"),
+                    trp("下面这些不解决，迁移跑不起来：") + NL + NL
+                    + NL.join("· " + x for x in 错误[:8]))
             return False
         if 提醒:
             self.log(trp("⚠️ 自检有 {0} 项提醒，等用户确认", len(提醒)), level="WARNING")
-            return bool(messagebox.askyesno(
-                trp("迁移前自检有提醒"),
-                trp("这些不影响运行，但结果可能不是你要的：") + "\n\n"
-                + "\n".join("· " + x for x in 提醒[:8]) + "\n\n"
-                + trp("还是要现在开始吗？"),
-                icon="warning", default="yes"))
+            try:
+                from ui import precheck_dialog as _pd
+                return bool(_pd.ask_warnings(self.root, self.theme, 提醒[:12]))
+            except Exception as _e:
+                trace_exc("main_window/自检提醒弹窗", _e)
+                return bool(messagebox.askyesno(
+                    trp("迁移前自检有提醒"),
+                    trp("这些不影响运行，但结果可能不是你要的：") + NL + NL
+                    + NL.join("· " + x for x in 提醒[:8]) + NL + NL
+                    + trp("还是要现在开始吗？"),
+                    icon="warning", default="yes"))
         self.log(trp("✅ 自检通过（{0} 项提示）", len(提示)), level="INFO")
         return True
 
