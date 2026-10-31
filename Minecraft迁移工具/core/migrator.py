@@ -102,34 +102,57 @@ def _unlink(path):
         p.unlink()
 
 
+# Windows 上「另一个程序正在使用此文件」多半是暂时的：杀软正在扫、客户端刚在读
+# 这个 jar、编辑器刚保存过。实测（_dctest/probe_file_lock.py）：对方以共享读打开时
+# 我们照样能复制，只有**独占**打开（dwShareMode=0）才会失败，而那种情况通常一两百
+# 毫秒就过去了。所以这里不是"探测占用"，而是复制失败时等一等再试。
+_重试错误码 = (5, 32, 33)          # 拒绝访问 / 共享冲突 / 锁冲突
+_重试次数 = 3
+_重试间隔 = 0.18
+
+
+def _像是被占用(e):
+    """判断异常是不是"文件被别的程序占着"这一类（值得重试的）。"""
+    if isinstance(e, PermissionError):
+        return True
+    return getattr(e, "winerror", None) in _重试错误码
+
+
 def _atomic_copy_file(src, dst):
     """把文件复制到 dst：先写同目录的临时名，成功后再原子替换。
 
     以前直接 shutil.copy2(src, dst)：目标是已存在的文件时，copy2 会先把它截断，
     中途断电/磁盘满/被占用就留下一个**半截文件**，而原内容已经没了。
     改成临时文件 + os.replace 之后，失败时目标文件保持原样。
+
+    被别的程序短暂占用（杀软扫描、客户端换 jar）时会等一会儿重试，见上面的常量。
     """
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".mctmp")
-    try:
-        if tmp.exists():
-            _unlink(tmp)
-        shutil.copy2(src, tmp)
-        # Windows 上目标只读会让 os.replace 失败，先解锁
-        if dst.exists():
-            try:
-                os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
-            except Exception:
-                pass
-        os.replace(tmp, dst)
-    except Exception:
+    for 次 in range(_重试次数):
         try:
             if tmp.exists():
                 _unlink(tmp)
-        except Exception:
-            pass
-        raise
+            shutil.copy2(src, tmp)
+            # Windows 上目标只读会让 os.replace 失败，先解锁
+            if dst.exists():
+                try:
+                    os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+            os.replace(tmp, dst)
+            return
+        except Exception as e:
+            try:
+                if tmp.exists():
+                    _unlink(tmp)
+            except Exception:
+                pass
+            if 次 + 1 >= _重试次数 or not _像是被占用(e):
+                raise
+            time.sleep(_重试间隔 * (次 + 1))
+    return
 
 
 def _atomic_write_json(path, data):
