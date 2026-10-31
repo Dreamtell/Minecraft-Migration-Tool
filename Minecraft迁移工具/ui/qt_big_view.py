@@ -796,6 +796,64 @@ class NetUsageChart(QtWidgets.QWidget):
                    int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), tr("↑ 上行"))
 
 
+class BusyBar(QtWidgets.QWidget):
+    """一条自己画的"不确定进度"细条。
+
+    为什么不用 QProgressBar(range 0,0)：Fusion 风格的不确定态是**按固定步进**在跳
+    （约 10 步/秒），看着就是一格一格挪。这里用 QTimer 16ms + 真实经过时间算位置，
+    60fps 连续平移，块宽 28%、一趟 1.1 秒、走到右端从左边接上。
+    """
+
+    def __init__(self, color="#ff9800", height=4, parent=None):
+        super().__init__(parent)
+        self._color = QtGui.QColor(color)
+        self._h = height
+        self.setFixedHeight(height)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._t0 = time.perf_counter()
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(16)          # ~60fps
+        self._timer.timeout.connect(self._tick)
+        self._paints = 0
+
+    def start(self):
+        self._t0 = time.perf_counter()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def shown(self):
+        return self._timer.isActive()
+
+    def _tick(self):
+        if not self.isVisible():
+            return
+        self.update()
+
+    def paintEvent(self, _ev):
+        self._paints += 1
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        半径 = h / 2.0
+        # 轨道（很淡的一条），让"有进度条"这件事看得出来
+        轨 = QtGui.QColor(self._color)
+        轨.setAlpha(46)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(轨)
+        p.drawRoundedRect(QtCore.QRectF(0, 0, w, h), 半径, 半径)
+        # 走动的块：宽度 28%，位置 = 经过时间 / 1.1 秒 取余
+        块宽 = max(24.0, w * 0.28)
+        周期 = 1.1
+        相位 = ((time.perf_counter() - self._t0) % 周期) / 周期
+        左 = -块宽 + 相位 * (w + 块宽)
+        矩形 = QtCore.QRectF(左, 0, 块宽, h)
+        p.setBrush(self._color)
+        p.drawRoundedRect(矩形, 半径, 半径)
+        p.end()
+
+
 class AnimButton(QtWidgets.QPushButton):
     """自绘渐变按钮：悬停会浮起来 + 扫过一道光，按下会沉下去、松手弹回来。
 
@@ -2437,14 +2495,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         # 搜索中的"动画"：状态行下面一条 3px 的不确定进度条（QProgressBar 自己会走），
         # 外加状态行开头的转圈字符。以前是用一块橙色大字盖在结果区正中，
         # 二次搜索时会糊在列表上 —— 现在搜索期间列表照常可见、也能继续滚。
-        self.search_bar = QtWidgets.QProgressBar()
-        self.search_bar.setRange(0, 0)          # 0/0 = 不确定（系统自己在跑）
-        self.search_bar.setTextVisible(False)
-        self.search_bar.setFixedHeight(3)
-        self.search_bar.setStyleSheet(
-            "QProgressBar { background: transparent; border: none; }"
-            "QProgressBar::chunk { background: #ff9800; }")
-        self.search_bar.hide()
+        # 自己画的细条（QProgressBar 的不确定态是 10 步/秒地跳，看着帧数很低）
+        self.search_bar = BusyBar("#ff9800", 4)
         lay.addWidget(self.search_bar)
 
         self._spin_frames = "◐◓◑◒"
@@ -2868,6 +2920,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             self._spin_text = tr("正在搜索…")
         try:
             self.search_bar.show()
+            self.search_bar.start()
             self._spin_i = 0
             self._画搜索中文字(self._spin_frames[0])
             self._spin_timer.start()
@@ -2895,6 +2948,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         except Exception:
             pass
         try:
+            self.search_bar.stop()
             self.search_bar.hide()
         except Exception:
             pass
