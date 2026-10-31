@@ -2422,6 +2422,26 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.status.setStyleSheet("color:%s;" % th.get("muted_fg"))
         lay.addWidget(self.status)
 
+        # 搜索中的"动画"：状态行下面一条 3px 的不确定进度条（QProgressBar 自己会走），
+        # 外加状态行开头的转圈字符。以前是用一块橙色大字盖在结果区正中，
+        # 二次搜索时会糊在列表上 —— 现在搜索期间列表照常可见、也能继续滚。
+        self.search_bar = QtWidgets.QProgressBar()
+        self.search_bar.setRange(0, 0)          # 0/0 = 不确定（系统自己在跑）
+        self.search_bar.setTextVisible(False)
+        self.search_bar.setFixedHeight(3)
+        self.search_bar.setStyleSheet(
+            "QProgressBar { background: transparent; border: none; }"
+            "QProgressBar::chunk { background: #ff9800; }")
+        self.search_bar.hide()
+        lay.addWidget(self.search_bar)
+
+        self._spin_frames = "◐◓◑◒"
+        self._spin_i = 0
+        self._spin_text = ""
+        self._spin_timer = QtCore.QTimer(self)
+        self._spin_timer.setInterval(100)
+        self._spin_timer.timeout.connect(self._转一圈)
+
         # 表格 / 卡片：页签样式和设置窗口同一套（圆角药丸 + 选中块滑过去）
         self.tabs = PillTabs(th, self)
         self.tabs.add(tr("📋 表格"))
@@ -2788,6 +2808,50 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             QtCore.QTimer.singleShot(200, self.search)   # 打开就直接搜一次
 
     # ---------------- 搜索 ----------------
+    def _转一圈(self):
+        if not getattr(self, "_searching", False):
+            return
+        self._spin_i = (self._spin_i + 1) % len(self._spin_frames)
+        self._画搜索中文字(self._spin_frames[self._spin_i])
+
+    def _画搜索中文字(self, 转):
+        try:
+            self.status.setText(("%s %s" % (转, self._spin_text)).strip())
+        except Exception:
+            pass
+
+    def _开始搜索动画(self):
+        try:
+            _t = self.status.text() or ""
+            # 去掉上一次残留的转圈字符，否则每轮会越堆越多（"◓ ◓ ◓ …"）
+            while _t[:1] in ("◐", "◓", "◑", "◒"):
+                _t = _t[1:].lstrip()
+            self._spin_text = _t or tr("正在搜索…")
+        except Exception:
+            self._spin_text = tr("正在搜索…")
+        try:
+            self.search_bar.show()
+            self._spin_i = 0
+            self._画搜索中文字(self._spin_frames[0])
+            self._spin_timer.start()
+        except Exception:
+            pass
+
+    def _停止搜索动画(self):
+        try:
+            self._spin_timer.stop()
+        except Exception:
+            pass
+        try:
+            self.search_bar.hide()
+        except Exception:
+            pass
+        try:
+            if self._spin_text:
+                self.status.setText(self._spin_text)
+        except Exception:
+            pass
+
     def search(self):
         # 搜索中再点一次直接忽略。**不能靠 setEnabled(False) 防连点**：AnimButton 的
         # paintEvent 在禁用态会把颜色硬编码成灰色（"#9e9e9e"），橙色"⟳ 搜索中…"根本
@@ -2812,6 +2876,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         except Exception:
             pass
         self._searching = True
+        self._开始搜索动画()
         # 记下这次搜索开始时的"本进程请求数 / 字节数"，结果出来时算差值显示
         try:
             from utils import netmeter
@@ -2824,8 +2889,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         # 后面的代码吞进去，上次就是这么把 th 弄成未定义的）
         try:
             self._fit_busy()
-            self.busy.raise_()
-            self.busy.show()
+            # 不再把"正在搜索"盖在结果区正中（会糊在列表上）
+            self.busy.hide()
         except Exception:
             pass
         # **先把这句话画到屏幕上**再开线程：QRunnable 里的 urllib 请求会抢 GIL，
