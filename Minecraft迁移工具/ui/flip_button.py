@@ -33,6 +33,7 @@ flip_to_front()/set_feel()/get_feel()/set_dry_run()。
 """
 import math
 import time
+from collections import deque as _deque
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -82,6 +83,7 @@ _STRIPE_W = 6.0         # 斜纹线宽
 _STRIPE_STEP = 28.0     # 斜纹间距
 _STRIPE_SPEED = 55.0    # 斜纹流速 px/s
 _PROGRESS_H = 3         # 底部进度条高度
+_BAR_SUBPX = 4          # 条宽按 1/4 像素量化（头子能半格半格挪）
 _PROGRESS_MIN = 0.06    # 进度条最短（原型 max(0.06, ...)）
 
 _UI_MS = 33             # 持续动画的 tick 间隔（30fps 上限）
@@ -90,7 +92,10 @@ _HV_IN, _HV_OUT = 0.09, 0.15    # 悬停淡入 90ms / 淡出 150ms（原型 step
 # 而淡入是指数逼近（_HV_IN=90ms，实际要 ~200ms 才到 0.99），于是鼠标一碰，亮度只跳
 # 4 下，看着就是「高亮帧数低」。改 25 档（步长 0.04）≈ 5ms 一档，跟刷新率对上。
 _HV_LEVELS = tuple(i / 24.0 for i in range(25))  # 0, 0.04, ... 1.0
-_BACK_PHASES = 72       # 背面相位表长度
+# 背面斜纹相位表长度。相位周期固定 2.417s，表越长每步的角度越小、看着越连续：
+# 72 = 每 33.6ms 换一格（≈30fps 的观感，用户反馈"背面帧数低"就是这个）；
+# 180 = 每 13.4ms 一格（≈74fps），缓存只多一百来张。
+_BACK_PHASES = 180
 _BACK_DT = (2.0 * math.pi / 2.6) / _BACK_PHASES   # 让进度条的 cos 周期正好一圈（2.417s）
 
 # ---------------------------------------------------------------- 配色（原型 FACE_IDLE / FACE_SEARCH 原值）
@@ -178,7 +183,9 @@ _FRAME_MS = 16          # 目标帧间隔（60fps）—— 现在只当兜底值
 # 帧图缓存在 _frames 里（key 带状态）：47 帧 × 2 方向 × 3 档手感 ≈ 280 张 ≈ 5.6MB。
 _TABLE_MS_MIN = 4       # 帧表密度的下限（240Hz 屏）
 _TABLE_MS_MAX = 16      # 上限（60Hz 屏），再密就是白烤帧
-_MAX_FRAMES = 900       # 图缓存上限（翻转帧 + 静止帧 + 相位表）
+# 非翻转帧的预算。以前是"一超上限就把非翻转帧全清"，相位表一满就整表重烤，
+# 滚动动画每轮都要暖一遍；改成按插入顺序挤掉最老的（dict 保序），稳态就不会抖。
+_MAX_FRAMES = 420       # 图缓存上限（翻转帧 + 静止帧 + 相位表）
 _PREWARM_MS_PER_TICK = 0.006   # 预热每轮最多占用主线程 6ms，然后让出
 
 # 字体：PIL 里 CJK 用微软雅黑粗体，emoji 只能单独用 Segoe UI Emoji 画
@@ -664,6 +671,40 @@ class FlipButton(tk.Canvas):
         """装饰性的来回扫宽度（只表示在忙，与时间无关）：6% → 100% → 6%。"""
         return max(_PROGRESS_MIN, 0.5 - 0.5 * math.cos(t * 2.6))
 
+    # 进度历史（时间, 值），只留最近的；条的显示位置从这里回放
+    _PROG_LAG = 0.18        # 回放延迟（秒）
+    _PROG_HIST_MAX = 48     # 最多记多少个采样点
+
+    def _push_prog_history(self, 值):
+        """记一笔真实进度，供底部条按"晚 _PROG_LAG 秒"回放。"""
+        try:
+            历史 = getattr(self, "_prog_hist", None)
+            if 历史 is None:
+                历史 = self._prog_hist = _deque(maxlen=self._PROG_HIST_MAX)
+            历史.append((time.perf_counter(), 值))
+        except Exception:
+            pass
+
+    def _prog_show_from_history(self, now, tgt):
+        """按历史回放算"现在该画到哪"：取 now-lag 时刻的插值。"""
+        历史 = getattr(self, "_prog_hist", None)
+        if not 历史:
+            return tgt
+        目标时刻 = now - self._PROG_LAG
+        if 目标时刻 <= 历史[0][0]:
+            return 历史[0][1]
+        上 = None
+        for t, v in 历史:
+            if t >= 目标时刻:
+                if 上 is None:
+                    return v
+                跨 = t - 上[0]
+                比 = 0.0 if 跨 <= 0 else (目标时刻 - 上[0]) / 跨
+                return 上[1] + (v - 上[1]) * max(0.0, min(1.0, 比))
+            上 = (t, v)
+        # 历史还没追上"现在"（迁移刚停）：就停在最后一个值上，别倒着走
+        return 上[1] if 上 else tgt
+
     def _bar_u(self):
         """这一帧该画的条宽：真进度优先（缓动值），没有就回到装饰性的来回扫。"""
         if self._prog_override is not None:
@@ -690,24 +731,41 @@ class FlipButton(tk.Canvas):
         return strip
 
     def _bar_photo(self, u):
-        """宽度 u（0..1）那一段的条贴图。裁剪是 C 层操作，比重新合成整面便宜得多。"""
+        """宽度 u（0..1）那一段的条贴图。
+
+        原来按**整像素**取整：150px 宽、7 秒走完，头子每秒才挪 21 个像素，
+        每挪一次就是一整格 —— 看着像"一秒动两下"。现在按 1/4 像素量化，
+        最后一列按余数压透明度，头子就能半格半格地挪（84 格/秒）。
+        裁剪 + 改一列 alpha 都是 C 层操作，比重新合成整面便宜得多。
+        """
         w = self._cw
         try:
-            pw = int(round(w * max(0.0, min(1.0, float(u)))))
+            q = int(round(max(0.0, min(1.0, float(u))) * w * _BAR_SUBPX))
         except Exception:
-            pw = 0
-        pw = max(0, min(w, pw))
-        if pw in self._bar_cache:
-            return self._bar_cache[pw]
+            q = 0
+        q = max(0, min(w * _BAR_SUBPX, q))
+        if q in self._bar_cache:
+            return self._bar_cache[q]
         photo = None
-        if pw > 0:
+        if q > 0:
             try:
-                photo = _ImageTk.PhotoImage(self._bar_strip().crop((0, 0, pw, _PROGRESS_H)))
+                整, 余 = divmod(q, _BAR_SUBPX)
+                条 = self._bar_strip()
+                if 余:
+                    段 = 条.crop((0, 0, 整 + 1, _PROGRESS_H))
+                    阿尔法 = 段.getchannel("A")
+                    # 条的填充是实色（alpha 255），所以最后那一列直接把 alpha 换成
+                    # 余数比例就行 —— 看上去就是"半格宽"的头子
+                    阿尔法.paste(int(round(255.0 * 余 / _BAR_SUBPX)), (整, 0))
+                    段.putalpha(阿尔法)
+                    photo = _ImageTk.PhotoImage(段)
+                else:
+                    photo = _ImageTk.PhotoImage(条.crop((0, 0, 整, _PROGRESS_H)))
             except Exception:
                 photo = None
-        if len(self._bar_cache) > 400:
+        if len(self._bar_cache) > 1600:
             self._bar_cache.clear()
-        self._bar_cache[pw] = photo
+        self._bar_cache[q] = photo
         return photo
 
     def _apply_bar(self, u=None):
@@ -752,9 +810,22 @@ class FlipButton(tk.Canvas):
         return photo
 
     def _drop_photos(self):
-        """只丢静止帧/相位表，保留翻转帧（那些是最贵的，扔了下次点击要现烤 40 帧）。"""
-        for k in [k for k in self._frames if not (isinstance(k, tuple) and k[0] == "flip")]:
+        """挤出最老的非翻转帧，保留翻转帧（那些最贵，扔了下次点击要现烤 40 帧）。
+
+        原来是"一超上限就全清"：背面相位表 180 张、悬停扫光 96 张，来回一混就顶到
+        上限，于是每 400 张左右整表重烤一遍（一次 4.5ms）—— 看着像周期性掉帧。
+        改成按插入顺序只挤掉最老的几张，稳态下相位表能一直命中缓存。
+        """
+        超 = len(self._frames) - _MAX_FRAMES
+        if 超 <= 0:
+            return
+        for k in list(self._frames):
+            if 超 <= 0:
+                break
+            if isinstance(k, tuple) and k[0] == "flip":
+                continue
             del self._frames[k]
+            超 -= 1
 
     def _stem(self):
         return (self._cw, self._ch, id(self._icon) if self._icon else 0, self._bg_rgb())
@@ -1087,16 +1158,14 @@ class FlipButton(tk.Canvas):
         （可能几分钟），给 30fps 就够了 —— 别让整机一直挂在 1ms 定时器上。
         """
         if self._at_back:
-            # 悬停淡入的那一小段要跟刷新率走（否则 33ms 一格，25 档要 0.8 秒，
-            # 看着是一跳一跳地亮起来）；淡完之后仍回到 30fps，别一直挂着快定时器。
-            在追 = abs((1.0 if self._hover else 0.0) - self._hv) > 0.02
-            if self._prog_override is not None or 在追:
-                # 有条真进度在跑 / 正在淡入：要跟刷新率走。
-                try:
-                    return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
-                except Exception:
-                    return _UI_MS
-            return _UI_MS
+            # 背面**一直**跟刷新率走：那条斜纹在流、底部条在长、文案点点在闪，
+            # 定格 33ms 一格的话（30fps）斜纹看着就是一格一格跳 —— 用户直接说
+            # "这个状态帧数低"。每帧只是一次 itemconfigure + 一次裁图（缓存命中，
+            # 实测 ~0.2ms），整机开销可以忽略；真正贵的是现烤整面，那个在缓存里。
+            try:
+                return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
+            except Exception:
+                return _UI_MS
         try:
             return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
         except Exception:
@@ -1171,15 +1240,15 @@ class FlipButton(tk.Canvas):
                 else:
                     photo = self._back_photo(self._back_phase(), self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
-                # 条的目标值一跳，这里每帧追一点（时间常数 0.12s，肉眼是"一路推上去"）
+                # 条的位置 = 进度历史的 180ms 前那个值（线性插值）。
+                # 为什么不用"追目标"：进度每 100~250ms 才来一跳，
+                #   * 指数追 —— 追平之后要干等下一跳，看着一顿一顿；
+                #   * 加最小步长 —— 步长一下就把整跳吃掉了，等于每跳"啪"地挪一段；
+                # 都是"一秒动两下"的观感。改成回放历史：源动多少条就动多少，
+                # 只是整体晚 180ms（肉眼看不出来），运动是连续、匀速的。
                 tgt = self._prog_override
                 if tgt is not None:
-                    if self._prog_show is None:
-                        self._prog_show = tgt
-                    elif abs(tgt - self._prog_show) > 0.002:
-                        self._prog_show += (tgt - self._prog_show) * min(1.0, dt / 0.12)
-                    else:
-                        self._prog_show = tgt
+                    self._prog_show = self._prog_show_from_history(now, tgt)
                 self._apply_bar(self._bar_u())
                 self._tick_dots(now)
             else:
@@ -1451,6 +1520,11 @@ class FlipButton(tk.Canvas):
         self._prog_override = 新
         if 新 is None:
             self._prog_show = None
+            ʰ = getattr(self, "_prog_hist", None)
+            if ʰ is not None:
+                ʰ.clear()
+        else:
+            self._push_prog_history(新)
         if self._at_back and not self._animating:
             self._apply_bar(self._bar_u())
             self._ensure_tick()     # 条在动，tick 得活着（也是提速的依据）
