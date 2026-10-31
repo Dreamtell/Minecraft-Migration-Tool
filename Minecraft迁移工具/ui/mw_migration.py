@@ -1610,14 +1610,12 @@ class MigrationMixin:
         self._refresh_busy_state()      # 别的按钮先灰掉
         self._close_child_windows()     # 子窗口全关（设置窗/差异窗/大视图）
         self._flip_start_btn(front=False)
-        # 倒计时期间不画条：用户明确要求"这个进度条长度不要变化"，
-        # 秒数靠按钮上的文字表达；条只在真正干活时出现（模拟运行=匀速滚动，
-        # 真迁移=按已拷比例长）。
+        # 倒计时是"沙漏"：满格起步往回收（用户要的就是这个，别把它藏起来）
         try:
-            self.start_btn.set_bar_off(True)
+            self.start_btn.set_bar_off(False)
         except Exception:
             pass
-        self._flip_progress(None)
+        self._flip_progress(1.0)
         self.log(trp("⏳ 开始前倒计时 {0} 秒：期间再点一下「开始迁移」可取消", 秒),
                  level="INFO")
         self._countdown_tick()
@@ -1645,7 +1643,7 @@ class MigrationMixin:
         # 倒计时 = 沙漏：条从满格往回收（1 → 0），数到 0 收空；
         # 关键是拿"屏幕上显示的那个秒数"算条宽 —— 用 剩/总 会差一整格：
         # 剩 = 2.99 秒时文字已经写"3 秒"了，条却只有 60%。
-        self._flip_progress(None)
+        self._flip_progress(max(0.0, min(1.0, 秒数 / 总)))
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
             self._countdown_txt = 文案
@@ -1659,13 +1657,9 @@ class MigrationMixin:
         self._countdown_txt = None
         self._flip_back_text(None)
         try:
-            self.start_btn.set_back_warn(False)
+            self.start_btn.set_back_warn(False)   # 先复原成红面，下面按模拟/真跑再切
         except Exception:
             pass
-        try:
-            self.start_btn.set_back_warn(False)
-        except Exception:
-            pass      # 换回「⏳ 迁移中...」
         # 倒计时收在 0，干活段从 0 接着长（真迁移由进度队列推真值；
         # 模拟运行不推数值，条自己滚动）。
         # 数完了：真跑从 0 接着长；模拟运行不接数值（推 None 让条回到"滚动"，
@@ -1674,13 +1668,14 @@ class MigrationMixin:
             self.start_btn.set_bar_off(False)
         except Exception:
             pass
-        # 模拟运行：干活段换成"黄色 + 满进度条 + ⚠ 文案"（用户 m09602 定的样式）
-        if self._是模拟运行():
-            try:
-                self.start_btn.set_back_warn(True)
-            except Exception:
-                pass
-            self._flip_back_text(trp("⚠️ 模拟中…"))
+        # 干活段统一换成"黄色 + 满进度条 + ⚠ 文案"（用户 m09602 定的样式）。
+        # 真迁移也用它 —— 精确进度在进度窗口里，按钮上只表达"正在跑、别动"。
+        try:
+            self.start_btn.set_back_warn(True)
+        except Exception:
+            pass
+        self._flip_back_text(trp("⚠️ 模拟中…") if self._是模拟运行()
+                             else trp("⚠️ 迁移中…"))
         self._flip_progress(self._条真进度(0.0))
         self._run_migration_entry()
 

@@ -2107,6 +2107,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "　⚠ Drag-and-drop unavailable (tkinterdnd2 missing) — use the \"Add mods\" button.",
     "⚠️ 模拟中…":
         "⚠️ Dry run…",
+    "⚠️ 迁移中…":
+        "⚠️ Migrating…",
 }
 
 
