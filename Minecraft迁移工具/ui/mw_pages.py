@@ -424,6 +424,23 @@ class PagesMixin:
             return 基础
         return 基础 + trp("　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。")
 
+    def _适配模组说明宽(self, _e=None):
+        """按容器宽度给说明行设 wraplength —— 不设的话长句子会挤成一行跑出边界。
+
+        切英文 / 带上"拖放不可用"那半句之后文字会长一大截，这里跟着宽度走。
+        """
+        if not hasattr(self, "_mod_hint"):
+            return
+        try:
+            父 = self._mod_hint.master
+            宽 = int(父.winfo_width() or 0)
+            if 宽 < 200:
+                宽 = int(self.root.winfo_width() or 800) - 60
+            self._mod_hint.configure(wraplength=max(220, 宽 - 24),
+                                     justify="left", anchor="w")
+        except Exception:
+            pass
+
     def _刷新模组说明(self):
         """切语言时重拼那行说明（按段拼，整串查表查不到）。"""
         if not hasattr(self, "_mod_hint"):
@@ -436,6 +453,7 @@ class PagesMixin:
             这次 = self._mod_hint_text()
             if str(self._mod_hint.cget("text")) != 这次:
                 self._mod_hint.configure(text=这次)
+            self._适配模组说明宽()
         except Exception:
             pass
 
@@ -447,6 +465,11 @@ class PagesMixin:
                  font=("微软雅黑", 8), justify="left")
         # pack 返回 None，不能直接赋给 self._mod_hint（注册拖放失败时要往里追加提示）
         self._mod_hint.pack(anchor="w", padx=5, pady=(2, 0))
+        try:
+            parent.bind("<Configure>", self._适配模组说明宽, add="+")
+        except Exception:
+            pass
+        self.root.after(200, self._适配模组说明宽)
         # 这行是"基础说明 +（可能的）拖放不可用提示"拼出来的，整串查表查不到；
         # 切语言时按段重拼，并且把语言层记下的那串中文原文撤掉，免得它盖回来。
         try:

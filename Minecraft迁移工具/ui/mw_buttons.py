@@ -199,10 +199,13 @@ class ButtonsMixin:
             # 先把这一排全部撤下来（含被隐藏的）：只重新 pack 显示的那些是不够的，
             # 之前已经摆上去的隐藏按钮会原地不动，"隐藏"等于没生效。
             for _k, w in entries:
-                try:
-                    w.pack_forget()
-                except Exception:
-                    pass
+                # ⚠ WrapRow 那一排的子控件是用 **place** 摆的，只 pack_forget 撤不下来，
+                # 于是"隐藏"对那几排等于没生效（用户报过：设置了隐藏，按钮还在）。
+                for _撤 in (w.pack_forget, w.place_forget, w.grid_forget):
+                    try:
+                        _撤()
+                    except Exception:
+                        pass
             row = self._placeable_row(entries)
             if row is not None:
                 try:

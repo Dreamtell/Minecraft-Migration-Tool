@@ -425,10 +425,14 @@ class WrapRow(tk.Frame):
             左 = [(c, p) for c, s, p in 可见 if s != "right"]
             右 = [(c, p) for c, s, p in 可见 if s == "right"]
             for c, _s, _p in self._frozen:
-                try:
-                    c.pack_forget()
-                except Exception:
-                    pass
+                # 被隐藏的子控件可能还处于 place 状态（上一次摆上去的），
+                # 只 pack_forget 撤不掉 —— 必须连 place 一起撤，否则它会留在原地。
+                if c not in [x[0] for x in 可见]:
+                    for _撤 in (c.pack_forget, c.place_forget):
+                        try:
+                            _撤()
+                        except Exception:
+                            pass
             x = y = 0
             行高 = 0
             for c, padx in 左:
