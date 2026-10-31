@@ -737,37 +737,20 @@ class _抽屉:
         # 平滑滚动：滚轮不再"一格一跳"，而是逐帧朝目标位置滑过去。
         # Canvas 的 yview_scroll(units) 一格就是一大截，看着很硬；这里自己按
         # "每格 60px / 内容总高" 换算成比例，再用 after 逐帧缓动。
-        平滑 = {"目标": None, "job": None}
+        平滑 = {"目标": None}
 
-        def _可视比():
-            try:
-                a, b = 列表.yview()
-                return max(0.0, min(1.0, b - a))
-            except Exception:
-                return 1.0
+        def _一步():
+            """朝目标滑一帧；返回 False 表示这一轮结束。
 
-        def _夹(目标):
-            return max(0.0, min(1.0 - _可视比(), 目标))
-
-        def _帧间隔():
-            """跟显示器刷新率走；滚动这段要毫秒级定时器（见 utils/anim.py 文件头）。"""
-            try:
-                # 用 frame_ms 而不是 delay()：抽屉是独立 Toplevel，focus_displayof()
-                # 常年为 None，delay() 会把它当"失焦"降到 30fps —— 正在滚的时候它明明
-                # 就在眼前。（滚动期间我们用 hold() 顶住了定时器精度）
-                return max(1, int(anim.frame_ms(列表)))
-            except Exception:
-                return 6
-
-        def _帧():
-            平滑["job"] = None
+            帧间隔与定时器精度交给 anim.FrameLoop（它会 top up 精度并在结束时还回去）。
+            """
             目标 = 平滑["目标"]
             if 目标 is None:
-                return
+                return False
             try:
                 当前 = 列表.yview()[0]
             except Exception:
-                return
+                return False
             差 = 目标 - 当前
             if abs(差) < 0.0006:
                 try:
@@ -775,18 +758,25 @@ class _抽屉:
                 except Exception:
                     pass
                 平滑["目标"] = None
-                if 平滑.get("持有"):
-                    try:
-                        anim.release()
-                    except Exception:
-                        pass
-                    平滑["持有"] = False
-                return
+                return False
             try:
                 列表.yview_moveto(当前 + 差 * 0.28)
             except Exception:
-                return
-            平滑["job"] = 列表.after(_帧间隔(), _帧)
+                return False
+            return True
+
+        环 = anim.FrameLoop(列表, _一步)
+
+        def _可视比():
+            """当前可见高度占全部内容的比例（算不出就返回 1，等于不能滚）。"""
+            try:
+                头, 尾 = 列表.yview()
+                return max(0.0, min(1.0, 尾 - 头))
+            except Exception:
+                return 1.0
+
+        def _夹(目标):
+            return max(0.0, min(1.0 - _可视比(), 目标))
 
         def _轮(e):
             try:
@@ -798,15 +788,8 @@ class _抽屉:
                 总 = 0.0
             格 = 1 if int(getattr(e, "delta", 0)) < 0 else -1
             基准 = 列表.yview()[0] if 平滑["目标"] is None else 平滑["目标"]
-            目标 = _夹(基准 + (格 * 60.0) / max(1.0, 总))
-            平滑["目标"] = 目标
-            if 平滑["job"] is None:
-                平滑["job"] = 列表.after(1, _帧)
-                try:
-                    anim.hold()
-                    平滑["持有"] = True
-                except Exception:
-                    平滑["持有"] = False
+            平滑["目标"] = _夹(基准 + (格 * 60.0) / max(1.0, 总))
+            环.start()
             return "break"
 
         列表.bind("<MouseWheel>", _轮)

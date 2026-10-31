@@ -239,3 +239,84 @@ def delay(win=None, slow=False):
     if slow or (win is not None and is_slow(win)):
         return slow_ms()
     return frame_ms(win)
+
+
+class FrameLoop:
+    """按显示器刷新率排帧的小循环：**自动配平 hold/release**。
+
+    为什么要有它：项目里已经踩过三次"想跑满帧但忘了 hold()"（消息中心滚动、
+    吐司、日志跟随），每次都表现为"看着能跑，但被 15.6ms 粒度卡在 64fps"。
+    统一封一层，以后新写动画直接用它，不用再各记各的规矩。
+
+    用法：
+        环 = FrameLoop(widget, 每帧函数)   # 每帧函数返回 False 表示这一轮结束
+        环.start()
+        环.stop()          # 也可以随时手动停（内部会 release）
+
+    细节：
+    - 每帧之间按 `delay(widget)` 排期；`slow=True` 时固定用 30fps 档；
+    - 每帧函数抛异常 → 自动 `stop()`，不会留下"精度被顶住但没人还"的状态；
+    - `start()` 可以重复调用：已经在跑就什么都不做。
+    """
+
+    def __init__(self, widget, step, slow=False):
+        self.widget = widget
+        self.step = step
+        self.slow = slow
+        self._job = None
+        self._held = False
+        self.帧数 = 0
+
+    # ---- 内部 ----
+    def _持(self):
+        if not self._held:
+            hold()
+            self._held = True
+
+    def _还(self):
+        if self._held:
+            release()
+            self._held = False
+
+    def _排(self, ms=None):
+        try:
+            if ms is None:
+                ms = delay(self.widget, slow=self.slow)
+            self._job = self.widget.after(max(1, int(ms)), self._走)
+        except Exception:
+            self._job = None
+            self._还()
+
+    def _走(self):
+        self._job = None
+        try:
+            继续 = self.step()
+        except Exception:
+            继续 = False
+        self.帧数 += 1
+        if 继续 is False:
+            self._还()
+            return
+        self._排()
+
+    # ---- 对外 ----
+    def running(self):
+        return self._job is not None
+
+    def start(self):
+        if self._job is not None:
+            return self
+        self.帧数 = 0
+        self._持()
+        self._排(1)
+        return self
+
+    def stop(self):
+        job, self._job = self._job, None
+        if job is not None:
+            try:
+                self.widget.after_cancel(job)
+            except Exception:
+                pass
+        self._还()
+        return self
