@@ -1526,7 +1526,7 @@ class MigrationMixin:
                 # 瞬间切背面：这里是弹模态框的当口，播翻转动画会卡在半翻的姿势
                 btn.jump_to(back=True)
                 btn.set_back_warn(True)          # 黄面 + 满条（长度不动）
-                btn.set_back_text(trp("⚠️ 等待……"))
+                btn.set_back_text(trp("⚠️ 等待中..."))
             else:
                 btn.set_back_text(None)
                 btn.set_back_warn(False)
@@ -1696,8 +1696,8 @@ class MigrationMixin:
             self.start_btn.set_back_warn(True)
         except Exception:
             pass
-        self._flip_back_text(trp("⚠️ 模拟中…") if self._是模拟运行()
-                             else trp("⚠️ 迁移中…"))
+        self._flip_back_text(trp("⚠️ 模拟中...") if self._是模拟运行()
+                             else trp("⚠️ 迁移中..."))
         self._flip_progress(self._条真进度(0.0))
         self._run_migration_entry()
 

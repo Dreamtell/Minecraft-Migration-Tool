@@ -1642,9 +1642,14 @@ class FlipButton(tk.Canvas):
             if 换字:
                 self._文案淡入(pal)
             return
-        base = text.rstrip(".．… ")
-        if not base:
+        if self._back_txt_custom:
+            # 自定义文案原样画（「⚠️ 等待中...」的省略号不能再被剥掉 ——
+            # 剥掉是给默认那套"点点点"动画留槽位用的）
             base = text
+        else:
+            base = text.rstrip(".．… ")
+            if not base:
+                base = text
         if self._back_txt_custom:
             # 倒计时文案整行居中（"..." 槽位在 set_back_text 里已经藏起来了）
             if self._dots_id is not None:
