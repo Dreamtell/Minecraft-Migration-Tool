@@ -926,7 +926,7 @@ class MigrationMixin:
                 "⚠️ 确认回滚",
                 trp("即将把目标实例恢复到迁移前的状态，此操作将覆盖当前所有内容！\n\n目标路径：{0}\n备份路径：{1}\n\nmods / config / saves 以及「其它文件」清单里复制过的东西都会还原；\n迁移前不存在的部分会被删掉。\n\n此操作不可撤销！\n确定要继续吗？", tgt, backup_root)
         ):
-            self.log("❌ 用户取消了回滚操作", level="WARNING")
+            self.log(trp("❌ 用户取消了回滚操作"), level="WARNING")
             return
 
         self.log("✅ 用户确认回滚，开始执行...", level="SUCCESS")
@@ -1478,10 +1478,10 @@ class MigrationMixin:
             self._按钮待确认(True)
             try:
                 from ui import precheck_dialog as _pd
-                return bool(_pd.ask_warnings(self.root, self.theme, 提醒[:12]))
+                继续 = bool(_pd.ask_warnings(self.root, self.theme, 提醒[:12]))
             except Exception as _e:
                 trace_exc("main_window/自检提醒弹窗", _e)
-                return bool(messagebox.askyesno(
+                继续 = bool(messagebox.askyesno(
                     trp("迁移前自检有提醒"),
                     trp("这些不影响运行，但结果可能不是你要的：") + NL + NL
                     + NL.join("· " + x for x in 提醒[:8]) + NL + NL
@@ -1489,6 +1489,10 @@ class MigrationMixin:
                     icon="warning", default="yes"))
             finally:
                 self._按钮待确认(False)
+            if not 继续:
+                self.log(trp("ℹ️ 你选择了「先不开始」，这次没有迁移任何文件"),
+                         level="INFO")
+            return 继续
         self.log(trp("✅ 自检通过（{0} 项提示）", len(提示)), level="INFO")
         return True
 
@@ -1686,7 +1690,7 @@ class MigrationMixin:
                     "大小MB": total_size / 1024 / 1024,
                     "覆盖模组": self.overwrite_mods.get(),
                     "其它文件冲突": self.extra_conflict.get()}):
-                self.log("ℹ️ 已取消：确认框里点了「取消」，没有动任何文件。", level="INFO")
+                self.log(trp("ℹ️ 已取消：确认框里点了「取消」，没有动任何文件。"), level="INFO")
                 return
 
         # 置为"迁移中"，禁用相关按钮、并给主窗口上锁，防止重复触发/误操作
