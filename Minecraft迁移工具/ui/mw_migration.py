@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 import tkinter as tk
+from core import precheck
 from core.migrator import (
     _is_safe_path, do_backup, do_restore, get_backup_path, load_history, mark_rollback,
     match_mod, run_migration,
@@ -1391,11 +1392,78 @@ class MigrationMixin:
             self._warn_file_task_busy(task)
             self._flip_start_btn()      # 点击时已经翻到背面，这里翻回来
             return
+        # 自检放在倒计时之前：有问题当场说，别让用户先等几秒再被拦下
+        if not self._precheck_before_start():
+            self._flip_start_btn()      # 点下去已经翻到背面，被拦下就翻回来
+            self._refresh_busy_state()
+            return
         秒 = self._countdown_seconds()
         if 秒 <= 0:
             self._run_migration_entry()
             return
         self._begin_start_countdown(秒)
+
+    def _precheck_before_start(self):
+        """迁移前自检：路径/权限/重叠/清单一致性。返回 False 表示这次不该往下走。
+
+        只看"便宜且确定"的东西（列目录、stat、试写一个临时文件），不读 jar、不算总大小。
+        失败项直接拦下；只有提醒时问一句，用户点继续照样能跑。
+        """
+        src = self.source_path.get().strip()
+        tgt = self.target_path.get().strip()
+        world = self.world_name.get().strip()
+        if not src or not tgt:
+            return True          # 路径都没填：交给正式流程那几条校验去报错，这里别抢
+        try:
+            modlist = [x.strip() for x in self.mod_text.get(1.0, tk.END).splitlines()
+                       if x.strip() and not x.strip().startswith("#")]
+            configlist = [x.strip() for x in self.config_text.get(1.0, tk.END).splitlines()
+                          if x.strip() and not x.strip().startswith("#")]
+            extralist = [x.strip().replace("\\", "/").rstrip("/")
+                         for x in self.extra_text.get(1.0, tk.END).splitlines()
+                         if x.strip() and not x.strip().startswith("#")]
+        except Exception as e:
+            trace_exc("main_window/自检读清单", e)
+            return True
+
+        self.log("🔎 开始迁移前自检…", level="INFO")
+        try:
+            结果 = precheck.run_precheck(src, tgt, world, modlist, configlist,
+                                         extralist, self.overwrite_mods.get())
+        except Exception as e:
+            # 自检自己炸了不该挡住迁移：记一笔，放行
+            trace_exc("main_window/迁移前自检", e)
+            self.log(trp("⚠️ 自检没跑完（{0}），已跳过自检继续", e), level="WARNING")
+            return True
+
+        错误 = [c["text"] for c in 结果["items"] if c["level"] == "fail"]
+        提醒 = [c["text"] for c in 结果["items"] if c["level"] == "warn"]
+        提示 = [c["text"] for c in 结果["items"] if c["level"] == "info"]
+        for 文 in 错误:
+            self.log("❌ " + 文, level="ERROR")
+        for 文 in 提醒:
+            self.log("⚠️ " + 文, level="WARNING")
+        for 文 in 提示:
+            self.log("ℹ️ " + 文, level="INFO")
+
+        if 错误:
+            self.log(trp("⛔ 自检没通过（{0} 项错误），已拦下，没有动任何文件", len(错误)),
+                     level="ERROR")
+            messagebox.showerror(
+                trp("迁移前自检没通过"),
+                trp("下面这些不解决，迁移跑不起来：") + "\n\n"
+                + "\n".join("· " + x for x in 错误[:8]))
+            return False
+        if 提醒:
+            self.log(trp("⚠️ 自检有 {0} 项提醒，等用户确认", len(提醒)), level="WARNING")
+            return bool(messagebox.askyesno(
+                trp("迁移前自检有提醒"),
+                trp("这些不影响运行，但结果可能不是你要的：") + "\n\n"
+                + "\n".join("· " + x for x in 提醒[:8]) + "\n\n"
+                + trp("还是要现在开始吗？"),
+                icon="warning", default="yes"))
+        self.log(trp("✅ 自检通过（{0} 项提示）", len(提示)), level="INFO")
+        return True
 
     # 读到 0 秒后停留多久（毫秒）。留足一档，肉眼能看清，又不至于像卡住。
     _倒计时零秒ms = 900
