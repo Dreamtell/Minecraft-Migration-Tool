@@ -2105,6 +2105,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "  ⚠ Drag & drop unavailable (tkinterdnd2 missing) — use the \"Add mods\" button.",
     "　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。":
         "　⚠ Drag-and-drop unavailable (tkinterdnd2 missing) — use the \"Add mods\" button.",
+    "⚠️ 模拟中…":
+        "⚠️ Dry run…",
 }
 
 

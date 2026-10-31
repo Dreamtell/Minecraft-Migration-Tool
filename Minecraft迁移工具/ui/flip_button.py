@@ -668,7 +668,7 @@ class FlipButton(tk.Canvas):
             return hit
         w, h = self._cw, self._ch
         W, H = w * _SS, h * _SS
-        acc = _rgb(self._pal["search"]["accent"])
+        acc = _rgb(self._pal[getattr(self, "_back_pid", "search")]["accent"])
         ov = _Image.new("RGBA", (W, H), acc + (0,))
         d = _ImageDraw.Draw(ov)
         lw = max(1, int(round(_STRIPE_W * _SS)))
@@ -755,13 +755,14 @@ class FlipButton(tk.Canvas):
 
     def _bar_strip(self):
         """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
-        key = ("barstrip", self._cw, self._ch, self._scheme)
+        key = ("barstrip", self._cw, self._ch, self._scheme,
+               getattr(self, "_back_pid", "search"))
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
         w, h = self._cw, self._ch
         strip = _Image.new("RGBA", (w, _PROGRESS_H),
-                           _rgb(self._pal["search"]["accent"]) + (255,))
+                           _rgb(self._pal[getattr(self, "_back_pid", "search")]["accent"]) + (255,))
         # 条的"外形"必须左右一样：以前用按钮的圆角遮罩裁条，条贴到两端时会被
         # 圆角切出斜角，一头方一头斜 —— 用户说的"外形不对称"就是这个。
         # 现在改成左右各内缩 `_BAR_INSET` 的直角条，两端永远是齐的。
@@ -962,6 +963,19 @@ class FlipButton(tk.Canvas):
         except Exception:
             pass
 
+    def set_back_warn(self, flag=True):
+        """模拟运行干活段的样式：黄色背面 + 满进度条（用户 m09602 要的效果）。"""
+        self._back_pid = "dry" if flag else "search"
+        self._bar_full = bool(flag)
+        try:
+            # 换色要重烤：面/斜纹/条都按旧色缓存着
+            for 表 in ("_face_cache", "_layer_cache", "_bar_cache", "_bar_strip_cache"):
+                getattr(self, 表, {}).clear()
+            self._draw_rest()
+            self._draw_bar_now()
+        except Exception:
+            pass
+
     def set_bar_off(self, flag=True):
         """打开后这一阶段完全不画底条（倒计时用：长度不能变，只能看文字）。"""
         self._bar_off = bool(flag)
@@ -974,6 +988,10 @@ class FlipButton(tk.Canvas):
         """按当前状态刷一次条：正面藏起来 / 背面有真进度就画进度 / 否则滚动。"""
         if not self._at_back:
             self._apply_bar(None)
+            return
+        if getattr(self, "_bar_full", False):
+            # 满进度条（模拟运行干活段）：整条铺满，长度恒定
+            self._apply_bar(1.0)
             return
         if getattr(self, "_bar_off", False):
             # 倒计时这种阶段：用户要求"长度不要变化"，干脆不画条（秒数靠文字）
@@ -991,7 +1009,8 @@ class FlipButton(tk.Canvas):
         底部进度条不在这里合成 —— 它是独立画布项（见 _apply_bar），否则进度一变就要
         重烤一整张面。
         """
-        face = self._face_rgba("search", self._pal["search"], hv, False)
+        面号 = getattr(self, "_back_pid", "search")
+        face = self._face_rgba(面号, self._pal[面号], hv, False)
         return _Image.alpha_composite(face, self._stripe_layer(t))
 
     # ------------------------------------------------------------ 贴图：底 + 面 + 图标

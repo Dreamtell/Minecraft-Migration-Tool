@@ -1657,7 +1657,15 @@ class MigrationMixin:
         self._countdown_job = None
         self._countdown_running = False
         self._countdown_txt = None
-        self._flip_back_text(None)      # 换回「⏳ 迁移中...」
+        self._flip_back_text(None)
+        try:
+            self.start_btn.set_back_warn(False)
+        except Exception:
+            pass
+        try:
+            self.start_btn.set_back_warn(False)
+        except Exception:
+            pass      # 换回「⏳ 迁移中...」
         # 倒计时收在 0，干活段从 0 接着长（真迁移由进度队列推真值；
         # 模拟运行不推数值，条自己滚动）。
         # 数完了：真跑从 0 接着长；模拟运行不接数值（推 None 让条回到"滚动"，
@@ -1666,6 +1674,13 @@ class MigrationMixin:
             self.start_btn.set_bar_off(False)
         except Exception:
             pass
+        # 模拟运行：干活段换成"黄色 + 满进度条 + ⚠ 文案"（用户 m09602 定的样式）
+        if self._是模拟运行():
+            try:
+                self.start_btn.set_back_warn(True)
+            except Exception:
+                pass
+            self._flip_back_text(trp("⚠️ 模拟中…"))
         self._flip_progress(self._条真进度(0.0))
         self._run_migration_entry()
 
