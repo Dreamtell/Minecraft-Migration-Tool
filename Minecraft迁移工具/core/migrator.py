@@ -313,7 +313,18 @@ def add_history_entry(target_path, src_path, modlist, configlist, extralist=None
     return entry
 
 
-def mark_rollback(target_path):
+def mark_rollback(target_path, record_id=None):
+    """把"这次回滚对应哪条迁移"记下来。
+
+    给了 record_id 就同时标在迁移档案上（历史窗口里那份），
+    老的目标内 .migration_history.json 也照样标一条（向后兼容）。
+    """
+    if record_id:
+        try:
+            from utils import history_store
+            history_store.mark_rolled_back(record_id)
+        except Exception:
+            pass
     history = load_history(target_path)
     if history:
         for entry in reversed(history):
@@ -346,6 +357,39 @@ def get_backup_path(target_path):
     return Path(target_path) / ".migrate_backup"
 
 
+# 每条迁移记录各留一份备份：回滚时可以选"回到哪一次之前"。
+# 目录形如 <目标>/.migrate_backup/rec_<档案id>/，老的单一备份（.migrate_backup 本身）
+# 继续认，回滚时没指定就用它（兼容旧版本留下的备份）。
+_KEEP_RECORD_BACKUPS = 5
+
+
+def get_record_backup_path(target_path, record_id):
+    return get_backup_path(target_path) / ("rec_" + str(record_id))
+
+
+def list_record_backups(target_path):
+    """返回 {档案id: 备份目录}，只列存在的。"""
+    出 = {}
+    try:
+        for p in get_backup_path(target_path).iterdir():
+            if p.is_dir() and p.name.startswith("rec_"):
+                出[p.name[4:]] = p
+    except Exception:
+        pass
+    return 出
+
+
+def _prune_record_backups(target_path, keep=_KEEP_RECORD_BACKUPS):
+    """只留最近 keep 份按记录分的备份（按目录修改时间）。"""
+    try:
+        项 = sorted(list_record_backups(target_path).values(),
+                    key=lambda p: p.stat().st_mtime, reverse=True)
+        for 旧 in 项[keep:]:
+            shutil.rmtree(旧, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _norm_rel(rel):
     """清单条目 → 备份用的规范相对路径（正斜杠、无前导/结尾斜杠）。不合规返回 ""。"""
     条目 = str(rel or "").replace("\\", "/").strip().strip("/")
@@ -354,7 +398,8 @@ def _norm_rel(rel):
     return 条目
 
 
-def _write_manifest(backup_root, exists_dirs, exists_files, exists_extras=None):
+def _write_manifest(backup_root, exists_dirs, exists_files, exists_extras=None,
+                    record_id=None):
     """记录"迁移前哪些目录/文件存在"，回滚时才知道哪些是迁移新建的、该删掉。
 
     `extras` 记的是这次迁移清单里每一条在迁移前存不存在（键=相对路径）。
@@ -362,6 +407,7 @@ def _write_manifest(backup_root, exists_dirs, exists_files, exists_extras=None):
     """
     data = {
         "version": 3,
+        "record": str(record_id or ""),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dirs": {name: bool(exists_dirs.get(name)) for name in _BACKUP_DIRS},
         "files": {name: bool(exists_files.get(name)) for name in _BACKUP_ROOT_FILES},
@@ -385,7 +431,7 @@ def read_manifest(backup_root):
         return None
 
 
-def do_backup(target_path, log_func=None, extra_entries=None):
+def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
     """
     备份目标实例里"迁移可能改动的部分"，若失败则抛出异常。
 
@@ -398,9 +444,13 @@ def do_backup(target_path, log_func=None, extra_entries=None):
     用户连上一次的回滚点都没了。
     """
     target_path = Path(target_path)
-    backup_root = get_backup_path(target_path)
+    # 有 record_id 就存到 rec_<id>/ 下（一条记录一份，可回滚到任意一次）；
+    # 没有就沿用老的单一备份目录。
+    backup_root = (get_record_backup_path(target_path, record_id)
+                   if record_id else get_backup_path(target_path))
     if log_func:
-        log_func("📦 开始备份目标实例...", "INFO")
+        log_func("📦 开始备份目标实例..." + ("（回滚点：%s）" % record_id if record_id else ""),
+                 "INFO")
 
     staging = backup_root.with_name(backup_root.name + ".tmp")
     _rmtree(staging)
@@ -468,7 +518,7 @@ def do_backup(target_path, log_func=None, extra_entries=None):
                 # 备份不到就不能装作没事：宁可整个备份失败（调用方会拦下迁移）
                 raise RuntimeError(f"备份「其它文件」条目 {rel} 失败：{e}")
 
-        _write_manifest(staging, exists_dirs, exists_files, exists_extras)
+        _write_manifest(staging, exists_dirs, exists_files, exists_extras, record_id)
     except Exception:
         _rmtree(staging)                 # 失败的半成品不能留着冒充"备份"
         raise
@@ -493,7 +543,7 @@ def do_backup(target_path, log_func=None, extra_entries=None):
         log_func(f"✅ 备份完成，已备份：{done if done else '无'}", "SUCCESS")
 
 
-def do_restore(target_path, log_func=None):
+def do_restore(target_path, log_func=None, backup_dir=None):
     """
     从备份恢复目标实例
     返回: 是否成功
@@ -514,7 +564,8 @@ def do_restore(target_path, log_func=None):
       · 单文件恢复走原子替换，失败不会留下半截文件。
     """
     target_path = Path(target_path)
-    backup_root = get_backup_path(target_path)
+    # backup_dir 给了就用它（历史窗口里"回滚到这一次"），否则用老的单份备份
+    backup_root = Path(backup_dir) if backup_dir else get_backup_path(target_path)
     if not backup_root.exists():
         if log_func:
             log_func("❌ 恢复失败：备份目录不存在", "ERROR")
@@ -775,7 +826,8 @@ def run_migration(
         add_history=True,
         rename_marker=None,
         extralist=None,
-        extra_overwrite=True
+        extra_overwrite=True,
+        record_id=None
 ):
     """
     执行迁移主流程
@@ -1172,6 +1224,9 @@ def run_migration(
                 失败总数 = sum(v["failed"] for v in 汇总.values())
                 结果 = "模拟运行" if dry_run else ("有失败" if 失败总数 else "成功")
                 档案 = {
+                    # 档案 id 由调用方提前生成（备份目录就是按它命名的），
+                    # 这样"回滚点目录"和"迁移档案"能对上
+                    "id": record_id or None,
                     "mode": "dry" if dry_run else "real",
                     "result": 结果,
                     "source": str(src_path),

@@ -141,6 +141,16 @@ def load_record(rec_id):
     return None
 
 
+def mark_rolled_back(rec_id):
+    """把某份档案标成"已回滚过"。返回是否改到了。"""
+    rec = load_record(rec_id)
+    if not rec:
+        return False
+    rec["rolled_back"] = True
+    rec["rollback_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    return bool(save_record(rec, limit=max(count() + 1, get_limit())))
+
+
 def delete_record(rec_id):
     try:
         (_root() / ("%s.json" % rec_id)).unlink()

@@ -204,7 +204,7 @@ def _动画出(窗, x, y, 宽, 高, 结束后, 时长=110):
     一步(0)
 
 
-def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标级别="warn"):
+def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标级别="warn", 正文=""):
     """返回被点的按钮名（按钮 = [(文字, 返回值, 是否主按钮), …]）。"""
     配色 = _配色(主题)
     窗 = tk.Toplevel(父窗)
@@ -334,6 +334,11 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
                  anchor="w", wraplength=宽 - px(48),
                  font=("微软雅黑", 9)).pack(fill="x", padx=px(20), pady=(0, px(10)))
 
+    if 正文:
+        tk.Label(框, text=可见(正文), bg=配色["卡"], fg=配色["字"], justify="left",
+                 anchor="w", wraplength=宽 - px(48),
+                 font=("微软雅黑", 10)).pack(fill="x", padx=px(20), pady=(0, px(14)))
+
     # ---- 条目清单（多了就滚动）----
     区 = tk.Frame(框, bg=配色["卡"])
     区.pack(fill="both", expand=True, padx=px(16), pady=(0, px(8)))
@@ -367,6 +372,9 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
     except Exception:
         _内容高 = px(120)
     画布.configure(height=min(px(320), _内容高))
+
+    if not 条目:
+        区.pack_forget()      # 只有一段正文的确认框：不留空白列表区
 
     if len(条目) > 6:
         条 = tk.Scrollbar(区, orient="vertical", command=画布.yview)
@@ -454,6 +462,15 @@ def _绑键(窗, 关, 主值, 次值):
             全绑(c)
     全绑(窗)
 
+
+
+def 确认(父窗, 主题, 标题, 正文, 主按钮="确定", 次按钮="取消", 图标级别="warn"):
+    """自绘的确认框：只有一段正文 + 两个按钮，返回是否点了主按钮。"""
+    try:
+        return bool(_弹(父窗, 主题, 标题, "", [], [(主按钮, True, True), (次按钮, False, False)],
+                        宽=px(520), 图标级别=图标级别, 正文=正文))
+    except Exception:
+        return False
 
 
 def ask_errors(父窗, 主题, 条目, 标题=None):

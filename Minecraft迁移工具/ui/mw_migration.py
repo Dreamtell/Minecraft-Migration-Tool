@@ -14,8 +14,8 @@ import time
 import tkinter as tk
 from core import precheck
 from core.migrator import (
-    _is_safe_path, do_backup, do_restore, get_backup_path, load_history, mark_rollback,
-    match_mod, run_migration,
+    _is_safe_path, do_backup, do_restore, get_backup_path, get_record_backup_path,
+    list_record_backups, load_history, mark_rollback, match_mod, run_migration,
 )
 from core.scanner import scan_mod_differences
 from pathlib import Path
@@ -800,6 +800,10 @@ class MigrationMixin:
             列表.sel = i
             列表.redraw()
             显示(记录[i] if 0 <= i < len(记录) else None)
+            try:
+                getattr(self, "_history_sel_hook", lambda: None)()
+            except Exception:
+                pass
             if 变了:
                 _滑动["当前"] = i
                 _滑入()
@@ -883,22 +887,46 @@ class MigrationMixin:
         # 语义没变 —— 仍然是"把目标实例恢复到最近一次迁移之前"，走的还是同一个
         # action_rollback（后台线程 + 备份还原 + 历史里标记已回滚）。
         def 回滚():
-            NL = chr(92) + "n"
-            问 = ("要把目标实例恢复到最近一次迁移之前吗？" + NL + NL
-                  + "这一操作会用备份覆盖当前内容，迁移前不存在的文件会被删掉，"
-                  + "而且不能撤销。" + NL + NL
-                  + "回滚过程中这扇窗会一直开着，进度看主界面的执行日志。")
-            if not messagebox.askyesno("↩ 回滚到迁移前", trp(问)):
+            NL = chr(10)
+            选中记录 = 记录[列表.sel] if (记录 and 0 <= 列表.sel < len(记录)) else None
+            时间 = str((选中记录 or {}).get("time") or "")
+            头句 = ("要把目标实例恢复到「%s」这次迁移之前吗？" % 时间) if 时间 else                 "要把目标实例恢复到最近一次迁移之前吗？"
+            问 = (头句 + NL + NL
+                  + "会用备份覆盖当前内容：mods / config / saves 以及「其它文件」清单里"
+                  + "复制过的部分都会还原，迁移前不存在的东西会被删掉。" + NL + NL
+                  + "此操作不可撤销。回滚过程看主界面的执行日志。")
+            try:
+                from ui import precheck_dialog as _pd
+                继续 = bool(_pd.确认(self.root, self.theme, "↩ 回滚到迁移前", 问,
+                                    主按钮="回滚", 次按钮="先不滚", 图标级别="fail"))
+            except Exception:
+                继续 = bool(messagebox.askyesno("↩ 回滚到迁移前", trp(问)))
+            if not 继续:
                 return
             try:
                 顶.destroy()
             except Exception:
                 pass
-            self.action_rollback()
+            self.action_rollback(选中记录)
 
         回滚钮 = create_gradient_button(底, "↩ 回滚到迁移前", 回滚,
                                        colors=("#e53935", "#ff7043"))
         回滚钮.pack(side="left", padx=(0, px(8)))
+
+        def _刷回滚钮():
+            """选中的那条有没有自己的备份 —— 没有就点不了（早期记录没有）。"""
+            try:
+                备份表 = list_record_backups(self.target_path.get().strip())
+                选 = 记录[列表.sel] if (记录 and 0 <= 列表.sel < len(记录)) else None
+                有 = bool(选 and str(选.get("id") or "") in 备份表)
+                回滚钮.state("normal" if 有 else "disabled")
+                if not 有 and 选 is not None:
+                    回滚钮._提示 = "这条记录没有自己的备份"
+            except Exception:
+                pass
+
+        self._history_sel_hook = _刷回滚钮
+        _刷回滚钮()
         删钮 = create_gradient_button(底, "删除这份档案", 删当前, colors=("#e53935", "#b71c1c"))
         删钮.pack(side="left")
         create_gradient_button(底, "关闭", lambda: 顶.destroy()).pack(side="right")
@@ -908,7 +936,14 @@ class MigrationMixin:
         else:
             显示(None)
 
-        顶.protocol("WM_DELETE_WINDOW", 顶.destroy)
+        def _关窗():
+            try:
+                self._history_sel_hook = lambda: None
+            except Exception:
+                pass
+            顶.destroy()
+
+        顶.protocol("WM_DELETE_WINDOW", _关窗)
         try:
             apply_theme_to_widget_tree(顶, self.theme)
         except Exception:
@@ -916,7 +951,12 @@ class MigrationMixin:
         _center_window(顶, px(1040), px(660))
         顶.deiconify()
 
-    def action_rollback(self):
+    def action_rollback(self, 记录=None):
+        """回滚到某次迁移之前。
+
+        `记录`：迁移档案（dict）。给了就用它自己的那份备份（rec_<id>/），
+        没给就挑最近的一份备份 —— 优先按记录分的，其次老的单一备份目录。
+        """
         if self._migration_running:
             messagebox.showwarning("提示", "迁移正在进行中，暂不能回滚。")
             return
@@ -934,7 +974,24 @@ class MigrationMixin:
             messagebox.showerror("错误", trp("目标路径不存在：{0}", tgt))
             return
 
-        backup_root = get_backup_path(tgt_path)
+        记录id = str((记录 or {}).get("id") or "") if isinstance(记录, dict) else ""
+        backup_root = None
+        if 记录id:
+            backup_root = get_record_backup_path(tgt_path, 记录id)
+            if not backup_root.exists():
+                self.log(trp("❌ 回滚失败：这份档案没有自己的备份（{0}）", 记录id), level="ERROR")
+                messagebox.showerror(
+                    "回滚失败",
+                    "这条迁移记录没有可用的备份，回滚不了。" + chr(10)
+                    + "（早期版本的迁移不会按记录留备份）")
+                return
+        else:
+            备份表 = list_record_backups(tgt_path)
+            if 备份表:
+                backup_root = max(备份表.values(), key=lambda p: p.stat().st_mtime)
+                记录id = next((k for k, v in 备份表.items() if v == backup_root), "") or 记录id
+            else:
+                backup_root = get_backup_path(tgt_path)
         if not backup_root.exists():
             self.log(trp("❌ 回滚失败：未找到备份目录 {0}", backup_root), level="ERROR")
             messagebox.showerror("回滚失败", "没有找到可用的备份，无法回滚。")
@@ -955,26 +1012,27 @@ class MigrationMixin:
         # 正好停在一半，既不是迁移后的样子、也不是迁移前的样子。
         # 登记成"文件类任务"：期间按钮全灰、开始迁移会被劝住、关窗口也拦得住。
         self._begin_file_task("回滚")
-        threading.Thread(target=self._run_rollback_thread, args=(tgt_path,),
+        threading.Thread(target=self._run_rollback_thread,
+                         args=(tgt_path, str(backup_root), 记录id),
                          daemon=True).start()
 
-    def _run_rollback_thread(self, tgt_path):
+    def _run_rollback_thread(self, tgt_path, backup_dir=None, record_id=""):
         """后台执行回滚。do_restore 的日志回调通过 _ui_post 排回主线程。"""
         def 日志(文本, level="INFO"):
             self._ui_post(self.log, 文本, level)
 
         success = False
         try:
-            success = bool(do_restore(tgt_path, log_func=日志))
+            success = bool(do_restore(tgt_path, log_func=日志, backup_dir=backup_dir))
         except Exception as e:
             self._ui_post(self.log, trp("❌ 回滚过程中出现异常：{0}", e), "ERROR")
-        self._ui_post(self._finish_rollback, tgt_path, success)
+        self._ui_post(self._finish_rollback, tgt_path, success, record_id)
 
-    def _finish_rollback(self, tgt_path, success):
+    def _finish_rollback(self, tgt_path, success, record_id=""):
         """回滚收尾（主线程）：标记历史、解除锁定、弹结果。"""
         try:
             if success:
-                if mark_rollback(tgt_path):
+                if mark_rollback(tgt_path, record_id or None):
                     self.log("📝 已标记本次回滚到历史记录", level="INFO")
                 else:
                     self.log("ℹ️ 历史记录里没有可标记的迁移记录（可能已经回滚过了）",
@@ -1746,7 +1804,7 @@ class MigrationMixin:
                 target=self._run_migration_thread,
                 args=(src_path, tgt_path, world, modlist, configlist, True,
                       self.overwrite_mods.get(), extralist,
-                      self.extra_conflict.get() != "skip")
+                      self.extra_conflict.get() != "skip", None)
             )
             thread.daemon = True
             thread.start()
@@ -1754,9 +1812,19 @@ class MigrationMixin:
 
         # 实际迁移：先备份。**要把这次迁移的「其它文件」清单一起传进去** ——
         # 那些条目迁移时会被覆盖/新建，没备份的话"覆盖（先备份）"就是空话、回滚也还原不了
+        #
+        # 备份按"记录"分目录：先生成这次迁移的档案 id，备份存到 rec_<id>/ 下，
+        # 迁移结束时那份档案也用同一个 id —— 于是历史窗口里每一条都能对应到自己的回滚点。
+        try:
+            from utils import history_store as _hs
+            记录id = _hs.new_id()
+        except Exception:
+            记录id = None
+        self._mig_record_id = 记录id
         try:
             _打桩优先("do_backup", do_backup)(
-                tgt_path, log_func=self.log, extra_entries=extralist)
+                tgt_path, log_func=self.log, extra_entries=extralist,
+                record_id=记录id)
         except Exception as e:
             self.log(trp("❌ 备份失败：{0}", e), level="ERROR")
             messagebox.showerror("备份错误", trp("备份目标实例失败：{0}\n迁移已取消。", e))
@@ -1784,7 +1852,7 @@ class MigrationMixin:
             target=self._run_migration_thread,
             args=(src_path, tgt_path, world, modlist, configlist, False,
                   self.overwrite_mods.get(), extralist,
-                  self.extra_conflict.get() != "skip")
+                  self.extra_conflict.get() != "skip", 记录id)
         )
         thread.daemon = True
         thread.start()
@@ -1870,7 +1938,8 @@ class MigrationMixin:
         return free >= needed, free, needed
 
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist,
-                              dry_run, overwrite, extralist=None, extra_overwrite=True):
+                              dry_run, overwrite, extralist=None, extra_overwrite=True,
+                              record_id=None):
         """迁移工作线程。
 
         overwrite / extra_overwrite 由主线程读好再传进来：Tk 变量只能在主线程碰，
@@ -1903,6 +1972,7 @@ class MigrationMixin:
                 log_callback=self.log,
                 check_cancel=check_cancel,
                 add_history=True,
+                record_id=record_id,
                 # 迁移标记：只改目标文件名，加载器认的是 jar 里的 modid，不受影响
                 rename_marker=(self.rename_marker
                                if getattr(self, "rename_migrated_mods", False) else None),
