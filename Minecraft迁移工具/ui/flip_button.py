@@ -902,8 +902,10 @@ class FlipButton(tk.Canvas):
         # 不淡出、不绕回、也不贴边露半截。
         # 两端都留出 `_DECOR_PAD` 的空隙：贴到 0 或贴到右边时，会被按钮的圆角
         # 遮罩切掉一角，看着就"左右不对称"。留边之后两头都是完整的柔边。
-        空 = min(_DECOR_PAD, max(0.0, (w - wid) / 2.0))
-        行程 = max(1.0, w - wid - 2 * 空)
+        左界 = float(_BAR_INSET)
+        右界 = max(左界, w - _BAR_INSET - wid)
+        空 = min(_DECOR_PAD, max(0.0, (右界 - 左界) / 2.0))
+        行程 = max(1.0, (右界 - 左界) - 2 * 空)
         周期 = 2.0 * 行程
         位 = 圈 % 周期
         if 位 > 行程:
@@ -941,7 +943,7 @@ class FlipButton(tk.Canvas):
                     self.itemconfigure(self._bar_id, state="hidden")
                     self.itemconfigure(self._bar2_id, state="hidden")
                 else:
-                    y = self._ch - _PROGRESS_H
+                    y = self._ch - _PROGRESS_H - 1
                     整 = max(0, int(round(x)))
                     self.coords(self._bar_id, 整, y)
                     self.itemconfigure(self._bar_id, image=photo, state="normal")
