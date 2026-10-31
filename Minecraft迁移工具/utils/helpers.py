@@ -2699,7 +2699,8 @@ class LiquidProgress(tk.Canvas):
         self.theme = dict(theme)
         self._h = int(height)
         self._cw = 0
-        self._fraction = 0.0        # 0 起步：内容是空的时候进度条就该是空的
+        self._fraction = 0.0        # 目标值（由调用方 set_fraction 决定）
+        self._shown = 0.0           # 当前显示值：每帧朝目标缓动，条才不会一格一格跳
         self._flow = 0.0
         self._job = None
         self._photo = None
@@ -2721,12 +2722,14 @@ class LiquidProgress(tk.Canvas):
         if abs(比例 - self._fraction) < 0.0005:
             return
         self._fraction = 比例
-        self._fill = None
-        self._render()
-        if 比例 < 0.999:
+        # 不要在这里直接 _render：进度是一簇一簇送进来的（扫描/迁移都是），
+        # 当场画就是"一顿一跳"。留给 _tick 每帧朝目标缓动。
+        if 比例 < self._shown:
+            self._shown = 比例            # 往回退（重置/取消）时立刻跟上
+        if abs(比例 - self._shown) > 0.0005 or 比例 < 0.999:
             self._ensure_tick()
         else:
-            self.stop()
+            self._ensure_tick()
 
     def set_theme(self, theme):
         self.theme = dict(theme)
@@ -2817,8 +2820,8 @@ class LiquidProgress(tk.Canvas):
         if self._cw <= 2 or self._h <= 0:
             return
         帧 = self._track_img().copy()
-        if self._fraction > 0.002:
-            宽 = max(self._h, int(self._cw * self._fraction))
+        if self._shown > 0.002:
+            宽 = max(self._h, int(self._cw * self._shown))
             条 = self._fill_img(宽).copy()
             光 = self._light_img()
             光宽 = 光.width
@@ -2861,6 +2864,13 @@ class LiquidProgress(tk.Canvas):
         except Exception:
             return
         self._flow = (self._flow + 0.018) % 1.0
+        差 = self._fraction - self._shown
+        if abs(差) > 0.0005:
+            # 指数缓动：约 120ms 追上目标；一簇进度会摊成十几帧走完
+            self._shown += 差 * 0.22
+            if abs(self._fraction - self._shown) < 0.0005:
+                self._shown = self._fraction
+            self._fill = None
         self._render()
         # 只刷这一块画布（比整窗 update_idletasks 便宜得多），40ms 一次就够跟手
         现在 = time.perf_counter()
@@ -2870,7 +2880,7 @@ class LiquidProgress(tk.Canvas):
                 super().update_idletasks()
             except Exception:
                 pass
-        if self._fraction < 0.999:
+        if self._shown < 0.999 or abs(self._fraction - self._shown) > 0.0005:
             self._ensure_tick()
 
 

@@ -169,7 +169,8 @@ class ScanProgressWindow:
         self.win.resizable(False, False)
         self.win.title("扫描模组差异进度")
         self.win.transient(parent)
-        self.win.grab_set()
+        # 不要 grab_set：这是纯展示的进度窗，抓住输入之后主界面就滚不动、点不动，
+        # 用户以为卡死了（他要边看进度边翻清单）。取消按钮照样能点。
         self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
         self.win.configure(bg=self.theme["bg"])
         set_window_icon(self.win)
