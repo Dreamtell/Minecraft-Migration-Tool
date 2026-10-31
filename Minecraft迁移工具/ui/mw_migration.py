@@ -1536,7 +1536,9 @@ class MigrationMixin:
             else:
                 btn.set_back_text(None)
                 btn.set_back_warn(False)
-                self._flip_start_btn()           # 回到正面等下一步
+                # 同样瞬间切回正面：从这里开始播翻转动画的话，动画是从
+                # "jump 过去的背面"起手的，会有一段文字残留/半翻的观感
+                btn.jump_to(back=False)
             btn.update_idletasks()
         except Exception:
             pass
