@@ -1429,7 +1429,8 @@ class MigrationMixin:
         self.log("🔎 开始迁移前自检…", level="INFO")
         try:
             结果 = precheck.run_precheck(src, tgt, world, modlist, configlist,
-                                         extralist, self.overwrite_mods.get())
+                                         extralist, self.overwrite_mods.get(),
+                                         self.extra_conflict.get() != "skip")
         except Exception as e:
             # 自检自己炸了不该挡住迁移：记一笔，放行
             trace_exc("main_window/迁移前自检", e)

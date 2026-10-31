@@ -110,7 +110,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "清单里有 {0} 个重复条目（不会重复复制）": "{0} duplicate entries in the list (they will not be copied twice)",
     "源目录里还有 {0} 个 jar 不在清单里，不会被复制（{1}）": "{0} more jars in the source are not in the list and will not be copied ({1})",
     "{0} 等 {1} 个": "{0} and {1} more",
-    "config 清单里有 {0} 条在源目录找不到：{1}": "config list: {0} entries not found in the source: {1}",
+    "config 清单里有 {0} 条在源 config 目录找不到：{1}": "config list: {0} entries not found in the source: {1}",
     "其它文件清单里有 {0} 条在源目录找不到：{1}": "Other files list: {0} entries not found in the source: {1}",
     "目标里已有 {0} 处同名内容，会按「覆盖」处理（覆盖前会先备份）": "{0} items already exist in the target and will be overwritten (backed up first)",
     "目标里已有 {0} 处同名内容，当前是「跳过已存在」，这些不会被覆盖": "{0} items already exist in the target and will be skipped (overwrite is off)",

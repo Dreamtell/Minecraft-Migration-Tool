@@ -130,45 +130,72 @@ def _查模组清单(src_path, modlist):
     return 条们
 
 
-def _查相对清单(src_path, 清单, 模板):
-    """config / 其它文件：条目是相对整合包根目录的路径，看看还在不在。"""
+def _查相对清单(基准, 清单, 模板):
+    """条目是相对 基准 目录的路径，看看还在不在。
+
+    注意两类清单的基准不一样：
+      · config 清单：相对 `<源>/config/`（迁移时也是复制到 `<目标>/config/`）
+      · 其它文件清单：相对整合包根目录（shaderpacks/、resourcepacks/ 这种）
+    一开始两类都按根目录查，结果用户的 15 条 config 全被判成"找不到"——
+    真机核对过：源 config/ 下 15 条一个不缺。
+    """
     if not 清单:
         return []
-    缺 = [x for x in 清单 if not (src_path / x).exists()]
+    缺 = [x for x in 清单 if not (基准 / x).exists()]
     if not 缺:
         return []
     return [_条("warn", trp(模板, len(缺), _列名(缺)))]
 
 
-def _查覆盖(src_path, tgt_path, world, modlist, configlist, extralist, overwrite):
-    """目标里已经有同名文件时，提醒一句这次会怎么处理。"""
+def _查覆盖(src_path, tgt_path, world, modlist, configlist, extralist,
+            overwrite, extra_overwrite):
+    """目标里已经有同名内容时，分开说清哪些会被覆盖、哪些不会。
+
+    三类东西的覆盖策略不一样（对着 migrator 里的 safe_copy 调用核过）：
+      · 模组     跟随「覆盖已存在的模组」开关
+      · 存档 / config  总是覆盖（覆盖前会先备份）
+      · 其它文件 跟随 extra_conflict
+    以前一律按 overwrite 说，用户配置成 overwrite=False + extra_conflict=overwrite
+    时就会说反（说 shaderpacks 不会被覆盖，其实会）。
+    """
     if not tgt_path.is_dir():
         return []
-    已存在 = 0
+    会覆盖 = 0
+    会跳过 = 0
     try:
-        if world:
-            存档 = tgt_path / "world" / world
-            if 存档.is_dir():
-                已存在 += 1
+        if world and (tgt_path / "world" / world).is_dir():
+            会覆盖 += 1
         模组目录 = tgt_path / "mods"
         if modlist and 模组目录.is_dir():
             目标名 = {p.name.lower() for p in 模组目录.iterdir() if p.is_file()}
-            已存在 += sum(1 for n in modlist if n.lower() in 目标名)
-        for 条目 in list(configlist) + list(extralist):
+            同名的 = sum(1 for n in modlist if n.lower() in 目标名)
+            if overwrite:
+                会覆盖 += 同名的
+            else:
+                会跳过 += 同名的
+        for 条目 in list(configlist):
+            if (tgt_path / "config" / 条目).exists():
+                会覆盖 += 1
+        for 条目 in list(extralist):
             if (tgt_path / 条目).exists():
-                已存在 += 1
+                if extra_overwrite:
+                    会覆盖 += 1
+                else:
+                    会跳过 += 1
     except OSError:
         return []
-    if 已存在 <= 0:
-        return []
-    if overwrite:
-        return [_条("info", trp("目标里已有 {0} 处同名内容，会按「覆盖」处理（覆盖前会先备份）",
-                                已存在))]
-    return [_条("warn", trp("目标里已有 {0} 处同名内容，当前是「跳过已存在」，这些不会被覆盖",
-                            已存在))]
+    条们 = []
+    if 会覆盖 > 0:
+        条们.append(_条("info", trp("目标里已有 {0} 处同名内容，会按「覆盖」处理（覆盖前会先备份）",
+                                 会覆盖)))
+    if 会跳过 > 0:
+        条们.append(_条("warn", trp("目标里已有 {0} 处同名内容，当前是「跳过已存在」，这些不会被覆盖",
+                                 会跳过)))
+    return 条们
 
 
-def run_precheck(src, tgt, world, modlist, configlist, extralist, overwrite=False):
+def run_precheck(src, tgt, world, modlist, configlist, extralist, overwrite=False,
+                 extra_overwrite=False):
     """跑一遍自检。参数都是原始值（路径字符串 / 清单列表），返回统计与条目。"""
     src_path = Path(str(src or "")).expanduser()
     tgt_path = Path(str(tgt or "")).expanduser()
@@ -178,13 +205,14 @@ def run_precheck(src, tgt, world, modlist, configlist, extralist, overwrite=Fals
         items += _查重叠(src_path, tgt_path)
         items += _查存档(src_path, str(world or "").strip())
         items += _查模组清单(src_path, list(modlist or []))
-        items += _查相对清单(src_path, list(configlist or []),
-                             "config 清单里有 {0} 条在源目录找不到：{1}")
+        items += _查相对清单(src_path / "config", list(configlist or []),
+                             "config 清单里有 {0} 条在源 config 目录找不到：{1}")
         items += _查相对清单(src_path, list(extralist or []),
                              "其它文件清单里有 {0} 条在源目录找不到：{1}")
         items += _查覆盖(src_path, tgt_path, str(world or "").strip(),
                          list(modlist or []), list(configlist or []),
-                         list(extralist or []), bool(overwrite))
+                         list(extralist or []), bool(overwrite),
+                         bool(extra_overwrite))
     统计 = {"fail": 0, "warn": 0, "info": 0}
     for c in items:
         统计[c["level"]] = 统计.get(c["level"], 0) + 1
