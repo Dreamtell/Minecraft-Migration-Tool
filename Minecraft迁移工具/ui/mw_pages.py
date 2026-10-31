@@ -478,7 +478,7 @@ class PagesMixin:
         except Exception:
             pass
 
-        self.mod_text_box = RoundedTextArea(parent, self.theme, height=8,
+        self.mod_text_box = RoundedTextArea(parent, self.theme, height=13,
                                             wrap=tk.NONE, undo=True,
                                             font=("微软雅黑 Light", 10))
         self.mod_text_box.pack(fill="both", expand=True, padx=5, pady=5)
@@ -591,7 +591,7 @@ class PagesMixin:
                                   fg=self.theme["fail_fg"], font=("微软雅黑", 9, "bold"))
         warning_config.pack(anchor="w", padx=5, pady=2)
 
-        self.config_text_box = RoundedTextArea(parent, self.theme, height=6,
+        self.config_text_box = RoundedTextArea(parent, self.theme, height=10,
                                                wrap=tk.NONE, undo=True,
                                                font=("微软雅黑 Light", 10))
         self.config_text_box.pack(fill="both", expand=True, padx=5, pady=5)
@@ -709,7 +709,7 @@ class PagesMixin:
             command=self._set_extra_conflict, value=self.extra_conflict.get())
         self.extra_conflict_seg.pack(side="left")
 
-        self.extra_text_box = RoundedTextArea(parent, self.theme, height=6,
+        self.extra_text_box = RoundedTextArea(parent, self.theme, height=10,
                                               wrap=tk.NONE, undo=True,
                                               font=("微软雅黑 Light", 10))
         self.extra_text_box.pack(fill="both", expand=True, padx=5, pady=5)
@@ -850,7 +850,9 @@ class PagesMixin:
 
     def _create_log_widgets(self):
         frame_log = tk.LabelFrame(self.root, text="执行日志", padx=5, pady=5)
-        frame_log.pack(fill="both", expand=True, padx=10, pady=5)
+        # 日志区**不参与纵向抢空间**：给它固定高度，多出来的全给上面的清单区
+        # （清单才是经常要翻的；日志平常看最后几行就够）
+        frame_log.pack(fill="x", expand=False, padx=10, pady=5)
 
         log_toolbar = WrapRow(frame_log)
         log_toolbar.pack(fill="x", pady=(0, 5))
@@ -930,12 +932,20 @@ class PagesMixin:
         # 放这里的话路径区还没建，`self.source_entry` 根本不存在，算出来偏小。
         self._stage()               # 下面这个日志文本框也要建一百来毫秒
         # 顶部提示区已移除，执行日志相应加高，占住释放出来的空间
-        self.log_text_box = RoundedTextArea(frame_log, self.theme, height=22,
+        self.log_text_box = RoundedTextArea(frame_log, self.theme, height=12,
                                             wrap=tk.WORD, state="disabled",
                                             bg=self.theme["log_bg"],
                                             fg=self.theme["log_fg"],
                                             font=log_font(), spacing1=1, spacing3=1)
-        self.log_text_box.pack(fill="both", expand=True, padx=2, pady=2)
+        # 日志框不再"抢"竖直空间：给它固定高度，剩下的都给上面的清单区
+        # （清单才是经常要翻的东西）
+        self.log_text_box.pack(fill="both", expand=False, padx=2, pady=2)
+        try:
+            # RoundedTextArea 里全是 place 摆的，自身没有"请求高度"，只能硬给
+            self.log_text_box.configure(height=150)
+            self.log_text_box.pack_propagate(False)
+        except Exception:
+            pass
         self.log_text = self.log_text_box.text
         self._bind_log_locate(self.log_text)     # 双击日志行 → 定位到清单条目
         # 试验：日志区平滑滚动。手动往上滚时暂停"自动跟到底"，滚回底部再恢复，

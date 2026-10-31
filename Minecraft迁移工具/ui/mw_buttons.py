@@ -238,6 +238,16 @@ class ButtonsMixin:
                         w.pack(side=side, padx=5)
                     except Exception:
                         pass
+            # WrapRow 那排的子孙是它自己 place 的：hide 时被 place_forget 了，
+            # 恢复时必须请它重新排一次（pack 之后再排，否则它看不到这些控件）。
+            try:
+                for _k, _w in entries:
+                    _母 = _w.master
+                    if hasattr(_母, "relayout"):
+                        self.root.after_idle(lambda m=_母: m.relayout(force=True))
+                        break
+            except Exception:
+                pass
             # pack 完让 WrapRow 重排一次：pack 子控件不改变容器宽度，容器收不到
             # <Configure>，不显式叫它一次就永远停在单行溢出
             for _k, w in entries:
