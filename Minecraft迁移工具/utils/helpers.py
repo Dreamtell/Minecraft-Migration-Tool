@@ -3359,6 +3359,15 @@ class SwitchRow(tk.Canvas):
             return tuple(int(缺省[i:i + 2], 16) for i in (1, 3, 5))
 
 
+def _译分段(文本):
+    """分段控件的文字：有词条就翻，没有就原样返回。"""
+    try:
+        from utils import i18n
+        return i18n.tr(文本)
+    except Exception:
+        return 文本
+
+
 class SegmentedControl(tk.Canvas):
     """分段选择：几个互斥选项排成一条，选中的那段用**滑动的高亮块**浮起来。
 
@@ -3420,9 +3429,16 @@ class SegmentedControl(tk.Canvas):
         self._img = self.create_image(0, 0, anchor="nw")            # 轨道
         self._hover_id = self.create_image(0, 0, anchor="nw", state="hidden")
         self._pill_id = self.create_image(0, 0, anchor="nw")        # 选中高亮
+        # 存中文原文、画的时候现翻：切语言时 refresh_language() 能重算文字与段宽
+        self._原文 = [文本 for _, 文本 in self._opts]
         self._texts = [
-            self.create_text(0, 0, text=文本, font=self._font, anchor="center")
-            for _, 文本 in self._opts]
+            self.create_text(0, 0, text=_译分段(原文), font=self._font, anchor="center")
+            for 原文 in self._原文]
+        try:
+            from utils import i18n as _i18n
+            _i18n.注册自绘(self, self.refresh_language)
+        except Exception:
+            pass
         self.bind("<Button-1>", self._on_click)
         self.bind("<Motion>", self._on_motion)
         self.bind("<Leave>", self._on_leave)
@@ -3441,6 +3457,24 @@ class SegmentedControl(tk.Canvas):
 
     def labels(self):
         return [t for _, t in self._opts]
+
+    def refresh_language(self):
+        """切语言后重算文字与段宽（英文比中文长，宽度得跟着变）。"""
+        段宽 = (max(self._font.measure(_译分段(t)) for t in self._原文) if self._原文
+               else self._font.measure("选项"))
+        self._seg_w = int(段宽 + self.PAD_X * 2)
+        self._total_w = self._seg_w * len(self._原文) + self.INSET * 2
+        for i, 原文 in enumerate(self._原文):
+            try:
+                self.itemconfigure(self._texts[i], text=_译分段(原文))
+            except Exception:
+                pass
+        try:
+            self.configure(width=self._total_w)
+        except Exception:
+            pass
+        self._cache_clear()
+        self._redraw()
 
     def set(self, value, animate=True):
         """选中某一段（animate=False 直接摆过去，用于初始化/换主题）。"""

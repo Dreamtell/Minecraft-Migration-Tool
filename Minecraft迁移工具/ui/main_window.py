@@ -544,6 +544,14 @@ class MigrationGUI(
             i18n.翻自绘()
         except Exception:
             pass
+        # 工具栏右端那两颗药丸（⚠ 更新提醒 / 🔁 应用上次记录）是现拼出来的 Canvas
+        # 文字，翻树和翻自绘都够不着 —— 直接重生一次
+        刷尾 = getattr(self, "_refresh_tail_buttons", None)
+        if callable(刷尾):
+            try:
+                刷尾()
+            except Exception as e:
+                trace_exc("main_window/重翻界面-尾按钮", e)
 
     def 重新翻译界面(self):
         """运行中切语言：把主界面整棵树按当前语言重刷一遍。
