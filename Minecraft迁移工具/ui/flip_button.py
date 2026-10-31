@@ -33,7 +33,6 @@ flip_to_front()/set_feel()/get_feel()/set_dry_run()。
 """
 import math
 import time
-from collections import deque as _deque
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -82,13 +81,7 @@ _STRIPE_ALPHA = 26      # 背面斜纹 alpha（原型 stripes.setAlpha(26)）
 _STRIPE_W = 6.0         # 斜纹线宽
 _STRIPE_STEP = 28.0     # 斜纹间距
 _STRIPE_SPEED = 55.0    # 斜纹流速 px/s
-_PROGRESS_H = 3
-_BAR_INSET = 6          # 条本身左右各内缩多少（保证两端是直角、左右一样）         # 底部进度条高度
-_BAR_SUBPX = 4          # 条宽按 1/4 像素量化（头子能半格半格挪）
-_DECOR_WID = 0.24       # 装饰性"滚动"那一块的长度（占按钮宽的比例）
-_DECOR_SPEED = 0.30     # 那块每秒走几倍按钮宽（慢一点更像"在加载"，不那么跳）
-_DECOR_PAD = 10.0       # 块走到两头时离边缘留多少空隙（贴边会被圆角切掉一角）
-_DECOR_EDGE = 14.0      # 进出边缘时小于这么多像素就不画（否则看着像多余几个像素）
+_PROGRESS_H = 3         # 底部进度条高度
 _PROGRESS_MIN = 0.06    # 进度条最短（原型 max(0.06, ...)）
 
 _UI_MS = 33             # 持续动画的 tick 间隔（30fps 上限）
@@ -97,10 +90,7 @@ _HV_IN, _HV_OUT = 0.09, 0.15    # 悬停淡入 90ms / 淡出 150ms（原型 step
 # 而淡入是指数逼近（_HV_IN=90ms，实际要 ~200ms 才到 0.99），于是鼠标一碰，亮度只跳
 # 4 下，看着就是「高亮帧数低」。改 25 档（步长 0.04）≈ 5ms 一档，跟刷新率对上。
 _HV_LEVELS = tuple(i / 24.0 for i in range(25))  # 0, 0.04, ... 1.0
-# 背面斜纹相位表长度。相位周期固定 2.417s，表越长每步的角度越小、看着越连续：
-# 72 = 每 33.6ms 换一格（≈30fps 的观感，用户反馈"背面帧数低"就是这个）；
-# 180 = 每 13.4ms 一格（≈74fps），缓存只多一百来张。
-_BACK_PHASES = 180
+_BACK_PHASES = 72       # 背面相位表长度
 _BACK_DT = (2.0 * math.pi / 2.6) / _BACK_PHASES   # 让进度条的 cos 周期正好一圈（2.417s）
 
 # ---------------------------------------------------------------- 配色（原型 FACE_IDLE / FACE_SEARCH 原值）
@@ -188,12 +178,7 @@ _FRAME_MS = 16          # 目标帧间隔（60fps）—— 现在只当兜底值
 # 帧图缓存在 _frames 里（key 带状态）：47 帧 × 2 方向 × 3 档手感 ≈ 280 张 ≈ 5.6MB。
 _TABLE_MS_MIN = 4       # 帧表密度的下限（240Hz 屏）
 _TABLE_MS_MAX = 16      # 上限（60Hz 屏），再密就是白烤帧
-# 非翻转帧的预算。以前是"一超上限就把非翻转帧全清"，相位表一满就整表重烤，
-# 滚动动画每轮都要暖一遍；改成按插入顺序挤掉最老的（dict 保序），稳态就不会抖。
 _MAX_FRAMES = 900       # 图缓存上限（翻转帧 + 静止帧 + 相位表）
-# 420 太小：背面相位表 180 + 悬停扫光 96 + 悬停面 25 + 翻转帧 40 就顶满了，
-# 于是每帧都在淘汰、每帧都要重烤一整张面 —— 那不叫省内存，那叫一直在重算。
-# 一张面约 30KB，900 张 ≈ 27MB，可接受。
 _PREWARM_MS_PER_TICK = 0.006   # 预热每轮最多占用主线程 6ms，然后让出
 
 # 字体：PIL 里 CJK 用微软雅黑粗体，emoji 只能单独用 Segoe UI Emoji 画
@@ -463,16 +448,7 @@ class FlipButton(tk.Canvas):
         # 面只在斜纹相位变化时换图（还都命中相位表），条只换一张 w×3 的裁剪图。
         self._bar_id = self.create_image(0, 0, anchor="nw", tags="bar",
                                          state="hidden")
-        # 滚动块绕回时用第二根：一块从右边滑出去的同时，另一块从左边进来。
-        # 只有一根的话，块尾巴在右边缘被裁成"几个像素"，看着像画错了。
-        self._bar2_id = self.create_image(0, 0, anchor="nw", tags="bar",
-                                          state="hidden")
         self._bar_cache = {}
-        self._decor_t0 = None
-        # 正在显示的 PhotoImage 必须留一个强引用：一旦被缓存淘汰或被 clear()，
-        # Tk 那边对应的图像会跟着销毁，画布项瞬间变空白 —— 那才是「闪」。
-        self._cur_bar_photo = None
-        self._cur_face_photo = None
         self._txt_id = self.create_text(self._cw // 2, self._ch // 2, text="",
                                         fill=self._pal["idle"]["title"],
                                         font=self._txt_font_pick(),
@@ -688,70 +664,14 @@ class FlipButton(tk.Canvas):
         """装饰性的来回扫宽度（只表示在忙，与时间无关）：6% → 100% → 6%。"""
         return max(_PROGRESS_MIN, 0.5 - 0.5 * math.cos(t * 2.6))
 
-    # 进度历史（时间, 值），只留最近的；条的显示位置从这里回放
-    _PROG_LAG = 0.18        # 回放延迟（秒）
-    _PROG_HIST_MAX = 48     # 最多记多少个采样点
-
-    def _push_prog_history(self, 值):
-        """记一笔真实进度，供底部条按"晚 _PROG_LAG 秒"回放。"""
-        try:
-            历史 = getattr(self, "_prog_hist", None)
-            if 历史 is None:
-                历史 = self._prog_hist = _deque(maxlen=self._PROG_HIST_MAX)
-            历史.append((time.perf_counter(), 值))
-        except Exception:
-            pass
-
-    def _prog_show_from_history(self, now, tgt):
-        """按历史回放算"现在该画到哪"：取 now-lag 时刻的插值。"""
-        历史 = getattr(self, "_prog_hist", None)
-        if not 历史:
-            return tgt
-        目标时刻 = now - self._PROG_LAG
-        if 目标时刻 <= 历史[0][0]:
-            return 历史[0][1]
-        上 = None
-        for t, v in 历史:
-            if t >= 目标时刻:
-                if 上 is None:
-                    return v
-                跨 = t - 上[0]
-                比 = 0.0 if 跨 <= 0 else (目标时刻 - 上[0]) / 跨
-                return 上[1] + (v - 上[1]) * max(0.0, min(1.0, 比))
-            上 = (t, v)
-        # 历史还没追上"现在"（迁移刚停）：就停在最后一个值上，别倒着走
-        return 上[1] if 上 else tgt
-
     def _bar_u(self):
         """这一帧该画的条宽：真进度优先（缓动值），没有就回到装饰性的来回扫。"""
         if self._prog_override is not None:
             if self._prog_show is None:
                 self._prog_show = self._prog_override
             return self._prog_show
-        # 没有真进度 → None，让 _draw_bar_now 走"滚动块"那条路。
-        # 以前这里返回 _decor_u（0→1→0 的伸缩），于是滚动块那段代码根本没被用上，
-        # 模拟运行时看到的还是"长出来又缩回去"，以及右边缘被裁出的几个像素。
         self._prog_show = None
-        return None
-
-    def _bar_edge_mask(self):
-        """整条轨道两端的淡出遮罩（宽 = 按钮宽，高 = _PROGRESS_H）。只烤一次。"""
-        key = ("baredge", self._cw, _PROGRESS_H)
-        hit = _bar_cache_edge = self._bar_cache.get(key)
-        if hit is not None:
-            return hit
-        w = max(1, self._cw)
-        渐 = max(6, min(22, w // 8))
-        m = _Image.new("L", (w, 1), 255)
-        画 = _ImageDraw.Draw(m)
-        左 = None
-        for i in range(渐):
-            v = int(round(255.0 * (i + 1) / float(渐 + 1)))
-            画.point((i, 0), fill=v)
-            画.point((w - 1 - i, 0), fill=v)
-        m = m.resize((w, _PROGRESS_H))
-        self._bar_cache[key] = m
-        return m
+        return self._decor_u(self._back_phase() * _BACK_DT)
 
     def _bar_strip(self):
         """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
@@ -762,216 +682,47 @@ class FlipButton(tk.Canvas):
         w, h = self._cw, self._ch
         strip = _Image.new("RGBA", (w, _PROGRESS_H),
                            _rgb(self._pal["search"]["accent"]) + (255,))
-        # 条的"外形"必须左右一样：以前用按钮的圆角遮罩裁条，条贴到两端时会被
-        # 圆角切出斜角，一头方一头斜 —— 用户说的"外形不对称"就是这个。
-        # 现在改成左右各内缩 `_BAR_INSET` 的直角条，两端永远是齐的。
-        遮 = _Image.new("L", (w, _PROGRESS_H), 0)
-        _ImageDraw.Draw(遮).rectangle(
-            [_BAR_INSET, 0, max(_BAR_INSET, w - 1 - _BAR_INSET), _PROGRESS_H - 1],
-            fill=255)
-        strip.putalpha(_ImageChops.multiply(strip.getchannel("A"), 遮))
+        strip.putalpha(_ImageChops.multiply(
+            strip.getchannel("A"), _clip_mask(w, h).crop((0, h - _PROGRESS_H, w, h))))
         if len(_layer_cache) > 220:
             _layer_cache.clear()
         _layer_cache[key] = strip
         return strip
 
     def _bar_photo(self, u):
-        """宽度 u（0..1）那一段的条贴图。
-
-        原来按**整像素**取整：150px 宽、7 秒走完，头子每秒才挪 21 个像素，
-        每挪一次就是一整格 —— 看着像"一秒动两下"。现在按 1/4 像素量化，
-        最后一列按余数压透明度，头子就能半格半格地挪（84 格/秒）。
-        裁剪 + 改一列 alpha 都是 C 层操作，比重新合成整面便宜得多。
-        """
+        """宽度 u（0..1）那一段的条贴图。裁剪是 C 层操作，比重新合成整面便宜得多。"""
         w = self._cw
         try:
-            q = int(round(max(0.0, min(1.0, float(u))) * w * _BAR_SUBPX))
+            pw = int(round(w * max(0.0, min(1.0, float(u)))))
         except Exception:
-            q = 0
-        q = max(0, min(w * _BAR_SUBPX, q))
-        # 不足一整像素就不画：否则 u≈0 时会在最左边留几个像素（用户看到的"溢出"）
-        if q // _BAR_SUBPX < 1:
-            return None
-        if q in self._bar_cache:
-            return self._bar_cache[q]
+            pw = 0
+        pw = max(0, min(w, pw))
+        if pw in self._bar_cache:
+            return self._bar_cache[pw]
         photo = None
-        if q > 0:
+        if pw > 0:
             try:
-                整, 余 = divmod(q, _BAR_SUBPX)
-                条 = self._bar_strip()
-                if 余:
-                    段 = 条.crop((0, 0, 整 + 1, _PROGRESS_H))
-                    阿尔法 = 段.getchannel("A")
-                    # 条的填充是实色（alpha 255），所以最后那一列直接把 alpha 换成
-                    # 余数比例就行 —— 看上去就是"半格宽"的头子
-                    # 注意：这里必须给 4 元组 —— 只给 (x, 0) 时 PIL 会抛
-                    # ValueError: cannot determine region size; use 4-item box，
-                    # 而外层 except 会把它吞成 photo=None（条就被"藏"起来）。
-                    # 于是余数不为 0 的帧全都不画条 —— 看着就是一直在闪。
-                    阿尔法.paste(int(round(255.0 * 余 / _BAR_SUBPX)),
-                                 (整, 0, 整 + 1, _PROGRESS_H))
-                    段.putalpha(阿尔法)
-                    photo = _ImageTk.PhotoImage(段)
-                else:
-                    photo = _ImageTk.PhotoImage(条.crop((0, 0, 整, _PROGRESS_H)))
+                photo = _ImageTk.PhotoImage(self._bar_strip().crop((0, 0, pw, _PROGRESS_H)))
             except Exception:
                 photo = None
-        self._bar_cache[q] = photo
-        self._trim_bar_cache()
+        if len(self._bar_cache) > 400:
+            self._bar_cache.clear()
+        self._bar_cache[pw] = photo
         return photo
 
-    def _bar_chunk_photo(self, off, wid):
-        """装饰性"滚动"用的那一段：从满宽条里裁 `wid` 宽的一条，带 1/4 像素的起点。"""
-        w = self._cw
-        try:
-            q = int(round(off * _BAR_SUBPX))
-            qw = int(round(wid * _BAR_SUBPX))
-        except Exception:
-            return None
-        q = max(-w * _BAR_SUBPX, min(w * _BAR_SUBPX, q))
-        qw = max(_BAR_SUBPX, min(w * _BAR_SUBPX - 1, qw))
-        key = ("chunk", w, q, qw)
-        if key in self._bar_cache:
-            return self._bar_cache[key]
-        photo = None
-        try:
-            整 = q // _BAR_SUBPX
-            宽 = qw // _BAR_SUBPX
-            if 宽 > 0:
-                条 = self._bar_strip()
-                # 越界的部分裁掉（块滑出左/右边缘时）
-                左 = max(0, -整)
-                右 = min(w, 整 + 宽)
-                if 右 > 左:
-                    # 实心一块、左右完全一样：柔边那版用户看着"左右不对称"
-                    # （左边压着按钮圆角、右边是纯色），干脆去掉渐隐。
-                    photo = _ImageTk.PhotoImage(条.crop((左, 0, 右, _PROGRESS_H)))
-        except Exception:
-            photo = None
-        self._bar_cache[key] = photo
-        self._trim_bar_cache()
-        return photo
-
-    def _bar_scroll_photo(self, x, wid):
-        """滚动块：整宽画一张，块的左右靠透明，两端的淡出交给 `_bar_edge_mask`。
-
-        这样块滑到边缘时是"淡出去"，不会留下半截像素，也不需要两根条拼绕回。
-        """
-        w, h = int(self._cw), _PROGRESS_H
-        try:
-            qx = int(round(x * _BAR_SUBPX))
-            qw = int(round(wid * _BAR_SUBPX))
-        except Exception:
-            return None
-        key = ("scroll", w, qx, qw)
-        if key in self._bar_cache:
-            return self._bar_cache[key]
-        photo = None
-        try:
-            色 = _rgb(self._pal["search"]["accent"]) + (255,)
-            图 = _Image.new("RGBA", (max(1, w), h), 色[:3] + (0,))
-            起 = qx // _BAR_SUBPX
-            终 = (qx + qw) // _BAR_SUBPX
-            画 = _ImageDraw.Draw(图)
-            画.rectangle([起, 0, max(起, 终 - 1), h - 1], fill=色)
-            甲 = _ImageChops.multiply(
-                图.getchannel("A"),
-                _ImageChops.multiply(
-                    _clip_mask(w, self._ch).crop((0, self._ch - h, w, self._ch)),
-                    self._bar_edge_mask()))
-            图.putalpha(甲)
-            photo = _ImageTk.PhotoImage(图)
-        except Exception:
-            photo = None
-        self._bar_cache[key] = photo
-        self._trim_bar_cache()
-        return photo
-
-    def _decor_chunk(self):
-        """装饰性滚动：一块固定长度的条从左往右滑，滑出去再从左边进来。
-
-        以前是"从 0 长到满、再缩回 0"（`_decor_u` 的 cos），看着像在闪；
-        用户要的"随机滚动"其实是这么一条一直在走的块。
-        """
-        w = max(1, self._cw)
-        wid = max(10.0, w * _DECOR_WID)
-        起 = getattr(self, "_decor_t0", None) or self._t0
-        圈 = (time.perf_counter() - 起) * _DECOR_SPEED * w
-        圈 %= (w + wid)
-        # 来回滚（用户选的）：只在 0 ~ (宽-块长) 之间往返，块始终完整可见，
-        # 不淡出、不绕回、也不贴边露半截。
-        # 两端都留出 `_DECOR_PAD` 的空隙：贴到 0 或贴到右边时，会被按钮的圆角
-        # 遮罩切掉一角，看着就"左右不对称"。留边之后两头都是完整的柔边。
-        左界 = float(_BAR_INSET)
-        右界 = max(左界, w - _BAR_INSET - wid)
-        空 = min(_DECOR_PAD, max(0.0, (右界 - 左界) / 2.0))
-        行程 = max(1.0, (右界 - 左界) - 2 * 空)
-        周期 = 2.0 * 行程
-        位 = 圈 % 周期
-        if 位 > 行程:
-            位 = 周期 - 位
-        return 空 + 位, wid
-
-    def _trim_bar_cache(self):
-        """条的贴图缓存淘汰：跳过正在显示的那张（清掉它 = 条闪一下）。"""
-        上限 = 600
-        if len(self._bar_cache) <= 上限:
-            return
-        当前 = self._cur_bar_photo
-        多 = len(self._bar_cache) - 上限
-        for k in list(self._bar_cache.keys()):
-            if 多 <= 0:
-                break
-            if 当前 is not None and self._bar_cache.get(k) is 当前:
-                continue
-            self._bar_cache.pop(k, None)
-            多 -= 1
-
-    def _apply_bar(self, u=None, seg=None):
-        """刷底部那条。
-
-        u     = 0..1 真进度（None = 不画）
-        seg   = (起点, 长度) 装饰性滚动用的那一段
-        """
+    def _apply_bar(self, u=None):
+        """刷底部那条：u=None 就藏起来（正面 / 翻转中）。"""
         if not _PIL_OK:
             return
         try:
-            if seg is not None:
-                x, wid = seg
-                photo = self._bar_chunk_photo(x, wid)
-                if photo is None:
-                    self.itemconfigure(self._bar_id, state="hidden")
-                    self.itemconfigure(self._bar2_id, state="hidden")
-                else:
-                    y = self._ch - _PROGRESS_H - 1
-                    整 = max(0, int(round(x)))
-                    self.coords(self._bar_id, 整, y)
-                    self.itemconfigure(self._bar_id, image=photo, state="normal")
-                    self.itemconfigure(self._bar2_id, state="hidden")
-                    self._cur_bar_photo = photo
-                return
             photo = None if u is None else self._bar_photo(u)
             if photo is None:
                 self.itemconfigure(self._bar_id, state="hidden")
-                self.itemconfigure(self._bar2_id, state="hidden")
             else:
                 self.coords(self._bar_id, 0, self._ch - _PROGRESS_H)
                 self.itemconfigure(self._bar_id, image=photo, state="normal")
-                self.itemconfigure(self._bar2_id, state="hidden")
-                self._cur_bar_photo = photo
         except Exception:
             pass
-
-    def _draw_bar_now(self):
-        """按当前状态刷一次条：正面藏起来 / 背面有真进度就画进度 / 否则滚动。"""
-        if not self._at_back:
-            self._apply_bar(None)
-            return
-        u = self._bar_u()
-        if u is None:
-            self._apply_bar(None, self._decor_chunk())
-        else:
-            self._apply_bar(u)
 
     def _back_layer(self, t, hv=0.0):
         """背面整层（不含底色、不含底部进度条）：红面 + 斜纹。翻转帧和静止帧共用。
@@ -1001,26 +752,9 @@ class FlipButton(tk.Canvas):
         return photo
 
     def _drop_photos(self):
-        """挤出最老的非翻转帧，保留翻转帧（那些最贵，扔了下次点击要现烤 40 帧）。
-
-        原来是"一超上限就全清"：背面相位表 180 张、悬停扫光 96 张，来回一混就顶到
-        上限，于是每 400 张左右整表重烤一遍（一次 4.5ms）—— 看着像周期性掉帧。
-        改成按插入顺序只挤掉最老的几张，稳态下相位表能一直命中缓存。
-        """
-        超 = len(self._frames) - _MAX_FRAMES
-        if 超 <= 0:
-            return
-        当前 = self._cur_face_photo
-        for k in list(self._frames):
-            if 超 <= 0:
-                break
-            if isinstance(k, tuple) and k[0] == "flip":
-                continue
-            # 正在显示的那张不能扔：Tk 里它一被销毁，画布项会闪一帧空白
-            if 当前 is not None and self._frames.get(k) is 当前:
-                continue
+        """只丢静止帧/相位表，保留翻转帧（那些是最贵的，扔了下次点击要现烤 40 帧）。"""
+        for k in [k for k in self._frames if not (isinstance(k, tuple) and k[0] == "flip")]:
             del self._frames[k]
-            超 -= 1
 
     def _stem(self):
         return (self._cw, self._ch, id(self._icon) if self._icon else 0, self._bg_rgb())
@@ -1353,14 +1087,16 @@ class FlipButton(tk.Canvas):
         （可能几分钟），给 30fps 就够了 —— 别让整机一直挂在 1ms 定时器上。
         """
         if self._at_back:
-            # 背面**一直**跟刷新率走：那条斜纹在流、底部条在长、文案点点在闪，
-            # 定格 33ms 一格的话（30fps）斜纹看着就是一格一格跳 —— 用户直接说
-            # "这个状态帧数低"。每帧只是一次 itemconfigure + 一次裁图（缓存命中，
-            # 实测 ~0.2ms），整机开销可以忽略；真正贵的是现烤整面，那个在缓存里。
-            try:
-                return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
-            except Exception:
-                return _UI_MS
+            # 悬停淡入的那一小段要跟刷新率走（否则 33ms 一格，25 档要 0.8 秒，
+            # 看着是一跳一跳地亮起来）；淡完之后仍回到 30fps，别一直挂着快定时器。
+            在追 = abs((1.0 if self._hover else 0.0) - self._hv) > 0.02
+            if self._prog_override is not None or 在追:
+                # 有条真进度在跑 / 正在淡入：要跟刷新率走。
+                try:
+                    return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
+                except Exception:
+                    return _UI_MS
+            return _UI_MS
         try:
             return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
         except Exception:
@@ -1435,37 +1171,16 @@ class FlipButton(tk.Canvas):
                 else:
                     photo = self._back_photo(self._back_phase(), self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
-                self._cur_face_photo = photo
-                # 条的位置 = 进度历史的 180ms 前那个值（线性插值）。
-                # 为什么不用"追目标"：进度每 100~250ms 才来一跳，
-                #   * 指数追 —— 追平之后要干等下一跳，看着一顿一顿；
-                #   * 加最小步长 —— 步长一下就把整跳吃掉了，等于每跳"啪"地挪一段；
-                # 都是"一秒动两下"的观感。改成回放历史：源动多少条就动多少，
-                # 只是整体晚 180ms（肉眼看不出来），运动是连续、匀速的。
+                # 条的目标值一跳，这里每帧追一点（时间常数 0.12s，肉眼是"一路推上去"）
                 tgt = self._prog_override
                 if tgt is not None:
-                    回放 = self._prog_show_from_history(now, tgt)
-                    当前 = (self._prog_show if self._prog_show is not None else 回放)
-                    # 两条纪律：
-                    #   ① 不许倒退 —— 历史里有时全是一簇几十毫秒内的点，回放会一前一后地
-                    #      取值，条头就来回抖（实测 4 秒里倒退 47 次，那就是"抽搐"）；
-                    #   ② 一簇点摊平 —— 进度是一次十来条挤在 1ms 里送进来的，
-                    #      按回放直接画等于一帧跳 3~6 像素。用 120ms 时间常数摊开。
-                    # 只在「当前 → 目标」之间取值：既不会越过目标，也不会被
-                    # 历史里一前一后的采样点带着来回抖。注意不能用 max() 单向
-                    # 钳住 —— 倒计时是往下走的（沙漏），单向钳住就等于冻在满格。
-                    低, 高 = (当前, tgt) if tgt >= 当前 else (tgt, 当前)
-                    目标 = min(max(回放, 低), 高)
-                    差 = 目标 - 当前
-                    if abs(差) > 1e-6:
-                        一步 = abs(差) * min(1.0, dt / 0.12)
-                        # 单帧最多挪半像素：进度是一簇一簇进来的，不封顶的话
-                        # 一帧就能挪 2~3 像素，看着就是"抽搐"
-                        if self._cw > 0:
-                            一步 = min(一步, 0.5 / float(self._cw))
-                        当前 += 一步 if 差 > 0 else -一步
-                    self._prog_show = 当前
-                self._draw_bar_now()
+                    if self._prog_show is None:
+                        self._prog_show = tgt
+                    elif abs(tgt - self._prog_show) > 0.002:
+                        self._prog_show += (tgt - self._prog_show) * min(1.0, dt / 0.12)
+                    else:
+                        self._prog_show = tgt
+                self._apply_bar(self._bar_u())
                 self._tick_dots(now)
             else:
                 target = 1.0 if self._hover else 0.0
@@ -1480,7 +1195,6 @@ class FlipButton(tk.Canvas):
                 else:
                     photo = self._rest_photo(pid, pal, self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
-                self._cur_face_photo = photo
         except Exception:
             pass
         self._ui_job = self.after(self._tick_ms(), self._ui_tick)
@@ -1527,11 +1241,7 @@ class FlipButton(tk.Canvas):
             else:
                 photo = self._back_photo(self._back_phase(), self._hv_q())
         self.itemconfigure(self._img_id, image=photo)
-        self._cur_face_photo = photo
-        if front:
-            self._apply_bar(None)
-        else:
-            self._draw_bar_now()
+        self._apply_bar(None if front else self._bar_u())
         if self._icon is not None:
             if self._icon_img_id is None:
                 self._icon_img_id = self.create_image(
@@ -1740,16 +1450,9 @@ class FlipButton(tk.Canvas):
             return
         self._prog_override = 新
         if 新 is None:
-            # 刚切到滚动：相位归零，块从最左边进场（不然会从中间凭空冒出来）
-            self._decor_t0 = time.perf_counter()
             self._prog_show = None
-            ʰ = getattr(self, "_prog_hist", None)
-            if ʰ is not None:
-                ʰ.clear()
-        else:
-            self._push_prog_history(新)
         if self._at_back and not self._animating:
-            self._draw_bar_now()
+            self._apply_bar(self._bar_u())
             self._ensure_tick()     # 条在动，tick 得活着（也是提速的依据）
 
     def state(self, new_state=None):
