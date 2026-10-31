@@ -36,7 +36,7 @@ def _去图标(文本):
 
 from utils.helpers import (
     DataText, OptionCards, RoundedEntry, SegmentedControl, SmoothScroller, SwitchRow,
-    center_window, create_gradient_button, focus_window, set_window_icon,
+    center_window, create_gradient_button, focus_window, set_window_icon, trace_exc,
 )
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
 from utils.i18n import trp
@@ -898,6 +898,33 @@ class SettingsMixin:
             重启 = getattr(self, "重启程序", None)
             if callable(重启):
                 名 = dict(i18n.CHOICES).get(值, 值)
+                # 先问一句：切语言要重启窗口，不能让人莫名其妙掉一次
+                要重启 = True
+                try:
+                    from ui.precheck_dialog import 确认 as _确认
+                    要重启 = _确认(
+                        getattr(self, "settings_win", None) or self.root,
+                        self.theme,
+                        trp("切换界面语言"),
+                        trp("改成「{0}」后需要重启程序才会生效。现在重启吗？", 名),
+                        主按钮=trp("现在重启"), 次按钮=trp("稍后再说"))
+                except Exception as e:
+                    trace_exc("settings/切语言确认", e)
+                    要重启 = True
+                if not 要重启:
+                    # 退回去：语言、变量、分段控件都回到原来那个
+                    try:
+                        i18n.set_language(旧)
+                    except Exception:
+                        pass
+                    try:
+                        self.settings_lang_var.set(旧)
+                        段 = getattr(self, "_settings_seg_map", {}).get("lang")
+                        if 段 is not None:
+                            段.set(旧, animate=False)
+                    except Exception as e:
+                        trace_exc("settings/切语言回退", e)
+                    return
                 try:
                     self.toast(trp("🌐 界面语言已改成「{0}」，正在重启…", 名),
                                level="ok", key="lang")

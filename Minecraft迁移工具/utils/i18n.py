@@ -2113,6 +2113,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "⚠️ Waiting…",
     "⚠️ 等待中...":
         "⚠️ Waiting…",
+    "切换界面语言": "Switch interface language",
+    "改成「{0}」后需要重启程序才会生效。现在重启吗？":
+        "Switching to \"{0}\" takes effect after a restart. Restart now?",
+    "现在重启": "Restart now",
+    "稍后再说": "Later",
     "🔁 应用上次记录":
         "🔁 Apply last record",
     "🔁 已回填上次的迁移记录":
