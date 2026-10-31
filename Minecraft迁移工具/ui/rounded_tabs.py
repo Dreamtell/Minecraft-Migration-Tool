@@ -17,6 +17,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 
+from utils import i18n
 from utils.helpers import _rounded_gradient, is_dark_theme, lighten_color
 
 PAD_X = 22          # 标签左右内边距
@@ -61,6 +62,20 @@ class RoundedTabs(tk.Frame):
         # 切页回调（收到 index）。主界面用它记住"上次停在哪一页"；
         # 设置窗那几个标签不需要，留 None 就行。
         self.on_change = None
+
+        # 切语言：每个标签按创建时那句中文重翻，然后重排标签条
+        def _重按语言():
+            for t in self._tabs:
+                t["label"] = i18n.tr(t.get("原", t["label"]))
+            try:
+                self._layout_bar()
+            except Exception:
+                pass
+            try:
+                self._refresh_pills()
+            except Exception:
+                pass
+        i18n.注册自绘(self, _重按语言)
 
         self.bar.bind("<Button-1>", self._on_click)
         self.bar.bind("<Motion>", self._on_motion)
@@ -169,8 +184,10 @@ class RoundedTabs(tk.Frame):
 
     def page(self, label):
         """建一页并返回它的容器（往里塞内容即可）。"""
+        原 = label                       # 「原」= 中文原文，切语言时按它重翻
+        label = i18n.tr(label)
         page = tk.Frame(self.body, bg=self.theme["bg"])
-        self._tabs.append({"label": label, "page": page, "x": 0, "w": 0,
+        self._tabs.append({"label": label, "原": 原, "page": page, "x": 0, "w": 0,
                            "pill": None, "text_main": None, "text_num": None,
                            "hover": False})
         self._layout_bar()

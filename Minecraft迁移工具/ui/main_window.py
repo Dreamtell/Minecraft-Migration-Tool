@@ -327,16 +327,10 @@ class MigrationGUI(
 
         def 更新(文字, 档位, 明细):
             try:
-                色 = {"ok": "#81c784", "warn": "#e65100", "fail": "#c62828"}.get(
-                    档位, self.theme.get("muted_fg", "#888888"))
-                # 圆点 + 文字：光一个点用户看不懂，必须有字说明状态
-                文案 = {"ok": "网络已连接", "warn": "网络部分不通",
-                        "fail": "网络未连接"}.get(档位, "正在检测网络…")
-                self.net_status.configure(text="● " + i18n.tr(文案), fg=色)
-                明细文字 = "｜".join(
-                    i18n.trp("{0}：{1}", k, i18n.trp("通") if v else i18n.trp("不通"))
-                    for k, v in 明细.items())
-                self._net_tip = (i18n.trp("网络通畅\n") if 档位 == "ok" else 文字 + "\n") + 明细文字
+                # 档位/明细留着：切语言时没法从"● 网络已连接"这种拼好的串反查，
+                # 只能靠这里的原料重算一遍（见 _刷新网络状态文字）
+                self._net_档位, self._net_明细 = 档位, dict(明细)
+                self._刷新网络状态文字()
             except Exception:
                 pass
 
@@ -344,6 +338,33 @@ class MigrationGUI(
             self._net_stop = mw_net.start_polling(self.root, 更新)
         except Exception:
             self._net_stop = None
+
+    def _刷新网络状态文字(self):
+        """按当前语言重写左下角那行网络状态（切语言 / 探测结果到达时都调）。"""
+        档位 = getattr(self, "_net_档位", None)
+        明细 = getattr(self, "_net_明细", None) or {}
+        try:
+            色 = {"ok": "#81c784", "warn": "#e65100", "fail": "#c62828"}.get(
+                档位, self.theme.get("muted_fg", "#888888"))
+            文案 = {"ok": "网络已连接", "warn": "网络部分不通",
+                    "fail": "网络未连接"}.get(档位, "正在检测网络…")
+            self.net_status.configure(text="● " + i18n.tr(文案), fg=色)
+            # 这行是"拼出来的派生文字"，本函数就是它的权威来源：把语言层记的原文
+            # 撤掉，免得翻树拿英文当原文、和这里互相覆盖
+            try:
+                getattr(self.net_status, "_i18n_原文", {}).pop("text", None)
+            except Exception:
+                pass
+            明细文字 = "｜".join(
+                i18n.trp("{0}：{1}", k, i18n.trp("通") if v else i18n.trp("不通"))
+                for k, v in 明细.items())
+            底 = i18n.trp("网络通畅\n") if 档位 == "ok" else (
+                i18n.tr("网络部分不通\n") if 档位 == "warn" else
+                i18n.tr("网络未连接\n") if 档位 == "fail" else
+                i18n.tr("正在检测网络…\n"))
+            self._net_tip = 底 + 明细文字
+        except Exception as e:
+            trace_exc("main_window/刷新网络状态", e)
 
     def _stage(self, text=""):
         """向构建阶段的观察者（启动闪屏）报告进度，并让出一帧。
@@ -504,6 +525,48 @@ class MigrationGUI(
             return 窗
         except Exception:
             return None
+
+    def 重新翻译界面(self):
+        """运行中切语言：把主界面整棵树按当前语言重刷一遍。
+
+        · 普通控件（Label/Button/复选框/树）走 i18n.翻树 —— 造的时候把中文原文
+          挂在控件上了，这里拿原文重新 tr 一次，来回切不会越翻越歪；
+        · 自绘控件（页签栏、渐变按钮、开关、翻转按钮）各自登记了重画回调，走翻自绘；
+        · 拼出来的状态行（"网络通畅 · Modrinth：通"之类）由 configure(text=) 记过原文，
+          也会跟着刷。
+        返回改了多少处，方便探针断言。
+        """
+        改 = 0
+        try:
+            改 = i18n.翻树(self.root)
+        except Exception as e:
+            trace_exc("main_window/重翻界面-翻树", e)
+        try:
+            i18n.翻自绘()
+        except Exception as e:
+            trace_exc("main_window/重翻界面-自绘", e)
+        # 有些"文案"是带缓存的探测结果（Qt 可用性那段就是）：缓存里存的是**当时语言**
+        # 的成品，不清掉的话设置页重建了也还是旧语言
+        for 缓存 in ("_qt_ok_cache",):
+            try:
+                setattr(self, 缓存, None)
+            except Exception:
+                pass
+        # Qt 子进程是另一个进程，Tk 这边重翻够不着它：推一条命令过去
+        推 = getattr(self, "_push_language_to_qt", None)
+        if callable(推):
+            try:
+                推(i18n.language())
+            except Exception:
+                pass
+        for 名 in ("_刷新网络状态文字", "_refresh_msg_badge"):
+            方 = getattr(self, 名, None)
+            if callable(方):
+                try:
+                    方()
+                except Exception:
+                    pass
+        return 改
 
     def _refresh_msg_badge(self):
         """刷新状态栏铃铛上的未读数（没建出来就安静跳过）。"""

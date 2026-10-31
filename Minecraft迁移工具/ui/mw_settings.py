@@ -282,8 +282,8 @@ class SettingsMixin:
         self.countdown_slider.pack(fill="x", pady=(px(4), 0))
         self._settings_sliders.append(self.countdown_slider)
 
-        # 界面语言（中文 / English）。文案是**启动时定下来**的（见 utils/i18n.py），
-        # 这里只负责记下选择，并提示重启 —— 界面是一次性建好的，运行中换不干净。
+        # 界面语言（中文 / English）。切了**当场生效**：i18n 会按新语言把整棵界面树
+        # 重刷一遍（见 utils/i18n.py 的 翻树 / 翻自绘），设置窗自己也重建一次。
         self.settings_lang_var = tk.StringVar(value=i18n.language())
         row_lang = tk.Frame(box1, bg=self.theme["bg"])
         row_lang.pack(fill="x", pady=(10, 0))
@@ -846,10 +846,11 @@ class SettingsMixin:
             self.set_button_hidden(key, key not in set(self.hidden_buttons or ()))
 
     def _set_language(self, 值):
-        """切换界面语言：写进配置 + 提示重启。
+        """切换界面语言：写进配置，并且**当场**换掉主界面和设置窗的文案（不用重启）。
 
-        界面是一次性建好的（见 utils/i18n.py 顶部说明），运行中切不干净，所以这里只
-        记住选择、并把**之后新开的窗口**（对话框等）变成新语言 —— 主界面要重启才换。
+        做法见 utils/i18n.py：造控件时把中文原文挂在控件上，切语言时按原文重新查表；
+        页签/渐变按钮/开关/翻转按钮这些自绘控件各自登记了重画回调；设置窗的页签名、
+        分段选项是建窗时定的，所以干脆整窗重建一次。
         """
         旧 = i18n.language()
         try:
@@ -863,8 +864,31 @@ class SettingsMixin:
                 self.save_config()
             except Exception:
                 pass
+            重翻 = getattr(self, "重新翻译界面", None)
+            if callable(重翻):
+                try:
+                    重翻()
+                except Exception as e:
+                    trace_exc("settings/重翻界面", e)
+            # 设置窗自己的文案是"建界面时"定的（页签名、分段选项、开关标题…），
+            # 重建一次最省事；必须延后一拍，否则会把正在响应点击的控件当场销毁。
+            def _重建():
+                try:
+                    if getattr(self, "settings_win", None) is not None:
+                        self.settings_win.destroy()
+                except Exception:
+                    pass
+                self.settings_win = None
+                try:
+                    self.open_settings()
+                except Exception as e:
+                    trace_exc("settings/重建", e)
+            try:
+                self.root.after(60, _重建)
+            except Exception:
+                pass
         名 = dict(i18n.CHOICES).get(值, 值)
-        self.toast(trp("🌐 界面语言已设为「{0}」—— 重启程序后完全生效（此后新打开的窗口会立刻用新语言）", 名), level="ok")
+        self.toast(trp("🌐 界面语言已切换为「{0}」，立即生效", 名), level="ok")
 
     def _toggle_splash(self):
         """启动动画开关：app.py 在创建闪屏前会直接读配置文件。"""

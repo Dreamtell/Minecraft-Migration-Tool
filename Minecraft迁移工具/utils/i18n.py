@@ -25,6 +25,7 @@
 - **Qt 子进程窗口**（放大查看 / 模组差异）：那边是 C++ 控件，没法在构造器上包装，
   要翻得逐个调用点改，属于下一批。
 """
+import weakref
 import os
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -2090,7 +2091,114 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "· missing {0}",
     "其它文件":
         "Other files",
+    "🌐 界面语言已切换为「{0}」，立即生效":
+        "🌐 UI language switched to \"{0}\" — applied immediately",
 }
+
+
+_原键 = "_i18n_原文"          # 挂在控件上的：{属性名: 中文原文}
+_重翻中 = False                # 翻树正在自己改文字：这时包装层别再把英文当原文记
+_自绘刷新 = []                 # [(弱引用, 刷新函数)]：Canvas 自绘控件自己登记
+
+
+def 记原文(控件, 键, 原文):
+    """把"这个控件的这个属性原本是什么中文"记下来，好在切语言时重翻。
+
+    只记中文原文（已经翻过一次的值不要传进来），否则来回切会越翻越歪。
+    """
+    if _重翻中 or not isinstance(原文, str) or not 原文:
+        return
+    try:
+        原们 = getattr(控件, _原键, None)
+        if 原们 is None:
+            原们 = {}
+            setattr(控件, _原键, 原们)
+        原们[键] = 原文
+    except Exception:
+        pass
+
+
+def 注册自绘(控件, 刷新):
+    """Canvas 自绘控件登记一个"重按当前语言画一遍"的回调。"""
+    if 控件 is None or 刷新 is None:
+        return
+    try:
+        _自绘刷新.append((weakref.ref(控件), 刷新))
+    except Exception:
+        pass
+
+
+def 翻树(根):
+    """把整棵控件树的文案按当前语言重刷一遍。返回改了多少处。
+
+    `tr()` 收中文原文，所以这里存/取的都是**原文**，来回切不会累积。
+
+    ⚠ 关键一步：中文模式**不装包装层**（零成本路径），所以那时候造的控件身上没有
+      原文。第一次切到英文时，控件上显示的那串**就是**中文原文 —— 就地记下来，
+      再照着翻。否则整棵树都是"查不到原文、无从翻起"（第一版就是这样，改了 0 处）。
+    """
+    global _重翻中
+    改 = 0
+
+    def 走(w):
+        nonlocal 改
+        原们 = getattr(w, _原键, None)
+        if 原们 is None:
+            原们 = {}
+            for 键 in ("text", "title"):
+                try:
+                    现 = w.title() if 键 == "title" else w.cget(键)
+                except Exception:
+                    continue
+                if isinstance(现, str) and 现.strip():
+                    原们[键] = 现
+            if 原们:
+                try:
+                    setattr(w, _原键, 原们)
+                except Exception:
+                    原们 = {}
+        for 键, 原 in list(原们.items()):
+            try:
+                if 键 == "title":
+                    if w.title() != tr(原):
+                        w.title(tr(原))
+                        改 += 1
+                else:
+                    if w.cget(键) != tr(原):
+                        w.configure(**{键: tr(原)})
+                        改 += 1
+            except Exception:
+                pass
+        try:
+            子们 = w.winfo_children()
+        except Exception:
+            子们 = []
+        for c in 子们:
+            走(c)
+
+    _重翻中 = True
+    try:
+        走(根)
+    except Exception:
+        pass
+    finally:
+        _重翻中 = False
+    return 改
+
+
+def 翻自绘():
+    """重画所有登记过的自绘控件（页签、渐变按钮、开关、分段…）。"""
+    活 = []
+    for 弱, 刷新 in _自绘刷新:
+        控件 = 弱()
+        if 控件 is None:
+            continue
+        活.append((弱, 刷新))
+        try:
+            刷新()
+        except Exception:
+            pass
+    _自绘刷新[:] = 活
 
 
 def language():
@@ -2127,6 +2235,7 @@ def set_language(值):
     _语言 = 值 if 值 in (ZH, EN) else ZH
     uninstall()
     install()
+    重翻全部()
     return _语言
 
 
@@ -2206,15 +2315,19 @@ def _包构造器(cls, 属性们=("text",), 位置们=(), 变换=None):
 
     def 新(self, *a, **kw):
         a = list(a)
-        for i in 位置们:
+        for i in 位置们:                              # 位置传的：记不了键名，只翻
             if len(a) > i:
                 a[i] = 变换.get(i, tr)(a[i])
         for i, x in enumerate(a):                 # tkinter 允许把选项打包成一个 dict
             if isinstance(x, dict) and any(k in x for k in 属性们):
+                for k in 属性们:
+                    if k in x:
+                        记原文(self, k, x[k])
                 a[i] = {k: (变换.get(k, tr)(v) if k in 属性们 else v)
                         for k, v in x.items()}
         for k in 属性们:
             if k in kw:
+                记原文(self, k, kw[k])
                 kw[k] = 变换.get(k, tr)(kw[k])
         原(self, *a, **kw)
 
@@ -2230,14 +2343,18 @@ def _包方法(cls, 名字, 参数们=(), 变换=None):
         return
     变换 = 变换 or {}
 
+    位置键 = {i: k for i, k in ((0, "title"),)} if cls is tk.Wm else {}
+
     def 新(self, *a, **kw):
         a = list(a)
         for i in 参数们:
             if isinstance(i, int) and len(a) > i:
                 处理 = 变换.get(i, tr)
+                记原文(self, 位置键.get(i, "text"), a[i])
                 a[i] = 处理(a[i])
         for k in [x for x in 参数们 if isinstance(x, str)]:
             if k in kw:
+                记原文(self, k, kw[k])
                 kw[k] = 变换.get(k, tr)(kw[k])
         # ⚠ 必须把原方法的返回值传出去：page() / heading() 之类是有返回值的，
         # 少了这个 return，调用方拿到 None 会当场炸（踩过一次）
@@ -2309,6 +2426,14 @@ def _包自家控件():
     _包方法(H.SwitchRow, "set_text", ("title", "desc"))
     _包方法(H.DataText, "set", (1,))                       # set(index, text)
     _包方法(H.DataText, "set_all", (0,), {0: _翻选项})      # set_all([(文本, 色键), …])
+
+
+def 重翻全部():
+    """按当前语言把已建的界面重刷一遍（切语言时调）。"""
+    装 = install()
+    if not 装:
+        uninstall()
+    return 翻自绘()
 
 
 def install():

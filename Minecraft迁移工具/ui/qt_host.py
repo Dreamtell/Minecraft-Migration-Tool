@@ -334,6 +334,21 @@ def run_host(argv):
                         except Exception as e:
                             写结果({"action": "entries_fail", "kind": kind,
                                     "error": repr(e)})
+                    elif 动作 == "language":
+                        # 主界面切了语言：这边跟着换，已开的大视图直接关掉 ——
+                        # 它的标题/表头/按钮是建窗时定的，重开一次就是新语言，
+                        # 比在这里逐个控件重刷可靠（用户点开就能看到新语言）
+                        try:
+                            i18n.set_language(命令.get("lang") or "zh")
+                            写结果({"action": "language_ok", "kind": kind,
+                                    "lang": i18n.language()})
+                        except Exception as e:
+                            写结果({"action": "language_fail", "kind": kind,
+                                    "error": repr(e)})
+                        try:
+                            view.close()
+                        except Exception:
+                            pass
                     elif 动作 == "theme":
                         # 主界面切了浅色/深色：这里把整套配色重新铺一遍，并回报结果
                         try:

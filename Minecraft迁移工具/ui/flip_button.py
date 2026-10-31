@@ -354,8 +354,21 @@ class FlipButton(tk.Canvas):
                  back_colors=_BACK_RED, width=None, click_guard_ms=300,
                  extra_w=0):
         self._font = font
-        self._texts = {"front": i18n.tr(text), "front_dry": i18n.tr("🚀 模拟运行"),
-                       "back": i18n.tr(back_text), "back_dry": i18n.tr("⏳ 模拟中...")}
+        # 原文留一份：切语言时按它重翻（_texts 里存的是当前语言的成品）
+        self._texts_原 = {"front": text, "front_dry": "🚀 模拟运行",
+                          "back": back_text, "back_dry": "⏳ 模拟中..."}
+        self._texts = {k: i18n.tr(v) for k, v in self._texts_原.items()}
+
+        def _重按语言():
+            self._texts = {k: i18n.tr(v) for k, v in self._texts_原.items()}
+            self._front_txt_custom = None
+            self._back_txt_custom = None
+            try:
+                self._recalc_width() if hasattr(self, "_recalc_width") else None
+                self._draw_rest()
+            except Exception:
+                pass
+        i18n.注册自绘(self, _重按语言)
         self._front_colors = tuple(colors)
         self._back_colors = tuple(back_colors)
         self._feel = feel if feel in PRESETS else DEFAULT_FEEL

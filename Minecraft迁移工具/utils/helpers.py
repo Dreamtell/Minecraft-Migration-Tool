@@ -1687,6 +1687,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            click_guard_ms=300):
     # 文案在**函数本体**里过 tr()，不能靠在别处包一层：调用方早把原函数 import 走了。
     # 中文（默认）时 tr() 原样返回，行为不变。见 utils/i18n.py。
+    原文 = text                      # 留一份中文：切语言时用它重翻
     text = i18n.tr(text)
     # 宽度：**不传就按实际译文量**（默认行为，按钮紧贴文字，左右各半个内边距）；
     # 传了就取"传的值"与"文字需要"的较大者，免得英文比中文长时把字挤出去。
@@ -2062,6 +2063,8 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     def get_text():
         """读当前按钮文字（`set_text` 的读回，方便状态切换后确认画的是什么）。"""
         return state["text"]
+    # 切语言时按新语言重画（set_text 自己会过 tr，所以传原文即可）
+    i18n.注册自绘(canvas, lambda: canvas.set_text(原文))
     canvas.get_text = get_text
 
     def set_icon(pil_img):
@@ -3005,6 +3008,20 @@ class SwitchRow(tk.Canvas):
         self.theme = dict(theme)
         self._title = title
         self._desc = desc
+        self._原标题, self._原说明 = str(title or ""), str(desc or "")
+
+        def _重按语言():
+            self._title = i18n.tr(self._原标题)
+            self._desc = i18n.tr(self._原说明)
+            # 文字是画布 item，_redraw 只管底图；必须再调 _layout_text 才会换字
+            for 步 in ("_fit_width", "_redraw", "_layout_text"):
+                方 = getattr(self, 步, None)
+                if callable(方):
+                    try:
+                        方()
+                    except Exception:
+                        pass
+        i18n.注册自绘(self, _重按语言)
         self._warn_desc = warn_desc or i18n.tr("⚠ 已开启")
         # 开着时的底色：紧凑形态（替代复选框的那些）统一用亮蓝 switch_on；
         # 卡片形态留给调用方按语义指定（主界面那个"编辑"开关是警示橙 edit_bg）

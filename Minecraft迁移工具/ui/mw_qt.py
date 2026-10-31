@@ -316,6 +316,15 @@ class QtMixin:
             self.toast(trp("⚠ 无法启动 Qt 子进程，详见日志"), level="warn")
             return False
 
+    def _push_language_to_qt(self, 语言):
+        """把新语言推给 Qt 子进程（它会把已开的窗口关掉，重开即新语言）。"""
+        发送 = getattr(self, "_send_qt_host_command", None)
+        if callable(发送):
+            try:
+                发送("language", 附加={"lang": 语言})
+            except Exception as e:
+                trace_exc("mw_qt/推送语言", e)
+
     def _send_qt_host_command(self, cmd, kind=None, 附加=None):
         """给 Qt 子进程写一条命令。
 
