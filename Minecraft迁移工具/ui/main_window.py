@@ -253,17 +253,10 @@ class MigrationGUI(
         # 其它"动文件"的任务（检查存在性/导入变更日志/回滚/大窗口检测…）跑起来时登记名字，
         # 期间禁止启动迁移（模拟运行也禁），避免两个任务同时改同一批文件。
         self._file_task = None
-        # 迁移期间盖在主窗口上的"锁屏"遮罩
-        self._lock_overlay = None
-        self._mig_watch_job = None
-        self._lock_pulse_job = None
-        self._lock_pulse_on = False
-        self._lock_cfg_bind = None
-        self._lock_log_text = None      # 锁屏里那份执行日志（第二个视图）
-        self._flow_job = None           # 红边流动动画的定时器
-        self._flow_canvas = None
-        self._flow_items = []
-        self._flow_tiles = {}           # 渐变瓦片（水平/垂直各一张，缓存）
+        # 锁屏遮罩已整体移除（2026-10-31）：这里只留"收尾是否还在等日志"这类
+        # 仍然有用的状态，遮罩/流动边框/内嵌日志那几个状态位一并删掉了。
+        self._mig_finish_pending = False
+        self._ending_wait_log = False
         # 下面两个由 app.py 注入：窗口挂在托盘里的时候，任务跑完要弹系统通知，
         # 扫描出来的差异窗口也要先压着，等窗口叫回来再开。
         self._task_done_cb = None

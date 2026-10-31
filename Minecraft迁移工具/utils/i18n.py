@@ -91,6 +91,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "覆盖已存在的模组": "Overwrite existing mods",
     "查看历史": "History",
     "回滚": "Roll back",
+    "🔒 迁移期间主界面按钮全部禁用（锁屏遮罩已移除）": "🔒 Buttons are disabled during migration (the lock overlay was removed)",
     "迁移": "Migration",
     "迁移准备": "Preparing migration",
     "开始迁移": "Start migration",
