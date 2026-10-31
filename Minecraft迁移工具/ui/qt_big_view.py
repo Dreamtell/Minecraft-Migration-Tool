@@ -814,6 +814,7 @@ class AnimButton(QtWidgets.QPushButton):
         self._t = 0.0        # 悬停进度（可能 >1，OutBack 的过冲）
         self._sweep = -1.0   # 扫光位置，-1 = 不画
         self._press = 0.0    # 按下进度
+        self._soft_disable = False   # 临时禁用时用"压暗的品牌色"而不是系统灰
         self.setFixedHeight(30)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
@@ -885,7 +886,14 @@ class AnimButton(QtWidgets.QPushButton):
         lift = -1.6 * min(1.0, max(0.0, t)) * (1.0 - press * 0.5) + 1.4 * press
         r = QtCore.QRectF(1.5, 2.0 + lift, self.width() - 3, self.height() - 4)
         if not self.isEnabled():
-            c1, c2, fg = "#9e9e9e", "#bdbdbd", "#f0f0f0"
+            if getattr(self, "_soft_disable", False):
+                # "搜索中"这种临时禁用：保持品牌色，只压暗，不要变成系统灰
+                bg = (self.theme or {}).get("bg", "#2e2e2e")
+                c1 = _mix(self.c1, bg, 0.55)
+                c2 = _mix(self.c2, bg, 0.55)
+                fg = _mix("#ffffff", bg, 0.30)
+            else:
+                c1, c2, fg = "#9e9e9e", "#bdbdbd", "#f0f0f0"
         else:
             over = min(1.18, max(0.0, t))          # OutBack 过冲削顶
             c1 = _mix(self.c1, _mix(self.c1, "#ffffff", 0.30), over)
@@ -2631,6 +2639,16 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.btn_net.setToolTip(tr("本工具的网络用量（最近 60 秒折线图）"))
         self.btn_net.clicked.connect(self._show_net_usage)
         行.addWidget(self.btn_net)
+
+        # 搜索中的醒目标记：过滤行右端一枚橙色胶囊（不盖结果区，但一直在视线里）
+        self.busy_pill = QtWidgets.QLabel(tr("⟳ 正在搜索…"))
+        self.busy_pill.setAlignment(QtCore.Qt.AlignCenter)
+        self.busy_pill.setFixedHeight(24)
+        self.busy_pill.setStyleSheet(
+            "QLabel { background: #ff9800; color: #ffffff; border-radius: 12px;"
+            " padding: 0 12px; font-weight: bold; }")
+        self.busy_pill.hide()
+        行.addWidget(self.busy_pill)
         lay.addLayout(行)
 
         # 连接放在最后：上面 setCurrentIndex 会触发 currentIndexChanged，
@@ -2821,6 +2839,21 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             pass
 
     def _开始搜索动画(self):
+        # 醒目提示：橙色胶囊 + 状态行变橙加粗 + 搜索按钮禁用（保持品牌色压暗）
+        try:
+            self.busy_pill.show()
+        except Exception:
+            pass
+        try:
+            self.status.setStyleSheet("color: #ff9800; font-weight: bold;")
+        except Exception:
+            pass
+        try:
+            self.btn._soft_disable = True
+            self.btn.setText(tr("⟳ 搜索中…"))
+            self.btn.setEnabled(False)
+        except Exception:
+            pass
         try:
             _t = self.status.text() or ""
             # 去掉上一次残留的转圈字符，否则每轮会越堆越多（"◓ ◓ ◓ …"）
@@ -2838,6 +2871,21 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             pass
 
     def _停止搜索动画(self):
+        try:
+            self.busy_pill.hide()
+        except Exception:
+            pass
+        try:
+            self.status.setStyleSheet(
+                "color: %s;" % (self.theme or {}).get("muted_fg", "#888"))
+        except Exception:
+            pass
+        try:
+            self.btn.setEnabled(True)
+            self.btn._soft_disable = False
+            self.btn.setText(tr("🔍 联网搜索"))
+        except Exception:
+            pass
         try:
             self._spin_timer.stop()
         except Exception:
