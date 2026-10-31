@@ -987,7 +987,9 @@ class MigrationMixin:
                             self.after_id = None
                         self._migration_running = False
                         self._flip_progress(None)   # 条回到"在忙"的默认扫法
-                        self._unlock_main_window()      # 进度窗口关掉时同步解锁
+                        # 收尾中不解锁：否则完成态被这条抢掉
+                        if not getattr(self, "_mig_finish_pending", False):
+                            self._unlock_main_window()  # 进度窗口关掉时同步解锁
                         self._notify_task_done(
                             "迁移", "任务已结束，点托盘图标打开主界面查看日志")
                         return
@@ -1710,6 +1712,11 @@ class MigrationMixin:
                 extra_overwrite=bool(extra_overwrite)
             )
         finally:
+            # 先立"收尾中"标志，再翻 _migration_running：锁屏那个 250ms 的
+            # _watch_migration_end 一看到"没在跑"就会立刻解锁，和下面这条
+            # _ui_post(_finish_migration_lock) 抢 ——抢赢的那次用户就看不到
+            # 完成态（他报的"完成迁移后锁屏界面直接退出"就是这个）。
+            self._mig_finish_pending = True
             self._migration_running = False
             # 收尾交给"锁屏完成态"：写总结 → 边框红转绿 → 等用户按任意键。
             # 这里是**迁移线程**，不能直接碰 Tk —— 丢给主线程的 UI 泵执行。

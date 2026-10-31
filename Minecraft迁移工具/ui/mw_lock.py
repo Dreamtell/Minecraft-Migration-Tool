@@ -366,8 +366,16 @@ class LockMixin:
             pass
 
     def _watch_migration_end(self):
-        """盯迁移结束：结束了就解锁（幂等，和线程侧的解锁互为保险）。"""
+        """盯迁移结束：结束了就解锁（幂等，和线程侧的解锁互为保险）。
+
+        ⚠ 迁移线程收尾时会先立 `_mig_finish_pending`，再翻 `_migration_running`：
+        这中间如果本函数抢到执行权，就会把「完成态」整个跳过去（用户报的
+        "完成迁移后锁屏界面直接退出"）。所以收尾期间这里只排队等，不解锁。
+        """
         self._mig_watch_job = None
+        if getattr(self, "_mig_finish_pending", False):
+            self._mig_watch_job = self.root.after(250, self._watch_migration_end)
+            return
         if self._migration_running:
             self._mig_watch_job = self.root.after(250, self._watch_migration_end)
             return
@@ -400,6 +408,7 @@ class LockMixin:
         ov = getattr(self, "_lock_overlay", None)
         if ov is None:
             # 没盖遮罩（lock_mode=off / 模拟运行）：不搞完成态，直接收尾
+            self._mig_finish_pending = False
             self._unlock_main_window()
             self._refresh_busy_state()
             return
@@ -453,6 +462,8 @@ class LockMixin:
             pass
         # 等按键 or 自动关
         self._lock_done = True                  # 从这里开始"按键关闭"才合法
+        # 完成态已经建立（总结写完、边框转绿、按键已挂）—— 收尾结束，标志清掉
+        self._mig_finish_pending = False
         if getattr(self, "lock_wait_key", True):
             try:
                 self._lock_sub.configure(text="按任意键关闭本界面（鼠标不会关闭）")

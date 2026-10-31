@@ -428,6 +428,51 @@ class LogMixin:
         except Exception:
             self._修剪已排 = False
 
+    def _排冲写(self):
+        """排一次「把待写队列冲进 Text」，50ms 内最多一次。"""
+        if getattr(self, "_待写已排", False):
+            return
+        self._待写已排 = True
+        try:
+            self.root.after(50, self._冲写日志)
+        except Exception:
+            self._待写已排 = False
+
+    def _冲写日志(self):
+        """把攒下来的日志一次性写进两个 Text。
+
+        每条日志都做一次 configure/insert/index/see 的话，迁移收尾那种"一口气
+        几十上百行"的场景就是几十上百次 Tk 往返（外加每行一个淡入动画链），
+        主线程会被按住几百毫秒 —— 用户看到的就是"爆炸性卡顿"。
+        现在改成：进的只是队列，50ms 合并写一次，写入期间置 _批处理中，
+        逐行只剩 insert，收尾统一修剪/跟随/重绘各一次。
+        """
+        self._待写已排 = False
+        待 = getattr(self, "_待写", None)
+        if not 待:
+            return
+        self._待写 = []
+        外批 = getattr(self, "_批处理中", False)
+        if not 外批:
+            self._日志批次开始()
+        try:
+            for 执行 in 待:
+                执行()
+        finally:
+            if not 外批:
+                self._日志批次结束()
+        # 一行一行来的场合（正常使用）保留淡入；批量/洪峰时不做，省下动画链
+        if not 外批 and len(待) == 1:
+            try:
+                现在 = time.monotonic()
+                if 现在 - getattr(self, "_last_fade_t", 0.0) >= 0.025:
+                    self._last_fade_t = 现在
+                    self._fade_log_line(self.log_text.index("end-2l"),
+                                        self.log_text.index("end-1c"),
+                                        getattr(self, "_最近行等级", "INFO"))
+            except Exception:
+                pass
+
     def _日志批次开始(self):
         """批量写日志之前调用：把两个 Text 一次开到 normal。
 
@@ -483,6 +528,7 @@ class LogMixin:
         message = i18n.tr(message)
 
         def _log():
+            self._最近行等级 = level
             # 批处理（后台线程灌日志）里由 _日志批次开始/结束 统一做 configure、
             # 修剪、see 和重绘，这里逐行只负责 insert。
             批 = getattr(self, "_批处理中", False)
@@ -523,7 +569,7 @@ class LogMixin:
             #   距上一次淡入不到 25ms 就省掉（上限约 40 个/秒，肉眼仍然连贯）。
             try:
                 现在 = time.monotonic()
-                if 现在 - getattr(self, "_last_fade_t", 0.0) >= 0.025:
+                if (not 批) and 现在 - getattr(self, "_last_fade_t", 0.0) >= 0.025:
                     self._last_fade_t = 现在
                     self._fade_log_line(start, end, level)
             except Exception:
@@ -569,14 +615,17 @@ class LogMixin:
                 except Exception:
                     pass
 
+        # 主线程和 worker 走同一条路：先攒进待写队列，50ms 合并写一次。
+        # 别再一行一个 after(0, _log) —— 迁移收尾一口气几十上百行时，
+        # 那就是几十上百个回调 + 几十上百个淡入动画链，主线程直接被按住。
+        if not hasattr(self, "_待写"):
+            self._待写 = []
+        self._待写.append(_log)
         if threading.current_thread() is threading.main_thread():
-            try:
-                self.root.after(0, _log)          # 主线程：照旧，立刻排上（快）
-            except Exception:
-                pass
+            self._排冲写()
         else:
-            # 子线程：只丢队列，让主线程的泵去写 —— 别在 worker 里碰 Tk
-            self._ui_post(_log)
+            # 子线程不能碰 Tk：让主线程去排那一次 flush
+            self._ui_post(self._排冲写)
 
     def _flush_logs_to_file(self, include_header=False):
         """把缓存的日志写入本地文件；文件过大时先轮转（改名），避免无限增长。"""
