@@ -25,7 +25,9 @@ from utils.i18n import tr, trp
 class ProgressWindow:
     """迁移进度模态窗口"""
 
-    def __init__(self, parent, total_files, total_size):
+    def __init__(self, parent, total_files, total_size, theme=None):
+        # theme 必须由调用方传进来：以前从 parent 上取，而调用方传的是 Tk 根窗口
+        # （没有 .theme），于是一律退回 LIGHT_THEME —— 深色主题下这条进度条永远是浅色。
         self.parent = parent
         self.total_files = total_files
         self.total_size = total_size
@@ -41,31 +43,37 @@ class ProgressWindow:
         self.win.protocol("WM_DELETE_WINDOW", self.on_close_request)
         set_window_icon(self.win)
 
+        # 主题：以前这个窗整个是系统灰底 + 默认字色，深色主题下像别人家的窗口
+        theme = theme or getattr(parent, "theme", None) or LIGHT_THEME
+        try:
+            self.win.configure(bg=theme.get("bg", "#f0f0f0"))
+        except Exception:
+            pass
+
         # 步骤标签（显示当前操作阶段）
         self.step_label = tk.Label(
             self.win,
             text="准备中...",
             anchor="w",
             font=("微软雅黑", 9, "bold"),
-            fg="#4fc3f7"
+            bg=theme.get("bg", "#f0f0f0"),
+            fg=theme.get("card_sel_bar") or theme.get("accent_fg", "#4fc3f7"),
         )
         self.step_label.pack(fill="x", padx=10, pady=(10, 0))
 
-        self.file_label = tk.Label(self.win, text="准备中...", anchor="w")
+        self.file_label = tk.Label(self.win, text="准备中...", anchor="w",
+                                   bg=theme.get("bg", "#f0f0f0"),
+                                   fg=theme.get("fg", "#222"))
         self.file_label.pack(fill="x", padx=10, pady=5)
-
-        # 从父窗口获取主题
-        if hasattr(parent, 'theme'):
-            theme = parent.theme
-        else:
-            theme = LIGHT_THEME
 
         # 进度条：和主界面/放大窗口同一套"液态"自绘控件（原来是 ttk 的实心蓝条）
         self.progress = LiquidProgress(self.win, theme, height=8)
         self.progress.pack(fill="x", padx=10, pady=6)
 
         self.stats_label = tk.Label(self.win, text="0 / 0 个文件  |  0.0 MB / 0.0 MB",
-                                    anchor="w")
+                                    anchor="w",
+                                    bg=theme.get("bg", "#f0f0f0"),
+                                    fg=theme.get("muted_fg", theme.get("fg", "#222")))
         self.stats_label.pack(fill="x", padx=10, pady=5)
 
         self.cancel_btn = create_gradient_button(self.win, "取消迁移", self.on_cancel,
@@ -77,6 +85,7 @@ class ProgressWindow:
         self.hint_label = tk.Label(
             self.win,
             text="⚠️ 迁移进行中，请勿关闭主窗口！",
+            bg=theme.get("bg", "#f0f0f0"),
             fg=theme.get("fail_fg", "red"),
             font=("微软雅黑", 9, "bold")
         )

@@ -1855,7 +1855,8 @@ class MigrationMixin:
             self.progress_queue = queue.Queue()
             # 背面那条 3px 条按真实进度走，换算要用到总量
             self._mig_total_size = float(total_size or 0)
-            self.progress_window = ProgressWindow(self.root, total_files, total_size)
+            self.progress_window = ProgressWindow(self.root, total_files, total_size,
+                                              theme=self.theme)
             if self.after_id is None:
                 self._poll_progress()
 

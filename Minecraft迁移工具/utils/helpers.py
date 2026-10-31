@@ -2642,7 +2642,7 @@ class LiquidProgress(tk.Canvas):
     还要按比例裁长度。内容不满一屏时整条填满、并且不再流动。
     """
 
-    _TICK_MS = 33          # ≈30fps：这么细的条够顺了，也不至于白烧 CPU
+    _TICK_MS = 12          # 兜底：拿不到屏幕刷新率时按 ~80fps 走（见 _tick_ms）
 
     def __init__(self, parent, theme, height=6, **kw):
         try:
@@ -2671,7 +2671,8 @@ class LiquidProgress(tk.Canvas):
     # ---------------------------------------------------------------- 对外
     def set_fraction(self, 比例):
         比例 = max(0.0, min(1.0, float(比例)))
-        if abs(比例 - self._fraction) < 0.002:
+        # 0.05% 才 ~0.23px（500px 的条）：阈值比这粗，条就会一格一格地跳
+        if abs(比例 - self._fraction) < 0.0005:
             return
         self._fraction = 比例
         self._fill = None
@@ -2787,11 +2788,22 @@ class LiquidProgress(tk.Canvas):
         except Exception:
             pass
 
+    def _tick_ms(self):
+        """跟屏幕刷新率走：以前写死 33ms（30fps），条上的柔光看着就是一顿一顿的。"""
+        try:
+            from utils import anim
+            帧 = int(anim.frame_ms(self))
+        except Exception:
+            帧 = 0
+        if 帧 <= 0:
+            帧 = self._TICK_MS
+        return max(4, min(16, 帧))
+
     def _ensure_tick(self):
         if self._job is not None:
             return
         try:
-            self._job = self.after(self._TICK_MS, self._tick)
+            self._job = self.after(self._tick_ms(), self._tick)
         except Exception:
             self._job = None
 
@@ -2804,6 +2816,14 @@ class LiquidProgress(tk.Canvas):
             return
         self._flow = (self._flow + 0.018) % 1.0
         self._render()
+        # 只刷这一块画布（比整窗 update_idletasks 便宜得多），40ms 一次就够跟手
+        现在 = time.perf_counter()
+        if 现在 - getattr(self, "_刷图t", 0.0) >= 0.04:
+            self._刷图t = 现在
+            try:
+                super().update_idletasks()
+            except Exception:
+                pass
         if self._fraction < 0.999:
             self._ensure_tick()
 

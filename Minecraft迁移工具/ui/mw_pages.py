@@ -449,7 +449,7 @@ class PagesMixin:
                 # 拖放用不了就直说，别让用户对着"拖不进去"发呆
                 self._mod_hint.configure(
                     text=str(self._mod_hint.cget("text"))
-                    + "　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。")
+                    + trp("　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。"))
             except Exception:
                 pass
         self._bind_badge_refresh(self.mod_text)
