@@ -160,10 +160,13 @@ _FRONT_YELLOW = ("#f9a825", "#ffd54f")    # 同上（面走 FACE_DRY）
 _BACK_RED = ("#e53935", "#ff7043")        # 同上（面走 FACE_SEARCH）
 
 # 三档手感。sink 是侧立时整体收缩量（原型：干脆/标准 0.05，沉 0.08）。
+# 三档手感。ms 是这一翻的总时长（用户 m12346 要求三档都放慢：
+# 原来 240/320/460 太快，「干脆」像闪现、「沉」又不够沉）。
+# sink 是侧立时整体收缩量；over 是过冲（越大越"弹"）。
 PRESETS = {
-    "crisp":    {"ms": 240, "over": 1.30, "sink": 0.05},
-    "standard": {"ms": 320, "over": 0.90, "sink": 0.05},
-    "heavy":    {"ms": 460, "over": 0.55, "sink": 0.08},
+    "crisp":    {"ms": 340, "over": 1.20, "sink": 0.05},
+    "standard": {"ms": 460, "over": 0.85, "sink": 0.06},
+    "heavy":    {"ms": 720, "over": 0.45, "sink": 0.10},
 }
 FEELS = ("crisp", "standard", "heavy")
 DEFAULT_FEEL = "standard"
@@ -874,7 +877,9 @@ class FlipButton(tk.Canvas):
     def _frame_table(self, feel, direction):
         """某一档手感、某个方向的 f 表（缓动+过冲先算好，帧才可缓存）。"""
         p = PRESETS.get(feel) or PRESETS[DEFAULT_FEEL]
-        n = max(9, int(round(p["ms"] / float(self._table_ms()))) + 1)
+        # 上限 72 帧：720ms 的「沉」按 7ms/帧会排到 104 帧，那就是 104 张整面要烤
+        # （预热预算得摊好几帧，第一次点还可能卡）；72 帧约 10ms/帧，肉眼看不出差别。
+        n = max(9, min(72, int(round(p["ms"] / float(self._table_ms()))) + 1))
         tab = []
         for i in range(n):
             e = _ease_out_back(i / float(n - 1), p["over"])
