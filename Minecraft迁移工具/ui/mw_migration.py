@@ -1370,6 +1370,7 @@ class MigrationMixin:
             self._ui_pump_id = None
 
     def _poll_scan_progress(self):
+        最新 = None
         try:
             while True:
                 msg = self._scan_progress_queue.get_nowait()
@@ -1385,7 +1386,14 @@ class MigrationMixin:
                     # 下次扫描会重新起这个轮询，别让它空转一辈子。
                     self._finish_scan(msg[1], msg[2])
                     return
-                current, filename = msg
+                # 同一轮里的多条进度只保留最后一条：合并之后再画一次，
+                # 否则"排空队列"会在一帧里连画几十次，条看着一顿一顿的。
+                最新 = msg
+        except queue.Empty:
+            pass
+        if 最新 is not None:
+            try:
+                current, filename = 最新
                 total = getattr(self, '_scan_total', 0)
                 if total > 0:
                     self.scan_btn.itemconfig(self.scan_btn.text_id,
@@ -1394,9 +1402,10 @@ class MigrationMixin:
                     self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 解析中...")
                 if hasattr(self, 'scan_progress_window'):
                     self.scan_progress_window.update_progress(current, filename)
-        except queue.Empty:
-            pass
-        self.root.after(100, self._poll_scan_progress)
+            except Exception:
+                pass
+        # 16ms 一轮（≈60fps）：以前是 100ms，进度只能 10 次/秒地跳。
+        self.root.after(16, self._poll_scan_progress)
 
     def _finish_scan(self, data, error_msg):
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="🔍 扫描模组差异")
