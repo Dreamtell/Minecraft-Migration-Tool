@@ -1523,7 +1523,8 @@ class MigrationMixin:
         btn = getattr(self, "start_btn", None)
         try:
             if 是:
-                btn.flip_to_back(force=True)
+                # 瞬间切背面：这里是弹模态框的当口，播翻转动画会卡在半翻的姿势
+                btn.jump_to(back=True)
                 btn.set_back_warn(True)          # 黄面 + 满条（长度不动）
                 btn.set_back_text(trp("⚠️ 等待……"))
             else:

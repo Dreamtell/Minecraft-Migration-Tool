@@ -1369,6 +1369,26 @@ class FlipButton(tk.Canvas):
         """翻回正面（迁移结束——成功或失败——调用）。"""
         self._flip(False, 结束后=结束后)
 
+    def jump_to(self, back=True):
+        """瞬间切到正面/背面静止态，**不播翻转动画**。
+
+        为什么要这个：弹模态框时用 `flip_to_back(force=True)` 会在对话框的
+        事件循环里播动画，`after` 被压住 → 按钮停在"翻到一半"的姿势上
+        （用户 m09783 说的"动画过渡异常"）。这里直接把状态写死再重画。
+        """
+        try:
+            self._animating = False
+            self._at_back = bool(back)
+            self._prog_show = 0.0 if back else 1.0
+            self._apply_face()
+            self._draw_bar_now()
+            if self._tick_wanted():
+                self._ensure_tick()
+            else:
+                self._stop_tick()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------ 持续动画（扫光 / 背面）
     def _sweep_phase(self):
         return int((time.perf_counter() - self._t0) * 1000.0 / _SWEEP_MS
