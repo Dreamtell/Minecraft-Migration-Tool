@@ -1280,7 +1280,7 @@ class MigrationMixin:
         self._file_task = None
         self._refresh_busy_state()
 
-    def _flip_start_btn(self, front=True):
+    def _flip_start_btn(self, front=True, 结束后=None):
         """把「开始迁移」按钮翻回正面（front=False 则翻到背面）。
 
         组件见 ui/flip_button.py。旧按钮（helpers.create_gradient_button）没有这
@@ -1289,11 +1289,23 @@ class MigrationMixin:
         btn = getattr(self, "start_btn", None)
         方法 = getattr(btn, "flip_to_front" if front else "flip_to_back", None)
         if 方法 is None:
+            if 结束后 is not None:
+                try:
+                    结束后()
+                except Exception:
+                    pass
             return
         try:
-            方法()
+            if 结束后 is not None and front:
+                方法(结束后=结束后)
+            else:
+                方法()
         except Exception:
-            pass
+            if 结束后 is not None:
+                try:
+                    结束后()
+                except Exception:
+                    pass
 
     # ---------- 开始前倒计时 ----------
     def _countdown_seconds(self):
@@ -1784,9 +1796,11 @@ class MigrationMixin:
                     except Exception:
                         pass
                     self._log_tail_job = None
-                self._flip_progress(None)     # 条复位，翻回正面后不再显示
+                # 条先留着（满格），等翻面那一下放完再复位 —— 否则它在翻之前就
+                # "啪"一下没了，正好卡在翻面那一帧，看着很突兀。
                 self._ending_wait_log = False
-                self._flip_start_btn()
+                self._flip_start_btn(
+                    结束后=lambda: self._flip_progress(None))
                 self._refresh_busy_state()
 
             # 日志还没滚完的这段时间也要算「忙」：否则按钮先亮了、按钮却还在背面，

@@ -965,7 +965,7 @@ class FlipButton(tk.Canvas):
         except Exception:
             pass
 
-    def _animate(self, direction):
+    def _animate(self, direction, 结束后=None):
         """direction=+1 翻到背面、-1 翻回正面；按时间推进，帧号量化后取缓存。"""
         self._cancel_anim()
         self._stop_tick()            # 翻转期间由动画独占画面（扫光/斜纹不插队）
@@ -1015,19 +1015,31 @@ class FlipButton(tk.Canvas):
                 self._rel_hr()
                 self._at_back = direction > 0
                 self._draw_rest()
+                if 结束后 is not None:
+                    # 放完再复位：翻之前就把条抹掉会"啪"一下消失，正好卡在翻面的那一帧
+                    # 才收，看着是随翻面一起收进去的。
+                    try:
+                        结束后()
+                    except Exception:
+                        pass
                 return
             self._job = self.after(interval, tick)
 
         self._job = self.after(0, tick)
 
-    def _flip(self, want_back):
+    def _flip(self, want_back, 结束后=None):
         if self._animating:
             if self._anim_target == (1 if want_back else -1):
                 return
         elif self._at_back == want_back:
             self._draw_rest()
+            if 结束后 is not None:
+                try:
+                    结束后()
+                except Exception:
+                    pass
             return
-        self._animate(1 if want_back else -1)
+        self._animate(1 if want_back else -1, 结束后=结束后)
 
     def flip_to_back(self, force=False):
         """翻到背面（点击时调用）。已经在背面就什么都不做（force 可以重播）。"""
@@ -1036,9 +1048,9 @@ class FlipButton(tk.Canvas):
             return
         self._flip(True)
 
-    def flip_to_front(self):
+    def flip_to_front(self, 结束后=None):
         """翻回正面（迁移结束——成功或失败——调用）。"""
-        self._flip(False)
+        self._flip(False, 结束后=结束后)
 
     # ------------------------------------------------------------ 持续动画（扫光 / 背面）
     def _sweep_phase(self):
