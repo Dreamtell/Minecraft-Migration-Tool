@@ -814,6 +814,39 @@ class LogMixin:
     # 匀速推，任何情况下单帧位移都不超过 24px。
     _FOLLOW_MAX_PX = 24.0
 
+    def when_log_bottom(self, cb, timeout=12.0):
+        """日志真的滚到底（用户看见最后一行）之后回调。
+
+        迁移的「结束」标志靠它：日志还在滚就把按钮翻回正面，用户会觉得
+        「我还没看完就结束了」。用户滚动上去看历史时不会立刻回调，
+        超时兜底 timeout 秒后照样回调一次，避免永远不给结束。
+        """
+        t0 = time.perf_counter()
+
+        def 检查():
+            try:
+                到底 = self._log_remain_px() <= 0.5
+            except Exception:
+                到底 = True
+            if 到底 or (time.perf_counter() - t0) > timeout:
+                try:
+                    cb()
+                except Exception as e:
+                    trace_exc("mw_log/when_log_bottom", e)
+                return
+            try:
+                self.root.after(50, 检查)
+            except Exception:
+                pass
+
+        try:
+            self.root.after(50, 检查)
+        except Exception:
+            try:
+                cb()
+            except Exception:
+                pass
+
     def _排跟随(self):
         if getattr(self, "_follow_job", None) is not None:
             return
@@ -833,16 +866,9 @@ class LogMixin:
         if 剩 <= 0.5:
             return
         视口 = max(1, int(self.log_text.winfo_height()))
-        # 落后超过一屏半：多半是收尾那一大批（迁移结束时的总结、出错清单）。
-        # 这时候再一帧 24px 地爬，就成了「进度早完了、日志还在滚」，直接对齐到底。
-        if 剩 > 视口 * 1.5:
-            try:
-                self.log_text.see(tk.END)
-            except Exception:
-                pass
-            return
-        # 追的时候按比例加速（最多走到 0.6 屏），追完自然回到每帧 24px 的平滑速度。
-        步 = int(min(max(self._FOLLOW_MAX_PX, 剩 * 0.35), 视口 * 0.6, 剩))
+        # 追的时候按比例加速，但**不做「直接跳到底」**：跳会让收尾那一批看着像闪现
+        # （用户原话），所以最多每帧走 0.35 屏，追得上、又看得见在滚。
+        步 = int(min(max(self._FOLLOW_MAX_PX, 剩 * 0.5), 视口 * 0.5, 剩))
         if 步 < 1:
             步 = 1
         try:

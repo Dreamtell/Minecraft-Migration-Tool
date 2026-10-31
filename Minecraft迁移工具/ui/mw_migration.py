@@ -1721,9 +1721,20 @@ class MigrationMixin:
             # 收尾交给"锁屏完成态"：写总结 → 边框红转绿 → 等用户按任意键。
             # 这里是**迁移线程**，不能直接碰 Tk —— 丢给主线程的 UI 泵执行。
             self._ui_post(self._finish_migration_lock)
-            self._ui_post(self._refresh_busy_state)
-            # 迁移结束（成功/失败/取消都走这个 finally）：把「开始迁移」翻回正面
-            self._ui_post(self._flip_start_btn)
+
+            # 「迁移结束」这个标志要等**执行日志真的滚到底**再给：
+            # 用户看的是那片日志，日志还在滚就把「开始迁移」翻回正面、按钮全部点亮，
+            # 会觉得「我还没看完就结束了」。
+            def _收尾():
+                # 迁移结束（成功/失败/取消都走这里）：把「开始迁移」翻回正面
+                self._ending_wait_log = False
+                self._flip_start_btn()
+                self._refresh_busy_state()
+
+            # 日志还没滚完的这段时间也要算「忙」：否则按钮先亮了、按钮却还在背面，
+            # 看着像两个状态打架。
+            self._ending_wait_log = True
+            self._ui_post(lambda: self.when_log_bottom(_收尾))
             # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
             if getattr(self, "_silent_notify_on_finish", False):
                 self._silent_notify_on_finish = False

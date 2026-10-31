@@ -642,7 +642,10 @@ class LockMixin:
         # 唯一还能点的是「开始迁移」—— 它就是取消键（见下面那段恢复 normal）。
         busy = (bool(self._busy_task_name())
                 or bool(getattr(self, "_starting", False))
-                or bool(getattr(self, "_countdown_running", False)))
+                or bool(getattr(self, "_countdown_running", False))
+                # 迁移跑完、但执行日志还在往下滚：这段也算忙（用户要的"结束标志"
+                # 就是日志滚完那一刻），不然按钮先亮、按钮却还在背面。
+                or bool(getattr(self, "_ending_wait_log", False)))
         state = "disabled" if busy else "normal"
         # 标签栏**必须一起锁**：切到一个还没建过的页会当场构建整页（377 个模组 =
         # 377 个卡片控件），主线程卡好几秒 —— 用户"点几下标签就弹未响应"就是这么来的。
