@@ -1416,13 +1416,48 @@ class MigrationMixin:
         return getattr(self, "_file_task", None)
 
     def _begin_file_task(self, name):
-        """登记一个文件类任务：期间迁移按钮会变灰，start_migration 也会直接拒绝。"""
+        """登记一个文件类任务：期间迁移按钮会变灰，start_migration 也会直接拒绝。
+
+        注意：**"全禁用"的视觉延后 150ms 才生效**。
+        「检查存在」「从变更日志导入」这类任务本身只有几十毫秒，立刻把所有按钮置灰
+        再恢复，用户看到的就是"点一下、所有控件闪一下变成禁用态"。逻辑标志
+        （`_file_task`）仍然立刻生效 —— 这期间不许开始迁移的规则没有放松。
+        """
         self._file_task = name
-        self._refresh_busy_state()
+        旧任务 = getattr(self, "_file_task_busy_job", None)
+        if 旧任务:
+            try:
+                self.root.after_cancel(旧任务)
+            except Exception:
+                pass
+        self._file_task_busy_shown = False
+
+        def _延迟变灰():
+            self._file_task_busy_job = None
+            if getattr(self, "_file_task", None):
+                self._file_task_busy_shown = True
+                self._refresh_busy_state()
+
+        try:
+            self._file_task_busy_job = self.root.after(150, _延迟变灰)
+        except Exception:
+            self._file_task_busy_job = None
+            self._file_task_busy_shown = True
+            self._refresh_busy_state()
 
     def _end_file_task(self):
         self._file_task = None
-        self._refresh_busy_state()
+        任务 = getattr(self, "_file_task_busy_job", None)
+        if 任务:
+            try:
+                self.root.after_cancel(任务)
+            except Exception:
+                pass
+            self._file_task_busy_job = None
+        # 只有"确实变灰过"才刷回去 —— 短任务压根没变灰，这里再刷一次就是多余重绘。
+        if getattr(self, "_file_task_busy_shown", False):
+            self._file_task_busy_shown = False
+            self._refresh_busy_state()
 
     def _flip_start_btn(self, front=True, 结束后=None):
         """把「开始迁移」按钮翻回正面（front=False 则翻到背面）。
