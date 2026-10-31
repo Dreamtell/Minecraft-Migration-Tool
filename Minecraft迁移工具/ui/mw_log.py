@@ -782,6 +782,12 @@ class LogMixin:
         sc = getattr(self, "_log_scroller", None)
         if sc is not None:
             try:
+                剩 = self._log_remain_px()
+                # 剩得少：交给平滑滚动去追（跟手、看得见"滑"）；
+                # 剩得多（洪峰一下子几百行）：硬拽，不然逐帧限幅会追不上、越落越远。
+                if 0 < 剩 <= max(200.0, self.log_text.winfo_height() * 2.0):
+                    sc.scroll_px(剩)
+                    return
                 sc.stop()
             except Exception:
                 pass
@@ -789,3 +795,16 @@ class LogMixin:
             self.log_text.see(tk.END)
         except Exception:
             pass
+
+    def _log_remain_px(self):
+        """从当前视口底边到文末还有多少像素（拿不到就返回 0）。"""
+        try:
+            文 = self.log_text
+            r = 文.count("1.0", "end", "ypixels")
+            总 = float(r[0]) if r else 0.0
+            if 总 <= 0:
+                return 0.0
+            已滚 = float(文.yview()[0]) * 总
+            return max(0.0, 总 - 已滚 - float(文.winfo_height()))
+        except Exception:
+            return 0.0
