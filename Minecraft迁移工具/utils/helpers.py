@@ -2096,8 +2096,11 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     def get_text():
         """读当前按钮文字（`set_text` 的读回，方便状态切换后确认画的是什么）。"""
         return state["text"]
-    # 切语言时按新语言重画（set_text 自己会过 tr，所以传原文即可）
-    i18n.注册自绘(canvas, lambda: canvas.set_text(原文))
+    # 切语言时按新语言重画（set_text 自己会过 tr，所以传原文即可）。
+    # 只挂"有文字"的按钮：图标按钮（主题/设置那两颗）没有文字可翻，
+    # 而 set_text 会把 icon 清成 None —— 一挂上去，切语言图标就没了。
+    if (原文 or "").strip():
+        i18n.注册自绘(canvas, lambda: canvas.set_text(原文))
     canvas.get_text = get_text
 
     def set_icon(pil_img):

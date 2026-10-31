@@ -400,16 +400,46 @@ class PagesMixin:
             except Exception:
                 pass
 
+    def _mod_hint_text(self):
+        """模组清单那行说明：基础说明 +（拿不到 tkinterdnd2 时）拖放不可用提示。"""
+        from utils.i18n import trp
+        基础 = trp("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，"
+                  "或直接把 jar / mods 文件夹拖进来）。"
+                  "同名匹配不区分大小写，改过名的也能对上。")
+        if getattr(self, "_dnd_ok", False):
+            return 基础
+        return 基础 + trp("　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。")
+
+    def _刷新模组说明(self):
+        """切语言时重拼那行说明（按段拼，整串查表查不到）。"""
+        if not hasattr(self, "_mod_hint"):
+            return
+        try:
+            from utils import i18n as _i18n
+            账 = getattr(self._mod_hint, _i18n._原键, None)
+            if isinstance(账, dict):
+                账.pop("text", None)
+            这次 = self._mod_hint_text()
+            if str(self._mod_hint.cget("text")) != 这次:
+                self._mod_hint.configure(text=这次)
+        except Exception:
+            pass
+
     def _create_modlist_page(self, parent):
         """模组清单页：每行一个 .jar 文件名。"""
         self._mod_hint = tk.Label(parent,
-                 text=("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，"
-                       "或直接把 jar / mods 文件夹拖进来）。"
-                       "同名匹配不区分大小写，改过名的也能对上。"),
+                 text=self._mod_hint_text(),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left")
         # pack 返回 None，不能直接赋给 self._mod_hint（注册拖放失败时要往里追加提示）
         self._mod_hint.pack(anchor="w", padx=5, pady=(2, 0))
+        # 这行是"基础说明 +（可能的）拖放不可用提示"拼出来的，整串查表查不到；
+        # 切语言时按段重拼，并且把语言层记下的那串中文原文撤掉，免得它盖回来。
+        try:
+            from utils import i18n as _i18n
+            _i18n.注册自绘(self._mod_hint, self._刷新模组说明)
+        except Exception:
+            pass
 
         self.mod_text_box = RoundedTextArea(parent, self.theme, height=8,
                                             wrap=tk.NONE, undo=True,
@@ -455,9 +485,7 @@ class PagesMixin:
             trace_exc("mw_pages/注册拖放", e)
             try:
                 # 拖放用不了就直说，别让用户对着"拖不进去"发呆
-                self._mod_hint.configure(
-                    text=str(self._mod_hint.cget("text"))
-                    + trp("　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。"))
+                self._刷新模组说明()
             except Exception:
                 pass
         self._bind_badge_refresh(self.mod_text)
