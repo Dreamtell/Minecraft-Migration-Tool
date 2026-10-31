@@ -1179,8 +1179,12 @@ class FlipButton(tk.Canvas):
         self._ui_last = now
         if not self._tick_wanted():
             self._stop_tick()
-            if not self._at_back and self._hv > 0.0:
-                self._hv = 0.0
+            # 这里**不能**无条件把 _hv 清成 0：指针还压在按钮上时清零等于"先变暗，
+            # 等下一次进事件再淡回来"，别的窗口一开一关、焦点一进一出就会闪一下。
+            # 按真实悬停状态对齐即可（没悬停的本来就该回到常色）。
+            目标 = 1.0 if self._hover else 0.0
+            if not self._at_back and abs(self._hv - 目标) > 1e-6:
+                self._hv = 目标
                 try:
                     self._apply_face()
                 except Exception:
