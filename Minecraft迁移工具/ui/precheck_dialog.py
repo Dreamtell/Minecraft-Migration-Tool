@@ -149,7 +149,8 @@ def _居中(父窗, 窗, 宽, 高):
         rx, ry = 父窗.winfo_rootx(), 父窗.winfo_rooty()
         rw, rh = 父窗.winfo_width(), 父窗.winfo_height()
         x = rx + max(0, (rw - 宽) // 2)
-        y = ry + max(0, (rh - 高) // 3)
+        # 竖直位置：取剩余空间的一半略偏上（原来取 1/3，用户嫌太靠上）
+        y = ry + max(0, int((rh - 高) * 0.45))
     except Exception:
         x = y = None
     if x is None:
