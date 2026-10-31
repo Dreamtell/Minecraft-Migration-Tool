@@ -168,7 +168,7 @@ class PagesMixin:
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
         self.net_status.pack(side="left", padx=(2, 4))
         self.create_tooltip(self.net_status,
-                            lambda: getattr(self, "_net_tip", "正在检测网络连通性…"))
+                            lambda: getattr(self, "_net_tip", trp("正在检测网络连通性…")))
         # 迷你折线图：最近几十次探测的连接延迟。**双击**打开完整版。
         # 数据在父进程（网络灯本来就在这边探测），所以不需要跨进程 —— 而流量数字在
         # Qt 子进程里，父进程读不到，所以这里画的是延迟而不是流量。
@@ -387,7 +387,7 @@ class PagesMixin:
                 pass
         if tabs is not None:
             try:
-                tabs.set_tail_button("⚠ 更新提醒" if 收起 else None,
+                tabs.set_tail_button(trp("⚠ 更新提醒") if 收起 else None,
                                      command=(bar._开弹窗 if bar is not None else None))
             except Exception:
                 pass
@@ -1083,7 +1083,7 @@ class PagesMixin:
         except Exception:
             平台 = ["Modrinth", "CurseForge"]
 
-        顶.title("📈 网络延迟（Modrinth / CurseForge 分开统计）")
+        顶.title(trp("📈 网络延迟（Modrinth / CurseForge 分开统计）"))
         try:
             顶.geometry(window_geometry(顶, 760, 430))
         except Exception:
@@ -1110,7 +1110,7 @@ class PagesMixin:
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         except Exception as _e:
-            tk.Label(顶, text="绘图需要 matplotlib：\n\npip install matplotlib\n\n(%s)" % _e,
+            tk.Label(顶, text=trp("绘图需要 matplotlib：\n\npip install matplotlib\n\n({0})", _e),
                      bg=self.theme["bg"], fg="#c62828", justify="left",
                      font=("微软雅黑", 10)).pack(padx=px(16), pady=px(16))
             create_gradient_button(顶, "关闭", lambda: 顶.destroy()).pack(pady=(0, px(10)))
@@ -1147,7 +1147,7 @@ class PagesMixin:
             图.subplots_adjust(left=0.11, right=0.98, top=0.95, bottom=0.16)
         except Exception:
             pass
-        轴.set_xlabel("秒（先填满，再滚动）", color=前景, fontsize=9)
+        轴.set_xlabel(trp("秒（先填满，再滚动）"), color=前景, fontsize=9)
 
         # ---- 每个平台一条线 ----
         系列 = []
@@ -1456,13 +1456,13 @@ class PagesMixin:
                     for s in 系列:
                         ys = s["ys"]
                         if not ys:
-                            段.append("%s 无数据" % s["名"])
+                            段.append(trp("{0} 无数据", s["名"]))
                         elif len(ys) < 2:
-                            段.append("%s 当前 %d ms" % (s["名"], int(ys[-1])))
+                            段.append(trp("{0} 当前 {1} ms", s["名"], int(ys[-1])))
                         else:
-                            段.append("%s 当前 %d · 平均 %d · 最高 %d" % (
-                                s["名"], int(ys[-1]),
-                                int(sum(ys) / len(ys)), int(max(ys))))
+                            段.append(trp("{0} 当前 {1} · 平均 {2} · 最高 {3}",
+                                          s["名"], int(ys[-1]),
+                                          int(sum(ys) / len(ys)), int(max(ys))))
                     信息.config(text="    ｜    ".join(段))
 
                 # 帧间隔跟显示器刷新率（anim.frame_ms：144Hz → 7ms），失焦时降一半。
@@ -1528,21 +1528,21 @@ class PagesMixin:
         try:
             if self._net_float is not None and self._net_float.alive():
                 self._net_float.close()
-                self.toast("📌 桌面浮标已关闭", level="ok", key="net_float")
+                self.toast(trp("📌 桌面浮标已关闭"), level="ok", key="net_float")
             else:
                 self.open_net_float()
                 if self._net_float is not None and self._net_float.alive():
-                    self.toast("📌 桌面浮标已显示（可拖动，双击看曲线）", level="ok",
+                    self.toast(trp("📌 桌面浮标已显示（可拖动，双击看曲线）"), level="ok",
                                key="net_float")
                 else:
-                    self.toast("⚠️ 浮标打不开，详见日志", level="warn")
+                    self.toast(trp("⚠️ 浮标打不开，详见日志"), level="warn")
         except Exception as e:
             # 原来整段是 try/except pass：失败时连日志都没有，用户只会觉得按钮坏了
             try:
-                self.log("❌ 切换浮标失败：%s" % e, level="ERROR")
+                self.log(trp("❌ 切换浮标失败：{0}", e), level="ERROR")
             except Exception:
                 pass
-            self.toast("⚠️ 浮标打不开，详见日志", level="warn")
+            self.toast(trp("⚠️ 浮标打不开，详见日志"), level="warn")
 
     def open_net_float(self):
         """把延迟曲线浮到桌面：无边框、置顶、可拖、位置记忆。"""

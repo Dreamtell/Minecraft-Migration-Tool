@@ -470,7 +470,8 @@ class SmoothScroller:
             self._warned = True
             try:
                 import traceback
-                sys.stderr.write("SmoothScroller: %s 抛异常，这段平滑滚动已停掉并还回定时器精度\n" % where)
+                sys.stderr.write(i18n.trp(
+                    "SmoothScroller: {0} 抛异常，这段平滑滚动已停掉并还回定时器精度\n", where))
                 traceback.print_exc()
             except Exception:
                 pass
@@ -750,7 +751,7 @@ def trace_exc(where, exc):
     """把回调里吞掉的异常写进日志（PySide6 只把它打到 stderr，界面看着就是"没反应"）。"""
     try:
         import traceback
-        trace_line("!! %s 抛异常: %s" % (where, "".join(
+        trace_line(i18n.trp("!! {0} 抛异常: {1}", where, "".join(
             traceback.format_exception(type(exc), exc, exc.__traceback__))[-600:]))
     except Exception:
         pass

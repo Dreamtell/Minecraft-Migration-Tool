@@ -334,8 +334,9 @@ class MigrationGUI(
                         "fail": "网络未连接"}.get(档位, "正在检测网络…")
                 self.net_status.configure(text="● " + i18n.tr(文案), fg=色)
                 明细文字 = "｜".join(
-                    "%s：%s" % (k, "通" if v else "不通") for k, v in 明细.items())
-                self._net_tip = ("网络通畅\n" if 档位 == "ok" else 文字 + "\n") + 明细文字
+                    i18n.trp("{0}：{1}", k, i18n.trp("通") if v else i18n.trp("不通"))
+                    for k, v in 明细.items())
+                self._net_tip = (i18n.trp("网络通畅\n") if 档位 == "ok" else 文字 + "\n") + 明细文字
             except Exception:
                 pass
 

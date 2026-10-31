@@ -321,7 +321,7 @@ class SettingsMixin:
 
         self.settings_float_edgefx_var = tk.BooleanVar(
             value=bool(getattr(self, "float_edge_fx", True)))
-        开关(box1, "贴边时显示边缘特效（绿色光带 + 粒子）",
+        开关(box1, trp("贴边时显示边缘特效（绿色光带 + 粒子）"),
              self.settings_float_edgefx_var, self._toggle_float_edgefx,
              名="floatedgefx").pack(fill="x", pady=(6, 0))
 
@@ -342,7 +342,7 @@ class SettingsMixin:
         # 开着：编辑时随手点一下背景就回只读；关掉：只能用编辑开关自己关，
         # 免得手滑点到背景就把编辑状态丢了。
         self.settings_blank_exit_sw = SwitchRow(
-            box1, self.theme, "点空白处取消清单文本框焦点",
+            box1, self.theme, trp("点空白处取消清单文本框焦点"),
             desc="关闭后只能用编辑开关自己关",
             command=self._toggle_blank_exit_edit, compact=True,
             accent="switch_on")
@@ -351,8 +351,8 @@ class SettingsMixin:
 
         # 消息中心抽屉：点主界面别处要不要顺手收回（默认关，开了一眼就想收的人才开）。
         self.settings_msg_outside_sw = SwitchRow(
-            box1, self.theme, "点消息中心以外就收回",
-            desc="关闭后只有 ✕ / Esc / 再点铃铛能收",
+            box1, self.theme, trp("点消息中心以外就收回"),
+            desc=trp("关闭后只有 ✕ / Esc / 再点铃铛能收"),
             command=self._toggle_msg_outside, compact=True,
             accent="switch_on")
         self.settings_msg_outside_sw.pack(fill="x", pady=(10, 0))
@@ -738,7 +738,7 @@ class SettingsMixin:
             self.toast(trp("📝 已打开配置文件：{0}", 路径), level="ok")
         except Exception as e:
             self.log(trp("❌ 打开配置文件失败：{0}", e), level="ERROR")
-            self.toast("❌ 打开配置文件失败，详见日志", level="warn")
+            self.toast(trp("❌ 打开配置文件失败，详见日志"), level="warn")
 
     # ---------- 设置窗口里的按钮列表 ----------
     def _refresh_button_tree(self):
@@ -928,7 +928,7 @@ class SettingsMixin:
         # ⚠ 顺序很重要：关掉之后就不会再有吐司了，所以**先弹再关**，
         # 否则用户点"关闭"会毫无反应（.message 系统自己关自己）。
         if not 开:
-            self.toast("🔔 消息提示已关闭（右下角不再弹卡片）", level="warn", ms=2500,
+            self.toast(trp("🔔 消息提示已关闭（右下角不再弹卡片）"), level="warn", ms=2500,
                        key="toast_on")
         self.toast_on = 开
         try:
@@ -936,7 +936,7 @@ class SettingsMixin:
         except Exception:
             pass
         if 开:
-            self.toast("🔔 消息提示已开启", level="ok", key="toast_on")
+            self.toast(trp("🔔 消息提示已开启"), level="ok", key="toast_on")
 
     def _bump_scroll_speed(self, 增量):
         """平滑滚动速度：1 最慢 … 5 最快。改完立刻生效，不用重启。"""
@@ -1066,8 +1066,9 @@ class SettingsMixin:
         except Exception:
             self.lock_wait_key = bool(getattr(self, "lock_wait_key", True))
         self.save_config()
-        self.toast("⌨️ 迁移完成后的收尾方式已改为：%s"
-                   % ("按任意键关闭" if self.lock_wait_key else "2 秒后自动关闭"),
+        self.toast(trp("⌨️ 迁移完成后的收尾方式已改为：按任意键关闭")
+                   if self.lock_wait_key else
+                   trp("⌨️ 迁移完成后的收尾方式已改为：2 秒后自动关闭"),
                    level="ok", key="lock_wait_key")
 
     # ---- 「默认携带的目录」（设置里勾选，迁移时自动并进清单） ----
@@ -1102,9 +1103,10 @@ class SettingsMixin:
                 pass
         self.config["extra_defaults"] = []
         self.save_config()
-        self.log("📦 原先勾选的「默认携带目录」已并入「其它文件」清单（%d 项：%s）。"
-                 "以后**清单就是唯一依据** —— 从清单里删掉就不会再带。"
-                 % (len(要加), "、".join(要加) if 要加 else "都在清单里了"),
+        self.log(trp("📦 原先勾选的「默认携带目录」已并入「其它文件」清单（{0} 项：{1}）。"
+                     "以后**清单就是唯一依据** —— 从清单里删掉就不会再带。",
+                     len(要加),
+                     "、".join(要加) if 要加 else trp("都在清单里了")),
                  level="INFO", save=False)
 
     # 以前这里还有一套「默认携带的目录」：勾选框里的目录会在迁移那一刻被自动并进临时
@@ -1162,8 +1164,8 @@ class SettingsMixin:
         self.qt_enabled = bool(value)
         self._qt_ok_cache = None
         self.save_config()
-        self.toast("🅆 PySide6 %s" % ("已启用" if self.qt_enabled else
-                                      "已关闭（纯 Tk 模式，重启后生效）"),
+        self.toast(trp("🅆 PySide6 已启用") if self.qt_enabled
+                   else trp("🅆 PySide6 已关闭（纯 Tk 模式，重启后生效）"),
                    level="ok", key="qt_enabled")
 
     def _on_qt_switch(self):
@@ -1178,7 +1180,8 @@ class SettingsMixin:
         self.big_view_backend = value if value in ("qt", "tk") else "qt"
         self.save_config()
         used_qt = self.big_view_backend == "qt"
-        self.toast("🗂 放大查看窗口已切换为：%s" % ("PySide6 试点窗口" if used_qt else "经典 Tk 窗口"),
+        self.toast(trp("🗂 放大查看窗口已切换为：PySide6 试点窗口") if used_qt
+                   else trp("🗂 放大查看窗口已切换为：经典 Tk 窗口"),
                    level="ok", key="big_view_backend")
         if used_qt:
             ok, why = self._qt_available()
@@ -1189,8 +1192,9 @@ class SettingsMixin:
         """差异窗口用哪个实现（下一次扫描生效）。"""
         self.diff_backend = value if value in ("qt", "tk") else "qt"
         self.save_config()
-        self.toast("🧩 差异窗口已切换为：%s"
-                   % ("PySide6 窗口" if self.diff_backend == "qt" else "经典 Tk 窗口"),
+        self.toast(trp("🧩 差异窗口已切换为：PySide6 窗口")
+                   if self.diff_backend == "qt" else
+                   trp("🧩 差异窗口已切换为：经典 Tk 窗口"),
                    level="ok", key="diff_backend")
         if self.diff_backend == "qt":
             ok, why = self._qt_available()
@@ -1201,16 +1205,18 @@ class SettingsMixin:
         """放大查看窗口默认用哪个视图（下一次打开生效）。"""
         self.big_view_view = value if value in ("table", "cards") else "table"
         self.save_config()
-        self.toast("🗂 放大查看窗口默认视图：%s"
-                   % ("卡片视图" if self.big_view_view == "cards" else "表格视图"),
+        self.toast(trp("🗂 放大查看窗口默认视图：卡片视图")
+                   if self.big_view_view == "cards" else
+                   trp("🗂 放大查看窗口默认视图：表格视图"),
                    level="ok", key="big_view_view")
 
     def _set_diff_view(self, value):
         """模组差异窗口默认用哪个视图（下一次打开生效）。"""
         self.diff_view = value if value in ("table", "cards") else "table"
         self.save_config()
-        self.toast("🧩 模组差异窗口默认视图：%s"
-                   % ("卡片视图" if self.diff_view == "cards" else "列表视图"),
+        self.toast(trp("🧩 模组差异窗口默认视图：卡片视图")
+                   if self.diff_view == "cards" else
+                   trp("🧩 模组差异窗口默认视图：列表视图"),
                    level="ok", key="diff_view")
 
     def _toggle_online_tags(self):
@@ -1251,9 +1257,9 @@ class SettingsMixin:
             文本 = secrets.status_text()
             色 = "ok_fg" if secrets.has_key() else "muted_fg"
         except Exception:
-            文本, 色 = "读取失败", "fail_fg"
+            文本, 色 = trp("读取失败"), "fail_fg"
         try:
-            lbl.set_all([("CurseForge：", "muted_fg"), (文本, 色)])
+            lbl.set_all([(trp("CurseForge："), "muted_fg"), (文本, 色)])
         except Exception:
             pass
 
@@ -1268,14 +1274,14 @@ class SettingsMixin:
         if secrets.set_key(原始):
             # 存完立刻清空输入框：明文没必要一直摆在界面上，也没必要留在内存里
             框.set("")
-            self.log("🔑 CurseForge API Key 已保存：%s（指纹 %s）"
-                     % (secrets.mask(), secrets.fingerprint()), level="INFO")
-            self.toast("🔑 CurseForge API Key 已保存", level="ok")
+            self.log(trp("🔑 CurseForge API Key 已保存：{0}（指纹 {1}）",
+                         secrets.mask(), secrets.fingerprint()), level="INFO")
+            self.toast(trp("🔑 CurseForge API Key 已保存"), level="ok")
             self._update_cf_key_label()
         else:
-            self.log("❌ CurseForge API Key 保存失败：写不了 %s" % secrets.where_text(),
-                     level="ERROR")
-            self.toast("❌ CurseForge API Key 保存失败，详见日志", level="warn")
+            self.log(trp("❌ CurseForge API Key 保存失败：写不了 {0}",
+                         secrets.where_text()), level="ERROR")
+            self.toast(trp("❌ CurseForge API Key 保存失败，详见日志"), level="warn")
 
     def _clear_cf_key(self):
         """删掉本机保存的 key。"""
@@ -1307,10 +1313,12 @@ class SettingsMixin:
                 ok, 说明 = False, secrets.redact_exc(e)
 
             def 收尾():
-                self.log(("✅ CurseForge Key 可用：" if ok else "❌ CurseForge Key 不可用：")
-                         + 说明, level="INFO" if ok else "ERROR")
+                self.log(trp("✅ CurseForge Key 可用：{0}", 说明) if ok
+                         else trp("❌ CurseForge Key 不可用：{0}", 说明),
+                         level="INFO" if ok else "ERROR")
                 # 点了「测试」之后只弹过「正在测试…」，结果只写日志的话用户永远等不到回音
-                self.toast(("✅ CurseForge Key 可用" if ok else "❌ CurseForge Key 不可用，详见日志"),
+                self.toast(trp("✅ CurseForge Key 可用") if ok
+                           else trp("❌ CurseForge Key 不可用，详见日志"),
                            level="ok" if ok else "warn")
                 self._update_cf_key_label()
 
@@ -1322,8 +1330,8 @@ class SettingsMixin:
         try:
             threading.Thread(target=跑, daemon=True).start()
         except Exception as e:
-            self.log("❌ 起不了测试线程：%s" % secrets.redact_exc(e), level="ERROR")
-            self.toast("❌ 起不了测试线程，详见日志", level="warn")
+            self.log(trp("❌ 起不了测试线程：{0}", secrets.redact_exc(e)), level="ERROR")
+            self.toast(trp("❌ 起不了测试线程，详见日志"), level="warn")
 
     def _toggle_silent(self):
         """后台静默执行开关。"""
@@ -1411,10 +1419,10 @@ class SettingsMixin:
         # key 固定：同一个开关反复切换时**原地更新那一条**，
         # 不再每次在右下角新冒一条（用户："本质还是新消息从底部重新弹出"）。
         if 开:
-            self.toast("🧪 模拟运行已开启：只显示将要执行的操作，不会修改任何文件",
+            self.toast(trp("🧪 模拟运行已开启：只显示将要执行的操作，不会修改任何文件"),
                        level="ok", key="dry_run")
         else:
-            self.toast("🧪 模拟运行已关闭：接下来的迁移会真正写入文件", level="warn",
+            self.toast(trp("🧪 模拟运行已关闭：接下来的迁移会真正写入文件"), level="warn",
                        key="dry_run")
 
     def _on_overwrite_switch(self):
@@ -1422,8 +1430,8 @@ class SettingsMixin:
         self.save_config()
         开 = bool(self.overwrite_mods.get())
         if 开:
-            self.toast("🔁 覆盖已存在的模组已开启：同名文件会被覆盖", level="ok",
+            self.toast(trp("🔁 覆盖已存在的模组已开启：同名文件会被覆盖"), level="ok",
                        key="overwrite_mods")
         else:
-            self.toast("🔁 覆盖已存在的模组已关闭：同名文件会被跳过", level="info",
+            self.toast(trp("🔁 覆盖已存在的模组已关闭：同名文件会被跳过"), level="info",
                        key="overwrite_mods")

@@ -45,9 +45,9 @@ class LogMixin:
         """
         if not 文本:
             return
-        for 索引, 框, 页名 in ((0, self.mod_text, "模组清单"),
-                             (1, self.config_text, "config 清单"),
-                             (2, self.extra_text, "其它文件")):
+        for 索引, 框, 页名 in ((0, self.mod_text, trp("模组清单")),
+                             (1, self.config_text, trp("config 清单")),
+                             (2, self.extra_text, trp("其它文件"))):
             try:
                 条目 = 框.get("1.0", "end-1c").splitlines()
             except Exception:
@@ -111,7 +111,7 @@ class LogMixin:
             if Path(条.strip()).name == 名:
                 self._goto_list_line(索引, 框, i, 名, 页名)
                 return
-        self.log("ℹ️ 「%s」已经不在清单里了" % 名, level="INFO", save=False)
+        self.log(trp("ℹ️ 「{0}」已经不在清单里了", 名), level="INFO", save=False)
 
     def _bind_log_locate(self, widget):
         """给日志控件挂上"双击哪一行，就跳到那一条"（主日志和放大日志都用它）。"""
@@ -143,9 +143,9 @@ class LogMixin:
             return
         if not 文本:
             return
-        for 索引, 框, 页名 in ((0, self.mod_text, "模组清单"),
-                             (1, self.config_text, "config 清单"),
-                             (2, self.extra_text, "其它文件")):
+        for 索引, 框, 页名 in ((0, self.mod_text, trp("模组清单")),
+                             (1, self.config_text, trp("config 清单")),
+                             (2, self.extra_text, trp("其它文件"))):
             try:
                 条目 = 框.get("1.0", "end-1c").splitlines()
             except Exception:
@@ -665,7 +665,8 @@ class LogMixin:
             if include_header:
                 if mode == 'a':
                     f.write("\n" + "=" * 50 + "\n")
-                    f.write(f"--- 新日志记录 ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+                    f.write(trp("--- 新日志记录 ({0}) ---",
+                                time.strftime('%Y-%m-%d %H:%M:%S')) + "\n")
                 f.write("".join(self._saved_logs))
             else:
                 f.write("".join(self._saved_logs))

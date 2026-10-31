@@ -163,7 +163,7 @@ def run_host(argv):
     except Exception as e:
         try:
             Path(str(结果路径) + ".err").write_text(
-                _脱敏("加载 PySide6 失败：%r" % (e,)), encoding="utf-8")
+                _脱敏(i18n.trp("加载 PySide6 失败：{0}", repr(e))), encoding="utf-8")
         except Exception:
             pass
         return 4
@@ -188,7 +188,7 @@ def run_host(argv):
             view = QtBigView(请求.get("entries") or [],
                              bool(请求.get("is_mod", True)),
                              str(请求.get("source_path") or ""),
-                             str(请求.get("title") or "清单"),
+                             str(请求.get("title") or i18n.trp("清单")),
                              主题,
                              online_tags=bool(请求.get("online_tags", False)),
                              hooks=主机,
@@ -208,7 +208,7 @@ def run_host(argv):
         import traceback
         try:
             Path(str(结果路径) + ".err").write_text(
-                _脱敏("建窗失败：\n" + traceback.format_exc()), encoding="utf-8")
+                _脱敏(i18n.trp("建窗失败：\n") + traceback.format_exc()), encoding="utf-8")
         except Exception:
             pass
         return 5

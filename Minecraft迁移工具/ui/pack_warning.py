@@ -14,8 +14,9 @@ import tkinter as tk
 from utils.dpi import px
 from utils.helpers import (create_gradient_button, is_dark_theme,
                            set_window_icon, show_window)
+from utils.i18n import trp
 
-标题 = "整合包更新提醒"
+标题 = trp("整合包更新提醒")
 
 横幅文案 = (
     "整合包更新时，作者可能会删除或替换模组 —— 这种情况下「扫描差异」只能比出文件名和"
@@ -33,7 +34,7 @@ from utils.helpers import (create_gradient_button, is_dark_theme,
 提示词 = (
     "我在把一个 Minecraft 整合包从旧版本迁移到新版本，需要你帮我从下面的"
     "更新日志里找出【与模组相关的变更】。\n\n"
-    "整合包：%s\n旧实例目录：%s\n新实例目录：%s\n\n"
+    "整合包：{0}\n旧实例目录：{1}\n新实例目录：{2}\n\n"
     "请按这个格式输出：\n"
     "1. 新增的模组（尽量给出 modid 或中文名）\n"
     "2. 移除的模组\n"
@@ -108,13 +109,13 @@ class PackWarning(tk.Frame):
         tk.Frame(框, bg=坏["边"], width=px(4)).pack(side="left", fill="y")
         tk.Label(框, text="⚠", font=("微软雅黑", 14), bg=坏["底"], fg=坏["图"]).pack(
             side="left", padx=(px(12), px(10)), anchor="n", pady=px(9))
-        tk.Label(框, text=横幅文案, justify="left", anchor="w", bg=坏["底"], fg=坏["字"],
+        tk.Label(框, text=trp(横幅文案), justify="left", anchor="w", bg=坏["底"], fg=坏["字"],
                  font=("微软雅黑", 9), wraplength=px(560)).pack(
             side="left", fill="x", expand=True, pady=px(8))
         右 = tk.Frame(框, bg=坏["底"])
         右.pack(side="right", padx=(px(8), px(10)))
-        self._建链接(右, 坏, "复制 AI 提示词", self._复制)
-        self._建链接(右, 坏, "收起 ▴", lambda: self._设收起(True), 弱=True)
+        self._建链接(右, 坏, trp("复制 AI 提示词"), self._复制)
+        self._建链接(右, 坏, trp("收起 ▴"), lambda: self._设收起(True), 弱=True)
 
     def _建链接(self, 父, 坏, 文字, 命令, 弱=False):
         标 = tk.Label(父, text=文字, bg=坏["底"], fg=坏["弱"] if 弱 else 坏["主"],
@@ -141,8 +142,9 @@ class PackWarning(tk.Frame):
             源, 标路径 = self._取路径()
         except Exception:
             源 = 标路径 = ""
-        名 = (源 or "").replace("\\", "/").rstrip("/").split("/")[-1] or "整合包"
-        文 = 提示词 % (名, 源 or "（未选择）", 标路径 or "（未选择）")
+        名 = (源 or "").replace("\\", "/").rstrip("/").split("/")[-1] or trp("整合包")
+        文 = trp(提示词, 名, 源 or trp("（未选择）"),
+                标路径 or trp("（未选择）"))
         try:
             self.应用根.clipboard_clear()
             self.应用根.clipboard_append(文)
@@ -157,10 +159,10 @@ class PackWarning(tk.Frame):
         def _写():
             for 子 in self.winfo_children():
                 for 孙 in getattr(子, "winfo_children", list)():
-                    if isinstance(孙, tk.Label) and str(孙.cget("text")).startswith("复制 AI 提示词"):
+                    if isinstance(孙, tk.Label) and str(孙.cget("text")).startswith(trp("复制 AI 提示词")):
                         try:
-                            孙.config(text="已复制 ✓", fg=坏["边"])
-                            self.after(1600, lambda: 孙.config(text="复制 AI 提示词", fg=坏["主"]))
+                            孙.config(text=trp("已复制 ✓"), fg=坏["边"])
+                            self.after(1600, lambda: 孙.config(text=trp("复制 AI 提示词"), fg=坏["主"]))
                         except Exception:
                             pass
         try:
@@ -220,23 +222,23 @@ class PackWarning(tk.Frame):
         字.pack(side="left", anchor="w")
         tk.Label(字, text=标题, bg=坏["底"], fg=坏["字"],
                  font=("微软雅黑", 11, "bold")).pack(anchor="w")
-        tk.Label(字, text="这条提醒不能关闭，只能收起成一个 ⚠ 图标",
+        tk.Label(字, text=trp("这条提醒不能关闭，只能收起成一个 ⚠ 图标"),
                  bg=坏["底"], fg=坏["弱"], font=("微软雅黑", 8)).pack(anchor="w")
 
-        tk.Label(窗, text=完整说明, justify="left", anchor="w", bg=th.get("bg"),
+        tk.Label(窗, text=trp(完整说明), justify="left", anchor="w", bg=th.get("bg"),
                  fg=th.get("fg", "#222222"), font=("微软雅黑", 9),
                  wraplength=px(520)).pack(fill="x", padx=px(18), pady=(px(14), px(10)))
 
         底 = tk.Frame(窗, bg=th.get("bg"))
         底.pack(fill="x", padx=px(18), pady=(0, px(14)))
-        create_gradient_button(底, "复制 AI 提示词", self._复制,
+        create_gradient_button(底, trp("复制 AI 提示词"), self._复制,
                                width=px(150), height=px(30)).pack(side="left")
         if self.已收起:
-            create_gradient_button(底, "展开成横幅", self._展开,
+            create_gradient_button(底, trp("展开成横幅"), self._展开,
                                    colors=("#e5484d", "#b3261e"),
                                    width=px(120), height=px(30)).pack(
                 side="left", padx=(px(8), 0))
-        create_gradient_button(底, "关闭", _关, width=px(90),
+        create_gradient_button(底, trp("关闭"), _关, width=px(90),
                                height=px(30)).pack(side="right")
 
         try:

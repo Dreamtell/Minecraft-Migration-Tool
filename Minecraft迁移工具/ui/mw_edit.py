@@ -53,8 +53,8 @@ class EditMixin:
         锁[kind] = True
         if self.edit_mode.get():
             self.edit_mode.set(False)
-            self.toast("ℹ️ %s 打开期间，主界面编辑已关闭（清单两边同时改会互相盖）。"
-                       % self._MIRROR_EDIT_NAMES[kind], level="info")
+            self.toast(trp("ℹ️ {0} 打开期间，主界面编辑已关闭（清单两边同时改会互相盖）。",
+                           trp(self._MIRROR_EDIT_NAMES[kind])), level="info")
         self._sync_edit_lock()
         self._update_text_states()
 
@@ -87,7 +87,7 @@ class EditMixin:
             if sw.get() != bool(self.edit_mode.get()):
                 sw.set(self.edit_mode.get(), animate=True)     # 被自动关掉时开关也得跟上
             if 锁:
-                名 = "、".join(self._MIRROR_EDIT_NAMES.get(k, k) for k in 锁)
+                名 = "、".join(trp(self._MIRROR_EDIT_NAMES.get(k, k)) for k in 锁)
                 sw.set_text(desc=trp("{0} 开着时不能编辑 · 关掉那个窗口即可恢复", 名))
                 sw.set_enabled(False)
             else:

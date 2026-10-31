@@ -224,24 +224,24 @@ def safe_copy(src, dst, dry_run, overwrite, is_file=True):
     返回: (成功与否, 消息)
     """
     if dry_run:
-        return True, "模拟复制"
+        return True, trp("模拟复制")
     if dst.exists() and not overwrite and is_file:
-        return False, "目标已存在，跳过"
+        return False, trp("目标已存在，跳过")
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if is_file:
             _atomic_copy_file(src, dst)      # 临时文件 + 原子替换，失败不留半截文件
         else:
             shutil.copytree(src, dst, dirs_exist_ok=True)
-        return True, "复制成功"
+        return True, trp("复制成功")
     except PermissionError:
-        return False, f"权限不足：无法写入 {dst}"
+        return False, trp("权限不足：无法写入 {0}", dst)
     except OSError as e:
         if "No space left" in str(e):
-            return False, "磁盘空间不足"
-        return False, f"系统错误：{e}"
+            return False, trp("磁盘空间不足")
+        return False, trp("系统错误：{0}", e)
     except Exception as e:
-        return False, f"未知错误：{e}"
+        return False, trp("未知错误：{0}", e)
 
 
 def safe_copytree(src, dst, dry_run, log_func=None):
@@ -249,21 +249,21 @@ def safe_copytree(src, dst, dry_run, log_func=None):
     安全复制目录，冲突时使用时间戳备份
     """
     if dry_run:
-        return True, "模拟复制目录"
+        return True, trp("模拟复制目录")
     if dst.exists():
         # 使用时间戳备份，避免覆盖
         backup = dst.with_suffix(dst.suffix + f".backup_{int(time.time())}")
         try:
             shutil.move(str(dst), str(backup))
             if log_func:
-                log_func(f"已备份原有目录至：{backup.name}", "SUCCESS")
+                log_func(trp("已备份原有目录至：{0}", backup.name), "SUCCESS")
         except Exception as e:
-            return False, f"备份失败：{e}"
+            return False, trp("备份失败：{0}", e)
     try:
         shutil.copytree(src, dst)
-        return True, "目录复制成功"
+        return True, trp("目录复制成功")
     except Exception as e:
-        return False, f"复制目录失败：{e}"
+        return False, trp("复制目录失败：{0}", e)
 
 
 # ---------- 历史记录 ----------
@@ -485,8 +485,10 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
     backup_root = (get_record_backup_path(target_path, record_id)
                    if record_id else get_backup_path(target_path))
     if log_func:
-        log_func("📦 开始备份目标实例..." + ("（回滚点：%s）" % record_id if record_id else ""),
-                 "INFO")
+        if record_id:
+            log_func(trp("📦 开始备份目标实例...（回滚点：{0}）", record_id), "INFO")
+        else:
+            log_func(trp("📦 开始备份目标实例..."), "INFO")
 
     staging = backup_root.with_name(backup_root.name + ".tmp")
     _rmtree(staging)
@@ -500,13 +502,12 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
             exists_dirs[folder] = src.exists()
             if src.exists():
                 if log_func:
-                    log_func(f"📂 备份 {folder} → {backup_root / folder}", "INFO")
+                    log_func(trp("📂 备份 {0} → {1}", folder, backup_root / folder), "INFO")
                 shutil.copytree(src, staging / folder)
                 backed.append(folder)
             else:
                 if log_func:
-                    log_func(f"ℹ️ {folder} 不存在，跳过备份"
-                             f"（回滚时会删掉迁移新建的同名目录）", "INFO")
+                    log_func(trp("ℹ️ {0} 不存在，跳过备份（回滚时会删掉迁移新建的同名目录）", folder), "INFO")
 
         # 根级文件（options.txt 等）：迁移也会覆盖它们，漏了就不是真回滚
         files_root = staging / _BACKUP_FILES_SUBDIR
@@ -518,8 +519,8 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
             if src.is_file():
                 files_root.mkdir(parents=True, exist_ok=True)
                 if log_func:
-                    log_func(f"📂 备份 {name} → {backup_root / _BACKUP_FILES_SUBDIR / name}",
-                             "INFO")
+                    log_func(trp("📂 备份 {0} → {1}", name,
+                                 backup_root / _BACKUP_FILES_SUBDIR / name), "INFO")
                 _atomic_copy_file(src, files_root / name)
                 backed_files.append(name)
 
@@ -536,8 +537,7 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
             exists_extras[rel] = src.exists()
             if not src.exists():
                 if log_func:
-                    log_func(f"ℹ️ {rel} 目标里不存在，跳过备份"
-                             f"（回滚时会删掉迁移新建的同名条目）", "INFO")
+                    log_func(trp("ℹ️ {0} 目标里不存在，跳过备份（回滚时会删掉迁移新建的同名条目）", rel), "INFO")
                 continue
             dst = extras_root / rel
             try:
@@ -548,11 +548,11 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
                     _atomic_copy_file(src, dst)
                 backed_extras.append(rel)
                 if log_func:
-                    log_func(f"📂 备份清单条目 {rel} → {backup_root / _BACKUP_EXTRAS_SUBDIR / rel}",
-                             "INFO")
+                    log_func(trp("📂 备份清单条目 {0} → {1}", rel,
+                                 backup_root / _BACKUP_EXTRAS_SUBDIR / rel), "INFO")
             except Exception as e:
                 # 备份不到就不能装作没事：宁可整个备份失败（调用方会拦下迁移）
-                raise RuntimeError(f"备份「其它文件」条目 {rel} 失败：{e}")
+                raise RuntimeError(trp("备份「其它文件」条目 {0} 失败：{1}", rel, e))
 
         _write_manifest(staging, exists_dirs, exists_files, exists_extras, record_id)
     except Exception:
@@ -564,7 +564,7 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
     _rmtree(old)
     if backup_root.exists():
         if log_func:
-            log_func("🗑️ 替换旧备份（新备份已完整写入）", "INFO")
+            log_func(trp("🗑️ 替换旧备份（新备份已完整写入）"), "INFO")
         backup_root.rename(old)
     try:
         staging.rename(backup_root)
@@ -576,7 +576,7 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
 
     if log_func:
         done = ", ".join(backed + backed_files + backed_extras)
-        log_func(f"✅ 备份完成，已备份：{done if done else '无'}", "SUCCESS")
+        log_func(trp("✅ 备份完成，已备份：{0}", done if done else trp("无")), "SUCCESS")
 
 
 def do_restore(target_path, log_func=None, backup_dir=None):
@@ -604,15 +604,15 @@ def do_restore(target_path, log_func=None, backup_dir=None):
     backup_root = Path(backup_dir) if backup_dir else get_backup_path(target_path)
     if not backup_root.exists():
         if log_func:
-            log_func("❌ 恢复失败：备份目录不存在", "ERROR")
+            log_func(trp("❌ 恢复失败：备份目录不存在"), "ERROR")
         return False
 
     manifest = read_manifest(backup_root)
     if manifest is None and log_func:
-        log_func("⚠️ 这份备份没有清单（旧版本留下的）：只恢复已有内容，"
-                 "不会清理迁移新建的部分", "WARNING")
+        log_func(trp("⚠️ 这份备份没有清单（旧版本留下的）：只恢复已有内容，不会清理迁移新建的部分"),
+                 "WARNING")
     if log_func:
-        log_func("🔄 开始从备份恢复...", "INFO")
+        log_func(trp("🔄 开始从备份恢复..."), "INFO")
 
     restored, cleaned, failed = [], [], []
 
@@ -622,7 +622,7 @@ def do_restore(target_path, log_func=None, backup_dir=None):
         try:
             if backup_folder.is_dir():
                 if log_func:
-                    log_func(f"📂 恢复备份：{backup_folder} → {target_folder}", "INFO")
+                    log_func(trp("📂 恢复备份：{0} → {1}", backup_folder, target_folder), "INFO")
                 # 旧目录先改名保底，复制成功后再删（失败会自己改回来）
                 _replace_tree_by_copy(backup_folder, target_folder)
                 restored.append(folder + "/")
@@ -630,21 +630,21 @@ def do_restore(target_path, log_func=None, backup_dir=None):
                 # 迁移前本来没这个目录 → 现在还留着，说明是迁移建的
                 if target_folder.exists():
                     if log_func:
-                        log_func(f"🗑️ 迁移新建的 {folder}/，按回滚要求删除", "INFO")
+                        log_func(trp("🗑️ 迁移新建的 {0}/，按回滚要求删除", folder), "INFO")
                     _rmtree(target_folder)
                     cleaned.append(folder + "/")
             elif manifest is not None and manifest.get("dirs", {}).get(folder, True):
                 # 清单说"迁移前有"，备份里却没有 → 这份备份不完整，不能默默跳过
-                failed.append(f"{folder}: 备份不完整（清单说存在，备份里没有）")
+                failed.append(trp("{0}: 备份不完整（清单说存在，备份里没有）", folder))
                 if log_func:
-                    log_func(f"❌ {folder}/ 在清单里标记为存在，但备份里找不到", "ERROR")
+                    log_func(trp("❌ {0}/ 在清单里标记为存在，但备份里找不到", folder), "ERROR")
             else:
                 if log_func:
-                    log_func(f"ℹ️ 备份中不存在 {folder}，跳过", "INFO")
+                    log_func(trp("ℹ️ 备份中不存在 {0}，跳过", folder), "INFO")
         except Exception as e:
             failed.append(f"{folder}: {e}")
             if log_func:
-                log_func(f"❌ 恢复 {folder} 失败: {e}", "ERROR")
+                log_func(trp("❌ 恢复 {0} 失败: {1}", folder, e), "ERROR")
 
     files_root = backup_root / _BACKUP_FILES_SUBDIR
     for name in _BACKUP_ROOT_FILES:
@@ -653,23 +653,23 @@ def do_restore(target_path, log_func=None, backup_dir=None):
         try:
             if backup_file.is_file():
                 if log_func:
-                    log_func(f"📂 恢复文件：{name} → {target_file}", "INFO")
+                    log_func(trp("📂 恢复文件：{0} → {1}", name, target_file), "INFO")
                 _atomic_copy_file(backup_file, target_file)
                 restored.append(name)
             elif manifest is not None and not manifest.get("files", {}).get(name, True):
                 if target_file.exists():
                     if log_func:
-                        log_func(f"🗑️ 迁移新建的 {name}，按回滚要求删除", "INFO")
+                        log_func(trp("🗑️ 迁移新建的 {0}，按回滚要求删除", name), "INFO")
                     _unlink(target_file)
                     cleaned.append(name)
             elif manifest is not None:
-                failed.append(f"{name}: 备份不完整（清单说存在，备份里没有）")
+                failed.append(trp("{0}: 备份不完整（清单说存在，备份里没有）", name))
                 if log_func:
-                    log_func(f"❌ {name} 在清单里标记为存在，但备份里找不到", "ERROR")
+                    log_func(trp("❌ {0} 在清单里标记为存在，但备份里找不到", name), "ERROR")
         except Exception as e:
             failed.append(f"{name}: {e}")
             if log_func:
-                log_func(f"❌ 恢复 {name} 失败: {e}", "ERROR")
+                log_func(trp("❌ 恢复 {0} 失败: {1}", name, e), "ERROR")
 
     # 「其它文件」清单里的条目（用户自己选的）：迁移前存在的要还原，迁移前没有的要删掉
     # —— 只恢复固定三目录+options.txt 的话，用户清单里的东西被覆盖了就回不来。
@@ -688,38 +688,46 @@ def do_restore(target_path, log_func=None, backup_dir=None):
                     _atomic_copy_file(backup_item, target_item)
                 restored.append(rel)
                 if log_func:
-                    log_func(f"📂 恢复清单条目：{rel} → {target_item}", "INFO")
+                    log_func(trp("📂 恢复清单条目：{0} → {1}", rel, target_item), "INFO")
             elif not 原来有:
                 if target_item.is_dir():
                     if log_func:
-                        log_func(f"🗑️ 迁移新建的清单条目 {rel}/，按回滚要求删除", "INFO")
+                        log_func(trp("🗑️ 迁移新建的清单条目 {0}/，按回滚要求删除", rel), "INFO")
                     _rmtree(target_item)
                     cleaned.append(rel + "/")
                 elif target_item.exists():
                     if log_func:
-                        log_func(f"🗑️ 迁移新建的清单条目 {rel}，按回滚要求删除", "INFO")
+                        log_func(trp("🗑️ 迁移新建的清单条目 {0}，按回滚要求删除", rel), "INFO")
                     _unlink(target_item)
                     cleaned.append(rel)
             else:
                 # 清单说迁移前有、备份里却没有 → 这份备份不完整
-                failed.append(f"{rel}: 备份不完整（清单说存在，备份里没有）")
+                failed.append(trp("{0}: 备份不完整（清单说存在，备份里没有）", rel))
                 if log_func:
-                    log_func(f"❌ 清单条目 {rel} 标记为存在，但备份里找不到", "ERROR")
+                    log_func(trp("❌ 清单条目 {0} 标记为存在，但备份里找不到", rel), "ERROR")
         except Exception as e:
             failed.append(f"{rel}: {e}")
             if log_func:
-                log_func(f"❌ 恢复清单条目 {rel} 失败: {e}", "ERROR")
+                log_func(trp("❌ 恢复清单条目 {0} 失败: {1}", rel, e), "ERROR")
 
     if failed:
         if log_func:
-            log_func(f"❌ 恢复未完成，失败 {len(failed)} 项：{'; '.join(failed)}", "ERROR")
+            log_func(trp("❌ 恢复未完成，失败 {0} 项：{1}", len(failed), "; ".join(failed)),
+                     "ERROR")
         return False
 
     if log_func:
-        detail = f"：{', '.join(restored)}" if restored else ""
-        log_func(f"✅ 恢复完成，已恢复 {len(restored)} 项"
-                 + (f"，清理迁移新建的 {len(cleaned)} 项" if cleaned else "")
-                 + detail, "SUCCESS")
+        detail = ", ".join(restored)
+        if cleaned and detail:
+            log_func(trp("✅ 恢复完成，已恢复 {0} 项，清理迁移新建的 {1} 项：{2}",
+                         len(restored), len(cleaned), detail), "SUCCESS")
+        elif cleaned:
+            log_func(trp("✅ 恢复完成，已恢复 {0} 项，清理迁移新建的 {1} 项",
+                         len(restored), len(cleaned)), "SUCCESS")
+        elif detail:
+            log_func(trp("✅ 恢复完成，已恢复 {0} 项：{1}", len(restored), detail), "SUCCESS")
+        else:
+            log_func(trp("✅ 恢复完成，已恢复 {0} 项", len(restored)), "SUCCESS")
     return True
 
 # ---------- 更新模组时的旧版本清理 ----------
@@ -801,8 +809,9 @@ def remove_old_mod_versions(target_path, target_mods, src_jar, dst_path, index=N
     if not modid:
         # 读不出 modid 就没法判断谁是谁，宁可不清理，也不凭文件名猜
         if log_func:
-            log_func(f"ℹ️ 无法识别 {Path(src_jar).name} 的 modid，跳过旧版本清理"
-                     f"（如目标里已存在同模组的其他版本，请手动确认）", "INFO")
+            log_func(trp("ℹ️ 无法识别 {0} 的 modid，跳过旧版本清理"
+                         "（如目标里已存在同模组的其他版本，请手动确认）",
+                         Path(src_jar).name), "INFO")
         return []
     try:
         dst_resolved = Path(dst_path).resolve()
@@ -837,11 +846,12 @@ def remove_old_mod_versions(target_path, target_mods, src_jar, dst_path, index=N
             except ValueError:
                 pass
             if log_func:
-                log_func(f"🗑️ 移除目标旧版本：{old.name}（同 modid: {modid}）"
-                         f"，已移入备份 .migrate_backup/removed_mods", "WARNING")
+                log_func(trp("🗑️ 移除目标旧版本：{0}（同 modid: {1}）"
+                             "，已移入备份 .migrate_backup/removed_mods",
+                             old.name, modid), "WARNING")
         except Exception as e:
             if log_func:
-                log_func(f"⚠️ 移除旧版本 {old.name} 失败：{e}（该文件保持原样）", "WARNING")
+                log_func(trp("⚠️ 移除旧版本 {0} 失败：{1}（该文件保持原样）", old.name, e), "WARNING")
     if moved:
         _record_removed(target_path, modid, moved, Path(dst_path).name)
     return moved
@@ -884,7 +894,7 @@ def run_migration(
         marker = marker + " " if not marker.endswith(" ") else marker
         local_log = log_callback
         if local_log:
-            local_log(f"🏷️ 已启用迁移标记：复制过去的模组会加前缀「{marker.strip()} 」", "INFO")
+            local_log(trp("🏷️ 已启用迁移标记：复制过去的模组会加前缀「{0} 」", marker.strip()), "INFO")
 
     _开始 = time.time()
     _日志 = []
@@ -953,7 +963,7 @@ def run_migration(
                 else:
                     matched = match_mod(item, source_files, name_map)
                     if not matched:
-                        failed.append((item, "未找到匹配的文件"))
+                        failed.append((item, trp("未找到匹配的文件")))
                         log(trp("❌ 未找到匹配模组: {0}", item), "ERROR")
                         continue
                     src_file = source_files[matched]
@@ -980,7 +990,7 @@ def run_migration(
                         log(trp("[模拟] 将复制: {0}", dst_file.name), "SIMULATE")
                     else:
                         log(trp("✅ 已复制: {0}", dst_file.name), "SUCCESS")
-                    step = f"复制模组 ({idx + 1}/{total_mods})"
+                    step = trp("复制模组 ({0}/{1})", idx + 1, total_mods)
                     progress(file_index, dst_file.name, copied_bytes, step)
                 else:
                     failed.append((item, msg))
@@ -1016,8 +1026,8 @@ def run_migration(
                 if ok:
                     file_index += 1
                     copied_bytes += src_file.stat().st_size
-                    step = f"复制存档 ({idx + 1}/{total_world_files})"
-                    progress(file_index, f"存档/{rel}", copied_bytes, step)
+                    step = trp("复制存档 ({0}/{1})", idx + 1, total_world_files)
+                    progress(file_index, trp("存档/{0}", rel), copied_bytes, step)
                 else:
                     log(trp("❌ 复制存档文件 {0} 失败: {1}", rel, msg), "ERROR")
             log(trp("✅ 存档 {0} 已{1}复制完成，共 {2} 个文件", world_name,
@@ -1054,7 +1064,7 @@ def run_migration(
                 src_entry = src_config / entry
                 if not src_entry.exists():
                     log(trp("❌ 源 config 条目不存在: {0}，跳过", entry), "ERROR")
-                    failed_cfg.append((entry, "源不存在"))
+                    failed_cfg.append((entry, trp("源不存在")))
                     continue
 
                 dst_entry = tgt_config / entry
@@ -1069,7 +1079,7 @@ def run_migration(
                             log(trp("[模拟] 将复制 config: {0}", entry), "SIMULATE")
                         else:
                             log(trp("✅ 已复制 config: {0}", entry), "SUCCESS")
-                        step = f"复制 config ({idx + 1}/{total_config_entries})"
+                        step = trp("复制 config ({0}/{1})", idx + 1, total_config_entries)
                         progress(file_index, f"config/{entry}", copied_bytes, step)
                     else:
                         failed_cfg.append((entry, msg))
@@ -1081,7 +1091,7 @@ def run_migration(
                         if not dry_run:
                             dst_entry.mkdir(parents=True, exist_ok=True)
                     except Exception as e:
-                        failed_cfg.append((entry, f"创建目录失败: {e}"))
+                        failed_cfg.append((entry, trp("创建目录失败: {0}", e)))
                         log(trp("❌ 创建 config 目录 {0} 失败: {1}", entry, e), "ERROR")
                         continue
 
@@ -1100,7 +1110,7 @@ def run_migration(
                                 try:
                                     dst_item.mkdir(parents=True, exist_ok=True)
                                 except Exception as e:
-                                    failed_cfg.append((f"{entry}/{rel}", f"建目录失败: {e}"))
+                                    failed_cfg.append((f"{entry}/{rel}", trp("建目录失败: {0}", e)))
                                     log(trp("❌ 创建 config 目录 {0}/{1} 失败: {2}", entry, rel, e), "ERROR")
                             continue
                         if not src_item.is_file():
@@ -1116,7 +1126,7 @@ def run_migration(
                                 log(trp("[模拟] 将复制 config: {0}/{1}", entry, rel), "SIMULATE")
                             else:
                                 log(trp("✅ 已复制 config: {0}/{1}", entry, rel), "SUCCESS")
-                            step = f"复制 config ({idx + 1}/{total_config_entries})"
+                            step = trp("复制 config ({0}/{1})", idx + 1, total_config_entries)
                             progress(file_index, f"config/{entry}/{rel}", copied_bytes, step)
                         else:
                             failed_cfg.append((f"{entry}/{rel}", msg))
@@ -1153,11 +1163,11 @@ def run_migration(
                 src_entry = src_path / entry
                 dst_entry = tgt_path / entry
                 if not src_entry.exists():
-                    failed_extra.append((entry, "源不存在"))
+                    failed_extra.append((entry, trp("源不存在")))
                     log(trp("❌ 源条目不存在: {0}，跳过", entry), "ERROR")
                     continue
 
-                step = f"复制其它文件 ({idx + 1}/{total_extra})"
+                step = trp("复制其它文件 ({0}/{1})", idx + 1, total_extra)
 
                 if src_entry.is_file():
                     if dst_entry.exists() and not extra_overwrite:
@@ -1184,7 +1194,7 @@ def run_migration(
                         if not dry_run:
                             dst_entry.mkdir(parents=True, exist_ok=True)
                     except Exception as e:
-                        failed_extra.append((entry, f"创建目录失败: {e}"))
+                        failed_extra.append((entry, trp("创建目录失败: {0}", e)))
                         log(trp("❌ 创建目录 {0} 失败: {1}", entry, e), "ERROR")
                         continue
 
@@ -1205,7 +1215,7 @@ def run_migration(
                                 try:
                                     dst_item.mkdir(parents=True, exist_ok=True)
                                 except Exception as e:
-                                    failed_extra.append((rel_s, f"建目录失败: {e}"))
+                                    failed_extra.append((rel_s, trp("建目录失败: {0}", e)))
                                     log(trp("❌ 创建目录 {0} 失败: {1}", rel_s, e), "ERROR")
                             continue
                         if not src_item.is_file():
@@ -1235,7 +1245,7 @@ def run_migration(
             log(trp("其它文件复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success_extra, skipped_extra, len(failed_extra)), "INFO")
             汇总["extra"] = {"success": success_extra, "skipped": skipped_extra,
                              "failed": len(failed_extra)}
-            失败明细.extend(("其它/%s" % str(x[0]), str(x[1])) for x in failed_extra[:50])
+            失败明细.extend((trp("其它/{0}", str(x[0])), str(x[1])) for x in failed_extra[:50])
 
         # -------- 记录历史 --------
         if not dry_run and add_history:

@@ -76,7 +76,7 @@ def _enable_fatal_log():
         fh = open(log, "a", encoding="utf-8", buffering=1)
         faulthandler.enable(fh, all_threads=True)
         try:
-            fh.write("\n===== 启动 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            fh.write(trp("\n===== 启动 {0} =====\n", time.strftime("%Y-%m-%d %H:%M:%S")))
         except Exception:
             pass
         return fh
@@ -324,7 +324,7 @@ def main():
         所以不管界面是不是挂在托盘里都得通知一声。
         """
         if hidden["v"] or force:
-            send_toast(f"✅ {name}完成", detail or "点托盘图标打开主界面查看")
+            send_toast(trp("✅ {0}完成", name), detail or trp("点托盘图标打开主界面查看"))
 
     app._task_done_cb = notify_task_done
     app._in_tray_cb = lambda: hidden["v"]
@@ -380,8 +380,8 @@ def main():
             pass
         if not tray_tip_shown["v"]:
             tray_tip_shown["v"] = True
-            send_toast("已收进系统托盘",
-                       "程序仍在后台运行。点托盘图标可重新打开，右键可退出。")
+            send_toast(trp("已收进系统托盘"),
+                       trp("程序仍在后台运行。点托盘图标可重新打开，右键可退出。"))
 
     def request_quit():
         """请求退出：先跳出主循环，存盘和销毁统一放到 mainloop 之后做。

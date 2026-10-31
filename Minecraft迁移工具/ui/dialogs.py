@@ -261,9 +261,9 @@ def ask_close_action(parent, theme):
     row = tk.Frame(win, bg=theme["bg"])
     row.pack(padx=20, pady=18)
     for text, action, colors, hover, width in (
-            ("收进托盘继续运行", "tray", ("#00c853", "#00e676"),
+            (trp("收进托盘继续运行"), "tray", ("#00c853", "#00e676"),
              ("#00e676", "#00c853"), 168),
-            ("直接退出", "exit", ("#e53935", "#ff7043"),
+            (trp("直接退出"), "exit", ("#e53935", "#ff7043"),
              ("#ef5350", "#ff7043"), 110),
             ("取消", None, ("#757575", "#9e9e9e"),
              ("#8d8d8d", "#bdbdbd"), 90)):
@@ -331,14 +331,14 @@ def ask_migrate_confirm(parent, theme, info):
                  fg=theme.get("fail_fg", "#c62828") if 强调 else theme.get("fg"),
                  font=("微软雅黑", 9, "bold" if 强调 else "normal")).pack(side="left")
 
-    一行("源", _shorten_path(info.get("源")))
-    一行("目标", _shorten_path(info.get("目标")))
-    一行("存档", str(info.get("存档") or "（未填）"))
-    一行("要复制", trp("模组 {0} · config {1} · 其它 {2} ｜ 共 {3} 个文件 / {4:.1f} MB",
+    一行(trp("源"), _shorten_path(info.get("源")))
+    一行(trp("目标"), _shorten_path(info.get("目标")))
+    一行(trp("存档"), str(info.get("存档") or trp("（未填）")))
+    一行(trp("要复制"), trp("模组 {0} · config {1} · 其它 {2} ｜ 共 {3} 个文件 / {4:.1f} MB",
                    info.get("模组", 0), info.get("config", 0), info.get("其它文件", 0),
                    info.get("文件数", 0), info.get("大小MB", 0.0)))
     覆盖 = bool(info.get("覆盖模组"))
-    一行("同名文件", trp("模组：{0} ｜ 其它文件：{1}",
+    一行(trp("同名文件"), trp("模组：{0} ｜ 其它文件：{1}",
                    trp("覆盖（先备份）" if 覆盖 else "跳过（目标保持不动）"),
                    trp("覆盖（先备份）" if info.get("其它文件冲突") == "overwrite"
                        else "跳过（目标保持不动）")),
@@ -559,7 +559,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     env = dict(env or {})
     info = get_full_mod_metadata(jar_path)
     # 单实例：同一模组的详情窗口已打开则聚焦，避免双击连点重复弹窗
-    win_title = f"模组详情 - {os.path.basename(jar_path)}"
+    win_title = trp("模组详情 - {0}", os.path.basename(jar_path))
     for w in getattr(parent, '_mod_detail_windows', []):
         try:
             if w.winfo_exists() and w.title() == win_title:
@@ -643,7 +643,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         win._detail_chips.append((chip, kind, text_c))
     if tags:
         note = tk.Label(chips_row,
-                        text="（分类来自 Modrinth）" if tags_from_web else "（分类为关键词推测）",
+                        text=(trp("（分类来自 Modrinth）") if tags_from_web
+                              else trp("（分类为关键词推测）")),
                         fg=muted, font=("微软雅黑", 8))
         note._keep_fg = True
         note.pack(side="left", padx=(4, 0))
@@ -655,7 +656,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     grid = tk.Frame(win)
     grid.pack(fill="x", padx=22, pady=(10, 4))
     grid.columnconfigure(1, weight=1)
-    fields = (("作者", info["authors"]), ("依赖", info["dependencies"]),
+    fields = ((trp("作者"), info["authors"]), (trp("依赖"), info["dependencies"]),
               ("Mod ID", info["modid"]))
     for r, (k, v) in enumerate(fields):
         kl = tk.Label(grid, text=k, font=("微软雅黑", 9), anchor="ne", fg=muted)
@@ -723,7 +724,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             except Exception as e:
                 _flash(trp("打开失败：{0}", e), fail)
                 return
-        _flash("已在资源管理器中定位该文件。", ok)
+        _flash(trp("已在资源管理器中定位该文件。"), ok)
 
     def copy_text(value, what):
         value = str(value or "").strip()
@@ -791,9 +792,9 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
                               values=("", "fabric", "forge", "neoforge", "quilt"))
     loader_box.pack(side="left", padx=(0, 6))
     if env.get("mc") or env.get("loader"):
-        _env_hint = "自动识别自 %s" % (env.get("src") or "实例")
+        _env_hint = trp("自动识别自 {0}", (env.get("src") or trp("实例")))
     else:
-        _env_hint = "没认出你的实例版本，可手动选"
+        _env_hint = trp("没认出你的实例版本，可手动选")
     tk.Label(filt, text=_env_hint, fg=muted).pack(side="left")
     win._search_filter_widgets = (mc_box, loader_box)
 
@@ -1015,8 +1016,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         # 探测出来的版本偶尔会错 —— 整合包自己的版本号就可能长得像 MC 版本。
         if not results and mc_now and not widen_state["tried"]:
             widen_state["tried"] = True
-            widen_state["note"] = ("按 %s 没搜到东西 —— 可能是版本认错了，"
-                                   "已自动放宽版本再搜一次。" % mc_now)
+            widen_state["note"] = trp("按 {0} 没搜到东西 —— 可能是版本认错了，"
+                                      "已自动放宽版本再搜一次。", mc_now)
             mc_var.set("")
             do_search()
             return
@@ -1027,7 +1028,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         result_items.clear()
         if not results:
             set_status(("%s " % 备注 if 备注 else "")
-                       + "没有找到相关模组，换个关键词试试。", fail)
+                       + trp("没有找到相关模组，换个关键词试试。"), fail)
             return
         # 按相似度打分排序，分数最高者置顶并标绿（"最相似"）
         scored = [(match_score(r), i, r) for i, r in enumerate(results)]
@@ -1064,7 +1065,8 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             threading.Thread(target=lambda pid=pid, i=pos, f=过滤,
                              src=r.get("source"), sl=r.get("slug", ""), wu=r.get("project_url", ""):
                              _fetch_version_for(pid, i, f, src, sl, wu), daemon=True).start()
-        extra = "★为各平台各自最相似的那条。" if best >= MIN else "未找到相似度足够的候选。"
+        extra = (trp("★为各平台各自最相似的那条。") if best >= MIN
+                 else trp("未找到相似度足够的候选。"))
         # 按来源计数：这样"看不到 CurseForge"时能立刻分清是**没查**还是**查了 0 条**
         # （前者会伴随"部分来源没查成"的提示，后者这里就是 0 条）。
         _计数 = {"curseforge": 0, "modrinth": 0}
@@ -1072,11 +1074,12 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             _k = _r.get("source") or "modrinth"
             if _k in _计数:
                 _计数[_k] += 1
-        _分源 = "🟧 CurseForge %d 条 · 🟩 Modrinth %d 条 ｜ " % (
-            _计数["curseforge"], _计数["modrinth"])
+        _分源 = trp("🟧 CurseForge {0} 条 · 🟩 Modrinth {1} 条 ｜ ",
+                    _计数["curseforge"], _计数["modrinth"])
         set_status(("%s " % 备注 if 备注 else "")
                    + _分源
-                   + f"找到 {len(results)} 个结果。{extra} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）", ok)
+                   + trp("找到 {0} 个结果。{1} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）",
+                         len(results), extra), ok)
         # 后台并发拉取各候选的最新版本，逐行填充
         for i, r in enumerate(results):
             pid = r.get("project_id")
@@ -1112,7 +1115,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         if status == "no_match":
             mc, loader = _filters()
             只看 = " · ".join(x for x in (mc, loader) if x)
-            disp = ("无 %s 的版本" % 只看) if 只看 else "没有可用版本"
+            disp = trp("无 {0} 的版本", 只看) if 只看 else trp("没有可用版本")
             updatable = False
         elif status == "error":
             disp, updatable = "获取失败", False
@@ -1203,7 +1206,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
             try:
                 results.extend(search_modrinth(q, limit=8, mc_version=mc, loader=loader))
             except Exception as e:
-                错误.append("Modrinth：%s" % e)
+                错误.append(trp("Modrinth：{0}", e))
             # 再搜 CurseForge（只有配了 Key 才搜；没 Key 就静默跳过，不打扰用户）
             try:
                 from utils import secrets
@@ -1212,11 +1215,11 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
                     results.extend(search_curseforge(q, limit=8, mc_version=mc,
                                                      loader=loader))
                 else:
-                    错误.append("CurseForge：没配置 API Key（可在设置里填）")
+                    错误.append(trp("CurseForge：没配置 API Key（可在设置里填）"))
             except Exception as e:
-                错误.append("CurseForge：%s" % e)
+                错误.append(trp("CurseForge：{0}", e))
             if not results:
-                msg_queue.put(("error", "；".join(错误) or "没搜到结果"))
+                msg_queue.put(("error", "；".join(错误) or trp("没搜到结果")))
                 return
             # 两个源都有结果时，把两边的提示一起给出去（比如 CurseForge 因限流失败）
             if 错误:
@@ -1241,32 +1244,32 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
         if r and r.get("download_url"):
             webbrowser.open(r["download_url"])
         else:
-            set_status("请先选中一条结果（需要它带下载链接）。", fail)
+            set_status(trp("请先选中一条结果（需要它带下载链接）。"), fail)
 
     def copy_download():
         r = selected()
         if r and r.get("download_url"):
             win.clipboard_clear()
             win.clipboard_append(r["download_url"])
-            set_status("已复制下载链接到剪贴板。", ok)
+            set_status(trp("已复制下载链接到剪贴板。"), ok)
         else:
-            set_status("请先选中一条结果（需要它带下载链接）。", fail)
+            set_status(trp("请先选中一条结果（需要它带下载链接）。"), fail)
 
     def copy_project():
         r = selected()
         if r:
             win.clipboard_clear()
             win.clipboard_append(r["project_url"])
-            set_status("已复制项目链接到剪贴板。", ok)
+            set_status(trp("已复制项目链接到剪贴板。"), ok)
         else:
-            set_status("请先选中一条结果。", fail)
+            set_status(trp("请先选中一条结果。"), fail)
 
     def open_project_page():
         r = selected()
         if r and r.get("project_url"):
             webbrowser.open(r["project_url"])
         else:
-            set_status("请先选中一条结果。", fail)
+            set_status(trp("请先选中一条结果。"), fail)
 
     open_btn.set_command(open_download)
     copy_link_btn.set_command(copy_download)

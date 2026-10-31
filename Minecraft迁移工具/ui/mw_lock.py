@@ -15,6 +15,7 @@ _lock_main_window / _finish_migration_lock / _unlock_main_window。
 import tkinter as tk
 
 from utils.helpers import trace_exc
+from utils.i18n import trp
 
 
 class LockMixin:
@@ -46,7 +47,7 @@ class LockMixin:
             return
         self._锁屏说明已记 = True
         try:
-            self.log("🔒 迁移期间主界面按钮全部禁用（锁屏遮罩已移除）", "INFO")
+            self.log(trp("🔒 迁移期间主界面按钮全部禁用（锁屏遮罩已移除）"), "INFO")
         except Exception as e:
             trace_exc("main_window/锁屏说明", e)
         try:

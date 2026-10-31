@@ -37,14 +37,18 @@ class ListsMixin:
             self.toast("⚠️ 请先选择源整合包目录，再往清单里加东西", level="warn")
             return 0
         if not (Path(源) / 条目.replace("\\", "/").rstrip("/")).exists():
-            self.toast("⚠️ 源目录里没有 %s，没加进清单" % 条目, level="warn")
+            self.toast(trp("⚠️ 源目录里没有 {0}，没加进清单", 条目), level="warn")
             return 0
         添加, _失败 = self._add_extra_paths([条目])
         if 添加:
-            self.toast("✅ 已把 %s 加入「其它文件」清单，迁移时会一起带过去%s"
-                       % (条目, ("（%s）" % 说明) if 说明 else ""), level="ok")
+            if 说明:
+                self.toast(trp("✅ 已把 {0} 加入「其它文件」清单，迁移时会一起带过去（{1}）",
+                               条目, 说明), level="ok")
+            else:
+                self.toast(trp("✅ 已把 {0} 加入「其它文件」清单，迁移时会一起带过去", 条目),
+                           level="ok")
         else:
-            self.toast("ℹ️ %s 已经在清单里了" % 条目, level="info")
+            self.toast(trp("ℹ️ {0} 已经在清单里了", 条目), level="info")
         return 添加
 
     def _quick_add_preset(self, 条目):
@@ -70,7 +74,7 @@ class ListsMixin:
         for _键, 条目, 说明 in _EXTRA_PRESETS:
             在了 = 条目.replace("\\", "/").rstrip("/").lower() in 已有
             菜单.add_command(
-                label=("%s   %s%s" % (条目, 说明, "　✅ 已在清单" if 在了 else "")),
+                label=("%s   %s%s" % (条目, 说明, trp("　✅ 已在清单") if 在了 else "")),
                 command=(lambda e=条目: self._quick_add_preset(e)))
         try:
             x = self.add_extra_preset_btn.winfo_rootx()
@@ -158,7 +162,7 @@ class ListsMixin:
             pass
 
     # ---------- 检查模组存在性 ----------
-    @_file_task_lock("检查模组是否存在")
+    @_file_task_lock(trp("检查模组是否存在"))
     def check_modlist_existence(self):
         now = time.time()
         if now - self.last_check_modlist_time < 2:
@@ -398,7 +402,7 @@ class ListsMixin:
         if failed:
             messagebox.showwarning(
                 "添加提示",
-                f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
+                trp("⚠️ 有 {0} 项未添加（不在源 config 目录下或不安全）：", len(failed)) + "\n"
                 + "\n".join(str(f) for f in failed[:5]), parent=self.root)
 
     def _pick_config_folders(self, src_config):
@@ -564,8 +568,8 @@ class ListsMixin:
 
         btnbar = tk.Frame(dlg, bg=theme["bg"])
         btnbar.pack(fill="x", padx=10, pady=(8, 10))
-        mk_button(btnbar, "全选顶层", select_top).pack(side="left", padx=4)
-        mk_button(btnbar, "全不选", clear_all).pack(side="left", padx=4)
+        mk_button(btnbar, trp("全选顶层"), select_top).pack(side="left", padx=4)
+        mk_button(btnbar, trp("全不选"), clear_all).pack(side="left", padx=4)
 
         def confirm():
             picked = [Path(r) for r in checked]
@@ -579,7 +583,7 @@ class ListsMixin:
             captured["value"] = None
             dlg.destroy()
 
-        mk_button(btnbar, "确定添加", confirm).pack(side="right", padx=4)
+        mk_button(btnbar, trp("确定添加"), confirm).pack(side="right", padx=4)
         mk_button(btnbar, "取消", cancel).pack(side="right", padx=4)
 
         populate("", src_config)
@@ -619,7 +623,7 @@ class ListsMixin:
         if failed:
             messagebox.showwarning(
                 "添加提示",
-                f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
+                trp("⚠️ 有 {0} 项未添加（不在源 config 目录下或不安全）：", len(failed)) + "\n"
                 + "\n".join(str(f) for f in failed[:5]), parent=self.root)
 
     def _safe_undo(self, widget):
@@ -824,10 +828,10 @@ class ListsMixin:
         安全校验沿用 _is_safe_path（挡 ".." 和绝对路径）。
         """
         if not str(base_dir or "").strip():
-            return 0, ["尚未设置源整合包实例根目录"]
+            return 0, [trp("尚未设置源整合包实例根目录")]
         base = Path(base_dir)
         if not base.exists():
-            return 0, [f"基准目录不存在：{base}"]
+            return 0, [trp("基准目录不存在：{0}", base)]
         lines = {l.strip().replace("\\", "/").rstrip("/")
                  for l in text_widget.get("1.0", tk.END).splitlines() if l.strip()}
         added, failed = 0, []
@@ -859,7 +863,7 @@ class ListsMixin:
         """（config 清单）路径相对 源实例/config。"""
         src = self.source_path.get().strip()
         if not src:
-            return 0, ["尚未设置源实例根目录"]
+            return 0, [trp("尚未设置源实例根目录")]
         added, failed = self._add_paths_to(self.config_text, Path(src) / "config", paths)
         if added:
             self.save_config()
@@ -880,7 +884,7 @@ class ListsMixin:
             messagebox.showinfo("添加成功", trp("✅ 已添加 {0} 个 config 条目。", added), parent=self.root)
         if failed:
             messagebox.showwarning("添加提示",
-                                   f"⚠️ 有 {len(failed)} 项未添加（不在源 config 目录下或不安全）：\n"
+                                   trp("⚠️ 有 {0} 项未添加（不在源 config 目录下或不安全）：", len(failed)) + "\n"
                                    + "\n".join(failed[:5]), parent=self.root)
 
     def clear_mod_list(self):
@@ -893,7 +897,7 @@ class ListsMixin:
         self._notify_modlist_change()
         # 清空是**不可撤销**的：没有任何提示的话，用户（尤其误点）无法判断发生了
         # 什么、也没法确认是不是自己想清的那一份（清空按钮就在添加按钮旁边）。
-        self.toast("🗑 模组清单已清空", level="ok")
+        self.toast(trp("🗑 模组清单已清空"), level="ok")
 
     def clear_config(self):
         """清空 config 清单。"""
@@ -903,7 +907,7 @@ class ListsMixin:
         self.save_config()
         self._update_text_states()
         self._notify_config_change()
-        self.toast("🗑 config 清单已清空", level="ok")
+        self.toast(trp("🗑 config 清单已清空"), level="ok")
 
     # ---------- 其它文件清单（路径相对**整合包根目录**） ----------
     # 用途：mods / config / saves 之外、但你想一起带走的东西，
@@ -916,7 +920,7 @@ class ListsMixin:
     def _add_extra_paths(self, paths):
         src = self.source_path.get().strip()
         if not src:
-            return 0, ["尚未设置源整合包实例根目录"]
+            return 0, [trp("尚未设置源整合包实例根目录")]
         added, failed = self._add_paths_to(self.extra_text, Path(src), paths)
         if added:
             self.save_config()
@@ -962,7 +966,7 @@ class ListsMixin:
         if failed:
             messagebox.showwarning(
                 "添加提示",
-                f"⚠️ 有 {len(failed)} 项未添加（不在整合包目录下或不安全）：\n"
+                trp("⚠️ 有 {0} 项未添加（不在整合包目录下或不安全）：", len(failed)) + "\n"
                 + "\n".join(str(f) for f in failed[:5]), parent=self.root)
 
     def browse_add_extra_file(self):
@@ -990,7 +994,7 @@ class ListsMixin:
         if failed:
             messagebox.showwarning(
                 "添加提示",
-                f"⚠️ 有 {len(failed)} 项未添加（不在整合包目录下或不安全）：\n"
+                trp("⚠️ 有 {0} 项未添加（不在整合包目录下或不安全）：", len(failed)) + "\n"
                 + "\n".join(str(f) for f in failed[:5]), parent=self.root)
 
     def _on_extra_drop(self, event):
@@ -1006,7 +1010,7 @@ class ListsMixin:
         if failed:
             messagebox.showwarning(
                 "添加提示",
-                f"⚠️ 有 {len(failed)} 项未添加（不在整合包目录下或不安全）：\n"
+                trp("⚠️ 有 {0} 项未添加（不在整合包目录下或不安全）：", len(failed)) + "\n"
                 + "\n".join(str(f) for f in failed[:5]), parent=self.root)
 
     def clear_extra_list(self):
@@ -1016,7 +1020,7 @@ class ListsMixin:
         self._clear_extra_status()
         self.save_config()
         self._update_text_states()
-        self.toast("🗑 其它文件清单已清空", level="ok")
+        self.toast(trp("🗑 其它文件清单已清空"), level="ok")
 
     def _clear_extra_status(self):
         """清掉其它文件清单的存在性高亮。"""

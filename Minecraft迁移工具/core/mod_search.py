@@ -75,12 +75,12 @@ def _带重试(动作, 说明="请求"):
                     原因 = getattr(e, "reason", None) or e
                     from utils import secrets
                     raise RuntimeError(secrets.redact(
-                        "%s（已自动重试 %d 次仍然失败）"
-                        % (原因, _最大尝试 - 1))) from e
+                        trp("{0}（已自动重试 {1} 次仍然失败）",
+                            原因, _最大尝试 - 1))) from e
                 raise
             用过重试 = True
             time.sleep(_重试间隔)
-    raise RuntimeError("%s 失败" % 说明)
+    raise RuntimeError(trp("{0} 失败", 说明))
 
 
 def _json_get(url, timeout=15):
@@ -485,7 +485,7 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
     from utils import secrets
     k = secrets.clean(key) if key is not None else secrets.get_key()
     if not k:
-        raise CurseForgeNoKey("未设置 CurseForge API Key")
+        raise CurseForgeNoKey(trp("未设置 CurseForge API Key"))
     url = CURSEFORGE_API + 路径
     if 参数:
         url += "?" + urllib.parse.urlencode(参数)
@@ -513,17 +513,17 @@ def _cf_get(路径, 参数=None, timeout=15, key=None):
         return json.loads(原始.decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            raise RuntimeError("CurseForge 拒绝了这个 API Key（HTTP %d）" % e.code)
+            raise RuntimeError(trp("CurseForge 拒绝了这个 API Key（HTTP {0}）", e.code))
         if e.code == 404:
-            raise RuntimeError("CurseForge 上没有这个项目（HTTP 404）")
+            raise RuntimeError(trp("CurseForge 上没有这个项目（HTTP 404）"))
         # 429 单列一条：刚拿到 Key 的人最容易撞的就是限流，看到"请求失败（HTTP 429）"
         # 会以为 Key 有问题。这里直接说清楚是"请求太频繁/额度用完了"。
         if e.code == 429:
-            raise RuntimeError("CurseForge 限流了（HTTP 429）：请求太频繁或今日额度用完了，"
-                               "过一会儿再试；批量搜索时把间隔拉长一点")
+            raise RuntimeError(trp(
+                "CurseForge 限流了（HTTP 429）：请求太频繁或今日额度用完了，过一会儿再试；批量搜索时把间隔拉长一点"))
         if 500 <= e.code < 600:
-            raise RuntimeError("CurseForge 服务端出错（HTTP %d），稍后重试" % e.code)
-        raise RuntimeError("CurseForge 请求失败（HTTP %d）" % e.code)
+            raise RuntimeError(trp("CurseForge 服务端出错（HTTP {0}），稍后重试", e.code))
+        raise RuntimeError(trp("CurseForge 请求失败（HTTP {0}）", e.code))
     except RuntimeError:
         # _带重试 拼好的文字已经是给人看的（也脱敏过了），别再用
         # redact_exc 套一层"RuntimeError: "前缀。
@@ -551,7 +551,7 @@ def test_curseforge_key(key=None, timeout=12):
         return False, "还没填 Key"
     except Exception as e:
         return False, secrets.redact_exc(e)
-    return True, "Key 可用（指纹 %s）" % secrets.fingerprint(k)
+    return True, trp("Key 可用（指纹 {0}）", secrets.fingerprint(k))
 
 
 def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):

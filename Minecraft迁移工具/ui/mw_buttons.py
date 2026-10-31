@@ -6,6 +6,7 @@
 """
 from ui import button_prefs
 from ui.mw_common import _BUTTON_GROUPS, _DEFAULT_BUTTON_ORDER, WrapRow
+from utils.i18n import trp           # 文案模板：trp 按位置填值
 
 
 class ButtonsMixin:
@@ -254,7 +255,7 @@ class ButtonsMixin:
         self._apply_button_layout()
         self.save_config()
         self._refresh_button_tree()
-        self.toast(("📌 已隐藏该按钮" if hidden else "📌 已显示该按钮"), level="ok")
+        self.toast(trp("📌 已隐藏该按钮") if hidden else trp("📌 已显示该按钮"), level="ok")
 
     def move_button(self, key, delta):
         """在所属那一排里把按钮上移/下移一格（整表顺序里含已隐藏的项）。"""
@@ -266,7 +267,7 @@ class ButtonsMixin:
         j = i + delta
         if j < 0 or j >= len(order):
             # 到底了却没有任何反馈，会让人以为按钮坏了（点在边界上反复无效）
-            self.toast("⚠️ 已经到" + ("最前" if delta < 0 else "最后") + "了", level="warn")
+            self.toast(trp("⚠️ 已经到{0}了", trp("最前") if delta < 0 else trp("最后")), level="warn")
             return False
         order[i], order[j] = order[j], order[i]
         self.button_order[gkey] = order
@@ -274,7 +275,7 @@ class ButtonsMixin:
         self._apply_button_layout()
         self.save_config()
         self._refresh_button_tree()
-        self.toast("🔼 已上移" if delta < 0 else "🔽 已下移", level="ok")
+        self.toast(trp("🔼 已上移") if delta < 0 else trp("🔽 已下移"), level="ok")
         return True
 
     def reset_button_layout(self):

@@ -148,7 +148,7 @@ class QtMixin:
                 pass
             try:
                 from utils.helpers import trace_line
-                trace_line("qt 窗口关闭 %s" % type(v).__name__)
+                trace_line(trp("qt 窗口关闭 {0}", type(v).__name__))
             except Exception:
                 pass
         self._qt_views = 活的
@@ -202,7 +202,7 @@ class QtMixin:
             return False
         try:
             from utils.helpers import trace_line
-            trace_line("打开 Qt 放大查看（子进程）%s rows=%d" % (title, len(entries)))
+            trace_line(trp("打开 Qt 放大查看（子进程）{0} rows={1}", title, len(entries)))
         except Exception:
             pass
         self.log(trp("🗂 已打开 Qt 放大查看：{0}（{1} 项，独立进程）", title, len(entries)),
@@ -236,15 +236,15 @@ class QtMixin:
                                apply_callback):
             try:
                 from utils.helpers import trace_line
-                trace_line("打开 Qt 差异窗口（子进程）rows=%d" % len(data))
+                trace_line(trp("打开 Qt 差异窗口（子进程）rows={0}", len(data)))
             except Exception:
                 pass
             self.log(trp("🗂 已打开 Qt 差异窗口（{0} 项，独立进程）", len(data)),
                      level="INFO", save=False)
             self.toast(trp("🗂 已打开 Qt 差异窗口（{0} 项）", len(data)), level="info")
             return None
-        self.log("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口", level="WARNING", save=False)
-        self.toast("⚠ Qt 子进程起不来，已改用进程内 Tk 差异窗口", level="warn")
+        self.log(trp("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口"), level="WARNING", save=False)
+        self.toast(trp("⚠ Qt 子进程起不来，已改用进程内 Tk 差异窗口"), level="warn")
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback,
                                             cards=_想卡片, env=self._instance_env())
@@ -313,7 +313,7 @@ class QtMixin:
             return True
         except Exception as e:
             self.log(trp("⚠ 无法启动 Qt 子进程：{0}", e), level="ERROR", save=False)
-            self.toast("⚠ 无法启动 Qt 子进程，详见日志", level="warn")
+            self.toast(trp("⚠ 无法启动 Qt 子进程，详见日志"), level="warn")
             return False
 
     def _send_qt_host_command(self, cmd, kind=None, 附加=None):
@@ -377,7 +377,7 @@ class QtMixin:
                                                  errors="ignore")[-400:]
                     except Exception:
                         pass
-                    self.log("⚠ Qt 窗口进程异常退出（%s）%s" % (code, 尾巴),
+                    self.log(trp("⚠ Qt 窗口进程异常退出（{0}）{1}", code, 尾巴),
                              level="ERROR", save=False)
         if 主机们:
             self._qt_host_poll = self.root.after(150, self._poll_qt_host)
@@ -413,7 +413,7 @@ class QtMixin:
             # 子进程确认换好了清单（实时重载）；只留最新的，用于诊断/测试
             self._qt_entries_ok = {"kind": 消息.get("kind"), "rows": 消息.get("rows")}
         elif 动作 == "entries_fail":
-            self.log("⚠ Qt 窗口更新清单失败：%s" % 消息.get("error"),
+            self.log(trp("⚠ Qt 窗口更新清单失败：{0}", 消息.get("error")),
                      level="ERROR", save=False)
         elif 动作 == "theme_ok":
             # 子进程确认换好了：记个内存标记（诊断/测试用），日志里不刷（切一次一行太吵）
@@ -423,12 +423,12 @@ class QtMixin:
             try:
                 from utils.helpers import trace_line
 
-                trace_line("Qt 窗口主题已切换 kind=%s bg=%s"
-                           % (kind, 消息.get("bg")))
+                trace_line(trp("Qt 窗口主题已切换 kind={0} bg={1}",
+                               kind, 消息.get("bg")))
             except Exception:
                 pass
         elif 动作 == "theme_fail":
-            self.log("⚠ Qt 窗口换主题失败：%s" % 消息.get("error"),
+            self.log(trp("⚠ Qt 窗口换主题失败：{0}", 消息.get("error")),
                      level="ERROR", save=False)
 
     def stop_qt_host(self):

@@ -35,6 +35,7 @@ from ctypes import wintypes
 
 from utils import anim
 from utils.dpi import px
+from utils.i18n import trp           # 文案模板：trp 按位置填值
 
 # 联网正常 → 绿色主题；探测不通 → 红色主题（整个浮标跟着变色，不只是环）
 _TILE = (38, 50, 56, 255)          # 无数据时的中性底色（一般用不到）
@@ -1527,10 +1528,10 @@ class NetFloat:
 
     def _menu(self):
         self.menu = tk.Menu(self._target(), tearoff=0)
-        self.menu.add_command(label="打开曲线图", command=self._open_chart)
-        self.menu.add_command(label="复位位置", command=self._reset_pos)
+        self.menu.add_command(label=trp("打开曲线图"), command=self._open_chart)
+        self.menu.add_command(label=trp("复位位置"), command=self._reset_pos)
         self.menu.add_separator()
-        self.menu.add_command(label="隐藏浮标", command=self.close)
+        self.menu.add_command(label=trp("隐藏浮标"), command=self.close)
 
     def _popup(self, e):
         try:

@@ -383,7 +383,7 @@ class _ArchiveList(tk.Frame):
                                     text=rec.get("time", "?"),
                                     fill=self.theme["fg"], font=("微软雅黑", 10, "bold")))
             组.append(c.create_text(w - px(24), px(16), anchor="e",
-                                    text=("模拟" if 模式 == "dry" else "实际"),
+                                    text=(trp("模拟") if 模式 == "dry" else trp("实际")),
                                     fill=条, font=("微软雅黑", 9, "bold")))
             组.append(c.create_text(px(20), px(38), anchor="w",
                                     text="%s → %s" % (_名(rec.get("source")), _名(rec.get("target"))),
@@ -391,14 +391,14 @@ class _ArchiveList(tk.Frame):
             统 = rec.get("stats") or {}
             组.append(c.create_text(
                 px(20), px(60), anchor="w",
-                text="模组 %d　·　config %d　·　其它 %d" % (
+                text=trp("模组 {0}　·　config {1}　·　其它 {2}",
                     (统.get("mods") or {}).get("success", 0),
                     (统.get("config") or {}).get("success", 0),
                     (统.get("extra") or {}).get("success", 0)),
                 fill=弱色, font=("微软雅黑", 9)))
             组.append(c.create_text(
                 px(20), px(78), anchor="w",
-                text="耗时 %s 秒　·　%s" % (rec.get("duration", "?"), 结果 or "—"),
+                text=trp("耗时 {0} 秒　·　{1}", rec.get("duration", "?"), 结果 or "—"),
                 fill=弱色, font=("微软雅黑", 8)))
             # 滚动时只需要 (图元, x, 相对卡片顶的 dy)：文字图元的 x 建完就再也不变了，
             # 所以在建的时候取一次存下来。改前 redraw() 是每帧每个图元都
@@ -489,7 +489,7 @@ class MigrationMixin:
         顶 = tk.Toplevel(self.root)
         self._history_win = 顶
         顶.withdraw()      # 构建完居中后再显示，避免"闪现-跳到中间"
-        顶.title("迁移历史")
+        顶.title(trp("迁移历史"))
         try:
             顶.geometry(window_geometry(顶, 1040, 660))
         except Exception:
@@ -520,8 +520,8 @@ class MigrationMixin:
         标题框.pack(side="left", fill="x", expand=True)
         tk.Label(标题框, text="迁移历史", font=("微软雅黑", 15, "bold"),
                  bg=self.theme["bg"], fg=self.theme["fg"], anchor="w").pack(fill="x")
-        tk.Label(标题框, text="共 %d 份档案　·　最多保存 %d 份（可在设置里调整）　·　%s"
-                 % (len(记录), 上限, history_store._root()),
+        tk.Label(标题框, text=trp("共 {0} 份档案　·　最多保存 {1} 份（可在设置里调整）　·　{2}",
+                 len(记录), 上限, history_store._root()),
                  font=("微软雅黑", 9), bg=self.theme["bg"], fg=弱色,
                  anchor="w").pack(fill="x", pady=(px(3), 0))
 
@@ -641,21 +641,21 @@ class MigrationMixin:
         def _填数据(槽, 成功, 跳过=0, 失败=0, 有跳过=True):
             for c in 槽.winfo_children():
                 c.destroy()
-            段 = [(str(成功), "data_num_fg"), (" 个", "muted_fg")]
+            段 = [(str(成功), "data_num_fg"), (trp(" 个"), "muted_fg")]
             if 有跳过:
-                段 += [("　跳过 ", "muted_fg"),
+                段 += [(trp("　跳过 "), "muted_fg"),
                        (str(跳过), "log_warning_fg" if 跳过 else "muted_fg")]
-            段 += [("　失败 ", "muted_fg"),
+            段 += [(trp("　失败 "), "muted_fg"),
                    (str(失败), "fail_fg" if 失败 else "ok_fg")]
             DataText(槽, self.theme, 段, font=("微软雅黑", 9)).pack(anchor="w")
 
-        详情["源"] = _行文本("源目录", 数据色)
-        详情["目标"] = _行文本("目标目录", 数据色)
-        详情["模组"] = _行数据("模组")
+        详情["源"] = _行文本(trp("源目录"), 数据色)
+        详情["目标"] = _行文本(trp("目标目录"), 数据色)
+        详情["模组"] = _行数据(trp("模组"))
         详情["config"] = _行数据("config")
-        详情["其它"] = _行数据("其它")
-        详情["耗时"] = _行文本("耗时", 数字色)
-        详情["失败"] = _行文本("失败")
+        详情["其它"] = _行数据(trp("其它"))
+        详情["耗时"] = _行文本(trp("耗时"), 数字色)
+        详情["失败"] = _行文本(trp("失败"))
 
         日志标题 = tk.Frame(内容, bg=面板色)
         日志标题.pack(fill="x", padx=px(14), pady=(px(10), px(2)))
@@ -667,7 +667,7 @@ class MigrationMixin:
 
         # 放大查看：**在本窗口里**把日志铺满（不另开窗口）
         _放大 = {"on": False}
-        放大钮 = tk.Label(日志标题, text="⤢  放大", bg=面板色, fg=主色,
+        放大钮 = tk.Label(日志标题, text=trp("⤢  放大"), bg=面板色, fg=主色,
                         cursor="hand2", font=("微软雅黑", 9),
                         padx=px(9), pady=px(1), bd=0,
                         highlightthickness=1, highlightbackground=边框色)
@@ -745,12 +745,12 @@ class MigrationMixin:
             """
             _放大["on"] = not _放大["on"]
             if _放大["on"]:
-                放大钮.config(text="⤡  还原")
+                放大钮.config(text=trp("⤡  还原"))
                 概览.pack_forget()
                 左.pack_forget()
                 _滑内容(+1)
             else:
-                放大钮.config(text="⤢  放大")
+                放大钮.config(text=trp("⤢  放大"))
                 左.configure(width=px(380))
                 左.pack(side="left", fill="y", before=右)
                 概览.pack(fill="x", padx=px(14), pady=(px(4), px(2)), after=顶条)
@@ -811,7 +811,7 @@ class MigrationMixin:
 
         def 显示(rec):
             if not rec:
-                详情["标题"].config(text="没有档案")
+                详情["标题"].config(text=trp("没有档案"))
                 详情["副标题"].config(text="")
                 for k in ("源", "目标", "耗时", "失败"):
                     详情[k].config(text="—")
@@ -819,11 +819,13 @@ class MigrationMixin:
                     _填数据(详情[k], 0, 0, 0)
                 _清空日志()
                 return
-            模式 = "模拟运行" if rec.get("mode") == "dry" else "实际迁移"
+            模式 = trp("模拟运行") if rec.get("mode") == "dry" else trp("实际迁移")
             结果 = rec.get("result") or ""
             色 = 好色 if 结果 == "成功" else (警色 if 结果 == "模拟运行" else 坏色)
-            详情["标题"].config(text="%s　·　%s" % (rec.get("time", "?"), 模式))
-            详情["副标题"].config(text=结果, fg=色)
+            详情["标题"].config(text=trp("{0}　·　{1}", rec.get("time", "?"), 模式))
+            # 结果里存的是中文原值（"成功"/"模拟运行"/…），显示时过一遍词表；
+            # 上面的颜色比较仍然用原值，别改那里的字面量。
+            详情["副标题"].config(text=(trp(结果) if 结果 else "—"), fg=色)
             详情["源"].config(text=rec.get("source", "—"))
             详情["目标"].config(text=rec.get("target", "—"))
             统计 = rec.get("stats") or {}
@@ -833,12 +835,12 @@ class MigrationMixin:
             _填数据(详情["模组"], m.get("success", 0), m.get("skipped", 0), m.get("failed", 0))
             _填数据(详情["config"], c.get("success", 0), 0, c.get("failed", 0), 有跳过=False)
             _填数据(详情["其它"], e.get("success", 0), e.get("skipped", 0), e.get("failed", 0))
-            详情["耗时"].config(text="%s 秒" % rec.get("duration", "—"))
+            详情["耗时"].config(text=trp("{0} 秒", rec.get("duration", "—")))
             失败 = (rec.get("lists") or {}).get("failed") or []
             if 失败:
-                详情["失败"].config(text="%d 条（详见日志）" % len(失败), fg=坏色)
+                详情["失败"].config(text=trp("{0} 条（详见日志）", len(失败)), fg=坏色)
             else:
-                详情["失败"].config(text="无", fg=好色)
+                详情["失败"].config(text=trp("无"), fg=好色)
 
             full = history_store.load_record(rec.get("id") or "") or rec
             详情["日志"].config(state="normal")
@@ -855,13 +857,13 @@ class MigrationMixin:
                 行数 = len(行们)
             else:
                 # 旧档案没有 log_lines：按行里的图标/关键字推断级别，照样上色
-                日志 = full.get("log") or "（这份档案没有日志）"
+                日志 = full.get("log") or trp("（这份档案没有日志）")
                 行数 = 0
                 for 行 in 日志.split("\n"):
                     行数 += 1
                     详情["日志"].insert("end", 行 + "\n", self._日志级别标签(行))
             详情["日志"].config(state="disabled")
-            详情["日志计数"].config(text="%d 行" % 行数)
+            详情["日志计数"].config(text=trp("{0} 行", 行数))
 
         # ---- 底部按钮 ----
         底 = tk.Frame(顶, bg=self.theme["bg"])
@@ -872,9 +874,9 @@ class MigrationMixin:
             if not (0 <= i < len(记录)):
                 return
             rec = 记录[i]
-            if not messagebox.askyesno("删除档案",
-                                       "确定删除 %s 这份档案吗？\n（只删记录，不影响任何游戏文件）"
-                                       % rec.get("time", ""), parent=顶):
+            if not messagebox.askyesno(trp("删除档案"),
+                                       trp("确定删除 {0} 这份档案吗？" + NL + "（只删记录，不影响任何游戏文件）",
+                                       rec.get("time", "")), parent=顶):
                 return
             history_store.delete_record(rec.get("id") or "")
             记录.pop(i)
@@ -882,7 +884,7 @@ class MigrationMixin:
             列表.sel = min(i, max(0, len(记录) - 1))
             列表.redraw()
             显示(记录[列表.sel] if 记录 else None)
-            详情["副标题"].config(text="已删除")
+            详情["副标题"].config(text=trp("已删除"))
 
         # 回滚并进这里（用户要求）：主界面不再有「回滚」按钮，回滚入口只在这扇窗里。
         # 语义没变 —— 仍然是"把目标实例恢复到最近一次迁移之前"，走的还是同一个
@@ -891,15 +893,15 @@ class MigrationMixin:
             NL = chr(10)
             选中记录 = 记录[列表.sel] if (记录 and 0 <= 列表.sel < len(记录)) else None
             时间 = str((选中记录 or {}).get("time") or "")
-            头句 = ("要把目标实例恢复到「%s」这次迁移之前吗？" % 时间) if 时间 else                 "要把目标实例恢复到最近一次迁移之前吗？"
+            头句 = trp("要把目标实例恢复到「{0}」这次迁移之前吗？", 时间) if 时间 else trp("要把目标实例恢复到最近一次迁移之前吗？")
             问 = (头句 + NL + NL
-                  + "会用备份覆盖当前内容：mods / config / saves 以及「其它文件」清单里"
-                  + "复制过的部分都会还原，迁移前不存在的东西会被删掉。" + NL + NL
-                  + "此操作不可撤销。回滚过程看主界面的执行日志。")
+                  + trp("会用备份覆盖当前内容：mods / config / saves 以及「其它文件」清单里复制过的部分都会还原，迁移前不存在的东西会被删掉。")
+                  + NL + NL
+                  + trp("此操作不可撤销。回滚过程看主界面的执行日志。"))
             try:
                 from ui import precheck_dialog as _pd
                 继续 = bool(_pd.确认(self.root, self.theme, "↩ 回滚到迁移前", 问,
-                                    主按钮="回滚", 次按钮="先不滚", 图标级别="fail"))
+                                    主按钮="回滚", 次按钮=trp("先不滚"), 图标级别="fail"))
             except Exception:
                 继续 = bool(messagebox.askyesno("↩ 回滚到迁移前", trp(问)))
             if not 继续:
@@ -922,13 +924,13 @@ class MigrationMixin:
                 有 = bool(选 and str(选.get("id") or "") in 备份表)
                 回滚钮.state("normal" if 有 else "disabled")
                 if not 有 and 选 is not None:
-                    回滚钮._提示 = "这条记录没有自己的备份"
+                    回滚钮._提示 = trp("这条记录没有自己的备份")
             except Exception:
                 pass
 
         self._history_sel_hook = _刷回滚钮
         _刷回滚钮()
-        删钮 = create_gradient_button(底, "删除这份档案", 删当前, colors=("#e53935", "#b71c1c"))
+        删钮 = create_gradient_button(底, trp("删除这份档案"), 删当前, colors=("#e53935", "#b71c1c"))
         删钮.pack(side="left")
         create_gradient_button(底, "关闭", lambda: 顶.destroy()).pack(side="right")
 
@@ -983,8 +985,8 @@ class MigrationMixin:
                 self.log(trp("❌ 回滚失败：这份档案没有自己的备份（{0}）", 记录id), level="ERROR")
                 messagebox.showerror(
                     "回滚失败",
-                    "这条迁移记录没有可用的备份，回滚不了。" + chr(10)
-                    + "（早期版本的迁移不会按记录留备份）")
+                    trp("这条迁移记录没有可用的备份，回滚不了。" + NL
+                        + "（早期版本的迁移不会按记录留备份）"))
                 return
         else:
             备份表 = list_record_backups(tgt_path)
@@ -1042,13 +1044,13 @@ class MigrationMixin:
                 self.log("❌ 回滚操作失败，目标实例可能处于不完整状态，"
                          "备份仍然保留，可重新执行回滚", level="ERROR")
         except Exception:
-            self.log("❌ 回滚收尾时出错（备份仍保留，可以重新执行回滚）", level="ERROR")
+            self.log(trp("❌ 回滚收尾时出错（备份仍保留，可以重新执行回滚）"), level="ERROR")
         finally:
             self._end_file_task()       # 解除"在忙"：按钮恢复、关闭保护解除
         self.log("=" * 50, level="INFO")
         if success:
             messagebox.showinfo("回滚完成", "目标实例已恢复到迁移前的状态。")
-            self._notify_task_done("回滚", "目标实例已恢复到迁移前的状态")
+            self._notify_task_done("回滚", trp("目标实例已恢复到迁移前的状态"))
         else:
             messagebox.showerror("回滚失败",
                                  "回滚未能完整完成，详情见日志。\n"
@@ -1079,7 +1081,7 @@ class MigrationMixin:
                         if not getattr(self, "_mig_finish_pending", False):
                             self._unlock_main_window()  # 进度窗口关掉时同步解锁
                         self._notify_task_done(
-                            "迁移", "任务已结束，点托盘图标打开主界面查看日志")
+                            "迁移", trp("任务已结束，点托盘图标打开主界面查看日志"))
                         return
                     if self.progress_window is not None:
                         self.progress_window.update_progress(*msg)
@@ -1304,7 +1306,7 @@ class MigrationMixin:
         if error_msg:
             self.log(trp("❌ 扫描出错: {0}", error_msg), level="ERROR")
             if self._in_tray():
-                self._notify_task_done("扫描模组差异", f"扫描出错：{error_msg}")
+                self._notify_task_done("扫描模组差异", trp("扫描出错：{0}", error_msg))
             else:
                 messagebox.showerror("扫描错误", trp("扫描过程中发生异常：{0}", error_msg))
             return
@@ -1315,7 +1317,7 @@ class MigrationMixin:
         if not data:
             self.log("📊 扫描完成：无差异", level="INFO")
             if self._in_tray():
-                self._notify_task_done("扫描模组差异", "两个 mods 目录完全一致，没有差异")
+                self._notify_task_done("扫描模组差异", trp("两个 mods 目录完全一致，没有差异"))
             else:
                 messagebox.showinfo("提示", "两个 mods 目录完全一致，没有任何差异。")
             return
@@ -1337,7 +1339,7 @@ class MigrationMixin:
             # 窗口挂在托盘里：别突然弹出这个窗口，先压着，等叫回主界面再开
             self._pending_diff = (data, apply_callback)
             self._notify_task_done("扫描模组差异",
-                                   f"发现 {len(data)} 项差异，点托盘图标查看")
+                                   trp("发现 {0} 项差异，点托盘图标查看", len(data)))
             return
         self._open_diff_window(data, apply_callback)
 
@@ -1778,8 +1780,8 @@ class MigrationMixin:
         self._mig_t0 = time.time()        # 完成态总结要算耗时
         self._mig_plan = (len(modlist), len(configlist), len(extralist))
         self._refresh_busy_state()
-        self._lock_main_window("正在执行迁移任务" if not self.dry_run.get()
-                              else "正在执行迁移任务（模拟运行）")
+        self._lock_main_window(trp("正在执行迁移任务") if not self.dry_run.get()
+                              else trp("正在执行迁移任务（模拟运行）"))
 
         # 模拟模式
         if self.dry_run.get():
@@ -2026,4 +2028,4 @@ class MigrationMixin:
             if getattr(self, "_silent_notify_on_finish", False):
                 self._silent_notify_on_finish = False
                 self._ui_post(lambda: self._notify_task_done(
-                    "迁移", "后台静默执行已结束，点托盘图标查看日志", force=True))
+                    "迁移", trp("后台静默执行已结束，点托盘图标查看日志"), force=True))

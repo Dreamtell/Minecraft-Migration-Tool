@@ -27,6 +27,8 @@ import threading
 import time
 from pathlib import Path
 
+from utils import i18n          # 界面语言（默认中文时 tr() 原样返回）
+
 # 超过这个秒数就记一笔。默认 0.4 秒：Windows 判定"未响应"是 5 秒，但用户嘴里的
 # "卡"往往只有两三百毫秒的连击 —— 1 秒阈值会把这类全放过（用户报卡、日志里却一条
 # 都没有）。想更安静就设环境变量 MCTOOL_STALL_S，比如 1.0。
@@ -54,10 +56,10 @@ def _write(间隔):
         _last_written[0] = 现在
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write("\n" + "=" * 72 + "\n")
-            f.write("主线程卡住 %.2f 秒 ｜ %s\n"
-                    % (间隔, time.strftime("%Y-%m-%d %H:%M:%S")))
+            f.write(i18n.trp("主线程卡住 {0:.2f} 秒 ｜ {1}\n",
+                             间隔, time.strftime("%Y-%m-%d %H:%M:%S")))
             try:
-                f.write("窗口标题：%s\n" % _state.get("title", ""))
+                f.write(i18n.trp("窗口标题：{0}\n", _state.get("title", "")))
             except Exception:
                 pass
             f.write("=" * 72 + "\n")
@@ -95,8 +97,8 @@ def start(root, threshold=THRESHOLD_SEC, tick_ms=TICK_MS, check_sec=CHECK_SEC):
     """挂上心跳。root 是主窗口（只用来写窗口标题，方便对上用户当时的界面）。"""
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as _f:
-            _f.write("\n---- 启动 %s ｜ 构建 %s ----\n"
-                     % (time.strftime("%Y-%m-%d %H:%M:%S"), _构建指纹()))
+            _f.write(i18n.trp("\n---- 启动 {0} ｜ 构建 {1} ----\n",
+                              time.strftime("%Y-%m-%d %H:%M:%S"), _构建指纹()))
     except Exception:
         pass
     _state["root"] = root

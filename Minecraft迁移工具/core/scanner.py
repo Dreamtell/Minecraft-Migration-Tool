@@ -654,7 +654,7 @@ def _env_from_version_json(root):
         if not loader:
             loader = _loader_of(名)
         if mc or loader:
-            return mc, loader, "version.json（%s）" % 名
+            return mc, loader, trp("version.json（{0}）", 名)
     return "", "", ""
 
 

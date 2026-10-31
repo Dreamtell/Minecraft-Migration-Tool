@@ -168,15 +168,15 @@ LINK_PCL = "https://pcl.ruanmao.net/"         # PCL 启动器：国内常用的�
 
 # 设置窗口的分区配色 / 图标（标题色、描边色、图标都是同一支主色）
 _SECTION_STYLE = {
-    "look":    ("外观与启动", "#8e24aa", "🎨"),
-    "migrate": ("迁移行为", "#7e57c2", "🏷️"),
-    "tags":    ("模组分类标签", "#00897b", "🌐"),
-    "lock":    ("任务与锁定", "#e53935", "🔒"),
-    "extras":  ("默认携带的目录", "#3949ab", "📦"),
-    "view":    ("放大查看窗口", "#00838f", "🗂"),
-    "buttons": ("界面按钮（勾选显示 / 上下调整顺序）", "#00acc1", "🧩"),
-    "close":   ("关闭与后台", "#fb8c00", "🚪"),
-    "links":   ("快捷链接", "#43a047", "🔗"),
+    "look":    (trp("外观与启动"), "#8e24aa", "🎨"),
+    "migrate": (trp("迁移行为"), "#7e57c2", "🏷️"),
+    "tags":    (trp("模组分类标签"), "#00897b", "🌐"),
+    "lock":    (trp("任务与锁定"), "#e53935", "🔒"),
+    "extras":  (trp("默认携带的目录"), "#3949ab", "📦"),
+    "view":    (trp("放大查看窗口"), "#00838f", "🗂"),
+    "buttons": (trp("界面按钮（勾选显示 / 上下调整顺序）"), "#00acc1", "🧩"),
+    "close":   (trp("关闭与后台"), "#fb8c00", "🚪"),
+    "links":   (trp("快捷链接"), "#43a047", "🔗"),
 }
 
 # 迁移时如何锁定主界面：不管选哪个，"所有操作按钮都会禁用"，区别只在盖不盖遮罩
@@ -184,9 +184,9 @@ _LOCK_MODES = (
     # 用**三元组**（值, 标题, 说明）而不是"标题：说明"一整句：OptionCards 会把一整句在
     # 冒号处劈成两段画到画布上（自绘文字，语言层包不到），那样只能整句翻、英文里还得留
     # 个全角冒号才劈得开。分开写之后标题和说明各自成词条，换语言两段都干净。
-    ("all",  "迁移时锁定界面", "盖一层遮罩（正式迁移和模拟运行都锁）"),
-    ("real", "只锁正式迁移", "模拟运行不盖遮罩（按钮照样禁用）"),
-    ("off",  "不锁屏", "不盖遮罩，只把按钮全部禁用"),
+    ("all",  trp("迁移时锁定界面"), trp("盖一层遮罩（正式迁移和模拟运行都锁）")),
+    ("real", trp("只锁正式迁移"), trp("模拟运行不盖遮罩（按钮照样禁用）")),
+    ("off",  trp("不锁屏"), trp("不盖遮罩，只把按钮全部禁用")),
 )
 
 # 迁移标记可选的符号：都是微软雅黑里有字形、且文件名安全的（不含 \ / : * ? " < > |）
@@ -196,20 +196,20 @@ _RENAME_MARKERS = ("★", "☆", "▶", "◆", "●", "✦", "✚", "【新】",
 # 勾上之后每次迁移都自动带上 —— 只并进这一次的迁移清单，**不改用户的「其它文件」清单**，
 # 免得上一次删掉的条目下一次又被塞回来。源实例里不存在的会被跳过（不报错）。
 _EXTRA_PRESETS = (
-    ("shaderpacks",    "shaderpacks/",    "光影包（Iris / OptiFine）"),
-    ("resourcepacks",  "resourcepacks/",  "资源包（材质包）"),
-    ("schematics",     "schematics/",     "投影 / 蓝图（Litematica、WorldEdit）"),
-    ("XaeroWorldMap",  "XaeroWorldMap/",  "Xaero 世界地图数据"),
-    ("XaeroWaypoints", "XaeroWaypoints/", "Xaero 路径点"),
-    ("xaero",          "xaero/",          "Xaero 小地图（旧版目录）"),
-    ("journeymap",     "journeymap/",     "JourneyMap 地图数据"),
-    ("kubejs",         "kubejs/",         "KubeJS 脚本"),
-    ("defaultconfigs", "defaultconfigs/", "整合包默认配置（Forge / NeoForge）"),
-    ("local",          "local/",          "本地数据（部分模组自建）"),
-    ("screenshots",    "screenshots/",    "截图"),
-    ("servers.dat",    "servers.dat",     "服务器列表"),
-    ("optionsof.txt",  "optionsof.txt",   "OptiFine 视频设置"),
-    ("iris.properties", "iris.properties", "Iris 光影设置"),
+    ("shaderpacks",    "shaderpacks/",    trp("光影包（Iris / OptiFine）")),
+    ("resourcepacks",  "resourcepacks/",  trp("资源包（材质包）")),
+    ("schematics",     "schematics/",     trp("投影 / 蓝图（Litematica、WorldEdit）")),
+    ("XaeroWorldMap",  "XaeroWorldMap/",  trp("Xaero 世界地图数据")),
+    ("XaeroWaypoints", "XaeroWaypoints/", trp("Xaero 路径点")),
+    ("xaero",          "xaero/",          trp("Xaero 小地图（旧版目录）")),
+    ("journeymap",     "journeymap/",     trp("JourneyMap 地图数据")),
+    ("kubejs",         "kubejs/",         trp("KubeJS 脚本")),
+    ("defaultconfigs", "defaultconfigs/", trp("整合包默认配置（Forge / NeoForge）")),
+    ("local",          "local/",          trp("本地数据（部分模组自建）")),
+    ("screenshots",    "screenshots/",    trp("截图")),
+    ("servers.dat",    "servers.dat",     trp("服务器列表")),
+    ("optionsof.txt",  "optionsof.txt",   trp("OptiFine 视频设置")),
+    ("iris.properties", "iris.properties", trp("Iris 光影设置")),
 )
 
 # 迁移这种会改文件的活儿，不该有"偷偷多带几样"的默认值：**清单是唯一依据**，
@@ -219,21 +219,21 @@ _EXTRA_PRESETS = (
 # 放大查看窗口的实现方式。PySide6 试点：圆角/阴影/逐帧动画是原生能力；
 # 缺库或想用回老窗口时切 tk。
 _BIG_VIEW_BACKENDS = (
-    ("qt", "🗂 PySide6 试点窗口（圆角卡片 + 原生动画，需已安装 PySide6）"),
-    ("tk", "🪟 经典 Tk 窗口（无需额外依赖）"),
+    ("qt", trp("🗂 PySide6 试点窗口（圆角卡片 + 原生动画，需已安装 PySide6）")),
+    ("tk", trp("🪟 经典 Tk 窗口（无需额外依赖）")),
 )
 
 # 「放大查看」打开时用哪个视图（表格 / 卡片）。两边都可以随时点按钮切换，
 # 这里只是定"刚打开时是哪个"。
 _BIG_VIEW_VIEWS = (
-    ("table", "📋 表格视图（打开就是列表，能改勾选/编辑）"),
-    ("cards", "🗂 卡片视图（打开就是卡片，只读预览）"),
+    ("table", trp("📋 表格视图（打开就是列表，能改勾选/编辑）")),
+    ("cards", trp("🗂 卡片视图（打开就是卡片，只读预览）")),
 )
 
 # 「模组差异」窗口打开时用哪个视图（同样只是定"刚打开时是哪个"）
 _DIFF_VIEWS = (
-    ("table", "📋 列表视图（一行一条差异，信息密度高）"),
-    ("cards", "🗂 卡片视图（带图标的大卡片，看得清描述）"),
+    ("table", trp("📋 列表视图（一行一条差异，信息密度高）")),
+    ("cards", trp("🗂 卡片视图（带图标的大卡片，看得清描述）")),
 )
 
 # 按钮列表里每一排的主色 + 图标，用来给分组行上色

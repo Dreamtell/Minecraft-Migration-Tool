@@ -240,9 +240,11 @@ class BigViewMixin:
     # ---------- 放大查看：按钮先变"打开中" ----------
     # 建那个窗口是同步的（大清单要几百毫秒），这期间界面不会自己重绘，
     # 点下去看着就像没反应。所以先把按钮切成"打开中"并强制刷一次。
-    def _magnify_busy(self, btn, text="⏳ 打开中…"):
+    def _magnify_busy(self, btn, text=None):
         if btn is None:
             return False
+        if text is None:
+            text = trp("⏳ 打开中…")
         try:
             btn.set_text(text)
             btn.set_gradient("#9e9e9e", "#bdbdbd")
@@ -269,9 +271,13 @@ class BigViewMixin:
         except Exception:
             pass
 
-    def _with_busy_btn(self, btn, func, busy_text="⏳ 打开中…",
-                       idle_text="📂 放大查看"):
+    def _with_busy_btn(self, btn, func, busy_text=None,
+                       idle_text=None):
         """同步执行 func，期间按钮显示"打开中"，结束后恢复。"""
+        if busy_text is None:
+            busy_text = trp("⏳ 打开中…")
+        if idle_text is None:
+            idle_text = trp("📂 放大查看")
         started = self._magnify_busy(btn, busy_text)
         try:
             func()
@@ -286,20 +292,20 @@ class BigViewMixin:
             if ok and self._open_big_view_qt(source_text, title):
                 return
             if not ok:
-                self.log("⚠ " + why + "，本次用经典窗口打开", level="WARNING", save=False)
+                self.log(trp("⚠ {0}，本次用经典窗口打开", why), level="WARNING", save=False)
                 # 用户点的是「放大查看」，实际弹出的却是另一种窗口 —— 不说明就成了怪事
-                self.toast("⚠️ Qt 不可用，已用经典窗口打开", level="warn")
+                self.toast(trp("⚠️ Qt 不可用，已用经典窗口打开"), level="warn")
         self.open_big_view(source_text, title)
 
     def open_mod_big_view(self):
         """模组清单 → 放大查看"""
         self._with_busy_btn(self.mod_magnify_btn,
-                            lambda: self._open_big_view_dispatch(self.mod_text, "模组清单"))
+                            lambda: self._open_big_view_dispatch(self.mod_text, trp("模组清单")))
 
     def open_config_big_view(self):
         """config 清单 → 放大查看"""
         self._with_busy_btn(self.config_magnify_btn,
-                            lambda: self._open_big_view_dispatch(self.config_text, "Config清单"))
+                            lambda: self._open_big_view_dispatch(self.config_text, trp("Config清单")))
 
     def open_log_big_view_busy(self):
         """执行日志 → 放大查看"""
@@ -310,7 +316,7 @@ class BigViewMixin:
         """大窗口查看：可多选（勾选）+ 可排序的列表，并支持搜索、存在性检测、添加/删除、拖拽。"""
         is_mod = "模组" in title or source_text is getattr(self, 'mod_text', None)
         # 单实例：同标题的放大查看窗口已打开则聚焦，避免连点重复弹窗
-        win_title = f"大窗口查看 - {title}"
+        win_title = trp("大窗口查看 - {0}", title)
         for w in getattr(self, '_big_view_windows', []):
             try:
                 if w.winfo_exists() and w.title() == win_title:
@@ -709,8 +715,8 @@ class BigViewMixin:
             total = len(entries)
             shown = len(order)
             self._roll_counter(count_lbl,
-                               f"显示 {shown}/{total} 项"
-                               if search_var.get().strip() else f"共 {total} 项")
+                               trp("显示 {0}/{1} 项", shown, total)
+                               if search_var.get().strip() else trp("共 {0} 项", total))
             update_summary()
 
         def write_back(fade_out_lines=None, fade_in_lines=None):
@@ -806,7 +812,7 @@ class BigViewMixin:
             _initial = str(mods_dir) if (mods_dir is not None and mods_dir.exists()) else None
             files = filedialog.askopenfilenames(title="选择要添加的模组（可多选）",
                                                 initialdir=_initial,
-                                                filetypes=[("Minecraft 模组", "*.jar"), ("所有文件", "*.*")])
+                                                filetypes=[("Minecraft 模组", "*.jar"), (trp("所有文件"), "*.*")])
             if not files:
                 return
             existing = set(entries)
@@ -1030,7 +1036,7 @@ class BigViewMixin:
                 return
             big_scanning["flag"] = True
             _set_busy_btns(True)
-            self._begin_file_task("检测模组是否存在")   # 期间禁止启动迁移
+            self._begin_file_task(trp("检测模组是否存在"))   # 期间禁止启动迁移
             meta.clear()
             _pending_detect["flag"] = True
             rebuild(rescan=True)
@@ -1116,7 +1122,8 @@ class BigViewMixin:
                 muted = self.theme.get("muted_fg", "#808080")
                 sel_lbl.config(fg=accent if picked else muted)
                 self._roll_counter(sel_lbl,
-                                   f"已选 {picked} / {total} 项" if picked else "未选择")
+                                   trp("已选 {0} / {1} 项", picked, total)
+                                   if picked else trp("未选择"))
                 exist = miss = 0
                 for i in range(total):
                     st = (meta.get(i) or {}).get("status")
@@ -1125,9 +1132,9 @@ class BigViewMixin:
                     elif st == "❌ 缺失":
                         miss += 1
                 exist_lbl.config(fg=self.theme.get("ok_fg", "#2e7d32") if exist else muted)
-                self._roll_counter(exist_lbl, f"存在 {exist}" if total else "")
+                self._roll_counter(exist_lbl, trp("存在 {0}", exist) if total else "")
                 miss_lbl.config(fg=self.theme.get("fail_fg", "#c62828") if miss else muted)
-                self._roll_counter(miss_lbl, f"· 缺失 {miss}" if total else "")
+                self._roll_counter(miss_lbl, trp("· 缺失 {0}", miss) if total else "")
                 scan_lbl.config(text="检测中…" if big_scanning["flag"] else "")
             except Exception:
                 pass
@@ -1345,7 +1352,7 @@ class BigViewMixin:
                     btn_view.set_text("📋 表格视图")
                     self.log("🗂 已切到卡片视图（只读预览；勾选/编辑请切回表格）",
                              level="INFO", save=False)
-                    self.toast("🗂 已切到卡片视图（只读预览）", level="info", key="big_view_view")
+                    self.toast(trp("🗂 已切到卡片视图（只读预览）"), level="info", key="big_view_view")
                 else:
                     if card_state["list"] is not None:
                         card_state["list"].grid_remove()
@@ -1358,7 +1365,7 @@ class BigViewMixin:
                 except Exception:
                     pass
                 self.log(trp("⚠️ 卡片视图不可用：{0}", exc), level="WARNING", save=False)
-                self.toast("⚠️ 卡片视图不可用，已切回表格视图，详见日志", level="warn", key="big_view_view")
+                self.toast(trp("⚠️ 卡片视图不可用，已切回表格视图，详见日志"), level="warn", key="big_view_view")
 
         btn_view = create_gradient_button(
             row_btns, "🗂 卡片视图", toggle_view,
@@ -1369,9 +1376,9 @@ class BigViewMixin:
 
         # 卡片视图没有表头可点，排序收进一个下拉按钮（表格视图也能用）
         sort_menu = tk.Menu(win, tearoff=0)
-        for _col, _label in (("name", "按名称"), ("status", "按状态"),
-                             ("version", "按版本"), ("modid", "按 Mod ID"),
-                             ("size", "按大小")):
+        for _col, _label in (("name", trp("按名称")), ("status", trp("按状态")),
+                             ("version", trp("按版本")), ("modid", trp("按 Mod ID")),
+                             ("size", trp("按大小"))):
             sort_menu.add_command(label=_label, command=lambda c=_col: sort_by(c))
         btn_sort = create_gradient_button(
             row_btns, "⇅ 排序", None,

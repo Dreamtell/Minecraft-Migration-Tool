@@ -275,7 +275,8 @@ def redact_exc(exc):
     try:
         return redact("%s: %s" % (type(exc).__name__, exc))
     except Exception:
-        return "请求失败（细节已省略）"
+        from utils import i18n
+        return i18n.trp("请求失败（细节已省略）")
 
 
 def scrub_obj(值):

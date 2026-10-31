@@ -18,7 +18,7 @@ Python，所以这里自己建一个隐藏窗口，**在主线程里**用 Tk 的
 """
 import queue
 
-from utils.i18n import tr          # 界面语言（默认中文时原样返回）
+from utils.i18n import tr, trp       # 界面语言（默认中文时原样返回）
 
 try:
     import win32api
@@ -68,7 +68,7 @@ class TrayIcon:
 
     def __init__(self, tooltip="Minecraft 整合包迁移工具", icon_path=None):
         if not _AVAILABLE:
-            raise RuntimeError("系统托盘需要 pywin32：pip install pywin32")
+            raise RuntimeError(trp("系统托盘需要 pywin32：pip install pywin32"))
         # 提示文字是自绘的（不进任何 tk 控件），语言层包不到 —— 在这里自己翻
         self.tooltip = tr(tooltip)
         self.icon_path = icon_path

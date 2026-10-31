@@ -1515,6 +1515,581 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "🚀 PCL launcher",
     "先不滚":
         "Not yet",
+    # ---------- 补齐：搜索窗/版本提示 ----------
+    "自动识别自 {0}":
+        "Auto-detected from {0}",
+    "实例":
+        "instance",
+    "没认出你的实例版本，可手动选":
+        "Could not detect your instance version; pick one manually",
+    "无 {0} 的版本":
+        "No version for {0}",
+    "没有可用版本":
+        "No versions available",
+    # ---------- 补齐：迁移结果状态 ----------
+    "成功":
+        "Succeeded",
+    "失败":
+        "Failed",
+    "已取消":
+        "Cancelled",
+    "进行中":
+        "Running",
+    # ---------- 补齐：日志整句化（子智能体产出） ----------
+    "模拟复制":
+        "Simulated copy",
+    "目标已存在，跳过":
+        "Already exists in the target, skipping",
+    "复制成功":
+        "Copied successfully",
+    "权限不足：无法写入 {0}":
+        "Permission denied: cannot write to {0}",
+    "系统错误：{0}":
+        "System error: {0}",
+    "未知错误：{0}":
+        "Unknown error: {0}",
+    "模拟复制目录":
+        "Simulated folder copy",
+    "已备份原有目录至：{0}":
+        "Backed up the original folder to: {0}",
+    "备份失败：{0}":
+        "Backup failed: {0}",
+    "目录复制成功":
+        "Folder copied successfully",
+    "复制目录失败：{0}":
+        "Failed to copy the folder: {0}",
+    "📦 开始备份目标实例...（回滚点：{0}）":
+        "📦 Starting to back up the target instance... (rollback point: {0})",
+    "📦 开始备份目标实例...":
+        "📦 Starting to back up the target instance...",
+    "📂 备份 {0} → {1}":
+        "📂 Backing up {0} → {1}",
+    "ℹ️ {0} 不存在，跳过备份（回滚时会删掉迁移新建的同名目录）":
+        "ℹ️ {0} does not exist; skipping its backup (a rollback deletes the same-named folder created by the migration)",
+    "ℹ️ {0} 目标里不存在，跳过备份（回滚时会删掉迁移新建的同名条目）":
+        "ℹ️ {0} does not exist in the target; skipping its backup (a rollback deletes the same-named entry created by the migration)",
+    "📂 备份清单条目 {0} → {1}":
+        "📂 Backing up list entry {0} → {1}",
+    "备份「其它文件」条目 {0} 失败：{1}":
+        "Failed to back up the other-files entry {0}: {1}",
+    "🗑️ 替换旧备份（新备份已完整写入）":
+        "🗑️ Replacing the old backup (the new backup is fully written)",
+    "✅ 备份完成，已备份：{0}":
+        "✅ Backup complete; backed up: {0}",
+    "❌ 恢复失败：备份目录不存在":
+        "❌ Restore failed: the backup folder does not exist",
+    "⚠️ 这份备份没有清单（旧版本留下的）：只恢复已有内容，不会清理迁移新建的部分":
+        "⚠️ This backup has no manifest (left by an older version): only existing content is restored; anything created by the migration is not cleaned up",
+    "🔄 开始从备份恢复...":
+        "🔄 Starting the restore from the backup...",
+    "📂 恢复备份：{0} → {1}":
+        "📂 Restoring from the backup: {0} → {1}",
+    "🗑️ 迁移新建的 {0}/，按回滚要求删除":
+        "🗑️ Deleting {0}/ created by the migration, as the rollback requires",
+    "{0}: 备份不完整（清单说存在，备份里没有）":
+        "{0}: the backup is incomplete (the manifest says it existed, but it is missing from the backup)",
+    "❌ {0}/ 在清单里标记为存在，但备份里找不到":
+        "❌ {0}/ is marked as existing in the manifest, but is missing from the backup",
+    "ℹ️ 备份中不存在 {0}，跳过":
+        "ℹ️ {0} is not in the backup, skipping",
+    "❌ 恢复 {0} 失败: {1}":
+        "❌ Failed to restore {0}: {1}",
+    "📂 恢复文件：{0} → {1}":
+        "📂 Restoring file: {0} → {1}",
+    "🗑️ 迁移新建的 {0}，按回滚要求删除":
+        "🗑️ Deleting {0} created by the migration, as the rollback requires",
+    "❌ {0} 在清单里标记为存在，但备份里找不到":
+        "❌ {0} is marked as existing in the manifest, but is missing from the backup",
+    "📂 恢复清单条目：{0} → {1}":
+        "📂 Restoring list entry: {0} → {1}",
+    "🗑️ 迁移新建的清单条目 {0}/，按回滚要求删除":
+        "🗑️ Deleting the list entry {0}/ created by the migration, as the rollback requires",
+    "🗑️ 迁移新建的清单条目 {0}，按回滚要求删除":
+        "🗑️ Deleting the list entry {0} created by the migration, as the rollback requires",
+    "❌ 清单条目 {0} 标记为存在，但备份里找不到":
+        "❌ The list entry {0} is marked as existing, but is missing from the backup",
+    "❌ 恢复清单条目 {0} 失败: {1}":
+        "❌ Failed to restore the list entry {0}: {1}",
+    "❌ 恢复未完成，失败 {0} 项：{1}":
+        "❌ Restore did not finish; {0} items failed: {1}",
+    "✅ 恢复完成，已恢复 {0} 项":
+        "✅ Restore complete; {0} items restored",
+    "✅ 恢复完成，已恢复 {0} 项：{1}":
+        "✅ Restore complete; {0} items restored: {1}",
+    "✅ 恢复完成，已恢复 {0} 项，清理迁移新建的 {1} 项":
+        "✅ Restore complete; {0} items restored, {1} items created by the migration cleaned up",
+    "✅ 恢复完成，已恢复 {0} 项，清理迁移新建的 {1} 项：{2}":
+        "✅ Restore complete; {0} items restored, {1} items created by the migration cleaned up: {2}",
+    "ℹ️ 无法识别 {0} 的 modid，跳过旧版本清理（如目标里已存在同模组的其他版本，请手动确认）":
+        "ℹ️ Cannot read the modid of {0}; skipping the old-version cleanup (if another version of the same mod is already in the target, please check manually)",
+    "🗑️ 移除目标旧版本：{0}（同 modid: {1}），已移入备份 .migrate_backup/removed_mods":
+        "🗑️ Removed an older version from the target: {0} (same modid: {1}); moved into the backup .migrate_backup/removed_mods",
+    "⚠️ 移除旧版本 {0} 失败：{1}（该文件保持原样）":
+        "⚠️ Failed to remove the older version {0}: {1} (the file is left as it is)",
+    "🏷️ 已启用迁移标记：复制过去的模组会加前缀「{0} 」":
+        "🏷️ Migration marker on: copied mods get the prefix \"{0} \"",
+    "未找到匹配的文件":
+        "No matching file found",
+    "复制模组 ({0}/{1})":
+        "Copying mods ({0}/{1})",
+    "复制存档 ({0}/{1})":
+        "Copying saves ({0}/{1})",
+    "存档/{0}":
+        "saves/{0}",
+    "源不存在":
+        "Source does not exist",
+    "复制 config ({0}/{1})":
+        "Copying config ({0}/{1})",
+    "创建目录失败: {0}":
+        "Failed to create the folder: {0}",
+    "建目录失败: {0}":
+        "Failed to create the folder: {0}",
+    "复制其它文件 ({0}/{1})":
+        "Copying other files ({0}/{1})",
+    "其它/{0}":
+        "Other/{0}",
+    "实际":
+        "Live",
+    "模组 {0}　·　config {1}　·　其它 {2}":
+        "{0} mods · {1} config · {2} other",
+    "耗时 {0} 秒　·　{1}":
+        "Took {0}s · {1}",
+    "共 {0} 份档案　·　最多保存 {1} 份（可在设置里调整）　·　{2}":
+        "{0} records · up to {1} kept (adjustable in Settings) · {2}",
+    " 个":
+        " items",
+    "　跳过 ":
+        " · skipped ",
+    "　失败 ":
+        " · failed ",
+    "源目录":
+        "Source folder",
+    "目标目录":
+        "Target folder",
+    "模组":
+        "Mods",
+    "其它":
+        "Other",
+    "耗时":
+        "Duration",
+    "⤡  还原":
+        "⤡  Restore",
+    "没有档案":
+        "No records",
+    "模拟运行":
+        "Dry run",
+    "实际迁移":
+        "Real migration",
+    "{0}　·　{1}":
+        "{0} · {1}",
+    "{0} 秒":
+        "{0}s",
+    "{0} 条（详见日志）":
+        "{0} entries (see log)",
+    "（这份档案没有日志）":
+        "(this record has no log)",
+    "删除档案":
+        "Delete record",
+    "确定删除 {0} 这份档案吗？\n（只删记录，不影响任何游戏文件）":
+        "Delete the record {0}?\n(only the record is removed — no game files are touched)",
+    "已删除":
+        "Deleted",
+    "要把目标实例恢复到「{0}」这次迁移之前吗？":
+        "Restore the target instance to how it was before the “{0}” migration?",
+    "会用备份覆盖当前内容：mods / config / saves 以及「其它文件」清单里复制过的部分都会还原，迁移前不存在的东西会被删掉。":
+        "The backup will overwrite the current contents: mods / config / saves and everything copied from the “Other files” list will be restored, and anything that did not exist before the migration will be deleted.",
+    "此操作不可撤销。回滚过程看主界面的执行日志。":
+        "This cannot be undone. Watch the main window log for rollback progress.",
+    "这条记录没有自己的备份":
+        "This record has no backup of its own",
+    "删除这份档案":
+        "Delete this record",
+    "这条迁移记录没有可用的备份，回滚不了。\n（早期版本的迁移不会按记录留备份）":
+        "This migration record has no usable backup, so it cannot be rolled back.\n(older versions did not keep a per-record backup)",
+    "❌ 回滚收尾时出错（备份仍保留，可以重新执行回滚）":
+        "❌ Roll-back finalisation failed (the backup is kept — you can roll back again)",
+    "目标实例已恢复到迁移前的状态":
+        "The target instance is back to its pre-migration state",
+    "任务已结束，点托盘图标打开主界面查看日志":
+        "Task finished — click the tray icon to open the main window and check the log",
+    "扫描出错：{0}":
+        "Scan error: {0}",
+    "两个 mods 目录完全一致，没有差异":
+        "The two mods folders are identical — no differences",
+    "发现 {0} 项差异，点托盘图标查看":
+        "Found {0} differences — click the tray icon to view them",
+    "正在执行迁移任务":
+        "Running a migration",
+    "正在执行迁移任务（模拟运行）":
+        "Running a migration (dry run)",
+    "后台静默执行已结束，点托盘图标查看日志":
+        "Silent background run finished — click the tray icon to check the log",
+    "❌ 打开配置文件失败，详见日志":
+        "❌ Failed to open the config file; see the log for details",
+    "🔔 消息提示已关闭（右下角不再弹卡片）":
+        "🔔 Notifications turned off (no more cards pop up in the bottom-right corner)",
+    "🔔 消息提示已开启":
+        "🔔 Notifications turned on",
+    "⌨️ 迁移完成后的收尾方式已改为：按任意键关闭":
+        "⌨️ Migration finish behavior changed to: close on any key",
+    "⌨️ 迁移完成后的收尾方式已改为：2 秒后自动关闭":
+        "⌨️ Migration finish behavior changed to: close automatically after 2 seconds",
+    "📦 原先勾选的「默认携带目录」已并入「其它文件」清单（{0} 项：{1}）。以后**清单就是唯一依据** —— 从清单里删掉就不会再带。":
+        "📦 The previously checked “Default carried folders” are now merged into the “Other files” list ({0} item(s): {1}). From now on **the list is the only source** — remove an entry from the list and it will no longer be carried.",
+    "都在清单里了":
+        "all already in the list",
+    "🅆 PySide6 已启用":
+        "🅆 PySide6 enabled",
+    "🅆 PySide6 已关闭（纯 Tk 模式，重启后生效）":
+        "🅆 PySide6 disabled (pure Tk mode, takes effect after a restart)",
+    "🗂 放大查看窗口已切换为：PySide6 试点窗口":
+        "🗂 Big view window switched to: PySide6 preview window",
+    "🗂 放大查看窗口已切换为：经典 Tk 窗口":
+        "🗂 Big view window switched to: Classic Tk window",
+    "🧩 差异窗口已切换为：PySide6 窗口":
+        "🧩 Diff window switched to: PySide6 window",
+    "🧩 差异窗口已切换为：经典 Tk 窗口":
+        "🧩 Diff window switched to: Classic Tk window",
+    "🗂 放大查看窗口默认视图：卡片视图":
+        "🗂 Big view default view: Card view",
+    "🗂 放大查看窗口默认视图：表格视图":
+        "🗂 Big view default view: Table view",
+    "🧩 模组差异窗口默认视图：卡片视图":
+        "🧩 Mod diff default view: Card view",
+    "🧩 模组差异窗口默认视图：列表视图":
+        "🧩 Mod diff default view: List view",
+    "读取失败":
+        "Read failed",
+    "CurseForge：":
+        "CurseForge: ",
+    "🔑 CurseForge API Key 已保存：{0}（指纹 {1}）":
+        "🔑 CurseForge API key saved: {0} (fingerprint {1})",
+    "🔑 CurseForge API Key 已保存":
+        "🔑 CurseForge API key saved",
+    "❌ CurseForge API Key 保存失败：写不了 {0}":
+        "❌ Failed to save the CurseForge API key: cannot write {0}",
+    "❌ CurseForge API Key 保存失败，详见日志":
+        "❌ Failed to save the CurseForge API key; see the log for details",
+    "✅ CurseForge Key 可用：{0}":
+        "✅ CurseForge key works: {0}",
+    "❌ CurseForge Key 不可用：{0}":
+        "❌ CurseForge key does not work: {0}",
+    "✅ CurseForge Key 可用":
+        "✅ CurseForge key works",
+    "❌ CurseForge Key 不可用，详见日志":
+        "❌ CurseForge key does not work; see the log for details",
+    "❌ 起不了测试线程：{0}":
+        "❌ Could not start the test thread: {0}",
+    "❌ 起不了测试线程，详见日志":
+        "❌ Could not start the test thread; see the log for details",
+    "🧪 模拟运行已开启：只显示将要执行的操作，不会修改任何文件":
+        "🧪 Dry run turned on: only the operations that would run are shown; no files are changed",
+    "🧪 模拟运行已关闭：接下来的迁移会真正写入文件":
+        "🧪 Dry run turned off: the next migration will actually write files",
+    "🔁 覆盖已存在的模组已开启：同名文件会被覆盖":
+        "🔁 Overwrite existing mods turned on: files with the same name will be overwritten",
+    "🔁 覆盖已存在的模组已关闭：同名文件会被跳过":
+        "🔁 Overwrite existing mods turned off: files with the same name will be skipped",
+    "收进托盘继续运行":
+        "Keep running in the tray",
+    "直接退出":
+        "Quit",
+    "源":
+        "Source",
+    "目标":
+        "Target",
+    "存档":
+        "Save",
+    "要复制":
+        "Copying",
+    "同名文件":
+        "Same-named files",
+    "模组详情 - {0}":
+        "Mod details - {0}",
+    "（分类来自 Modrinth）":
+        "(Categories from Modrinth)",
+    "（分类为关键词推测）":
+        "(Categories guessed from keywords)",
+    "作者":
+        "Author",
+    "依赖":
+        "Dependencies",
+    "已在资源管理器中定位该文件。":
+        "Revealed the file in Explorer.",
+    "按 {0} 没搜到东西 —— 可能是版本认错了，已自动放宽版本再搜一次。":
+        "Nothing found for {0} — the version may be wrong, so the version filter was widened and the search re-run.",
+    "没有找到相关模组，换个关键词试试。":
+        "No matching mods found — try another keyword.",
+    "🟧 CurseForge {0} 条 · 🟩 Modrinth {1} 条 ｜ ":
+        "🟧 CurseForge {0} · 🟩 Modrinth {1} ｜ ",
+    "找到 {0} 个结果。{1} 版本/下载链接加载中…（🔵蓝=最相似, 🟡黄=可更新）":
+        "Found {0} results. {1} Loading versions and download links… (🔵 blue = best match, 🟡 yellow = update available)",
+    "Modrinth：{0}":
+        "Modrinth: {0}",
+    "CurseForge：{0}":
+        "CurseForge: {0}",
+    "没搜到结果":
+        "Nothing found",
+    "请先选中一条结果（需要它带下载链接）。":
+        "Select a result first (it needs a download link).",
+    "已复制下载链接到剪贴板。":
+        "Download link copied to the clipboard.",
+    "已复制项目链接到剪贴板。":
+        "Project link copied to the clipboard.",
+    "请先选中一条结果。":
+        "Select a result first.",
+    "version.json（{0}）":
+        "version.json ({0})",
+    "⚠️ 源目录里没有 {0}，没加进清单":
+        "⚠️ {0} isn't in the source folder, so it wasn't added to the list",
+    "✅ 已把 {0} 加入「其它文件」清单，迁移时会一起带过去（{1}）":
+        "✅ Added {0} to the Other files list; it will be carried over during migration ({1})",
+    "✅ 已把 {0} 加入「其它文件」清单，迁移时会一起带过去":
+        "✅ Added {0} to the Other files list; it will be carried over during migration",
+    "ℹ️ {0} 已经在清单里了":
+        "ℹ️ {0} is already in the list",
+    "　✅ 已在清单":
+        "　✅ Already in the list",
+    "检查模组是否存在":
+        "check whether the mods exist",
+    "⚠️ 有 {0} 项未添加（不在源 config 目录下或不安全）：":
+        "⚠️ {0} item(s) were not added (not under the source config folder, or unsafe):",
+    "全选顶层":
+        "Select top level",
+    "全不选":
+        "Select none",
+    "确定添加":
+        "Add selected",
+    "尚未设置源整合包实例根目录":
+        "The source modpack instance root isn't set yet",
+    "基准目录不存在：{0}":
+        "The base folder doesn't exist: {0}",
+    "尚未设置源实例根目录":
+        "The source instance root isn't set yet",
+    "🗑 模组清单已清空":
+        "🗑 Mod list cleared",
+    "🗑 config 清单已清空":
+        "🗑 Config list cleared",
+    "⚠️ 有 {0} 项未添加（不在整合包目录下或不安全）：":
+        "⚠️ {0} item(s) were not added (not under the modpack folder, or unsafe):",
+    "🗑 其它文件清单已清空":
+        "🗑 Other files list cleared",
+    "⏳ 打开中…":
+        "⏳ Opening…",
+    "⚠ {0}，本次用经典窗口打开":
+        "⚠ {0}; opening in the classic window this time",
+    "⚠️ Qt 不可用，已用经典窗口打开":
+        "⚠️ Qt isn't available; opened in the classic window",
+    "模组清单":
+        "Mod list",
+    "Config清单":
+        "Config list",
+    "大窗口查看 - {0}":
+        "Large view - {0}",
+    "显示 {0}/{1} 项":
+        "Showing {0}/{1}",
+    "共 {0} 项":
+        "Total {0}",
+    "所有文件":
+        "All files",
+    "检测模组是否存在":
+        "check whether the mods exist",
+    "已选 {0} / {1} 项":
+        "Selected {0} / {1}",
+    "🗂 已切到卡片视图（只读预览）":
+        "🗂 Switched to card view (read-only preview)",
+    "⚠️ 卡片视图不可用，已切回表格视图，详见日志":
+        "⚠️ Card view isn't available; switched back to the table view — see the log for details",
+    "按名称":
+        "By name",
+    "按状态":
+        "By status",
+    "按版本":
+        "By version",
+    "按 Mod ID":
+        "By mod ID",
+    "按大小":
+        "By size",
+    "正在检测网络连通性…":
+        "Checking network connectivity…",
+    "⚠ 更新提醒":
+        "⚠ Update notice",
+    "📈 网络延迟（Modrinth / CurseForge 分开统计）":
+        "📈 Network latency (Modrinth / CurseForge tracked separately)",
+    "绘图需要 matplotlib：\n\npip install matplotlib\n\n({0})":
+        "Drawing requires matplotlib:\n\npip install matplotlib\n\n({0})",
+    "秒（先填满，再滚动）":
+        "Seconds (fills up first, then scrolls)",
+    "{0} 无数据":
+        "{0}: no data",
+    "{0} 当前 {1} ms":
+        "{0}: now {1} ms",
+    "{0} 当前 {1} · 平均 {2} · 最高 {3}":
+        "{0}: now {1} · avg {2} · max {3}",
+    "📌 桌面浮标已关闭":
+        "📌 Desktop overlay closed",
+    "📌 桌面浮标已显示（可拖动，双击看曲线）":
+        "📌 Desktop overlay shown (drag it; double-click for the chart)",
+    "❌ 切换浮标失败：{0}":
+        "❌ Failed to toggle the overlay: {0}",
+    "⚠️ 浮标打不开，详见日志":
+        "⚠️ The overlay can't be opened — see the log for details",
+    "整合包更新提醒":
+        "Modpack update notice",
+    "「扫描差异」只比对两件事：清单里写的文件名，和目标目录里实际存在的文件。\n\n作者更新整合包时如果删掉或替换了某个模组，我们的清单里本来就没有它 —— 扫出来是「没有差异」，实际却少了东西。\n\n建议的做法：\n① 打开整合包的更新日志，逐条核对模组变更；\n② 或者点下面的「复制 AI 提示词」，把提示词连同更新日志一起交给 AI 逐条分析。":
+        "「Scan for differences」only compares two things: the file names written in the lists, and the files that actually exist in the target folder.\n\nIf the author deletes or replaces a mod when updating the modpack, it was never in our list to begin with — so the scan reports 「no differences」even though something is missing.\n\nSuggested approach:\n① Open the modpack's changelog and check each mod change;\n② Or click 「Copy AI prompt」below and hand the prompt plus the changelog to an AI to analyze item by item.",
+    "我在把一个 Minecraft 整合包从旧版本迁移到新版本，需要你帮我从下面的更新日志里找出【与模组相关的变更】。\n\n整合包：{0}\n旧实例目录：{1}\n新实例目录：{2}\n\n请按这个格式输出：\n1. 新增的模组（尽量给出 modid 或中文名）\n2. 移除的模组\n3. 被替换/合并的模组（A 换成了 B）\n4. 依赖或前置发生变化的模组\n5. 需要我手动处理的注意点（配置重置、存档兼容性、存档版本）\n\n更新日志如下：\n（把更新日志粘贴在这里）\n":
+        "I'm migrating a Minecraft modpack from an old version to a new one, and I need you to find the mod-related changes in the changelog below.\n\nModpack: {0}\nOld instance folder: {1}\nNew instance folder: {2}\n\nPlease output in this format:\n1. Added mods (give the modid or English name if possible)\n2. Removed mods\n3. Replaced/merged mods (A replaced by B)\n4. Mods whose dependencies or prerequisites changed\n5. Points I need to handle manually (config resets, save compatibility, save version)\n\nThe changelog is below:\n(paste the changelog here)\n",
+    "整合包":
+        "modpack",
+    "已复制 ✓":
+        "Copied ✓",
+    "展开成横幅":
+        "Expand into banner",
+    "外观与启动":
+        "Appearance & startup",
+    "迁移行为":
+        "Migration behavior",
+    "模组分类标签":
+        "Mod categories",
+    "任务与锁定":
+        "Tasks & locking",
+    "默认携带的目录":
+        "Directories carried by default",
+    "界面按钮（勾选显示 / 上下调整顺序）":
+        "Interface buttons (check to show / reorder)",
+    "关闭与后台":
+        "Closing & background",
+    "快捷链接":
+        "Quick links",
+    "🗂 PySide6 试点窗口（圆角卡片 + 原生动画，需已安装 PySide6）":
+        "🗂 PySide6 trial window（Rounded cards + native animation; requires PySide6）",
+    "🪟 经典 Tk 窗口（无需额外依赖）":
+        "🪟 Classic Tk window（No extra dependencies）",
+    "📋 表格视图（打开就是列表，能改勾选/编辑）":
+        "📋 Table view（Opens as a list; you can check/edit）",
+    "🗂 卡片视图（打开就是卡片，只读预览）":
+        "🗂 Card view（Opens as cards; read-only preview）",
+    "📋 列表视图（一行一条差异，信息密度高）":
+        "📋 List view（One difference per row; dense with information）",
+    "🗂 卡片视图（带图标的大卡片，看得清描述）":
+        "🗂 Card view（Large cards with icons; descriptions are easy to read）",
+    "config 清单":
+        "Config list",
+    "ℹ️ 「{0}」已经不在清单里了":
+        "ℹ️ 「{0}」is no longer in the list",
+    "--- 新日志记录 ({0}) ---":
+        "--- New log session ({0}) ---",
+    "\n===== 启动 {0} =====\n":
+        "\n===== Started {0} =====\n",
+    "✅ {0}完成":
+        "✅ {0} done",
+    "点托盘图标打开主界面查看":
+        "Click the tray icon to open the main window",
+    "已收进系统托盘":
+        "Minimized to system tray",
+    "程序仍在后台运行。点托盘图标可重新打开，右键可退出。":
+        "It is still running in the background. Click the tray icon to reopen, or right-click to quit.",
+    "{0}（已自动重试 {1} 次仍然失败）":
+        "{0} (still failed after {1} automatic retries)",
+    "{0} 失败":
+        "{0} failed",
+    "未设置 CurseForge API Key":
+        "CurseForge API key is not set",
+    "CurseForge 拒绝了这个 API Key（HTTP {0}）":
+        "CurseForge rejected this API key (HTTP {0})",
+    "CurseForge 上没有这个项目（HTTP 404）":
+        "This project does not exist on CurseForge (HTTP 404)",
+    "CurseForge 请求失败（HTTP {0}）":
+        "CurseForge request failed (HTTP {0})",
+    "Key 可用（指纹 {0}）":
+        "Key works (fingerprint {0})",
+    "正在构建界面…":
+        "Building the interface…",
+    "正在应用主题…":
+        "Applying the theme…",
+    "正在载入清单…":
+        "Loading lists…",
+    "正在检查实例路径…":
+        "Checking instance paths…",
+    "就绪":
+        "Ready",
+    "{0}：{1}":
+        "{0}: {1}",
+    "通":
+        "Reachable",
+    "不通":
+        "Unreachable",
+    "网络通畅\n":
+        "Network is fine\n",
+    "📌 已隐藏该按钮":
+        "📌 Button hidden",
+    "📌 已显示该按钮":
+        "📌 Button shown",
+    "⚠️ 已经到{0}了":
+        "⚠️ Already at the {0}",
+    "最前":
+        "front",
+    "最后":
+        "end",
+    "🔼 已上移":
+        "🔼 Moved up",
+    "🔽 已下移":
+        "🔽 Moved down",
+    "ℹ️ {0} 打开期间，主界面编辑已关闭（清单两边同时改会互相盖）。":
+        "ℹ️ While {0} is open, editing in the main window is off (edits on both sides would overwrite each other).",
+    "模组差异":
+        "Mod differences",
+    "qt 窗口关闭 {0}":
+        "Qt window closed {0}",
+    "打开 Qt 放大查看（子进程）{0} rows={1}":
+        "Open Qt big view (subprocess) {0} rows={1}",
+    "打开 Qt 差异窗口（子进程）rows={0}":
+        "Open Qt diff window (subprocess) rows={0}",
+    "⚠ Qt 子进程起不来，已改用进程内 Tk 差异窗口":
+        "⚠ Qt subprocess failed to start; switched to the in-process Tk diff window",
+    "⚠ 无法启动 Qt 子进程，详见日志":
+        "⚠ Cannot start the Qt subprocess; see the log",
+    "⚠ Qt 窗口进程异常退出（{0}）{1}":
+        "⚠ Qt window process exited unexpectedly ({0}) {1}",
+    "⚠ Qt 窗口更新清单失败：{0}":
+        "⚠ Failed to update lists in the Qt window: {0}",
+    "Qt 窗口主题已切换 kind={0} bg={1}":
+        "Qt window theme switched kind={0} bg={1}",
+    "⚠ Qt 窗口换主题失败：{0}":
+        "⚠ Failed to switch the theme of the Qt window: {0}",
+    "打开曲线图":
+        "Open chart",
+    "复位位置":
+        "Reset position",
+    "隐藏浮标":
+        "Hide widget",
+    "加载 PySide6 失败：{0}":
+        "Failed to load PySide6: {0}",
+    "清单":
+        "List",
+    "建窗失败：\n":
+        "Failed to create the window:\n",
+    "系统托盘需要 pywin32：pip install pywin32":
+        "The system tray requires pywin32: pip install pywin32",
+    "主线程卡住 {0:.2f} 秒 ｜ {1}\n":
+        "Main thread stuck for {0:.2f} s ｜ {1}\n",
+    "窗口标题：{0}\n":
+        "Window title: {0}\n",
+    "\n---- 启动 {0} ｜ 构建 {1} ----\n":
+        "\n---- Started {0} ｜ Build {1} ----\n",
+    "SmoothScroller: {0} 抛异常，这段平滑滚动已停掉并还回定时器精度\n":
+        "SmoothScroller: {0} raised an exception; this smooth-scroll run stopped and the timer precision was restored\n",
+    "!! {0} 抛异常: {1}":
+        "!! {0} raised an exception: {1}",
+    "请求失败（细节已省略）":
+        "Request failed (details omitted)",
+    "存在 {0}":
+        "exists {0}",
+    "· 缺失 {0}":
+        "· missing {0}",
+    "其它文件":
+        "Other files",
 }
 
 
@@ -1601,8 +2176,13 @@ def trp(模板, *值):
     英 = 表.get(模板, 模板)
     try:
         return 英.format(*值)
-    except Exception:                      # 占位符对不上时别炸，退回原文
-        return 模板.format(*值)
+    except Exception:                      # 占位符对不上时别炸，退回中文模板
+        try:
+            return 模板.format(*值)
+        except Exception:
+            # 连中文也填不出来（值是机械改出来的，可能少传一个）：宁可少填也不能抛，
+            # 否则一条日志就能把迁移线程带崩
+            return 模板
 
 
 # ------------------------------------------------------------------ 包装层
