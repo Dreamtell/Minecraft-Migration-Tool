@@ -2522,13 +2522,34 @@ def show_window(win):
         pass
 
 
-def set_window_icon(window):
-    icon_path = get_icon_path()
+def set_window_icon(window, icon_path=None):
+    """给窗口套上程序图标。
+
+    第二个参数是**可选**的：以前只收 window，`ui/lang_picker.py` 按两个参数调，
+    TypeError 被包在 try/except 里 → 语言选择框一直顶着 Tk 默认的羽毛图标。
+    """
+    icon_path = icon_path or get_icon_path()
     if icon_path:
         try:
             window.iconbitmap(icon_path)
-        except:
+            return True
+        except Exception:
             pass
+    # .ico 读不了时退一步：用 PNG 走 iconphoto（任务栏/标题栏都能吃到）
+    try:
+        from PIL import Image, ImageTk
+        图 = get_icon_image() if "get_icon_image" in globals() else None
+        if 图 is None:
+            png = str(get_icon_path() or "").replace(".ico", ".png")
+            from pathlib import Path as _P
+            if _P(png).exists():
+                图 = Image.open(png)
+        if 图 is not None:
+            window.iconphoto(True, ImageTk.PhotoImage(图))
+            return True
+    except Exception:
+        pass
+    return False
 
 
 _圆角缓存 = {}
