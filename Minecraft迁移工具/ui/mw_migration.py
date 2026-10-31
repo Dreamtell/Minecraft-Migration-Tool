@@ -974,12 +974,15 @@ class MigrationMixin:
 
     # ---------- 进度轮询 ----------
     def _poll_progress(self):
-        if self.progress_queue is not None and self.progress_window is not None:
+        # 只要队列在就轮询：模拟运行没有进度窗口，但背面那条 3px 条一样要跟着走
+        # （见下面 progress_window 为 None 的分支）。
+        if self.progress_queue is not None:
             try:
                 while True:
                     msg = self.progress_queue.get_nowait()
                     if msg is None:
-                        self.progress_window.close()
+                        if self.progress_window is not None:
+                            self.progress_window.close()
                         self.progress_window = None
                         self.progress_queue = None
                         if self.after_id is not None:
@@ -993,7 +996,8 @@ class MigrationMixin:
                         self._notify_task_done(
                             "迁移", "任务已结束，点托盘图标打开主界面查看日志")
                         return
-                    self.progress_window.update_progress(*msg)
+                    if self.progress_window is not None:
+                        self.progress_window.update_progress(*msg)
                     # 顺手把进度同步到背面那条 3px 条（copied_bytes / 总量）
                     try:
                         总 = float(getattr(self, "_mig_total_size", 0) or 0)
@@ -1537,6 +1541,18 @@ class MigrationMixin:
 
         # 模拟模式
         if self.dry_run.get():
+            # 模拟运行也开一条进度队列（不建进度窗口）：背面那条 3px 条就能跟着
+            # 「处理到第几个文件」走，和日志是同一个节奏 —— 用户要的同步就是这个。
+            try:
+                _总数, _总量 = self._calculate_migration_stats(
+                    src_path, tgt_path, world, modlist, configlist, extralist)
+                self.progress_queue = queue.Queue()
+                self._mig_total_size = float(_总量 or 0)
+                if self.after_id is None:
+                    self._poll_progress()
+            except Exception as e:
+                trace_exc("main_window/模拟运行进度队列", e)
+                self.progress_queue = None
             self.log("========== 开始迁移（模拟） ==========", level="INFO")
             self.log(trp("旧版目录（源）: {0}", src), level="INFO")
             self.log(trp("新版目录（目标）: {0}", tgt), level="INFO")
