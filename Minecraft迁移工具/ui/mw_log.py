@@ -15,6 +15,7 @@ from utils import anim
 from pathlib import Path
 from tkinter import messagebox
 from utils import i18n, secrets
+from utils.textsafe import 可见 as _可见文本
 from utils.helpers import SmoothScroller, tree_row_px
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
 from utils.i18n import trp
@@ -544,6 +545,8 @@ class LogMixin:
         # 所以 API Key 之类的敏感串必须在这一行就抹掉，不能指望调用方自觉。
         # 见 utils/secrets.py：没配 key 时这一步只多一次 in 判断，可以忽略。
         message = secrets.redact(message)
+        # 控制字符（路径里混进 0x0B 之类）在 Text 里会画成方块，统一还原成可见写法
+        message = _可见文本(message)
         # 界面语言：日志正文也翻。静态串在这里一次命中（core/ 里的模块也是回调到这儿，
         # 所以它们发的日志一样被覆盖）；f-string 拼的串走 trp 模板，见 utils/i18n.py。
         message = i18n.tr(message)

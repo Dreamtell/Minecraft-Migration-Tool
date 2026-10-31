@@ -365,6 +365,9 @@ class ToastHost:
         约 100ms 主线程阻塞）。那种情况下任何动画都会被卡在半路，看着像"弹一下"；
         干脆不动画，用户立刻看到结果，进度条照常走。
         """
+        from utils.textsafe import 可见 as _可见
+
+        text = _可见(text)          # 控制字符画不出字来，统一还原成反斜杠写法
         if self._closed:
             return None
         try:

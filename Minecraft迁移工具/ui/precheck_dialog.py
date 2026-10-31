@@ -19,6 +19,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from utils.dpi import px
+from utils.textsafe import 可见
 from utils.helpers import create_gradient_button, set_window_icon
 from utils.i18n import trp
 
@@ -243,7 +244,7 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
     叉.bind("<Leave>", lambda e: 叉.configure(fg=配色["弱"]))
 
     if 副标题:
-        tk.Label(框, text=副标题, bg=配色["卡"], fg=配色["弱"], justify="left",
+        tk.Label(框, text=可见(副标题), bg=配色["卡"], fg=配色["弱"], justify="left",
                  anchor="w", wraplength=宽 - px(48),
                  font=("微软雅黑", 9)).pack(fill="x", padx=px(20), pady=(0, px(10)))
 
@@ -269,7 +270,7 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
         tk.Label(行, text=点, bg=配色["条"], fg=色,
                  font=("微软雅黑", 9)).pack(side="left", padx=(px(10), px(6)),
                                             pady=px(7), anchor="n")
-        字 = tk.Label(行, text=文本, bg=配色["条"], fg=配色["字"], justify="left",
+        字 = tk.Label(行, text=可见(文本), bg=配色["条"], fg=配色["字"], justify="left",
                       anchor="w", wraplength=宽 - px(84), font=("微软雅黑", 9))
         字.pack(side="left", fill="x", expand=True, padx=(0, px(10)), pady=px(7))
         行们.append((行, 字, 配色))
