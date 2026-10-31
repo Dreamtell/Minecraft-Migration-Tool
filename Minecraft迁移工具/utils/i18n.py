@@ -2207,6 +2207,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         " ({0})",
     "✕ 关闭":
         "✕ Close",
+    "⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较":
+        "⚠️ {0} list entries are not in the source mods folder; marked as missing and skipped",
 }
 
 

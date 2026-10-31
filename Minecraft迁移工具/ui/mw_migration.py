@@ -1191,6 +1191,44 @@ class MigrationMixin:
             self._flip_progress(1.0)
 
     # ---------- 扫描相关 ----------
+    def _mark_missing_before_scan(self, src: str) -> list:
+        """扫描差异之前先把"源里根本没有"的条目标出来并返回。
+
+        - 只认源 `<实例>/mods/*.jar`（和「检查存在」同一套匹配）；
+        - 命中的行打 `mod_missing` 标签（红），**不自动清除** —— 这是状态，不是
+          一闪而过的提示；清单再改一次时会被 `_clear_mod_status()` 收掉；
+        - 返回缺失条目列表，调用方拿去写日志（这些条目不会被拿去比较）。
+        """
+        缺失 = []
+        try:
+            src_mods = Path(src) / "mods"
+            if not src_mods.is_dir():
+                return 缺失
+            source_files = {f.name: f for f in src_mods.glob("*.jar")}
+            if not source_files:
+                return 缺失
+            name_map = {}
+            for orig in source_files:
+                clean = orig
+                if clean.startswith("[") and "]" in clean:
+                    clean = clean.split("]", 1)[1].strip()
+                name_map[clean] = orig
+                name_map[orig] = orig
+            from core.migrator import match_mod as _mm
+
+            行们 = self.mod_text.get("1.0", tk.END).splitlines()
+            self.mod_text.tag_remove("mod_missing", "1.0", tk.END)
+            for i, ln in enumerate(行们):
+                s2 = ln.strip()
+                if not s2 or s2.startswith("#"):
+                    continue
+                if not _mm(s2, source_files, name_map):
+                    缺失.append(s2)
+                    self.mod_text.tag_add("mod_missing", f"{i + 1}.0", f"{i + 1}.end")
+        except Exception as e:
+            trace_exc("main_window/扫描前检查存在", e)
+        return 缺失
+
     def action_scan_mod_diff(self):
         # 差异窗口已经开着就直接叫回来（Qt 子进程 / 进程内 Qt / Tk 各判断一次）
         if self._qt_host_alive("diff"):
@@ -1222,6 +1260,13 @@ class MigrationMixin:
         if Path(src).resolve() == Path(tgt).resolve():
             messagebox.showinfo("提示", "源目录和目标目录相同，无需比较。")
             return
+
+        # 扫描之前先做一遍"清单里这些文件到底在不在源 mods 里"：
+        # 不存在的直接标红、不参与后面比较（用户要的就是这个语义）。
+        缺 = self._mark_missing_before_scan(src)
+        if 缺:
+            self.log(trp("⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较",
+                         len(缺)), level="WARNING")
 
         self._scanning = True
         self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 扫描中…")
