@@ -205,10 +205,9 @@ class SliderRow(tk.Canvas):
                 trace_exc("helpers", e)
 
     def _on_wheel(self, event):
-        if not self._enabled:
-            return "break"
-        self._step(1 if getattr(event, "delta", 0) > 0 else -1)
-        return "break"
+        """滚轮**不改数值**：设置页是滚动浏览的，鼠标划过滑条就改参数太容易误触
+        （用户反馈"正常滑动设置界面时被意外改动"）。要改就按住拖动，或点轨道。"""
+        return None
 
     def _step(self, d):
         if not self._enabled:

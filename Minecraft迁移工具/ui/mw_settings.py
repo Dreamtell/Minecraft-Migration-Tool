@@ -16,7 +16,7 @@ from ui import button_prefs
 from ui.mw_common import (
     LINK_GITHUB, LINK_MCMOD, LINK_MINECRAFT, LINK_PCL,
     _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS,
-    _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS, _LOCK_MODES,
+    _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS,
     _RENAME_MARKERS, _SECTION_STYLE, _mix,
 )
 from utils import i18n
@@ -516,30 +516,6 @@ class SettingsMixin:
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(2, 0))
         self._update_cf_key_label()
-
-        # ---------- 任务与锁定 ----------
-        box_lock = section("lock", page_mig)
-        self.settings_lock_var = tk.StringVar(value=getattr(self, "lock_mode", "all"))
-        卡片(box_lock, self.settings_lock_var, _LOCK_MODES, self._set_lock_mode, 名="lock")
-        tk.Label(box_lock,
-                 text="三个选项都只是「盖不盖遮罩」的区别：迁移期间所有操作按钮一律禁用，"
-                      "执行日志始终留着，方便看进度。",
-                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
-                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
-                                                                          pady=(4, 0))
-        # 跑完之后的完成态：总结 + 边框转绿，是按键关闭还是自动关闭
-        self.settings_lock_key_sw = SwitchRow(
-            box_lock, self.theme, "迁移完成后按任意键关闭",
-            command=self._toggle_lock_wait_key, compact=True, accent="switch_on")
-        self.settings_lock_key_sw.pack(fill="x", pady=(10, 0))
-        self.settings_lock_key_sw.set(getattr(self, "lock_wait_key", True))
-        tk.Label(box_lock,
-                 text="跑完不会“啪”地消失：锁屏里先打印迁移总结、边框从红渐变成绿"
-                      "（有失败则变橙）。开启时停在完成态等你按任意键（或点一下）；"
-                      "关闭则 2 秒后自动收起。",
-                 bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
-                 font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
-                                                                          pady=(4, 0))
 
         # ---------- 携带什么，全在「其它文件」清单里说了算 ----------
         # 以前这里有一组「默认携带的目录」勾选框：勾上的目录在迁移那一刻被**自动**
@@ -1128,25 +1104,6 @@ class SettingsMixin:
                                      state=state, marker=self.rename_marker))
         except Exception:
             pass
-
-    def _set_lock_mode(self, value):
-        """迁移时怎么锁主界面（只影响"盖不盖遮罩"，按钮一律禁用）。"""
-        self.lock_mode = value if value in ("all", "real", "off") else "all"
-        self.save_config()
-        text = dict(_LOCK_MODES).get(self.lock_mode, self.lock_mode)
-        self.toast(trp("🔒 迁移锁定方式已改为：{0}", text), level="ok", key="lock_mode")
-
-    def _toggle_lock_wait_key(self):
-        """完成态是"按任意键关闭"还是"自动关闭"。"""
-        try:
-            self.lock_wait_key = bool(self.settings_lock_key_sw.get())
-        except Exception:
-            self.lock_wait_key = bool(getattr(self, "lock_wait_key", True))
-        self.save_config()
-        self.toast(trp("⌨️ 迁移完成后的收尾方式已改为：按任意键关闭")
-                   if self.lock_wait_key else
-                   trp("⌨️ 迁移完成后的收尾方式已改为：2 秒后自动关闭"),
-                   level="ok", key="lock_wait_key")
 
     # ---- 「默认携带的目录」（设置里勾选，迁移时自动并进清单） ----
 
