@@ -98,6 +98,42 @@ def _外壳(win):
         return 0
 
 
+def _贴在父窗上(窗, 父窗):
+    """把弹窗插到父窗正上方（Z 序），但不设 topmost —— 别的程序切到前台时自然被盖住。"""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = _外壳(窗)
+        after_hwnd = _外壳(父窗)
+        if not hwnd or not after_hwnd:
+            return False
+        SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+        GW_HWNDPREV = 3
+        # SetWindowPos 的 hWndInsertAfter 是"排在它**后面**"那个窗口，
+        # 想贴在父窗上面就得传"父窗上面那个窗口"；父窗已经在最上面时就传 HWND_TOP。
+        user32.GetWindow.restype = ctypes.c_void_p
+        user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        prev = user32.GetWindow(ctypes.c_void_p(after_hwnd), GW_HWNDPREV)
+        插入位置 = ctypes.c_void_p(int(prev) if prev else None)
+        return bool(user32.SetWindowPos(ctypes.c_void_p(hwnd), 插入位置,
+                                        0, 0, 0, 0,
+                                        SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE))
+    except Exception:
+        return False
+
+
+def _是置顶窗(窗):
+    """当前是否 WS_EX_TOPMOST（用于自检，探针也用它）。"""
+    try:
+        import ctypes
+        GWL_EXSTYLE = -20
+        WS_EX_TOPMOST = 0x00000008
+        风 = ctypes.windll.user32.GetWindowLongW(ctypes.c_void_p(_外壳(窗)), GWL_EXSTYLE)
+        return bool(风 & WS_EX_TOPMOST)
+    except Exception:
+        return False
+
+
 def _前台窗口():
     """当前前台窗口句柄；拿不到返回 0。"""
     try:
@@ -226,15 +262,13 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
 
     # 无边框窗（overrideredirect）不参与"从属窗口"那套层叠，transient 说了不算：
     # 主界面被点一下就能盖到它上面。两手一起用 —— 置顶 + 主界面一拿焦点就把它抬起来。
-    try:
-        窗.attributes("-topmost", True)
-    except Exception:
-        pass
+    # 不用 topmost（用户报"过分置顶"）：改成把自己插到父窗正上方，
+    # 这样它压得住主界面，但别的程序一切到前台就把它盖住。
 
     def _父窗聚焦(_e=None):
         if 已关["值"]:
             return
-        for 做 in (lambda: 窗.lift(), lambda: 窗.attributes("-topmost", True)):
+        for 做 in (lambda: 窗.lift(), lambda: _贴在父窗上(窗, 父窗)):
             try:
                 做()
             except Exception:
@@ -262,15 +296,7 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
                 if not 窗.winfo_viewable():
                     窗.deiconify()
                     _设圆角(窗)
-                _前台 = _前台窗口()
-                _我 = _外壳(窗)
-                _父 = _外壳(父窗)
-                要顶 = (_前台 == 0) or (_前台 in (_我, _父))
-                if 要顶 and not 窗.attributes("-topmost"):
-                    窗.attributes("-topmost", True)
-                    窗.lift()
-                elif (not 要顶) and 窗.attributes("-topmost"):
-                    窗.attributes("-topmost", False)
+                _贴在父窗上(窗, 父窗)
         except Exception:
             pass
         try:
