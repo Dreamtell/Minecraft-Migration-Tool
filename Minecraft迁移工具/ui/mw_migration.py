@@ -1093,7 +1093,7 @@ class MigrationMixin:
                             # 15% → 85%：干活这一段；剩下 15% 留给"日志还在一行行滚"
                             if not self._是模拟运行():
                                 self._flip_progress(
-                                    0.15 + 0.70 * min(1.0, float(msg[2]) / 总))
+                                    0.85 * min(1.0, float(msg[2]) / 总))
                     except Exception:
                         pass
             except queue.Empty:
@@ -1610,7 +1610,8 @@ class MigrationMixin:
         self._refresh_busy_state()      # 别的按钮先灰掉
         self._close_child_windows()     # 子窗口全关（设置窗/差异窗/大视图）
         self._flip_start_btn(front=False)
-        self._flip_progress(0.0)
+        # 倒计时是"沙漏"：从满格往回收，数到 0 正好收空，然后干活段从 0 重新长。
+        self._flip_progress(1.0)
         self.log(trp("⏳ 开始前倒计时 {0} 秒：期间再点一下「开始迁移」可取消", 秒),
                  level="INFO")
         self._countdown_tick()
@@ -1626,17 +1627,16 @@ class MigrationMixin:
                 文案 = trp("⏳ {0} 秒后开始", 0)
                 self._countdown_txt = 文案
                 self._flip_back_text(文案)
-                self._flip_progress(0.15)
+                self._flip_progress(0.0)
             elif time.perf_counter() - self._countdown_zero_at >= self._倒计时零秒ms / 1000.0:
                 self._finish_start_countdown()
                 return
             self._countdown_job = self.root.after(16, self._countdown_tick)
             return
         总 = self._countdown_total or 1.0
-        # 整段进度：倒计时占前 15%（0 → 15%），干活 15% → 85%，日志滚完再 85% → 100%。
-        # 以前倒计时是"从满格缩到空"，数完正好接上"从 0 涨"，一缩一涨是在换向，
-        # 观感上像倒回去了。
-        self._flip_progress(0.15 * (1.0 - max(0.0, 剩) / 总))
+        # 倒计时 = 沙漏：条从满格往回收（1 → 0），数到 0 收空；
+        # 收空之后再干活，条从 0 长到 85%，最后日志滚完 85% → 100%。
+        self._flip_progress(max(0.0, min(1.0, 剩 / 总)))
         秒数 = max(1, int(剩 + 0.9999))
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
@@ -1650,10 +1650,9 @@ class MigrationMixin:
         self._countdown_running = False
         self._countdown_txt = None
         self._flip_back_text(None)      # 换回「⏳ 迁移中...」
-        # 真迁移：条归零，接下来由进度队列推真值；模拟运行没有进度队列，
-        # 让它回到默认的来回扫（否则整段时间都停在 0，像死了）。
-        # 倒计时收在 15%，这里就从 15% 接着往下走，中间的衔接不跳。
-        self._flip_progress(0.15)
+        # 倒计时收在 0，干活段从 0 接着长（真迁移由进度队列推真值；
+        # 模拟运行不推数值，条自己滚动）。
+        self._flip_progress(0.0)
         self._run_migration_entry()
 
     def _cancel_start_countdown(self):
