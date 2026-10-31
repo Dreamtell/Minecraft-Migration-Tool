@@ -84,6 +84,8 @@ _STRIPE_STEP = 28.0     # 斜纹间距
 _STRIPE_SPEED = 55.0    # 斜纹流速 px/s
 _PROGRESS_H = 3         # 底部进度条高度
 _BAR_SUBPX = 4          # 条宽按 1/4 像素量化（头子能半格半格挪）
+_DECOR_WID = 0.30       # 装饰性"滚动"那一块的长度（占按钮宽的比例）
+_DECOR_SPEED = 0.55     # 那块每秒走几倍按钮宽（一圈 = (1+_DECOR_WID) 个宽）
 _PROGRESS_MIN = 0.06    # 进度条最短（原型 max(0.06, ...)）
 
 _UI_MS = 33             # 持续动画的 tick 间隔（30fps 上限）
@@ -768,11 +770,68 @@ class FlipButton(tk.Canvas):
         self._bar_cache[q] = photo
         return photo
 
-    def _apply_bar(self, u=None):
-        """刷底部那条：u=None 就藏起来（正面 / 翻转中）。"""
+    def _bar_chunk_photo(self, off, wid):
+        """装饰性"滚动"用的那一段：从满宽条里裁 `wid` 宽的一条，带 1/4 像素的起点。"""
+        w = self._cw
+        try:
+            q = int(round(off * _BAR_SUBPX))
+            qw = int(round(wid * _BAR_SUBPX))
+        except Exception:
+            return None
+        q = max(-w * _BAR_SUBPX, min(w * _BAR_SUBPX, q))
+        qw = max(_BAR_SUBPX, min(w * _BAR_SUBPX - 1, qw))
+        key = ("chunk", w, q, qw)
+        if key in self._bar_cache:
+            return self._bar_cache[key]
+        photo = None
+        try:
+            整 = q // _BAR_SUBPX
+            宽 = qw // _BAR_SUBPX
+            if 宽 > 0:
+                条 = self._bar_strip()
+                # 越界的部分裁掉（块滑出左/右边缘时）
+                左 = max(0, -整)
+                右 = min(w, 整 + 宽)
+                if 右 > 左:
+                    photo = _ImageTk.PhotoImage(条.crop((左, 0, 右, _PROGRESS_H)))
+        except Exception:
+            photo = None
+        if len(self._bar_cache) > 1600:
+            self._bar_cache.clear()
+        self._bar_cache[key] = photo
+        return photo
+
+    def _decor_chunk(self):
+        """装饰性滚动：一块固定长度的条从左往右滑，滑出去再从左边进来。
+
+        以前是"从 0 长到满、再缩回 0"（`_decor_u` 的 cos），看着像在闪；
+        用户要的"随机滚动"其实是这么一条一直在走的块。
+        """
+        w = max(1, self._cw)
+        wid = max(10.0, w * _DECOR_WID)
+        圈 = (time.perf_counter() - self._t0) * _DECOR_SPEED * w
+        圈 %= (w + wid)
+        return 圈 - wid, wid
+
+    def _apply_bar(self, u=None, seg=None):
+        """刷底部那条。
+
+        u     = 0..1 真进度（None = 不画）
+        seg   = (起点, 长度) 装饰性滚动用的那一段
+        """
         if not _PIL_OK:
             return
         try:
+            if seg is not None:
+                x, wid = seg
+                photo = self._bar_chunk_photo(x, wid)
+                if photo is None:
+                    self.itemconfigure(self._bar_id, state="hidden")
+                else:
+                    self.coords(self._bar_id, max(0, int(round(x))),
+                                self._ch - _PROGRESS_H)
+                    self.itemconfigure(self._bar_id, image=photo, state="normal")
+                return
             photo = None if u is None else self._bar_photo(u)
             if photo is None:
                 self.itemconfigure(self._bar_id, state="hidden")
@@ -781,6 +840,17 @@ class FlipButton(tk.Canvas):
                 self.itemconfigure(self._bar_id, image=photo, state="normal")
         except Exception:
             pass
+
+    def _draw_bar_now(self):
+        """按当前状态刷一次条：正面藏起来 / 背面有真进度就画进度 / 否则滚动。"""
+        if not self._at_back:
+            self._apply_bar(None)
+            return
+        u = self._bar_u()
+        if u is None:
+            self._apply_bar(None, self._decor_chunk())
+        else:
+            self._apply_bar(u)
 
     def _back_layer(self, t, hv=0.0):
         """背面整层（不含底色、不含底部进度条）：红面 + 斜纹。翻转帧和静止帧共用。
@@ -1264,7 +1334,7 @@ class FlipButton(tk.Canvas):
                             一步 = min(一步, 0.5 / float(self._cw))
                         当前 += 一步
                     self._prog_show = 当前
-                self._apply_bar(self._bar_u())
+                self._draw_bar_now()
                 self._tick_dots(now)
             else:
                 target = 1.0 if self._hover else 0.0
@@ -1325,7 +1395,10 @@ class FlipButton(tk.Canvas):
             else:
                 photo = self._back_photo(self._back_phase(), self._hv_q())
         self.itemconfigure(self._img_id, image=photo)
-        self._apply_bar(None if front else self._bar_u())
+        if front:
+            self._apply_bar(None)
+        else:
+            self._draw_bar_now()
         if self._icon is not None:
             if self._icon_img_id is None:
                 self._icon_img_id = self.create_image(
@@ -1541,7 +1614,7 @@ class FlipButton(tk.Canvas):
         else:
             self._push_prog_history(新)
         if self._at_back and not self._animating:
-            self._apply_bar(self._bar_u())
+            self._draw_bar_now()
             self._ensure_tick()     # 条在动，tick 得活着（也是提速的依据）
 
     def state(self, new_state=None):

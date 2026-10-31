@@ -1075,7 +1075,8 @@ class MigrationMixin:
                         self._migration_running = False
                         # 停在 85%：剩下 15% 交给"日志滚完"那一段推（用户要的是
                         # 日志滚完条才满，不是活儿干完就满）。
-                        self._flip_progress(self._条真进度(0.85))
+                        if not self._是模拟运行():
+                            self._flip_progress(0.85)
                         self._日志尾巴起步()
                         # 收尾中不解锁：否则完成态被这条抢掉
                         if not getattr(self, "_mig_finish_pending", False):
@@ -1090,8 +1091,9 @@ class MigrationMixin:
                         总 = float(getattr(self, "_mig_total_size", 0) or 0)
                         if 总 > 0:
                             # 15% → 85%：干活这一段；剩下 15% 留给"日志还在一行行滚"
-                            self._flip_progress(self._条真进度(
-                                0.15 + 0.70 * min(1.0, float(msg[2]) / 总)))
+                            if not self._是模拟运行():
+                                self._flip_progress(
+                                    0.15 + 0.70 * min(1.0, float(msg[2]) / 总))
                     except Exception:
                         pass
             except queue.Empty:
@@ -1124,12 +1126,14 @@ class MigrationMixin:
         if not getattr(self, "_log_tail_from", None):
             self._log_tail_from = max(1.0, 剩余)
         比 = 1.0 - min(1.0, 剩余 / max(1.0, float(self._log_tail_from)))
-        self._flip_progress(self._条真进度(0.85 + 0.15 * 比))
+        if not self._是模拟运行():
+            self._flip_progress(0.85 + 0.15 * 比)
         # 日志滚到底、或者收尾已经把按钮翻回正面了 —— 两种都收手
         if 剩余 > 0.5 and getattr(self, "_ending_wait_log", False):
             self._log_tail_job = self.root.after(60, self._日志尾巴步)
         else:
-            self._flip_progress(self._条真进度(1.0))
+            if not self._是模拟运行():
+                self._flip_progress(1.0)
 
     # ---------- 扫描相关 ----------
     def action_scan_mod_diff(self):
@@ -1419,7 +1423,11 @@ class MigrationMixin:
             return False
 
     def _条真进度(self, value):
-        """模拟运行阶段不接数值：按用户要求，这段时间条只做随机滚动。"""
+        """模拟运行阶段不接数值：按用户要求，这段时间条只做随机滚动。
+
+        注意不是"推 None"，而是调用点直接跳过 —— 反复 set_back_progress(None) 会把
+        `_prog_show` 和历史一遍遍清掉，条看着就一顿一顿（像在闪）。
+        """
         return None if self._是模拟运行() else value
 
     def _flip_progress(self, value=None):
