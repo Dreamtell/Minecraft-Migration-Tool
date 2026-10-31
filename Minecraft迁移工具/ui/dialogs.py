@@ -132,7 +132,13 @@ class ProgressWindow:
         # ⚠ 别每次更新都强制刷新：进度是高频回调，update_idletasks 会把所有挂起的
         # 重绘立刻跑一遍，单次能卡 1 秒以上（看门狗日志抓到的就是这里）。
         # 节流到 100ms：进度条看起来一样跟手，主线程不再被反复按着重绘。
-        self.win.update_idletasks()
+        现在 = time.perf_counter()
+        if 现在 - getattr(self, "_刷图t", 0.0) >= 0.1:
+            self._刷图t = 现在
+            try:
+                self.win.update_idletasks()
+            except Exception:
+                pass
 
     def close(self):
         self.win.destroy()
@@ -188,7 +194,13 @@ class ScanProgressWindow:
         # ⚠ 别每次更新都强制刷新：进度是高频回调，update_idletasks 会把所有挂起的
         # 重绘立刻跑一遍，单次能卡 1 秒以上（看门狗日志抓到的就是这里）。
         # 节流到 100ms：进度条看起来一样跟手，主线程不再被反复按着重绘。
-        self.win.update_idletasks()
+        现在 = time.perf_counter()
+        if 现在 - getattr(self, "_刷图t", 0.0) >= 0.1:
+            self._刷图t = 现在
+            try:
+                self.win.update_idletasks()
+            except Exception:
+                pass
 
     def close(self):
         if not self.closed:
