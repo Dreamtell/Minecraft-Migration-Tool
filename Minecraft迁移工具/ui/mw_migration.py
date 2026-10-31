@@ -1652,7 +1652,9 @@ class MigrationMixin:
         self._flip_back_text(None)      # 换回「⏳ 迁移中...」
         # 倒计时收在 0，干活段从 0 接着长（真迁移由进度队列推真值；
         # 模拟运行不推数值，条自己滚动）。
-        self._flip_progress(0.0)
+        # 数完了：真跑从 0 接着长；模拟运行不接数值（推 None 让条回到"滚动"，
+        # 否则 override 停在 0.0，条就是一条 0 宽的线 —— 看着像不动了）
+        self._flip_progress(self._条真进度(0.0))
         self._run_migration_entry()
 
     def _cancel_start_countdown(self):
