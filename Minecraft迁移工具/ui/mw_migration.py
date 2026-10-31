@@ -1376,16 +1376,6 @@ class MigrationMixin:
         两个方法 —— 翻转组件构造失败时会降级回旧按钮，所以这里全程 getattr 兜着。
         """
         btn = getattr(self, "start_btn", None)
-        if front:
-            # 翻回正面时无条件复原背面样式：黄色/满条/⚠️ 文案都是"干活中"的临时态，
-            # 不复原的话第一次跑完按钮就永远停在黄面 ⚠️ 上（用户 m09684 报的故障）。
-            try:
-                btn.set_back_warn(False)
-                btn.set_bar_off(False)
-                btn.set_back_progress(None)
-            except Exception:
-                pass
-            self._flip_back_text(None)
         方法 = getattr(btn, "flip_to_front" if front else "flip_to_back", None)
         if 方法 is None:
             if 结束后 is not None:
@@ -1414,20 +1404,14 @@ class MigrationMixin:
         except Exception:
             return 3
 
-    def _flip_back_text(self, text=None, dots=None):
-        """换背面文案；旧按钮没有这个方法，getattr 兜着。
-
-        `dots=False` 表示别再跟 1→2→3 的省略号动画（倒计时那种完整句子用）。
-        """
+    def _flip_back_text(self, text=None):
+        """换背面文案（倒计时用）；旧按钮没有这个方法，getattr 兜着。"""
         btn = getattr(self, "start_btn", None)
         方法 = getattr(btn, "set_back_text", None)
         if 方法 is None:
             return
         try:
-            if dots is None:
-                方法(text)
-            else:
-                方法(text, dots=dots)
+            方法(text)
         except Exception:
             pass
 
@@ -1522,24 +1506,10 @@ class MigrationMixin:
         self._begin_start_countdown(秒)
 
     def _按钮待确认(self, 是):
-        """等用户做选择（自检弹窗开着）时：满条 + 黄面 + 「⚠️ 等待……」文案。
-
-        用户 m09734：「这个进度条别动了，让它占满，而且文本改成等待……」。
-        """
-        btn = getattr(self, "start_btn", None)
+        """弹自检确认框期间，把「开始迁移」正面文案换成「⏳ 等你确认…」。"""
         try:
-            if 是:
-                # 瞬间切背面：这里是弹模态框的当口，播翻转动画会卡在半翻的姿势
-                btn.jump_to(back=True)
-                btn.set_back_warn(True)          # 黄面 + 满条（长度不动）
-                btn.set_back_text(trp("⚠️ 等待中..."))
-            else:
-                btn.set_back_text(None)
-                btn.set_back_warn(False)
-                # 同样瞬间切回正面：从这里开始播翻转动画的话，动画是从
-                # "jump 过去的背面"起手的，会有一段文字残留/半翻的观感
-                btn.jump_to(back=False)
-            btn.update_idletasks()
+            self.start_btn.set_front_text(trp("⏳ 等你确认…") if 是 else None)
+            self.start_btn.update_idletasks()
         except Exception:
             pass
 
@@ -1640,11 +1610,7 @@ class MigrationMixin:
         self._refresh_busy_state()      # 别的按钮先灰掉
         self._close_child_windows()     # 子窗口全关（设置窗/差异窗/大视图）
         self._flip_start_btn(front=False)
-        # 倒计时是"沙漏"：满格起步往回收（用户要的就是这个，别把它藏起来）
-        try:
-            self.start_btn.set_bar_off(False)
-        except Exception:
-            pass
+        # 倒计时是"沙漏"：从满格往回收，数到 0 正好收空，然后干活段从 0 重新长。
         self._flip_progress(1.0)
         self.log(trp("⏳ 开始前倒计时 {0} 秒：期间再点一下「开始迁移」可取消", 秒),
                  level="INFO")
@@ -1660,7 +1626,7 @@ class MigrationMixin:
                 self._countdown_zero_at = time.perf_counter()
                 文案 = trp("⏳ {0} 秒后开始", 0)
                 self._countdown_txt = 文案
-                self._flip_back_text(文案, dots=False)
+                self._flip_back_text(文案)
                 # 0 秒时条已经空了 —— 直接藏掉，别留一条 0 宽的细线在左边
                 self._flip_progress(None)
             elif time.perf_counter() - self._countdown_zero_at >= self._倒计时零秒ms / 1000.0:
@@ -1677,7 +1643,7 @@ class MigrationMixin:
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
             self._countdown_txt = 文案
-            self._flip_back_text(文案, dots=False)
+            self._flip_back_text(文案)
         # 16ms：条单独画了之后刷新很便宜，25 次/秒看着会一格一格跳
         self._countdown_job = self.root.after(16, self._countdown_tick)
 
@@ -1685,27 +1651,11 @@ class MigrationMixin:
         self._countdown_job = None
         self._countdown_running = False
         self._countdown_txt = None
-        self._flip_back_text(None)
-        try:
-            self.start_btn.set_back_warn(False)   # 先复原成红面，下面按模拟/真跑再切
-        except Exception:
-            pass
+        self._flip_back_text(None)      # 换回「⏳ 迁移中...」
         # 倒计时收在 0，干活段从 0 接着长（真迁移由进度队列推真值；
         # 模拟运行不推数值，条自己滚动）。
         # 数完了：真跑从 0 接着长；模拟运行不接数值（推 None 让条回到"滚动"，
         # 否则 override 停在 0.0，条就是一条 0 宽的线 —— 看着像不动了）
-        try:
-            self.start_btn.set_bar_off(False)
-        except Exception:
-            pass
-        # 干活段统一换成"黄色 + 满进度条 + ⚠ 文案"（用户 m09602 定的样式）。
-        # 真迁移也用它 —— 精确进度在进度窗口里，按钮上只表达"正在跑、别动"。
-        try:
-            self.start_btn.set_back_warn(True)
-        except Exception:
-            pass
-        self._flip_back_text(trp("⚠️ 模拟中...") if self._是模拟运行()
-                             else trp("⚠️ 迁移中..."))
         self._flip_progress(self._条真进度(0.0))
         self._run_migration_entry()
 
@@ -2096,8 +2046,7 @@ class MigrationMixin:
             # 日志还没滚完的这段时间也要算「忙」：否则按钮先亮了、按钮却还在背面，
             # 看着像两个状态打架。
             self._ending_wait_log = True
-            # 3 秒兜底：日志太长时不能一直把按钮按在背面（用户会当成卡死）。
-            self._ui_post(lambda: self.when_log_bottom(_收尾, timeout=3.0))
+            self._ui_post(lambda: self.when_log_bottom(_收尾))
             # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
             if getattr(self, "_silent_notify_on_finish", False):
                 self._silent_notify_on_finish = False

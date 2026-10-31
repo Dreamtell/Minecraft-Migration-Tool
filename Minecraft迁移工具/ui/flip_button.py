@@ -414,7 +414,6 @@ class FlipButton(tk.Canvas):
         self._tk_font = None
         self._frames = {}                    # 帧图/静止图缓存（key 里带状态，见各处）
         self._t0 = time.perf_counter()
-        self._back_dots_on = True
         # 开始前倒计时要用：背面临时文案（「⏳ 3 秒后开始」）和真实进度（0..1）。
         # 都留 None = 保持原来的样子（省略号动画 + 来回扫的装饰条）。
         self._back_txt_custom = None
@@ -669,7 +668,7 @@ class FlipButton(tk.Canvas):
             return hit
         w, h = self._cw, self._ch
         W, H = w * _SS, h * _SS
-        acc = _rgb(self._pal[getattr(self, "_back_pid", "search")]["accent"])
+        acc = _rgb(self._pal["search"]["accent"])
         ov = _Image.new("RGBA", (W, H), acc + (0,))
         d = _ImageDraw.Draw(ov)
         lw = max(1, int(round(_STRIPE_W * _SS)))
@@ -756,14 +755,13 @@ class FlipButton(tk.Canvas):
 
     def _bar_strip(self):
         """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
-        key = ("barstrip", self._cw, self._ch, self._scheme,
-               getattr(self, "_back_pid", "search"))
+        key = ("barstrip", self._cw, self._ch, self._scheme)
         hit = _layer_cache.get(key)
         if hit is not None:
             return hit
         w, h = self._cw, self._ch
         strip = _Image.new("RGBA", (w, _PROGRESS_H),
-                           _rgb(self._pal[getattr(self, "_back_pid", "search")]["accent"]) + (255,))
+                           _rgb(self._pal["search"]["accent"]) + (255,))
         # 条的"外形"必须左右一样：以前用按钮的圆角遮罩裁条，条贴到两端时会被
         # 圆角切出斜角，一头方一头斜 —— 用户说的"外形不对称"就是这个。
         # 现在改成左右各内缩 `_BAR_INSET` 的直角条，两端永远是齐的。
@@ -964,38 +962,9 @@ class FlipButton(tk.Canvas):
         except Exception:
             pass
 
-    def set_back_warn(self, flag=True):
-        """模拟运行干活段的样式：黄色背面 + 满进度条（用户 m09602 要的效果）。"""
-        self._back_pid = "dry" if flag else "search"
-        self._bar_full = bool(flag)
-        try:
-            # 换色要重烤：面/斜纹/条都按旧色缓存着
-            for 表 in ("_face_cache", "_layer_cache", "_bar_cache", "_bar_strip_cache"):
-                getattr(self, 表, {}).clear()
-            self._draw_rest()
-            self._draw_bar_now()
-        except Exception:
-            pass
-
-    def set_bar_off(self, flag=True):
-        """打开后这一阶段完全不画底条（倒计时用：长度不能变，只能看文字）。"""
-        self._bar_off = bool(flag)
-        try:
-            self._draw_bar_now()
-        except Exception:
-            pass
-
     def _draw_bar_now(self):
         """按当前状态刷一次条：正面藏起来 / 背面有真进度就画进度 / 否则滚动。"""
         if not self._at_back:
-            self._apply_bar(None)
-            return
-        if getattr(self, "_bar_full", False):
-            # 满进度条（模拟运行干活段）：整条铺满，长度恒定
-            self._apply_bar(1.0)
-            return
-        if getattr(self, "_bar_off", False):
-            # 倒计时这种阶段：用户要求"长度不要变化"，干脆不画条（秒数靠文字）
             self._apply_bar(None)
             return
         u = self._bar_u()
@@ -1010,8 +979,7 @@ class FlipButton(tk.Canvas):
         底部进度条不在这里合成 —— 它是独立画布项（见 _apply_bar），否则进度一变就要
         重烤一整张面。
         """
-        面号 = getattr(self, "_back_pid", "search")
-        face = self._face_rgba(面号, self._pal[面号], hv, False)
+        face = self._face_rgba("search", self._pal["search"], hv, False)
         return _Image.alpha_composite(face, self._stripe_layer(t))
 
     # ------------------------------------------------------------ 贴图：底 + 面 + 图标
@@ -1370,26 +1338,6 @@ class FlipButton(tk.Canvas):
         """翻回正面（迁移结束——成功或失败——调用）。"""
         self._flip(False, 结束后=结束后)
 
-    def jump_to(self, back=True):
-        """瞬间切到正面/背面静止态，**不播翻转动画**。
-
-        为什么要这个：弹模态框时用 `flip_to_back(force=True)` 会在对话框的
-        事件循环里播动画，`after` 被压住 → 按钮停在"翻到一半"的姿势上
-        （用户 m09783 说的"动画过渡异常"）。这里直接把状态写死再重画。
-        """
-        try:
-            self._animating = False
-            self._at_back = bool(back)
-            self._prog_show = 0.0 if back else 1.0
-            self._apply_face()
-            self._draw_bar_now()
-            if self._tick_wanted():
-                self._ensure_tick()
-            else:
-                self._stop_tick()
-        except Exception:
-            pass
-
     # ------------------------------------------------------------ 持续动画（扫光 / 背面）
     def _sweep_phase(self):
         return int((time.perf_counter() - self._t0) * 1000.0 / _SWEEP_MS
@@ -1541,8 +1489,8 @@ class FlipButton(tk.Canvas):
         """背面标题的三个点：固定槽位里 1→2→3 循环（原型 int(t*3)%3）。"""
         if self._dots_id is None or self._icon is not None:
             return
-        if not getattr(self, "_back_dots_on", True):
-            return
+        if self._back_txt_custom:
+            return          # 倒计时文案是完整的，不加省略号
         n = 1 + int((now - self._t0) * 3.0) % 3
         if n != self._dots_n:
             self._dots_n = n
@@ -1643,12 +1591,11 @@ class FlipButton(tk.Canvas):
             if 换字:
                 self._文案淡入(pal)
             return
-        # 一律剥掉尾巴的点：省略号由单独的槽位（_dots_id）做 1→2→3 动画，
-        # 这是"最开始那样"的做法 —— 自定义文案也走它，过渡才不会一跳一跳。
         base = text.rstrip(".．… ")
         if not base:
             base = text
-        if not getattr(self, "_back_dots_on", True):
+        if self._back_txt_custom:
+            # 倒计时文案整行居中（"..." 槽位在 set_back_text 里已经藏起来了）
             if self._dots_id is not None:
                 self.itemconfigure(self._dots_id, state="hidden")
             self.itemconfigure(self._txt_id, text=base, anchor="center", fill=title,
@@ -1665,18 +1612,6 @@ class FlipButton(tk.Canvas):
         cy = self._ch // 2
         self.itemconfigure(self._txt_id, text=base, anchor="w", fill=title, state="normal")
         self.coords(self._txt_id, x0, cy)
-        # `_text_w`（tkfont.measure）对「⚠️ 等待中」这种带 emoji 的串会高估十几像素，
-        # 点就被推到很远的地方（中间一大片空白）。按画布上真实的 bbox 再校对一次。
-        try:
-            框 = self.bbox(self._txt_id)
-            if 框:
-                实宽 = float(框[2] - 框[0])
-                if abs(实宽 - tw) > 2.0:
-                    tw = 实宽
-                    x0 = (self._cw - (tw + gap + slot)) / 2.0
-                    self.coords(self._txt_id, x0, cy)
-        except Exception:
-            pass
         if self._dots_id is not None:
             self._dots_n = 1 + int((time.perf_counter() - self._t0) * 3.0) % 3
             self.itemconfigure(self._dots_id, text="." * self._dots_n, anchor="w",
@@ -1774,7 +1709,7 @@ class FlipButton(tk.Canvas):
             except Exception:
                 pass
 
-    def set_back_text(self, text=None, dots=None):
+    def set_back_text(self, text=None):
         """临时换掉背面文案（倒计时要用：「⏳ 3 秒后开始」）。
 
         传 None 恢复默认的「⏳ 迁移中...」/「⏳ 模拟中...」。自定义文案不加省略号动画、
@@ -1787,10 +1722,6 @@ class FlipButton(tk.Canvas):
         if 新 == self._back_txt_custom:
             return
         self._back_txt_custom = 新
-        if dots is not None:
-            # 省略号要不要跟着动：状态词（等待中/模拟中/迁移中）要，
-            # 倒计时的「N 秒后开始」不要（它本身就是一句完整的话）
-            self._back_dots_on = bool(dots) if 新 else True
         if self._at_back and not self._animating:
             self._draw_rest()
 
