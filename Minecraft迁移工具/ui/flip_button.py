@@ -390,6 +390,9 @@ class FlipButton(tk.Canvas):
         # 都留 None = 保持原来的样子（省略号动画 + 来回扫的装饰条）。
         self._back_txt_custom = None
         self._prog_override = None
+        # 条实际画到哪儿（缓动追 _prog_override）：日志一条一条地来，直接照抄目标值
+        # 就是一跳一跳；这里让它每帧追一点，观感是连续推过去的。
+        self._prog_show = None
 
         self._ch = int(height)
         # 宽度：和旧按钮同一套量法（helpers._btn_text_width + _BTN_TEXT_PAD），
@@ -642,9 +645,12 @@ class FlipButton(tk.Canvas):
         return max(_PROGRESS_MIN, 0.5 - 0.5 * math.cos(t * 2.6))
 
     def _bar_u(self):
-        """这一帧该画的条宽：真进度优先，没有就回到装饰性的来回扫。"""
+        """这一帧该画的条宽：真进度优先（缓动值），没有就回到装饰性的来回扫。"""
         if self._prog_override is not None:
-            return self._prog_override
+            if self._prog_show is None:
+                self._prog_show = self._prog_override
+            return self._prog_show
+        self._prog_show = None
         return self._decor_u(self._back_phase() * _BACK_DT)
 
     def _bar_strip(self):
@@ -1133,6 +1139,15 @@ class FlipButton(tk.Canvas):
                 else:
                     photo = self._back_photo(self._back_phase(), self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
+                # 条的目标值一跳，这里每帧追一点（时间常数 0.12s，肉眼是"一路推上去"）
+                tgt = self._prog_override
+                if tgt is not None:
+                    if self._prog_show is None:
+                        self._prog_show = tgt
+                    elif abs(tgt - self._prog_show) > 0.002:
+                        self._prog_show += (tgt - self._prog_show) * min(1.0, dt / 0.12)
+                    else:
+                        self._prog_show = tgt
                 self._apply_bar(self._bar_u())
                 self._tick_dots(now)
             else:
@@ -1352,6 +1367,8 @@ class FlipButton(tk.Canvas):
         if 新 == self._prog_override:
             return
         self._prog_override = 新
+        if 新 is None:
+            self._prog_show = None
         if self._at_back and not self._animating:
             self._apply_bar(self._bar_u())
             self._ensure_tick()     # 条在动，tick 得活着（也是提速的依据）
