@@ -15,6 +15,7 @@ from ui.pack_warning import PackWarning
 from ui.rounded_tabs import RoundedTabs
 from utils.dpi import UI_SCALE, px, window_geometry
 from utils.helpers import (
+    log_font,
     LiquidProgress, RoundedTextArea, SegmentedControl, SmoothScroller, SwitchRow,
     bind_text_scroll, create_gradient_button, is_dark_theme, style_window,
 )
@@ -867,7 +868,8 @@ class PagesMixin:
         self.log_text_box = RoundedTextArea(frame_log, self.theme, height=22,
                                             wrap=tk.WORD, state="disabled",
                                             bg=self.theme["log_bg"],
-                                            fg=self.theme["log_fg"])
+                                            fg=self.theme["log_fg"],
+                                            font=log_font(), spacing1=1, spacing3=1)
         self.log_text_box.pack(fill="both", expand=True, padx=2, pady=2)
         self.log_text = self.log_text_box.text
         self._bind_log_locate(self.log_text)     # 双击日志行 → 定位到清单条目

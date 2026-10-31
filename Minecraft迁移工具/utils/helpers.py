@@ -1380,6 +1380,39 @@ class RoundedEntry(tk.Frame):
             self._liquid_start()
 
 
+_LOG_FONT_CACHE = {}
+
+
+def log_font(size=10):
+    """执行日志用的字体：优先「微软雅黑 UI」，柔和、中英混排不打架。
+
+    Tk 的 Text 默认字体是 `TkTextFont`，在装了美化字体的机器上会变成
+    装饰性中文字体（实测这台机器是"海派腔调森系圆-闪"）—— 日志读起来很累。
+    这里固定成系统自带的无衬线体，并且正文字号给到 10（9 号太小、发虚）。
+    """
+    key = int(size)
+    hit = _LOG_FONT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    候选 = ["Microsoft YaHei UI", "微软雅黑", "Microsoft YaHei",
+            "Noto Sans SC", "思源黑体", "DengXian", "等线", "Segoe UI"]
+    选 = None
+    try:
+        import tkinter.font as _tkfont
+        有 = set(_tkfont.families())
+        for 名 in 候选:
+            if 名 in 有:
+                选 = 名
+                break
+    except Exception:
+        选 = None
+    if 选 is None:
+        选 = "Microsoft YaHei UI"
+    值 = (选, key)
+    _LOG_FONT_CACHE[key] = 值
+    return 值
+
+
 class RoundedTextArea(tk.Frame):
     """圆角外框的文本框（模组清单 / config 清单 / 执行日志那种大文本框）。
 

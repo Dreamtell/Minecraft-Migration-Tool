@@ -18,7 +18,7 @@ from ui.mw_common import _center_window, _close_popup, _grad_width
 from ui.virtual_table import VirtualTable
 from utils.helpers import (
     DataText, RoundedEntry, RoundedTextArea, begin_bulk_scan, create_gradient_button,
-    end_bulk_scan, focus_window, set_window_icon, text_delta,
+    end_bulk_scan, focus_window, log_font, set_window_icon, text_delta,
 )
 from utils.theme import apply_theme_to_widget_tree
 
@@ -87,10 +87,10 @@ class BigViewMixin:
                                side="right", padx=4)
 
         self._log_big_box = RoundedTextArea(win, self.theme, wrap=tk.WORD,
+                                            font=log_font(), spacing1=1, spacing3=1,
                                            state="disabled",
                                            bg=self.theme["log_bg"],
-                                           fg=self.theme["log_fg"],
-                                           font=("微软雅黑", 10))
+                                           fg=self.theme["log_fg"])
         big = self._log_big_box.text
         self._log_big_box.pack(fill="both", expand=True, padx=8, pady=8)
         self._log_big_text = big
