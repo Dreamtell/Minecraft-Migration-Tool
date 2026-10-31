@@ -251,11 +251,33 @@ class PagesMixin:
                     pass
             try:
                 self._reflow_job = self.root.after(
-                    260, lambda: self._apply_button_layout(animate=False))
+                    260, lambda: self._reflow_once())
             except Exception:
                 self._reflow_job = None
 
         self._reflow_job = None
+        self._reflow_w = None       # 上一次重排时的窗口宽度
+
+        def _reflow_once():
+            """宽度真变了才重排。
+
+            `<Configure>` 在窗口刚显示时也会来一次（尺寸从占位值变成真实值），
+            紧接着那次重排如果照做，按钮会在显示之后"挪一下" —— 用户看到的就是
+            "打开时按钮闪一下"。宽度没变就别动。
+            """
+            self._reflow_job = None
+            try:
+                宽 = self.root.winfo_width()
+            except Exception:
+                return
+            if 宽 == self._reflow_w:
+                return
+            self._reflow_w = 宽
+            try:
+                self._apply_button_layout(animate=False)
+            except Exception:
+                pass
+
         self.root.bind("<Configure>", _reflow, add="+")
 
     def _create_modlist_widgets(self):
