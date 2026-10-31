@@ -2113,6 +2113,18 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "⚠️ Waiting…",
     "⚠️ 等待中...":
         "⚠️ Waiting…",
+    "🔁 应用上次记录":
+        "🔁 Apply last record",
+    "🔁 已回填上次的迁移记录":
+        "🔁 Last migration record applied",
+    "🗂 还没有迁移记录，先跑一次迁移":
+        "🗂 No migration records yet — run one first",
+    "⚠ 最近那份记录里没有清单内容":
+        "⚠ The latest record has no list content",
+    "🔁 已应用上一次的迁移记录（模组 {0} / config {1} / 其它 {2}）":
+        "🔁 Applied the last migration record (mods {0} / config {1} / other {2})",
+    "⚠ 回填上次记录失败：%s":
+        "⚠ Could not apply the last record: %s",
 }
 
 

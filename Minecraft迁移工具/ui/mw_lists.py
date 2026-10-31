@@ -122,6 +122,74 @@ class ListsMixin:
         except Exception:
             self._badge_job = None
 
+    def _apply_last_record(self):
+        """一键应用上一次的迁移记录：路径、存档名、三个清单全部回填。
+
+        只回填、不启动迁移 —— 回填完由用户自己确认再点【开始迁移】。
+        """
+        try:
+            from utils import history_store
+            档案们 = history_store.list_records()
+        except Exception as e:
+            trace_exc("mw_lists/读迁移档案", e)
+            档案们 = []
+        if not 档案们:
+            self.toast("🗂 还没有迁移记录，先跑一次迁移", level="warn")
+            return
+        最近 = 档案们[0]
+        清单 = 最近.get("lists") or {}
+        模组们 = [str(x) for x in (清单.get("mods") or []) if str(x).strip()]
+        配置们 = [str(x) for x in (清单.get("configs") or []) if str(x).strip()]
+        其它们 = [str(x) for x in (清单.get("extras") or []) if str(x).strip()]
+        if not (模组们 or 配置们 or 其它们):
+            self.toast("⚠ 最近那份记录里没有清单内容", level="warn")
+            return
+
+        def _填(控件, 行们):
+            内 = getattr(控件, "text", 控件)
+            if 内 is None:
+                return
+            try:
+                内.configure(state="normal")
+            except Exception:
+                pass
+            内.delete("1.0", "end")
+            if 行们:
+                内.insert("1.0", chr(10).join(行们))
+            try:
+                内.configure(state="disabled")
+            except Exception:
+                pass
+
+        try:
+            if 最近.get("source"):
+                self.source_path.set(最近["source"])
+            if 最近.get("target"):
+                self.target_path.set(最近["target"])
+            if 最近.get("world"):
+                self.world_name.set(最近["world"])
+            _填(getattr(self, "mod_text", None), 模组们)
+            _填(getattr(self, "config_text", None), 配置们)
+            _填(getattr(self, "extra_text", None), 其它们)
+        except Exception as e:
+            trace_exc("mw_lists/回填上次记录", e)
+            self.toast("⚠ 回填上次记录失败：%s" % (e,), level="warn")
+            return
+        try:
+            self._schedule_badge_refresh()
+        except Exception:
+            pass
+        try:
+            self._update_text_states()
+        except Exception:
+            pass
+        try:
+            self.log(trp("🔁 已应用上一次的迁移记录（模组 {0} / config {1} / 其它 {2}）",
+                         len(模组们), len(配置们), len(其它们)), level="INFO")
+        except Exception:
+            pass
+        self.toast("🔁 已回填上次的迁移记录", level="ok")
+
     def _refresh_list_badges(self):
         """把三个清单的条数挂到标签上：🧩 模组清单 376 / ⚙️ config 清单 12 / 📦 其它文件 5。"""
         self._badge_job = None

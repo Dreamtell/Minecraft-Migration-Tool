@@ -387,8 +387,15 @@ class PagesMixin:
                 pass
         if tabs is not None:
             try:
-                tabs.set_tail_button(trp("⚠ 更新提醒") if 收起 else None,
-                                     command=(bar._开弹窗 if bar is not None else None))
+                # 右端两个小药丸：更新提醒（常驻，点开说明）+ 一键应用上次记录
+                尾们 = [{"text": trp("⚠ 更新提醒"),
+                         "command": (bar._开弹窗 if bar is not None else None),
+                         "kind": "warn"}]
+                if hasattr(self, "_apply_last_record"):
+                    尾们.append({"text": trp("🔁 应用上次记录"),
+                                 "command": self._apply_last_record,
+                                 "kind": "apply"})
+                tabs.set_tail_buttons(尾们)
             except Exception:
                 pass
 
