@@ -86,6 +86,7 @@ _PROGRESS_H = 3         # 底部进度条高度
 _BAR_SUBPX = 4          # 条宽按 1/4 像素量化（头子能半格半格挪）
 _DECOR_WID = 0.24       # 装饰性"滚动"那一块的长度（占按钮宽的比例）
 _DECOR_SPEED = 0.30     # 那块每秒走几倍按钮宽（慢一点更像"在加载"，不那么跳）
+_DECOR_PAD = 10.0       # 块走到两头时离边缘留多少空隙（贴边会被圆角切掉一角）
 _DECOR_EDGE = 14.0      # 进出边缘时小于这么多像素就不画（否则看着像多余几个像素）
 _PROGRESS_MIN = 0.06    # 进度条最短（原型 max(0.06, ...)）
 
@@ -835,19 +836,9 @@ class FlipButton(tk.Canvas):
                 左 = max(0, -整)
                 右 = min(w, 整 + 宽)
                 if 右 > 左:
-                    块 = 条.crop((左, 0, 右, _PROGRESS_H))
-                    宽块 = 块.width
-                    渐 = max(3, min(14, 宽块 // 5))
-                    if 宽块 >= 8 and 渐 * 2 < 宽块:
-                        遮 = _Image.new("L", (宽块, 1), 255)
-                        笔 = _ImageDraw.Draw(遮)
-                        for i in range(渐):
-                            v = int(round(255.0 * (i + 1) / float(渐 + 1)))
-                            笔.point((i, 0), fill=v)
-                            笔.point((宽块 - 1 - i, 0), fill=v)
-                        块.putalpha(_ImageChops.multiply(
-                            块.getchannel("A"), 遮.resize((宽块, _PROGRESS_H))))
-                    photo = _ImageTk.PhotoImage(块)
+                    # 实心一块、左右完全一样：柔边那版用户看着"左右不对称"
+                    # （左边压着按钮圆角、右边是纯色），干脆去掉渐隐。
+                    photo = _ImageTk.PhotoImage(条.crop((左, 0, 右, _PROGRESS_H)))
         except Exception:
             photo = None
         self._bar_cache[key] = photo
@@ -902,12 +893,15 @@ class FlipButton(tk.Canvas):
         圈 %= (w + wid)
         # 来回滚（用户选的）：只在 0 ~ (宽-块长) 之间往返，块始终完整可见，
         # 不淡出、不绕回、也不贴边露半截。
-        行程 = max(1.0, w - wid)
+        # 两端都留出 `_DECOR_PAD` 的空隙：贴到 0 或贴到右边时，会被按钮的圆角
+        # 遮罩切掉一角，看着就"左右不对称"。留边之后两头都是完整的柔边。
+        空 = min(_DECOR_PAD, max(0.0, (w - wid) / 2.0))
+        行程 = max(1.0, w - wid - 2 * 空)
         周期 = 2.0 * 行程
         位 = 圈 % 周期
         if 位 > 行程:
             位 = 周期 - 位
-        return 位, wid
+        return 空 + 位, wid
 
     def _trim_bar_cache(self):
         """条的贴图缓存淘汰：跳过正在显示的那张（清掉它 = 条闪一下）。"""
