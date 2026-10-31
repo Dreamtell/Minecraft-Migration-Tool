@@ -187,7 +187,10 @@ _TABLE_MS_MIN = 4       # 帧表密度的下限（240Hz 屏）
 _TABLE_MS_MAX = 16      # 上限（60Hz 屏），再密就是白烤帧
 # 非翻转帧的预算。以前是"一超上限就把非翻转帧全清"，相位表一满就整表重烤，
 # 滚动动画每轮都要暖一遍；改成按插入顺序挤掉最老的（dict 保序），稳态就不会抖。
-_MAX_FRAMES = 420       # 图缓存上限（翻转帧 + 静止帧 + 相位表）
+_MAX_FRAMES = 900       # 图缓存上限（翻转帧 + 静止帧 + 相位表）
+# 420 太小：背面相位表 180 + 悬停扫光 96 + 悬停面 25 + 翻转帧 40 就顶满了，
+# 于是每帧都在淘汰、每帧都要重烤一整张面 —— 那不叫省内存，那叫一直在重算。
+# 一张面约 30KB，900 张 ≈ 27MB，可接受。
 _PREWARM_MS_PER_TICK = 0.006   # 预热每轮最多占用主线程 6ms，然后让出
 
 # 字体：PIL 里 CJK 用微软雅黑粗体，emoji 只能单独用 Segoe UI Emoji 画
@@ -458,6 +461,10 @@ class FlipButton(tk.Canvas):
         self._bar_id = self.create_image(0, 0, anchor="nw", tags="bar",
                                          state="hidden")
         self._bar_cache = {}
+        # 正在显示的 PhotoImage 必须留一个强引用：一旦被缓存淘汰或被 clear()，
+        # Tk 那边对应的图像会跟着销毁，画布项瞬间变空白 —— 那才是「闪」。
+        self._cur_bar_photo = None
+        self._cur_face_photo = None
         self._txt_id = self.create_text(self._cw // 2, self._ch // 2, text="",
                                         fill=self._pal["idle"]["title"],
                                         font=self._txt_font_pick(),
@@ -758,16 +765,20 @@ class FlipButton(tk.Canvas):
                     阿尔法 = 段.getchannel("A")
                     # 条的填充是实色（alpha 255），所以最后那一列直接把 alpha 换成
                     # 余数比例就行 —— 看上去就是"半格宽"的头子
-                    阿尔法.paste(int(round(255.0 * 余 / _BAR_SUBPX)), (整, 0))
+                    # 注意：这里必须给 4 元组 —— 只给 (x, 0) 时 PIL 会抛
+                    # ValueError: cannot determine region size; use 4-item box，
+                    # 而外层 except 会把它吞成 photo=None（条就被"藏"起来）。
+                    # 于是余数不为 0 的帧全都不画条 —— 看着就是一直在闪。
+                    阿尔法.paste(int(round(255.0 * 余 / _BAR_SUBPX)),
+                                 (整, 0, 整 + 1, _PROGRESS_H))
                     段.putalpha(阿尔法)
                     photo = _ImageTk.PhotoImage(段)
                 else:
                     photo = _ImageTk.PhotoImage(条.crop((0, 0, 整, _PROGRESS_H)))
             except Exception:
                 photo = None
-        if len(self._bar_cache) > 1600:
-            self._bar_cache.clear()
         self._bar_cache[q] = photo
+        self._trim_bar_cache()
         return photo
 
     def _bar_chunk_photo(self, off, wid):
@@ -796,9 +807,8 @@ class FlipButton(tk.Canvas):
                     photo = _ImageTk.PhotoImage(条.crop((左, 0, 右, _PROGRESS_H)))
         except Exception:
             photo = None
-        if len(self._bar_cache) > 1600:
-            self._bar_cache.clear()
         self._bar_cache[key] = photo
+        self._trim_bar_cache()
         return photo
 
     def _decor_chunk(self):
@@ -812,6 +822,21 @@ class FlipButton(tk.Canvas):
         圈 = (time.perf_counter() - self._t0) * _DECOR_SPEED * w
         圈 %= (w + wid)
         return 圈 - wid, wid
+
+    def _trim_bar_cache(self):
+        """条的贴图缓存淘汰：跳过正在显示的那张（清掉它 = 条闪一下）。"""
+        上限 = 600
+        if len(self._bar_cache) <= 上限:
+            return
+        当前 = self._cur_bar_photo
+        多 = len(self._bar_cache) - 上限
+        for k in list(self._bar_cache.keys()):
+            if 多 <= 0:
+                break
+            if 当前 is not None and self._bar_cache.get(k) is 当前:
+                continue
+            self._bar_cache.pop(k, None)
+            多 -= 1
 
     def _apply_bar(self, u=None, seg=None):
         """刷底部那条。
@@ -831,6 +856,7 @@ class FlipButton(tk.Canvas):
                     self.coords(self._bar_id, max(0, int(round(x))),
                                 self._ch - _PROGRESS_H)
                     self.itemconfigure(self._bar_id, image=photo, state="normal")
+                    self._cur_bar_photo = photo
                 return
             photo = None if u is None else self._bar_photo(u)
             if photo is None:
@@ -838,6 +864,7 @@ class FlipButton(tk.Canvas):
             else:
                 self.coords(self._bar_id, 0, self._ch - _PROGRESS_H)
                 self.itemconfigure(self._bar_id, image=photo, state="normal")
+                self._cur_bar_photo = photo
         except Exception:
             pass
 
@@ -889,10 +916,14 @@ class FlipButton(tk.Canvas):
         超 = len(self._frames) - _MAX_FRAMES
         if 超 <= 0:
             return
+        当前 = self._cur_face_photo
         for k in list(self._frames):
             if 超 <= 0:
                 break
             if isinstance(k, tuple) and k[0] == "flip":
+                continue
+            # 正在显示的那张不能扔：Tk 里它一被销毁，画布项会闪一帧空白
+            if 当前 is not None and self._frames.get(k) is 当前:
                 continue
             del self._frames[k]
             超 -= 1
@@ -1310,6 +1341,7 @@ class FlipButton(tk.Canvas):
                 else:
                     photo = self._back_photo(self._back_phase(), self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
+                self._cur_face_photo = photo
                 # 条的位置 = 进度历史的 180ms 前那个值（线性插值）。
                 # 为什么不用"追目标"：进度每 100~250ms 才来一跳，
                 #   * 指数追 —— 追平之后要干等下一跳，看着一顿一顿；
@@ -1349,6 +1381,7 @@ class FlipButton(tk.Canvas):
                 else:
                     photo = self._rest_photo(pid, pal, self._hv_q())
                 self.itemconfigure(self._img_id, image=photo)
+                self._cur_face_photo = photo
         except Exception:
             pass
         self._ui_job = self.after(self._tick_ms(), self._ui_tick)
@@ -1395,6 +1428,7 @@ class FlipButton(tk.Canvas):
             else:
                 photo = self._back_photo(self._back_phase(), self._hv_q())
         self.itemconfigure(self._img_id, image=photo)
+        self._cur_face_photo = photo
         if front:
             self._apply_bar(None)
         else:
