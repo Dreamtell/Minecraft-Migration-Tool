@@ -367,8 +367,20 @@ class ListsMixin:
 
         missing = []
         found = []
+        命中 = {}                      # 行文本 -> 是否存在（上色时直接查，不再重复匹配）
+
+        def _清前缀(x):
+            """去掉 `[前缀]` —— 先按清理后的名字查表，命中的话就不必再线性扫。"""
+            if x.startswith("[") and "]" in x:
+                return x.split("]", 1)[1].strip()
+            return x
+
         for item in modlist:
-            matched = match_mod(item, source_files, name_map)
+            # match_mod 里对每个 item 都要把 source_files 全扫一遍（377 行 × 60 个
+            # jar 就是 2 万多次 startswith/split，实测吃掉 200ms）。先拿清理后的名字
+            # 走 name_map 的字典命中，未命中再退回原来的全扫逻辑。
+            matched = name_map.get(_清前缀(item)) or match_mod(item, source_files, name_map)
+            命中[item.strip()] = bool(matched)
             if matched:
                 found.append(item)
             else:
@@ -380,11 +392,12 @@ class ListsMixin:
                  level="PLAIN" if missing else "INFO")
         if missing:
             self.root.bell()
-            self.log("缺失列表：", level="WARNING")
-            for m in missing[:50]:
-                self.log(f"  - {m}", level="ERROR")
+            # 一次写完：50 条挨个 self.log 就是 50 次插入 + 行内 tag + see()，
+            # 实测吃掉 100ms 左右，主线程整段空转（点一下按钮"卡一下"就是这个）。
+            段 = ["缺失列表："] + ["  - " + m for m in missing[:50]]
             if len(missing) > 50:
-                self.log(trp("  ... 还有 {0} 个未显示", len(missing) - 50), level="WARNING")
+                段.append(trp("  ... 还有 {0} 个未显示", len(missing) - 50))
+            self.log(chr(10).join(段), level="WARNING")
 
         _重复 = sum(v - 1 for v in counts.values() if v > 1)
         if missing or _重复:
@@ -401,19 +414,31 @@ class ListsMixin:
                 self.root.after_cancel(_flash_after)
             except Exception:
                 pass
+        # 分块上色：377 行一次性 tag_add + 全窗重绘，在 Windows 上会让所有
+        # Canvas 自绘控件（按钮/开关/滑条/页签）跟着重画一遍 —— 用户看到的就是
+        # "所有可点的东西闪一下"。改成每 30 行一批、批间让出一帧，重绘被摊开。
         flash_lines = self.mod_text.get("1.0", tk.END).splitlines()
-        for i, ln in enumerate(flash_lines):
-            s = ln.strip()
-            if not s or s.startswith("#"):
-                continue
-            idx, end = f"{i + 1}.0", f"{i + 1}.end"
-            if not match_mod(s, source_files, name_map):
-                self.mod_text.tag_add("mod_missing", idx, end)
-            elif counts[norm(s)] > 1:
-                self.mod_text.tag_add("mod_duplicate", idx, end)
+
+        def 上色(起):
+            止 = min(起 + 30, len(flash_lines))
+            for i in range(起, 止):
+                ln = flash_lines[i]
+                s = ln.strip()
+                if not s or s.startswith("#"):
+                    continue
+                idx, end = f"{i + 1}.0", f"{i + 1}.end"
+                if not 命中.get(s, False):
+                    self.mod_text.tag_add("mod_missing", idx, end)
+                elif counts[norm(s)] > 1:
+                    self.mod_text.tag_add("mod_duplicate", idx, end)
+                else:
+                    self.mod_text.tag_add("mod_ok", idx, end)
+            if 止 < len(flash_lines):
+                self._mod_flash_after = self.root.after(1, lambda: 上色(止))
             else:
-                self.mod_text.tag_add("mod_ok", idx, end)
-        self._mod_flash_after = self.root.after(1000, self._clear_mod_status)
+                self._mod_flash_after = self.root.after(1000, self._clear_mod_status)
+
+        上色(0)
 
     # ---------- 从变更日志导入 ----------
     def import_from_changelog(self):

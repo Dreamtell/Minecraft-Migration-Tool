@@ -364,7 +364,9 @@ class Store(QtCore.QObject):
         self._pool = QtCore.QThreadPool()
         # 6 个并发在 SSD 上换不来多少速度，却让界面线程在 GIL 上排到第 7 位；
         # 3 个线程总耗时差不多（扫描大部分时间在等磁盘），界面明显更跟手
-        self._pool.setMaxThreadCount(3)
+        # 2 个线程：jar 元数据解析大量时间在 GIL 里做 Python 层循环，
+        # 并发再高也只是跟界面线程抢 GIL（实测 3 线程比 2 线程更卡）。
+        self._pool.setMaxThreadCount(2)
         self._signals = _ScanSignals()
         self._signals.done.connect(self._on_scanned)
         self._pending = set()
@@ -1753,7 +1755,9 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
             return None
         pm = pm.scaled(ICON_PX, ICON_PX, QtCore.Qt.KeepAspectRatio,
                        QtCore.Qt.SmoothTransformation)
-        if len(self._pix) > 200:
+        # 上限抬到 800 并且只清一次就够：以前是「超过 200 全清」，一屏 30 行来回滚
+        # 就能把缓存打穿、每次都重新读盘 + SmoothTransformation 缩放，滚动时明显掉帧。
+        if len(self._pix) > 800:
             self._pix.clear()
         self._pix[key] = pm
         return pm
