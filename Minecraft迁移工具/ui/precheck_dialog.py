@@ -99,6 +99,52 @@ def _居中(父窗, 窗, 宽, 高):
     窗.geometry("+%d+%d" % (x, y))
 
 
+def _动画进(窗, x, y, 宽, 高, 时长=150):
+    """弹出：透明度 0→1 同时从下方 10px 滑到位（ease-out-cubic）。"""
+    步数 = 10
+
+    def 一步(i):
+        k = min(1.0, i / 步数)
+        e = 1.0 - (1.0 - k) ** 3
+        try:
+            窗.attributes("-alpha", max(0.02, e))
+            窗.geometry("%dx%d+%d+%d" % (宽, 高, x, y + int(round((1.0 - e) * px(10)))))
+        except Exception:
+            return
+        if i < 步数:
+            窗.after(max(1, 时长 // 步数), lambda: 一步(i + 1))
+        else:
+            try:
+                窗.attributes("-alpha", 0.999)   # 保持分层，否则 DWM 圆角会掉
+            except Exception:
+                pass
+
+    一步(0)
+
+
+def _动画出(窗, x, y, 宽, 高, 结束后, 时长=110):
+    """收回：透明度 1→0 同时向下沉 6px，然后销毁。"""
+    步数 = 8
+
+    def 一步(i):
+        k = min(1.0, i / 步数)
+        e = k ** 2
+        try:
+            窗.attributes("-alpha", max(0.02, 1.0 - e))
+            窗.geometry("%dx%d+%d+%d" % (宽, 高, x, y + int(round(e * px(6)))))
+        except Exception:
+            pass
+        if i < 步数:
+            窗.after(max(1, 时长 // 步数), lambda: 一步(i + 1))
+        else:
+            try:
+                结束后()
+            except Exception:
+                pass
+
+    一步(0)
+
+
 def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标级别="warn"):
     """返回被点的按钮名（按钮 = [(文字, 返回值, 是否主按钮), …]）。"""
     配色 = _配色(主题)
@@ -113,22 +159,40 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
     窗.configure(bg=配色["卡"])
     set_window_icon(窗)
     try:
+        窗.title("__precheck__")   # 无边框窗看不见标题，但探针/自动化能靠它认出这个窗
+    except Exception:
+        pass
+    try:
         窗.transient(父窗)
     except Exception:
         pass
 
     结果 = {"值": None}
 
+    位置 = {"x": 0, "y": 0, "宽": 宽, "高": 0}
+    已关 = {"值": False}
+
     def 关(值=None):
+        if 已关["值"]:
+            return
+        已关["值"] = True
         结果["值"] = 值
         try:
             窗.grab_release()
         except Exception:
             pass
+
+        def 销毁():
+            try:
+                窗.destroy()
+            except Exception:
+                pass
+
+        # 收回动画；万一窗口已经没了就直接销毁
         try:
-            窗.destroy()
+            _动画出(窗, 位置["x"], 位置["y"], 位置["宽"], 位置["高"] or 窗.winfo_height(), 销毁)
         except Exception:
-            pass
+            销毁()
 
     窗.bind("<Escape>", lambda e: 关(按钮[-1][1] if 按钮 else None))
 
@@ -240,10 +304,17 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
     高 = min(px(660), max(px(200), 框.winfo_reqheight()))
     _居中(父窗, 窗, 宽, 高)
     窗.geometry("%dx%d" % (宽, 高))
+    try:
+        窗.attributes("-alpha", 0.02)     # 先压到几乎透明，免得第一帧整块闪出来
+    except Exception:
+        pass
     窗.deiconify()
     # deiconify 会重建 HWND，圆角必须在显示之后设一次（顺序反了就白设）
     _设圆角(窗)
     窗.lift()
+    位置.update({"x": 窗.winfo_rootx(), "y": 窗.winfo_rooty(),
+                 "宽": 宽, "高": 高})
+    _动画进(窗, 位置["x"], 位置["y"], 宽, 高)
     try:
         窗.grab_set()
     except Exception:

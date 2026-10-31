@@ -1405,6 +1405,14 @@ class MigrationMixin:
             return
         self._begin_start_countdown(秒)
 
+    def _按钮待确认(self, 是):
+        """弹自检确认框期间，把「开始迁移」正面文案换成「⏳ 等你确认…」。"""
+        try:
+            self.start_btn.set_front_text(trp("⏳ 等你确认…") if 是 else None)
+            self.start_btn.update_idletasks()
+        except Exception:
+            pass
+
     def _precheck_before_start(self):
         """迁移前自检：路径/权限/重叠/清单一致性。返回 False 表示这次不该往下走。
 
@@ -1452,6 +1460,7 @@ class MigrationMixin:
         if 错误:
             self.log(trp("⛔ 自检没通过（{0} 项错误），已拦下，没有动任何文件", len(错误)),
                      level="ERROR")
+            self._按钮待确认(True)
             try:
                 from ui import precheck_dialog as _pd
                 _pd.ask_errors(self.root, self.theme, 错误[:12])
@@ -1461,9 +1470,12 @@ class MigrationMixin:
                     trp("迁移前自检没通过"),
                     trp("下面这些不解决，迁移跑不起来：") + NL + NL
                     + NL.join("· " + x for x in 错误[:8]))
+            finally:
+                self._按钮待确认(False)
             return False
         if 提醒:
             self.log(trp("⚠️ 自检有 {0} 项提醒，等用户确认", len(提醒)), level="WARNING")
+            self._按钮待确认(True)
             try:
                 from ui import precheck_dialog as _pd
                 return bool(_pd.ask_warnings(self.root, self.theme, 提醒[:12]))
@@ -1475,6 +1487,8 @@ class MigrationMixin:
                     + NL.join("· " + x for x in 提醒[:8]) + NL + NL
                     + trp("还是要现在开始吗？"),
                     icon="warning", default="yes"))
+            finally:
+                self._按钮待确认(False)
         self.log(trp("✅ 自检通过（{0} 项提示）", len(提示)), level="INFO")
         return True
 

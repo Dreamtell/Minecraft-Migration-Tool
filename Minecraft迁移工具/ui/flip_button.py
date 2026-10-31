@@ -389,6 +389,8 @@ class FlipButton(tk.Canvas):
         # 开始前倒计时要用：背面临时文案（「⏳ 3 秒后开始」）和真实进度（0..1）。
         # 都留 None = 保持原来的样子（省略号动画 + 来回扫的装饰条）。
         self._back_txt_custom = None
+        # 正面临时文案（弹确认框时写「⏳ 等你确认…」），None = 用默认
+        self._front_txt_custom = None
         # 文案淡入：换字那一下从暗到亮，别「啪」地换（倒计时 → 迁移中就是这种）
         self._shown_text = None
         self._text_fade_job = None
@@ -472,7 +474,9 @@ class FlipButton(tk.Canvas):
             pid = "idle"
         pal = self._pal[pid]        # 深浅主题各一套，见 _SCHEMES
         if front:
-            text = self._texts["front_dry"] if self._dry_on() else self._texts["front"]
+            text = (self._front_txt_custom
+                    or (self._texts["front_dry"] if self._dry_on()
+                        else self._texts["front"]))
         else:
             # 倒计时会临时换掉背面文案（set_back_text），没换就用默认的「⏳ 迁移中...」
             text = (self._back_txt_custom
@@ -1386,6 +1390,21 @@ class FlipButton(tk.Canvas):
         if not self._animating:
             self._draw_rest()
         self.prewarm()               # 先把新配色的相位表烤上，首次悬停才不会现画
+
+    def set_front_text(self, text=None):
+        """临时换正面文案（None 恢复默认）。弹确认框时用。
+
+        只影响"这一面现在写什么"，不动宽度：调用方给的文案别比原来的长太多。
+        """
+        新 = (i18n.tr(text) if text else None)
+        if 新 == self._front_txt_custom:
+            return
+        self._front_txt_custom = 新
+        if not self._at_back and not self._animating:
+            try:
+                self._draw_rest()
+            except Exception:
+                pass
 
     def set_back_text(self, text=None):
         """临时换掉背面文案（倒计时要用：「⏳ 3 秒后开始」）。

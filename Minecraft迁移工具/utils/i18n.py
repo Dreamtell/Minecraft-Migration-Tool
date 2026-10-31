@@ -126,6 +126,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "还是要现在开始吗？": "Start anyway?",
     "知道了": "Got it",
     "先不开始": "Not now",
+    "⏳ 等你确认…": "⏳ Waiting for you…",
     "✅ 自检通过（{0} 项提示）": "✅ Pre-migration check passed ({0} notes)",
     "迁移": "Migration",
     "迁移准备": "Preparing migration",
