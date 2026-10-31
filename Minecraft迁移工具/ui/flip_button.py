@@ -831,12 +831,14 @@ class FlipButton(tk.Canvas):
         起 = getattr(self, "_decor_t0", None) or self._t0
         圈 = (time.perf_counter() - 起) * _DECOR_SPEED * w
         圈 %= (w + wid)
-        x = 圈 - wid
-        # 贴边那一小段不画：块正从边缘滑进/滑出时只剩几个像素，
-        # 看着像"画错了"（用户 m09264 说的就是那几像素）。留个空档，进出更干净。
-        if x > w - _DECOR_EDGE or x < -wid + _DECOR_EDGE:
-            return w + wid, wid
-        return x, wid
+        # 来回滚（乒乓）：只在 0 ~ (宽-块长) 之间往返，块始终完整出现，
+        # 不会在边缘露出半截、也不会同时出现两块（用户看到"两块/残影"就是那个）。
+        行程 = max(1.0, w - wid)
+        周期 = 2.0 * 行程
+        位 = (圈 % 周期)
+        if 位 > 行程:
+            位 = 周期 - 位
+        return 位, wid
 
     def _trim_bar_cache(self):
         """条的贴图缓存淘汰：跳过正在显示的那张（清掉它 = 条闪一下）。"""
@@ -872,9 +874,9 @@ class FlipButton(tk.Canvas):
                     y = self._ch - _PROGRESS_H
                     整 = int(round(x))
                     圈长 = int(round(wid)) + int(round(self._cw))
-                    for 项, 偏 in ((self._bar_id, 0), (self._bar2_id, -圈长)):
-                        self.coords(项, 整 + 偏, y)
-                        self.itemconfigure(项, image=photo, state="normal")
+                    self.coords(self._bar_id, 整, y)
+                    self.itemconfigure(self._bar_id, image=photo, state="normal")
+                    self.itemconfigure(self._bar2_id, state="hidden")
                     self._cur_bar_photo = photo
                 return
             photo = None if u is None else self._bar_photo(u)

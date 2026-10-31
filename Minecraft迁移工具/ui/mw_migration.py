@@ -1634,10 +1634,11 @@ class MigrationMixin:
             self._countdown_job = self.root.after(16, self._countdown_tick)
             return
         总 = self._countdown_total or 1.0
-        # 倒计时 = 沙漏：条从满格往回收（1 → 0），数到 0 收空；
-        # 收空之后再干活，条从 0 长到 85%，最后日志滚完 85% → 100%。
-        self._flip_progress(max(0.0, min(1.0, 剩 / 总)))
         秒数 = max(1, int(剩 + 0.9999))
+        # 倒计时 = 沙漏：条从满格往回收（1 → 0），数到 0 收空；
+        # 关键是拿"屏幕上显示的那个秒数"算条宽 —— 用 剩/总 会差一整格：
+        # 剩 = 2.99 秒时文字已经写"3 秒"了，条却只有 60%。
+        self._flip_progress(max(0.0, min(1.0, 秒数 / 总)))
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
             self._countdown_txt = 文案
