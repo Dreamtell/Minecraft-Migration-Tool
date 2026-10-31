@@ -91,14 +91,24 @@ def _查重叠(src_path, tgt_path):
     return []
 
 
-def _查存档(src_path, world):
-    """存档目录在不在（不在就只跳过存档，不该挡住迁移）。"""
+def _查存档(src_path, tgt_path, world):
+    """存档在不在（不在就只跳过存档，不该挡住迁移）。
+
+    路径是 `saves/<名字>`：migrator 复制存档查的是 `src/saves/<名字>`
+    （core/migrator.py:912），界面那个「存档已存在」徽标查的也是它
+    （ui/mw_paths.py:372）。这里以前写成 `world/<名字>`，于是别人的存档明明
+    在，自检却报「存档目录不存在」—— 和徽标自相矛盾。
+    """
     if not world:
         return [_条("warn", trp("没有填存档名称，存档不会被迁移"))]
-    存档 = src_path / "world" / world
-    if not 存档.is_dir():
-        return [_条("warn", trp("存档目录不存在，本次迁移会跳过存档：{0}", 存档))]
-    return []
+    源存档 = src_path / "saves" / world
+    if 源存档.is_dir():
+        return []
+    目标存档 = tgt_path / "saves" / world
+    if 目标存档.is_dir():
+        return [_条("info", trp("源整合包里没有存档「{0}」，目标里已经有了，这个存档不会被改动",
+                                 world))]
+    return [_条("warn", trp("源和目标里都没有存档「{0}」，这次不会迁移存档", world))]
 
 
 def _查模组清单(src_path, modlist):
@@ -163,7 +173,7 @@ def _查覆盖(src_path, tgt_path, world, modlist, configlist, extralist,
     会覆盖 = 0
     会跳过 = 0
     try:
-        if world and (tgt_path / "world" / world).is_dir():
+        if world and (tgt_path / "saves" / world).is_dir():
             会覆盖 += 1
         模组目录 = tgt_path / "mods"
         if modlist and 模组目录.is_dir():
@@ -203,7 +213,7 @@ def run_precheck(src, tgt, world, modlist, configlist, extralist, overwrite=Fals
     items += _查路径(src_path, tgt_path)
     if not any(c["level"] == "fail" for c in items):
         items += _查重叠(src_path, tgt_path)
-        items += _查存档(src_path, str(world or "").strip())
+        items += _查存档(src_path, tgt_path, str(world or "").strip())
         items += _查模组清单(src_path, list(modlist or []))
         items += _查相对清单(src_path / "config", list(configlist or []),
                              "config 清单里有 {0} 条在源 config 目录找不到：{1}")
