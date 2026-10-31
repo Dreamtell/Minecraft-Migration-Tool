@@ -86,6 +86,7 @@ _PROGRESS_H = 3         # 底部进度条高度
 _BAR_SUBPX = 4          # 条宽按 1/4 像素量化（头子能半格半格挪）
 _DECOR_WID = 0.30       # 装饰性"滚动"那一块的长度（占按钮宽的比例）
 _DECOR_SPEED = 0.55     # 那块每秒走几倍按钮宽（一圈 = (1+_DECOR_WID) 个宽）
+_DECOR_EDGE = 14.0      # 进出边缘时小于这么多像素就不画（否则看着像多余几个像素）
 _PROGRESS_MIN = 0.06    # 进度条最短（原型 max(0.06, ...)）
 
 _UI_MS = 33             # 持续动画的 tick 间隔（30fps 上限）
@@ -460,7 +461,12 @@ class FlipButton(tk.Canvas):
         # 面只在斜纹相位变化时换图（还都命中相位表），条只换一张 w×3 的裁剪图。
         self._bar_id = self.create_image(0, 0, anchor="nw", tags="bar",
                                          state="hidden")
+        # 滚动块绕回时用第二根：一块从右边滑出去的同时，另一块从左边进来。
+        # 只有一根的话，块尾巴在右边缘被裁成"几个像素"，看着像画错了。
+        self._bar2_id = self.create_image(0, 0, anchor="nw", tags="bar",
+                                          state="hidden")
         self._bar_cache = {}
+        self._decor_t0 = None
         # 正在显示的 PhotoImage 必须留一个强引用：一旦被缓存淘汰或被 clear()，
         # Tk 那边对应的图像会跟着销毁，画布项瞬间变空白 —— 那才是「闪」。
         self._cur_bar_photo = None
@@ -720,8 +726,11 @@ class FlipButton(tk.Canvas):
             if self._prog_show is None:
                 self._prog_show = self._prog_override
             return self._prog_show
+        # 没有真进度 → None，让 _draw_bar_now 走"滚动块"那条路。
+        # 以前这里返回 _decor_u（0→1→0 的伸缩），于是滚动块那段代码根本没被用上，
+        # 模拟运行时看到的还是"长出来又缩回去"，以及右边缘被裁出的几个像素。
         self._prog_show = None
-        return self._decor_u(self._back_phase() * _BACK_DT)
+        return None
 
     def _bar_strip(self):
         """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
@@ -819,9 +828,15 @@ class FlipButton(tk.Canvas):
         """
         w = max(1, self._cw)
         wid = max(10.0, w * _DECOR_WID)
-        圈 = (time.perf_counter() - self._t0) * _DECOR_SPEED * w
+        起 = getattr(self, "_decor_t0", None) or self._t0
+        圈 = (time.perf_counter() - 起) * _DECOR_SPEED * w
         圈 %= (w + wid)
-        return 圈 - wid, wid
+        x = 圈 - wid
+        # 贴边那一小段不画：块正从边缘滑进/滑出时只剩几个像素，
+        # 看着像"画错了"（用户 m09264 说的就是那几像素）。留个空档，进出更干净。
+        if x > w - _DECOR_EDGE or x < -wid + _DECOR_EDGE:
+            return w + wid, wid
+        return x, wid
 
     def _trim_bar_cache(self):
         """条的贴图缓存淘汰：跳过正在显示的那张（清掉它 = 条闪一下）。"""
@@ -849,21 +864,27 @@ class FlipButton(tk.Canvas):
         try:
             if seg is not None:
                 x, wid = seg
-                photo = self._bar_chunk_photo(x, wid)
+                photo = self._bar_chunk_photo(0.0, wid)
                 if photo is None:
                     self.itemconfigure(self._bar_id, state="hidden")
+                    self.itemconfigure(self._bar2_id, state="hidden")
                 else:
-                    self.coords(self._bar_id, max(0, int(round(x))),
-                                self._ch - _PROGRESS_H)
-                    self.itemconfigure(self._bar_id, image=photo, state="normal")
+                    y = self._ch - _PROGRESS_H
+                    整 = int(round(x))
+                    圈长 = int(round(wid)) + int(round(self._cw))
+                    for 项, 偏 in ((self._bar_id, 0), (self._bar2_id, -圈长)):
+                        self.coords(项, 整 + 偏, y)
+                        self.itemconfigure(项, image=photo, state="normal")
                     self._cur_bar_photo = photo
                 return
             photo = None if u is None else self._bar_photo(u)
             if photo is None:
                 self.itemconfigure(self._bar_id, state="hidden")
+                self.itemconfigure(self._bar2_id, state="hidden")
             else:
                 self.coords(self._bar_id, 0, self._ch - _PROGRESS_H)
                 self.itemconfigure(self._bar_id, image=photo, state="normal")
+                self.itemconfigure(self._bar2_id, state="hidden")
                 self._cur_bar_photo = photo
         except Exception:
             pass
@@ -1646,6 +1667,8 @@ class FlipButton(tk.Canvas):
             return
         self._prog_override = 新
         if 新 is None:
+            # 刚切到滚动：相位归零，块从最左边进场（不然会从中间凭空冒出来）
+            self._decor_t0 = time.perf_counter()
             self._prog_show = None
             ʰ = getattr(self, "_prog_hist", None)
             if ʰ is not None:
