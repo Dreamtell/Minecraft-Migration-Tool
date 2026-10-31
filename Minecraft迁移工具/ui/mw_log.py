@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from utils import anim
 from pathlib import Path
 from tkinter import messagebox
 from utils import i18n, secrets
@@ -434,7 +435,9 @@ class LogMixin:
             return
         self._待写已排 = True
         try:
-            self.root.after(50, self._冲写日志)
+            # 16ms 冲一次（约一帧）：以前 50ms 一次，正常速率下每次要挤进 6~8 行，
+            # 文字是成块蹦出来的 —— 动画在滑、字在跳，看着就是"自滚动卡顿"。
+            self.root.after(16, self._冲写日志)
         except Exception:
             self._待写已排 = False
 
@@ -451,7 +454,19 @@ class LogMixin:
         待 = getattr(self, "_待写", None)
         if not 待:
             return
-        self._待写 = []
+        # 每次最多写 24 条：16ms 一冲，正常速率（几十~几百条/秒）每次只写 1~5 行，
+        # 字才是"流"出来的；洪峰时也够快（24 条/16ms ≈ 1500 条/秒）。
+        取 = 待[:24]
+        剩 = 待[24:]
+        self._待写 = 剩
+        if 剩:
+            # 还有没冲完的，下一帧继续（_排冲写 会重新排上）
+            try:
+                self._待写已排 = False
+                self.root.after(1, self._冲写日志)
+            except Exception:
+                pass
+        待 = 取
         外批 = getattr(self, "_批处理中", False)
         if not 外批:
             self._日志批次开始()
@@ -779,15 +794,12 @@ class LogMixin:
                 pass
         self._log_see_job = None
         self._log_see_t = time.perf_counter()
+        if getattr(self, "_log_follow", True):
+            self._排跟随()
+            return
         sc = getattr(self, "_log_scroller", None)
         if sc is not None:
             try:
-                剩 = self._log_remain_px()
-                # 剩得少：交给平滑滚动去追（跟手、看得见"滑"）；
-                # 剩得多（洪峰一下子几百行）：硬拽，不然逐帧限幅会追不上、越落越远。
-                if 0 < 剩 <= max(200.0, self.log_text.winfo_height() * 2.0):
-                    sc.scroll_px(剩)
-                    return
                 sc.stop()
             except Exception:
                 pass
@@ -795,6 +807,40 @@ class LogMixin:
             self.log_text.see(tk.END)
         except Exception:
             pass
+
+    # 跟随到底的帧循环：每帧最多走 _FOLLOW_MAX_PX 像素。
+    # 为什么不用 SmoothScroller：它是按"一格滚轮"标定速度的（限幅 = px_per_notch*0.6），
+    # 跟随场景下剩余量一大就会一帧跨几百像素 —— 看着就是"一顿一顿"。这里只按像素
+    # 匀速推，任何情况下单帧位移都不超过 24px。
+    _FOLLOW_MAX_PX = 24.0
+
+    def _排跟随(self):
+        if getattr(self, "_follow_job", None) is not None:
+            return
+        try:
+            # 间隔必须有下限：anim.frame_ms 在失焦/最小化时会给出很小甚至 0，
+            # after(0) 会让这个循环在同一帧里连跑几十次，每帧 24px 就累成几千像素的大跳。
+            间隔 = max(4, int(anim.frame_ms(self.log_text) or 16))
+            self._follow_job = self.root.after(间隔, self._跟随一步)
+        except Exception:
+            self._follow_job = None
+
+    def _跟随一步(self):
+        self._follow_job = None
+        if not getattr(self, "_log_follow", True):
+            return
+        剩 = self._log_remain_px()
+        if 剩 <= 0.5:
+            return
+        步 = int(min(self._FOLLOW_MAX_PX, 剩))
+        if 步 < 1:
+            步 = 1
+        try:
+            self.log_text.yview_scroll(步, "pixels")
+        except Exception:
+            return
+        if 剩 - 步 > 0.5:
+            self._排跟随()
 
     def _log_remain_px(self):
         """从当前视口底边到文末还有多少像素（拿不到就返回 0）。"""
