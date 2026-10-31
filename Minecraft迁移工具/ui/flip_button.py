@@ -1248,7 +1248,22 @@ class FlipButton(tk.Canvas):
                 # 只是整体晚 180ms（肉眼看不出来），运动是连续、匀速的。
                 tgt = self._prog_override
                 if tgt is not None:
-                    self._prog_show = self._prog_show_from_history(now, tgt)
+                    回放 = self._prog_show_from_history(now, tgt)
+                    当前 = (self._prog_show if self._prog_show is not None else 回放)
+                    # 两条纪律：
+                    #   ① 不许倒退 —— 历史里有时全是一簇几十毫秒内的点，回放会一前一后地
+                    #      取值，条头就来回抖（实测 4 秒里倒退 47 次，那就是"抽搐"）；
+                    #   ② 一簇点摊平 —— 进度是一次十来条挤在 1ms 里送进来的，
+                    #      按回放直接画等于一帧跳 3~6 像素。用 120ms 时间常数摊开。
+                    目标 = max(当前, min(回放, tgt))
+                    if 目标 - 当前 > 1e-6:
+                        一步 = (目标 - 当前) * min(1.0, dt / 0.12)
+                        # 单帧最多挪半像素：进度是一簇一簇进来的，不封顶的话
+                        # 一帧就能挪 2~3 像素，看着就是"抽搐"
+                        if self._cw > 0:
+                            一步 = min(一步, 0.5 / float(self._cw))
+                        当前 += 一步
+                    self._prog_show = 当前
                 self._apply_bar(self._bar_u())
                 self._tick_dots(now)
             else:
