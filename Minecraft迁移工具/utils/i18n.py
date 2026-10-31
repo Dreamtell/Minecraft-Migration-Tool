@@ -123,7 +123,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⚠️ 自检没跑完（{0}），已跳过自检继续": "⚠️ The pre-migration check did not finish ({0}); continuing without it",
     "⛔ 自检没通过（{0} 项错误），已拦下，没有动任何文件": "⛔ The pre-migration check failed ({0} errors) — stopped, nothing was touched",
     "迁移前自检没通过": "Pre-migration check failed",
-    "下面这些不解决，迁移跑不起来：": "Fix these and the migration still cannot run:",
+    "下面这些不解决，迁移跑不起来：": "Fix these, otherwise the migration cannot run:",
     "⚠️ 自检有 {0} 项提醒，等用户确认": "⚠️ The pre-migration check raised {0} warnings; waiting for confirmation",
     "ℹ️ 你选择了「先不开始」，这次没有迁移任何文件": "ℹ️ You chose “Not now” — nothing was migrated",
     "❌ 用户取消了回滚操作": "❌ Roll back cancelled by user",
@@ -1421,6 +1421,100 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "读取错误: ": "Read error: ",
     "搜索请求失败: ": "Search request failed: ",
     "还没填 Key": "No key set yet",
+    # ---------- 补齐：英文同步（迁移档案 / 回滚 / 消息中心 / 设置 / 提醒条） ----------
+    "🗂️ 已保存迁移档案: {0}":
+        "🗂️ Migration record saved: {0}",
+    "⚠️ 保存迁移档案失败: {0}":
+        "⚠️ Could not save the migration record: {0}",
+    "迁移历史":
+        "Migration history",
+    "📦 迁移历史":
+        "📦 Migration history",
+    "⤢  放大":
+        "⤢  Enlarge",
+    "❌ 回滚失败：这份档案没有自己的备份（{0}）":
+        "❌ Roll-back failed: this record has no backup of its own ({0})",
+    "❌ 回滚过程中出现异常：{0}":
+        "❌ Roll-back raised an error: {0}",
+    "🌐  选择界面语言 / Choose your language":
+        "🌐  Choose your language",
+    "以后可以随时在「设置 → 🎨 外观与启动」里改":
+        "You can change this later in Settings → 🎨 Appearance & startup",
+    "消息中心":
+        "Message center",
+    "还没有消息":
+        "No messages yet",
+    "操作提示会记在这里，吐司消失后也能回看":
+        "Notices are collected here, so you can look back after a toast disappears",
+    "灰字为上次运行留下":
+        "Grey text is left over from the previous run",
+    "清空":
+        "Clear",
+    "{0} 条":
+        "{0}",
+    "点消息中心以外就收回":
+        "Close the message center when clicking outside",
+    "关闭后只有 ✕ / Esc / 再点铃铛能收":
+        "Once off, only ✕ / Esc / clicking the bell again can close it",
+    "消息中心：最近的提示消息（Ctrl+M）":
+        "Message center: recent notices (Ctrl+M)",
+    "⚠️ 模组清单有问题：缺 {0} 项 / 重复 {1} 行":
+        "⚠️ Mod list has issues: {0} missing / {1} duplicate lines",
+    "✅ 模组清单检查完成：{0} 项全部存在":
+        "✅ Mod list check done: all {0} entries exist",
+    "⚠️ 其它文件清单有问题：缺 {0} 项 / 重复 {1} 行":
+        "⚠️ Extra-files list has issues: {0} missing / {1} duplicate lines",
+    "✅ 其它文件清单检查完成：{0} 项全部存在":
+        "✅ Extra-files list check done: all {0} entries exist",
+    "⚠️ config 清单有问题：缺 {0} 项 / 重复 {1} 行":
+        "⚠️ Config list has issues: {0} missing / {1} duplicate lines",
+    "✅ config 清单检查完成：{0} 项全部存在":
+        "✅ Config list check done: all {0} entries exist",
+    "● 正在检测网络…":
+        "● Checking network…",
+    "在主窗口内显示延迟浮标（点浮标打开曲线图，可拖动）":
+        "Show the latency widget inside the main window (click it for the chart, drag to move)",
+    "🗂 已打开 Qt 放大查看：{0}（{1} 项）":
+        "🗂 Opened the Qt detail view: {0} ({1} items)",
+    "🗂 已打开 Qt 差异窗口（{0} 项）":
+        "🗂 Opened the Qt diff window ({0} items)",
+    "\nMC百科：中文模组资料库　·　PCL：整合包启动器　·　欢迎反馈问题或提交建议。":
+        "\nMCMod: a Chinese mod database　·　PCL: a modpack launcher　·　Feedback and suggestions are welcome.",
+    "✨ 贴边特效已{0}":
+        "✨ Edge effect {0}",
+    "🖱️ 平滑滚动速度已设为 {0} 档":
+        "🖱️ Smooth scrolling speed set to level {0}",
+    "🗂️ 迁移历史最多保留 {0} 份":
+        "🗂️ Keep at most {0} migration records",
+    "同名文件：{0}":
+        "Same-name files: {0}",
+    "跳过":
+        "Skip",
+    "迁移前确认已{0}":
+        "Pre-migration confirmation {0}",
+    "点空白取消焦点已{0}":
+        "Unfocus-on-empty-click {0}",
+    "点外部收回消息中心已{0}":
+        "Close message center on outside click {0}",
+    "点空白处取消清单文本框焦点":
+        "Click empty space to unfocus the list box",
+    "这条提醒不能关闭，只能收起成一个 ⚠ 图标":
+        "This notice cannot be closed; it can only collapse into a ⚠ icon",
+    "复制 AI 提示词":
+        "Copy AI prompt",
+    "收起 ▴":
+        "Collapse ▴",
+    # ---------- 补齐：英文同步（第二轮） ----------
+    "整合包更新时，作者可能会删除或替换模组 —— 这种情况下「扫描差异」只能比出文件名和版本的不同，被作者删掉的模组是发现不了的。\n请务必核对更新日志里的模组变更；也可以把更新日志交给 AI 帮你逐条分析。":
+        "When the pack is updated, the author may delete or replace mods. In that case “Scan differences” can only compare file names and versions; mods the author removed are invisible to it.\nAlways check the changelog for mod changes; you can also hand the changelog to an AI and have it go through the changes one by one.",
+    "贴边时显示边缘特效（绿色光带 + 粒子）":
+        "Show an edge effect while docked (green glow + particles)",
+    "📚 MC百科":
+        "📚 MCMod",
+    "🚀 PCL 启动器":
+        "🚀 PCL launcher",
+    "先不滚":
+        "Not yet",
 }
 
 
