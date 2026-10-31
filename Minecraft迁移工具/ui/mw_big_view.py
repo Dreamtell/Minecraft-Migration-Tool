@@ -26,6 +26,17 @@ from utils.theme import apply_theme_to_widget_tree
 from utils.i18n import tr, trp
 
 
+
+def _窗可用(win):
+    """主窗现在是不是「正常显示」——最小化/藏进托盘时为 False。
+
+    气泡是 topmost 的，主窗不可见时弹出来就浮在别的程序上面，所以先问一句。
+    """
+    try:
+        return str(win.state()) == "normal" and bool(win.winfo_viewable())
+    except Exception:
+        return False
+
 class BigViewMixin:
     """放大查看（Tk 版）：清单大窗口、日志大窗口、忙碌/溢出处理。"""
 
@@ -384,6 +395,10 @@ class BigViewMixin:
             try:
                 if not win.winfo_exists():
                     return
+                # 主窗已经最小化/藏进托盘时别再弹 —— 气泡是 topmost 的，
+                # 弹出来就浮在别的程序上面了
+                if not _窗可用(win):
+                    return
             except Exception:
                 return
             row = _tip_cell["row"]
@@ -400,6 +415,11 @@ class BigViewMixin:
             tip = _cell_tip.get("win")
             if tip is None:
                 tip = tk.Toplevel(win)
+                # 主窗一被藏/最小化就把气泡收掉（否则它 topmost 地留在桌面上）
+                try:
+                    win.bind("<Unmap>", lambda _e: _tip_hide(), add="+")
+                except Exception:
+                    pass
                 tip.wm_overrideredirect(True)
                 try:
                     tip.attributes("-topmost", True)

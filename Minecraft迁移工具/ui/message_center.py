@@ -829,8 +829,16 @@ class _抽屉:
         return win
 
     def _on_parent_unmap(self, _e=None):
+        """主界面最小化 **或** 被藏进托盘（withdraw）时，抽屉收回。
+
+        withdraw 不触发 <Unmap> 的 iconic 分支，早先只看 "iconic"，于是
+        「收进托盘」之后抽屉还浮在桌面上（用户报过同类问题）。
+        """
         try:
-            if self.win is not None and str(self.父窗.state()) == "iconic":
+            if self.win is None:
+                return
+            状态 = str(self.父窗.state())
+            if 状态 in ("iconic", "withdrawn"):
                 self.close()
         except Exception:
             pass
