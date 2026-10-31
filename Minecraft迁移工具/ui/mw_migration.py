@@ -912,9 +912,32 @@ class MigrationMixin:
                 pass
             self.action_rollback(选中记录)
 
+        def 应用选中():
+            选中记录 = 记录[列表.sel] if (记录 and 0 <= 列表.sel < len(记录)) else None
+            if 选中记录 is None:
+                return
+            try:
+                顶.destroy()
+            except Exception:
+                pass
+            self._apply_record(选中记录, 来源="历史里选中的那份档案")
+
+        # 留着给探针/脚本调用（窗口里的按钮是自绘控件，外面拿不到文字）
+        self._history_apply_cmd = 应用选中
         回滚钮 = create_gradient_button(底, "↩ 回滚到迁移前", 回滚,
                                        colors=("#e53935", "#ff7043"))
         回滚钮.pack(side="left", padx=(0, px(8)))
+
+        应用钮 = create_gradient_button(底, trp("🔁 应用到主界面"), 应用选中,
+                                       colors=("#1e88e5", "#42a5f5"))
+        应用钮.pack(side="left", padx=(0, px(8)))
+        # 和回滚钮一样：没选中任何档案时点不了
+        self._history_apply_hook = lambda: 应用钮.state(
+            "normal" if (记录 and 0 <= 列表.sel < len(记录)) else "disabled")
+        try:
+            self._history_apply_hook()
+        except Exception:
+            pass
 
         def _刷回滚钮():
             """选中的那条有没有自己的备份 —— 没有就点不了（早期记录没有）。"""
@@ -928,7 +951,8 @@ class MigrationMixin:
             except Exception:
                 pass
 
-        self._history_sel_hook = _刷回滚钮
+        self._history_sel_hook = lambda: (_刷回滚钮(),
+                                          getattr(self, "_history_apply_hook", lambda: None)())
         _刷回滚钮()
         删钮 = create_gradient_button(底, trp("删除这份档案"), 删当前, colors=("#e53935", "#b71c1c"))
         删钮.pack(side="left")

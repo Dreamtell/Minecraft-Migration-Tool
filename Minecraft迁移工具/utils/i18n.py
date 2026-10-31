@@ -2125,6 +2125,18 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "🔁 Applied the last migration record (mods {0} / config {1} / other {2})",
     "⚠ 回填上次记录失败：%s":
         "⚠ Could not apply the last record: %s",
+    "🔁 应用到主界面":
+        "🔁 Apply to main window",
+    "🔁 已应用{0}（模组 {1} / config {2} / 其它 {3}）":
+        "🔁 Applied {0} (mods {1} / config {2} / other {3})",
+    "🔁 已回填{0}":
+        "🔁 Filled in {0}",
+    "⚠ 这份档案读不出来":
+        "⚠ This record cannot be read",
+    "⚠ 这份记录里没有清单内容":
+        "⚠ This record has no list content",
+    "历史里选中的那份档案":
+        "the record selected in history",
 }
 
 
