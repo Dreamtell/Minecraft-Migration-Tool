@@ -90,7 +90,8 @@ _HV_IN, _HV_OUT = 0.09, 0.15    # 悬停淡入 90ms / 淡出 150ms（原型 step
 # 而淡入是指数逼近（_HV_IN=90ms，实际要 ~200ms 才到 0.99），于是鼠标一碰，亮度只跳
 # 4 下，看着就是「高亮帧数低」。改 25 档（步长 0.04）≈ 5ms 一档，跟刷新率对上。
 _HV_LEVELS = tuple(i / 24.0 for i in range(25))  # 0, 0.04, ... 1.0
-_BACK_PHASES = 180      # 背面相位表长度（72 时每步 33.6ms，斜纹看着一顿一顿）
+_BACK_PHASES = 180      # 背面相位表长度（300 时每帧要多烤一整面，反而更慢）
+_BAR_SUBPX = 4          # 条的宽度按 1/4 像素量化（高刷屏才看得出来）      # 背面相位表长度（72 时每步 33.6ms，斜纹看着一顿一顿）
 _BACK_DT = (2.0 * math.pi / 2.6) / _BACK_PHASES   # 让进度条的 cos 周期正好一圈（2.417s）
 
 # ---------------------------------------------------------------- 配色（原型 FACE_IDLE / FACE_SEARCH 原值）
@@ -671,7 +672,13 @@ class FlipButton(tk.Canvas):
                 self._prog_show = self._prog_override
             return self._prog_show
         self._prog_show = None
-        return self._decor_u(self._back_phase() * _BACK_DT)
+        # 用连续时间而不是量化过的相位表：相位表一圈只有 180 格（74 步/秒），
+        # 高刷屏上条的宽度每 13ms 才变一次，看着是 60Hz 的台阶。
+        try:
+            t = time.perf_counter() - self._t0
+        except Exception:
+            t = self._back_phase() * _BACK_DT
+        return self._decor_u(t)
 
     def _bar_strip(self):
         """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
@@ -690,24 +697,43 @@ class FlipButton(tk.Canvas):
         return strip
 
     def _bar_photo(self, u):
-        """宽度 u（0..1）那一段的条贴图。裁剪是 C 层操作，比重新合成整面便宜得多。"""
+        """宽度 u（0..1）那一段的条贴图。
+
+        按 1/4 像素量化：高刷屏上一帧只该多出零点几个像素，按整像素量化的话
+        3 帧才变一次（看着就是 60Hz 的台阶），所以末列用 alpha 表达余数。
+        """
         w = self._cw
         try:
-            pw = int(round(w * max(0.0, min(1.0, float(u)))))
+            v = max(0.0, min(1.0, float(u))) * w
         except Exception:
-            pw = 0
-        pw = max(0, min(w, pw))
-        if pw in self._bar_cache:
-            return self._bar_cache[pw]
+            v = 0.0
+        总值 = int(round(v * _BAR_SUBPX))
+        整, 余 = divmod(max(0, 总值), _BAR_SUBPX)
+        整 = min(w, 整)
+        if 整 <= 0 and 余 == 0:
+            if 0 in self._bar_cache:
+                return self._bar_cache[0]
+            self._bar_cache[0] = None
+            return None
+        key = 总值
+        if key in self._bar_cache:
+            return self._bar_cache[key]
         photo = None
-        if pw > 0:
-            try:
-                photo = _ImageTk.PhotoImage(self._bar_strip().crop((0, 0, pw, _PROGRESS_H)))
-            except Exception:
-                photo = None
-        if len(self._bar_cache) > 400:
+        try:
+            条 = self._bar_strip()
+            宽 = min(w, 整 + (1 if 余 else 0))
+            块 = 条.crop((0, 0, 宽, _PROGRESS_H))
+            if 余 and 宽 > 0:
+                阿尔法 = 块.getchannel("A")
+                阿尔法.paste(int(round(255.0 * 余 / _BAR_SUBPX)),
+                             (宽 - 1, 0, 宽, _PROGRESS_H))
+                块.putalpha(阿尔法)
+            photo = _ImageTk.PhotoImage(块)
+        except Exception:
+            photo = None
+        if len(self._bar_cache) > 800:
             self._bar_cache.clear()
-        self._bar_cache[pw] = photo
+        self._bar_cache[key] = photo
         return photo
 
     def _apply_bar(self, u=None):
@@ -1115,8 +1141,9 @@ class FlipButton(tk.Canvas):
         if not self._tick_wanted():
             return
         self._ui_last = time.perf_counter()
-        if not self._at_back:
-            self._hold_hr()
+        # 高精度定时器：不 hold 的话 after(4ms) 会被系统 15.6ms 粒度卡回 ~64fps。
+        # 以前只在正面 hold，背面（一直有斜纹/条在动）被卡在 30fps 附近。
+        self._hold_hr()
         try:
             self._ui_job = self.after(self._tick_ms(), self._ui_tick)
         except Exception:
@@ -1130,8 +1157,7 @@ class FlipButton(tk.Canvas):
             except Exception:
                 pass
             self._ui_job = None
-        if not self._at_back:
-            self._rel_hr()
+        self._rel_hr()
 
     def _ui_tick(self):
         """30fps 的持续动画：只换相位表里的图（itemconfigure），不现画整面。"""
