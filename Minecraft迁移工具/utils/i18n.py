@@ -2197,6 +2197,16 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "Root files (options.txt etc.)",
     "「其它文件」清单里的条目":
         "Entries in the \"Other files\" list",
+    "网络部分不通\n":
+        "Some network checks failed\n",
+    "网络未连接\n":
+        "Network disconnected\n",
+    "正在检测网络…\n":
+        "Checking network...\n",
+    "（{0} 项）":
+        " ({0})",
+    "✕ 关闭":
+        "✕ Close",
 }
 
 

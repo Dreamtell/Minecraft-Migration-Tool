@@ -1179,7 +1179,7 @@ class PagesMixin:
             tk.Label(顶, text=trp("绘图需要 matplotlib：\n\npip install matplotlib\n\n({0})", _e),
                      bg=self.theme["bg"], fg="#c62828", justify="left",
                      font=("微软雅黑", 10)).pack(padx=px(16), pady=px(16))
-            create_gradient_button(顶, "关闭", lambda: 顶.destroy()).pack(pady=(0, px(10)))
+            create_gradient_button(顶, "✕ 关闭", lambda: 顶.destroy()).pack(pady=(0, px(10)))
             return
 
         深色 = is_dark_theme(self.theme)

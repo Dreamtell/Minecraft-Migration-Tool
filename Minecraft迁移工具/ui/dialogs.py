@@ -899,7 +899,7 @@ def show_mod_detail(parent, jar_path, theme, tags_hint=None, tags_online=False, 
     copy_link_btn.pack(side="right", padx=4)
     copy_proj_btn.pack(side="right", padx=4)
 
-    create_gradient_button(win, "关闭", win.destroy,
+    create_gradient_button(win, "✕ 关闭", win.destroy,
                            colors=("#e53935", "#c62828"),
                            width=72, height=30, font=("微软雅黑", 9, "bold")).pack(pady=8)
 

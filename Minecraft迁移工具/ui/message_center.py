@@ -774,12 +774,12 @@ class _抽屉:
 
         try:
             from utils.helpers import create_gradient_button
-            create_gradient_button(底栏, trp("关闭"), self.close,
+            create_gradient_button(底栏, trp("✕ 关闭"), self.close,
                                    colors=("#42a5f5", "#1565c0"), width=px(58),
                                    height=px(24), font=("微软雅黑", 9)).pack(side="right")
         except Exception:
             for 标, 命令, side in ((trp("清空"), _清空, "left"),
-                                   (trp("关闭"), self.close, "right")):
+                                   (trp("✕ 关闭"), self.close, "right")):
                 钮 = tk.Label(底栏, text=标, bg=self.theme.get("button_bg", "#e0e0e0"),
                               fg=self.theme.get("button_fg", "#222222"), cursor="hand2",
                               font=("微软雅黑", 9), padx=px(12), pady=px(3))

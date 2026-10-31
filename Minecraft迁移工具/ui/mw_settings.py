@@ -675,7 +675,7 @@ class SettingsMixin:
 
         row = tk.Frame(win, bg=self.theme["bg"])
         row.pack(fill="x", padx=14, pady=14)
-        create_gradient_button(row, "关闭", win.destroy,
+        create_gradient_button(row, "✕ 关闭", win.destroy,
                                colors=("#e53935", "#c62828"),
                                width=90, height=30,
                                font=("微软雅黑", 9, "bold")).pack(side="right")

@@ -563,7 +563,7 @@ def show_diff_window(parent, data: list, theme, current_theme, apply_callback, c
                            colors=("#00c853", "#00e676"),
                            width=102, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=(8, 2))
-    create_gradient_button(btn_frame, "关闭", diff_win.destroy,
+    create_gradient_button(btn_frame, "✕ 关闭", diff_win.destroy,
                            colors=("#e53935", "#c62828"),
                            width=62, height=28,
                            font=("微软雅黑", 9, "bold")).pack(side="left", padx=2)
@@ -638,7 +638,7 @@ def update_diff_theme(diff_win, theme, current_theme):
                               "📌 全选目标独有": theme["neutral_bg"]}
                     widget.configure(bg=bg_map.get(text, theme["button_bg"]),
                                      fg=theme["fg"])
-                elif text in ("☑ 全选", "☐ 取消全选", "关闭"):
+                elif text in ("☑ 全选", "☐ 取消全选", "✕ 关闭"):
                     widget.configure(bg=theme["button_bg"], fg=theme["button_fg"])
                 elif text == "✅ 应用所选":
                     widget.configure(bg=theme["success_bg"], fg=theme["success_fg"])

@@ -956,7 +956,7 @@ class MigrationMixin:
         _刷回滚钮()
         删钮 = create_gradient_button(底, trp("删除这份档案"), 删当前, colors=("#e53935", "#b71c1c"))
         删钮.pack(side="left")
-        create_gradient_button(底, "关闭", lambda: 顶.destroy()).pack(side="right")
+        create_gradient_button(底, "✕ 关闭", lambda: 顶.destroy()).pack(side="right")
 
         if 记录:
             选中(0)
