@@ -740,15 +740,9 @@ class PagesMixin:
         self.start_btn.pack(side="right", padx=5)
         self._stage()
 
-        self.rollback_btn = create_gradient_button(
-            parent=btn_group,
-            text="⚠️ 回滚",
-            command=self.action_rollback,
-            colors=("#e53935", "#ff7043"),
-            height=btn_h,
-            font=font_aux
-        )
-        self.rollback_btn.pack(side="right", padx=5)
+        # 回滚已经并进「迁移历史」窗口（用户要求合并），主界面这排只留两个按钮。
+        # 这里保留一个 None，方便其它地方 getattr 判空，不必到处改。
+        self.rollback_btn = None
         self._stage()
 
         self.history_btn = create_gradient_button(
@@ -762,7 +756,6 @@ class PagesMixin:
         self.history_btn.pack(side="right", padx=5)
         self._btn_widgets.update({
             "start": self.start_btn,
-            "rollback": self.rollback_btn,
             "history": self.history_btn,
         })
         self._stage()

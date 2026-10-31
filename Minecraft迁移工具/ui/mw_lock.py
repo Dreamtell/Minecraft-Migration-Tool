@@ -132,7 +132,9 @@ class LockMixin:
         btns = (
             # 「开始迁移」不在这里：迁移进行中它要保持活的样子（红背面 + 悬停特效
             # + 「⏳ 迁移中...」），由下面单独处理成 normal + inert。
-            self.rollback_btn,
+            # 「回滚」按钮已并入迁移历史窗口，主界面没有它了（现在回滚只能在历史窗里点，
+            # 那时窗口本身是模态的，用户点不到主界面）。
+            getattr(self, "rollback_btn", None),
             # 「查看历史」原来漏在名单外：迁移/倒计时期间它一直亮着（用户要求全部禁用）
             getattr(self, "history_btn", None), self.scan_btn,
             self.btn_changelog, self.mod_magnify_btn, self.add_mods_btn,

@@ -879,6 +879,26 @@ class MigrationMixin:
             显示(记录[列表.sel] if 记录 else None)
             详情["副标题"].config(text="已删除")
 
+        # 回滚并进这里（用户要求）：主界面不再有「回滚」按钮，回滚入口只在这扇窗里。
+        # 语义没变 —— 仍然是"把目标实例恢复到最近一次迁移之前"，走的还是同一个
+        # action_rollback（后台线程 + 备份还原 + 历史里标记已回滚）。
+        def 回滚():
+            NL = chr(92) + "n"
+            问 = ("要把目标实例恢复到最近一次迁移之前吗？" + NL + NL
+                  + "这一操作会用备份覆盖当前内容，迁移前不存在的文件会被删掉，"
+                  + "而且不能撤销。" + NL + NL
+                  + "回滚过程中这扇窗会一直开着，进度看主界面的执行日志。")
+            if not messagebox.askyesno("↩ 回滚到迁移前", trp(问)):
+                return
+            try:
+                顶.destroy()
+            except Exception:
+                pass
+            self.action_rollback()
+
+        回滚钮 = create_gradient_button(底, "↩ 回滚到迁移前", 回滚,
+                                       colors=("#e53935", "#ff7043"))
+        回滚钮.pack(side="left", padx=(0, px(8)))
         删钮 = create_gradient_button(底, "删除这份档案", 删当前, colors=("#e53935", "#b71c1c"))
         删钮.pack(side="left")
         create_gradient_button(底, "关闭", lambda: 顶.destroy()).pack(side="right")
