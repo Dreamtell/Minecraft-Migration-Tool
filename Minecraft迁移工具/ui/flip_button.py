@@ -732,6 +732,25 @@ class FlipButton(tk.Canvas):
         self._prog_show = None
         return None
 
+    def _bar_edge_mask(self):
+        """整条轨道两端的淡出遮罩（宽 = 按钮宽，高 = _PROGRESS_H）。只烤一次。"""
+        key = ("baredge", self._cw, _PROGRESS_H)
+        hit = _bar_cache_edge = self._bar_cache.get(key)
+        if hit is not None:
+            return hit
+        w = max(1, self._cw)
+        渐 = max(6, min(22, w // 8))
+        m = _Image.new("L", (w, 1), 255)
+        画 = _ImageDraw.Draw(m)
+        左 = None
+        for i in range(渐):
+            v = int(round(255.0 * (i + 1) / float(渐 + 1)))
+            画.point((i, 0), fill=v)
+            画.point((w - 1 - i, 0), fill=v)
+        m = m.resize((w, _PROGRESS_H))
+        self._bar_cache[key] = m
+        return m
+
     def _bar_strip(self):
         """满宽进度条（w x _PROGRESS_H，已按圆角裁好）。只烤一次。"""
         key = ("barstrip", self._cw, self._ch, self._scheme)
@@ -762,6 +781,9 @@ class FlipButton(tk.Canvas):
         except Exception:
             q = 0
         q = max(0, min(w * _BAR_SUBPX, q))
+        # 不足一整像素就不画：否则 u≈0 时会在最左边留几个像素（用户看到的"溢出"）
+        if q // _BAR_SUBPX < 1:
+            return None
         if q in self._bar_cache:
             return self._bar_cache[q]
         photo = None
@@ -820,6 +842,41 @@ class FlipButton(tk.Canvas):
         self._trim_bar_cache()
         return photo
 
+    def _bar_scroll_photo(self, x, wid):
+        """滚动块：整宽画一张，块的左右靠透明，两端的淡出交给 `_bar_edge_mask`。
+
+        这样块滑到边缘时是"淡出去"，不会留下半截像素，也不需要两根条拼绕回。
+        """
+        w, h = int(self._cw), _PROGRESS_H
+        try:
+            qx = int(round(x * _BAR_SUBPX))
+            qw = int(round(wid * _BAR_SUBPX))
+        except Exception:
+            return None
+        key = ("scroll", w, qx, qw)
+        if key in self._bar_cache:
+            return self._bar_cache[key]
+        photo = None
+        try:
+            色 = _rgb(self._pal["search"]["accent"]) + (255,)
+            图 = _Image.new("RGBA", (max(1, w), h), 色[:3] + (0,))
+            起 = qx // _BAR_SUBPX
+            终 = (qx + qw) // _BAR_SUBPX
+            画 = _ImageDraw.Draw(图)
+            画.rectangle([起, 0, max(起, 终 - 1), h - 1], fill=色)
+            甲 = _ImageChops.multiply(
+                图.getchannel("A"),
+                _ImageChops.multiply(
+                    _clip_mask(w, self._ch).crop((0, self._ch - h, w, self._ch)),
+                    self._bar_edge_mask()))
+            图.putalpha(甲)
+            photo = _ImageTk.PhotoImage(图)
+        except Exception:
+            photo = None
+        self._bar_cache[key] = photo
+        self._trim_bar_cache()
+        return photo
+
     def _decor_chunk(self):
         """装饰性滚动：一块固定长度的条从左往右滑，滑出去再从左边进来。
 
@@ -831,11 +888,11 @@ class FlipButton(tk.Canvas):
         起 = getattr(self, "_decor_t0", None) or self._t0
         圈 = (time.perf_counter() - 起) * _DECOR_SPEED * w
         圈 %= (w + wid)
-        # 来回滚（乒乓）：只在 0 ~ (宽-块长) 之间往返，块始终完整出现，
-        # 不会在边缘露出半截、也不会同时出现两块（用户看到"两块/残影"就是那个）。
+        # 来回滚（用户选的）：只在 0 ~ (宽-块长) 之间往返，块始终完整可见，
+        # 不淡出、不绕回、也不贴边露半截。
         行程 = max(1.0, w - wid)
         周期 = 2.0 * 行程
-        位 = (圈 % 周期)
+        位 = 圈 % 周期
         if 位 > 行程:
             位 = 周期 - 位
         return 位, wid
@@ -866,14 +923,13 @@ class FlipButton(tk.Canvas):
         try:
             if seg is not None:
                 x, wid = seg
-                photo = self._bar_chunk_photo(0.0, wid)
+                photo = self._bar_chunk_photo(x, wid)
                 if photo is None:
                     self.itemconfigure(self._bar_id, state="hidden")
                     self.itemconfigure(self._bar2_id, state="hidden")
                 else:
                     y = self._ch - _PROGRESS_H
-                    整 = int(round(x))
-                    圈长 = int(round(wid)) + int(round(self._cw))
+                    整 = max(0, int(round(x)))
                     self.coords(self._bar_id, 整, y)
                     self.itemconfigure(self._bar_id, image=photo, state="normal")
                     self.itemconfigure(self._bar2_id, state="hidden")
