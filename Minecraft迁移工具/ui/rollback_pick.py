@@ -20,9 +20,9 @@ def _配色(theme):
     dark = str(theme.get("bg", "#ffffff")).lower() in ("#2e2e2e", "#1e1e1e", "#252526")
     if dark:
         return {"卡": "#2e2e2e", "底": "#252526", "字": "#e6e6e6", "弱": "#9e9e9e",
-                "边": "#3a3a3a", "要": "#4da3f0"}
+                "边": "#3a3a3a", "要": "#4da3f0", "悬": "#353535"}
     return {"卡": "#f7f7f7", "底": "#ffffff", "字": "#1f1f1f", "弱": "#666666",
-            "边": "#dcdcdc", "要": "#2f7fd1"}
+            "边": "#dcdcdc", "要": "#2f7fd1", "悬": "#eeeeee"}
 
 
 def _设圆角(窗):
@@ -81,31 +81,79 @@ def pick_parts(parent, theme, 有无, 默认=None, 记住=False):
              bg=色["卡"], fg=色["弱"], font=("微软雅黑", 8),
              justify="left", anchor="w").pack(fill="x")
 
+    def 做勾选行(父, 文, 说明=None, 初值=True, 小字=False):
+        """自绘的圆角勾选行：左边一个小圆角方块（勾上时填主色 + 白勾），
+        右边是名称（可选带一行灰说明）。整行可点，悬停会亮一点。"""
+        高 = 30 if 说明 else 26
+        宽 = int(父.winfo_width() or 400)
+        画 = tk.Canvas(父, height=高, bg=色["卡"], highlightthickness=0, bd=0,
+                       cursor="hand2")
+        画.pack(fill="x", pady=1)
+        态 = {"值": bool(初值), "悬": False}
+
+        def 圆角图(宽, 高, 半径, 填充, 描边=None):
+            """烤一张圆角矩形（超采样再缩回来，边缘不发毛）。"""
+            from PIL import Image as _I, ImageDraw as _D, ImageTk as _Tk
+            S = 4
+            大 = _I.new("RGBA", (宽 * S, 高 * S), (0, 0, 0, 0))
+            _D.Draw(大).rounded_rectangle(
+                [0, 0, 宽 * S - 1, 高 * S - 1], radius=max(1, 半径) * S,
+                fill=填充, outline=描边, width=(S if 描边 else 0))
+            小 = 大.resize((宽, 高), _I.LANCZOS)
+            return _Tk.PhotoImage(小)
+
+        _图缓存 = {}
+
+        def 取图(k, 宽, 高, 半径, 填充, 描边=None):
+            t = (k, 宽, 高, 半径, 填充, 描边)
+            if t not in _图缓存:
+                _图缓存[t] = 圆角图(宽, 高, 半径, 填充, 描边)
+            return _图缓存[t]
+
+        def 画全部(_=None):
+            画.delete("all")
+            宽 = int(画.winfo_width() or 400)
+            底 = 色["悬"] if 态["悬"] else 色["卡"]
+            画.create_image(0, 0, anchor="nw",
+                            image=取图("行", 宽, 高, 8, 底))
+            盒 = 16
+            x0, y0 = 8, (高 - 盒) // 2
+            if 态["值"]:
+                画.create_image(x0, y0, anchor="nw",
+                                image=取图("盒开", 盒, 盒, 5, 色["要"]))
+                画.create_text(x0 + 盒 / 2, y0 + 盒 / 2 - 1, text="✓",
+                                fill="#ffffff", font=("微软雅黑", 9, "bold"))
+            else:
+                画.create_image(x0, y0, anchor="nw",
+                                image=取图("盒关", 盒, 盒, 5, 色["底"], 色["边"]))
+            字 = 文 if not 小字 else 文
+            画.create_text(x0 + 盒 + 10, 高 / 2, text=字, anchor="w",
+                           fill=色["字"], font=("微软雅黑", 9))
+            if 说明:
+                画.create_text(宽 - 10, 高 / 2, text=说明, anchor="e",
+                               fill=色["弱"], font=("微软雅黑", 8))
+
+        def 点(_e=None):
+            态["值"] = not 态["值"]
+            画全部()
+
+        画.bind("<Button-1>", 点)
+        画.bind("<Configure>", 画全部)
+        画.bind("<Enter>", lambda _e: (态.__setitem__("悬", True), 画全部()))
+        画.bind("<Leave>", lambda _e: (态.__setitem__("悬", False), 画全部()))
+        画.get = lambda: 态["值"]
+        画全部()
+        return 画
+
     变量们 = {}
     for 键 in 可选:
         名, 说明 = _PART_LABELS[键]
         数 = int(有无.get(键) or 0)
         文 = trp(名) + (trp("（{0} 项）", 数) if 数 else "")
-        变量 = tk.BooleanVar(value=键 in 预选)
-        变量们[键] = 变量
-        行 = tk.Frame(壳, bg=色["卡"])
-        行.pack(fill="x", padx=14, pady=1)
-        cb = tk.Checkbutton(行, text=文, variable=变量, bg=色["卡"], fg=色["字"],
-                            activebackground=色["卡"], activeforeground=色["要"],
-                            selectcolor=色["底"], font=("微软雅黑", 9),
-                            anchor="w", bd=0, highlightthickness=0)
-        cb.pack(side="left")
-        tk.Label(行, text="　" + trp(说明), bg=色["卡"], fg=色["弱"],
-                 font=("微软雅黑", 8)).pack(side="left")
+        变量们[键] = 做勾选行(壳, 文, trp(说明), 键 in 预选)
 
-    记住变量 = tk.BooleanVar(value=bool(记住))
-    记住行 = tk.Frame(壳, bg=色["卡"])
-    记住行.pack(fill="x", padx=14, pady=(6, 2))
-    tk.Checkbutton(记住行, text=trp("记住我的选择（以后回滚都按这个，可在设置里改）"),
-                   variable=记住变量, bg=色["卡"], fg=色["字"],
-                   activebackground=色["卡"], activeforeground=色["要"],
-                   selectcolor=色["底"], font=("微软雅黑", 9),
-                   bd=0, highlightthickness=0).pack(side="left")
+    记住变量 = 做勾选行(壳, trp("记住我的选择（以后回滚都按这个，可在设置里改）"),
+                     None, bool(记住), 小字=True)
 
     底 = tk.Frame(壳, bg=色["卡"])
     底.pack(fill="x", padx=14, pady=(8, 12))
