@@ -1516,10 +1516,21 @@ class MigrationMixin:
         self._begin_start_countdown(秒)
 
     def _按钮待确认(self, 是):
-        """弹自检确认框期间，把「开始迁移」正面文案换成「⏳ 等你确认…」。"""
+        """等用户做选择（自检弹窗开着）时：满条 + 黄面 + 「⚠️ 等待……」文案。
+
+        用户 m09734：「这个进度条别动了，让它占满，而且文本改成等待……」。
+        """
+        btn = getattr(self, "start_btn", None)
         try:
-            self.start_btn.set_front_text(trp("⏳ 等你确认…") if 是 else None)
-            self.start_btn.update_idletasks()
+            if 是:
+                btn.flip_to_back(force=True)
+                btn.set_back_warn(True)          # 黄面 + 满条（长度不动）
+                btn.set_back_text(trp("⚠️ 等待……"))
+            else:
+                btn.set_back_text(None)
+                btn.set_back_warn(False)
+                self._flip_start_btn()           # 回到正面等下一步
+            btn.update_idletasks()
         except Exception:
             pass
 
