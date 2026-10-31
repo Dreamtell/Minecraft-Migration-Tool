@@ -35,7 +35,7 @@ if "--qt-host" in sys.argv:
 
 from tendo import singleton
 from utils.helpers import (get_icon_path, warm_up_emoji_font, clear_layered_style,
-                           focus_window, force_foreground)
+                           focus_window, force_foreground, trace_exc)
 from utils.config import load_raw_config, save_raw_config
 from winotify import Notification, audio
 
@@ -382,6 +382,52 @@ def main():
             tray_tip_shown["v"] = True
             send_toast(trp("已收进系统托盘"),
                        trp("程序仍在后台运行。点托盘图标可重新打开，右键可退出。"))
+
+    def restart_app():
+        """重启自己（切语言后用它，比"当场换文案"稳）。
+
+        顺序很重要：先存盘 → 撤托盘/关 Qt 子进程 → **放掉单实例锁** → 起新进程 →
+        结束自己。锁不放的话新进程一启动就被 tendo 判成"已经在跑"，会自己退出。
+        """
+        global _LOCK_HOLDER
+        try:
+            app.save_config()
+        except Exception:
+            pass
+        if tray is not None:
+            try:
+                tray.stop()
+            except Exception:
+                pass
+        try:
+            app.stop_qt_host()
+        except Exception:
+            pass
+        _LOCK_HOLDER = None                 # 放锁：让新进程能拿到
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            import subprocess
+            脚本 = os.path.abspath(sys.argv[0])
+            参数 = [a for a in sys.argv[1:] if not a.startswith("--qt-host")]
+            subprocess.Popen([sys.executable, 脚本] + 参数, close_fds=True)
+        except Exception as e:
+            trace_exc("app/重启", e)
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    # 设置页切语言时要能调到它；探针直接建 MigrationGUI 时没有这个属性，
+    # 所以验证脚本仍然走"当场翻"，不会把测试进程重启掉
+    try:
+        gui.重启程序 = restart_app
+    except Exception:
+        pass
 
     def request_quit():
         """请求退出：先跳出主循环，存盘和销毁统一放到 mainloop 之后做。

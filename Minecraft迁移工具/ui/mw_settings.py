@@ -893,6 +893,24 @@ class SettingsMixin:
                 self.save_config()
             except Exception:
                 pass
+            # 真程序里优先"自动重启"：当场换文案漏项太多（自绘控件、Qt 子进程、
+            # 已经拼好的状态行都容易漏），重启一遍最稳，用户也看得见在做什么。
+            重启 = getattr(self, "重启程序", None)
+            if callable(重启):
+                名 = dict(i18n.CHOICES).get(值, 值)
+                try:
+                    self.toast(trp("🌐 界面语言已改成「{0}」，正在重启…", 名),
+                               level="ok", key="lang")
+                except Exception:
+                    pass
+                try:
+                    self.root.after(650, 重启)
+                except Exception:
+                    try:
+                        重启()
+                    except Exception:
+                        pass
+                return
             重翻 = getattr(self, "重新翻译界面", None)
             if callable(重翻):
                 try:
