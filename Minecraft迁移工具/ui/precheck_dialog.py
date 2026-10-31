@@ -86,6 +86,27 @@ def _设圆角(窗):
         pass
 
 
+def _外壳(win):
+    """拿到窗口的顶层句柄（Tk 的 winfo_id 是内层子窗）。"""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        return int(user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id())
+    except Exception:
+        return 0
+
+
+def _前台窗口():
+    """当前前台窗口句柄；拿不到返回 0。"""
+    try:
+        import ctypes
+        return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
 def _居中(父窗, 窗, 宽, 高):
     try:
         父窗.update_idletasks()
@@ -223,6 +244,44 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
         按住["id"] = 父窗.bind("<FocusIn>", _父窗聚焦, add="+")
     except Exception:
         按住["id"] = None
+
+    # 置顶只能"有限"：主界面收进托盘 / 最小化时跟着藏起来，别的程序在前台时也让开。
+    # （用户 m07008：主界面隐藏了这窗户还在最上面。）
+    def _跟父窗():
+        if 已关["值"] or not 窗.winfo_exists():
+            return
+        try:
+            父可见 = bool(父窗.winfo_viewable()) and 父窗.state() not in ("iconic", "withdrawn")
+        except Exception:
+            父可见 = False
+        try:
+            if not 父可见:
+                if 窗.winfo_viewable():
+                    窗.withdraw()
+            else:
+                if not 窗.winfo_viewable():
+                    窗.deiconify()
+                    _设圆角(窗)
+                _前台 = _前台窗口()
+                _我 = _外壳(窗)
+                _父 = _外壳(父窗)
+                要顶 = (_前台 == 0) or (_前台 in (_我, _父))
+                if 要顶 and not 窗.attributes("-topmost"):
+                    窗.attributes("-topmost", True)
+                    窗.lift()
+                elif (not 要顶) and 窗.attributes("-topmost"):
+                    窗.attributes("-topmost", False)
+        except Exception:
+            pass
+        try:
+            窗.after(220, _跟父窗)
+        except Exception:
+            pass
+
+    try:
+        窗.after(60, _跟父窗)
+    except Exception:
+        pass
 
     # 不画矩形描边：窗口本身是 DWM 圆角，方形描边会在圆角处露出来
     框 = tk.Frame(窗, bg=配色["卡"])
