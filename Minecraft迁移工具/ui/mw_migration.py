@@ -1627,7 +1627,8 @@ class MigrationMixin:
                 文案 = trp("⏳ {0} 秒后开始", 0)
                 self._countdown_txt = 文案
                 self._flip_back_text(文案)
-                self._flip_progress(0.0)
+                # 0 秒时条已经空了 —— 直接藏掉，别留一条 0 宽的细线在左边
+                self._flip_progress(None)
             elif time.perf_counter() - self._countdown_zero_at >= self._倒计时零秒ms / 1000.0:
                 self._finish_start_countdown()
                 return
