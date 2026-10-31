@@ -653,7 +653,9 @@ class LockMixin:
             pass
         # 两个复选开关（模拟运行 / 覆盖已存在的模组）由下面的 switch 树兜底处理
         btns = (
-            self.start_btn, self.rollback_btn,
+            # 「开始迁移」不在这里：迁移进行中它要保持活的样子（红背面 + 悬停特效
+            # + 「⏳ 迁移中...」），由下面单独处理成 normal + inert。
+            self.rollback_btn,
             # 「查看历史」原来漏在名单外：迁移/倒计时期间它一直亮着（用户要求全部禁用）
             getattr(self, "history_btn", None), self.scan_btn,
             self.btn_changelog, self.mod_magnify_btn, self.add_mods_btn,
@@ -682,9 +684,19 @@ class LockMixin:
             self._set_edit_lock(busy)
         except Exception as e:
             trace_exc("main_window/锁定输入", e)
-        # 倒计时期间把「开始迁移」点亮：再点一下就是取消（start_migration 里判断）。
-        if getattr(self, "_countdown_running", False):
-            try:
+        # 「开始迁移」单独处理：
+        #   - 倒计时期间点亮：再点一下就是取消（start_migration 里判断）；
+        #   - 迁移进行中（含准备阶段）也保持 normal：用户要求按钮保持特效（红背面 +
+        #     悬停 + 「⏳ 迁移中...」），但用 set_inert 把点击吞掉，所以点不动；
+        #   - 其它忙（扫描/文件任务）照旧禁用。
+        迁移中 = bool(getattr(self, "_migration_running", False)) or bool(
+            getattr(self, "_starting", False))
+        try:
+            if 迁移中 or getattr(self, "_countdown_running", False):
                 self.start_btn.state("normal")
-            except Exception:
-                pass
+                self.start_btn.set_inert(迁移中)
+            else:
+                self.start_btn.set_inert(False)
+                self.start_btn.state(state)
+        except Exception as e:
+            trace_exc("main_window/开始迁移按钮状态", e)

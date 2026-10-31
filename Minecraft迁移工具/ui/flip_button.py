@@ -362,6 +362,10 @@ class FlipButton(tk.Canvas):
         self._dry = bool(dry_run)
         self._disabled = False
         self._btn_disabled = False            # 只读标记：和旧按钮同名，方便排查
+        # inert：看着是活的（常色面 + 悬停特效），但点击什么都不做。
+        # 迁移进行中就用它 —— 用户要求「按钮保持特效」，而 disabled 会把面切成
+        # 灰的（见 _face_spec），特效全没。
+        self._inert = False
         self._cmd = command
         self._click_guard_ms = click_guard_ms
         self._click_at = 0.0
@@ -1366,6 +1370,17 @@ class FlipButton(tk.Canvas):
         if not self._animating:
             self._draw_rest()
 
+    def set_inert(self, flag):
+        """看着活着但不响应点击（迁移进行中用）。和 state('disabled') 的区别：
+        不禁用渲染，所以背面还是红的、悬停/扫光照旧。
+        """
+        flag = bool(flag)
+        if flag == self._inert:
+            return
+        self._inert = flag
+        if not self._animating:
+            self._draw_rest()
+
     def set_corner_bg(self, new_bg):
         """主题切换时同步画布底色（帧图是**不透明**的，底色变了得重出）。"""
         try:
@@ -1473,7 +1488,7 @@ class FlipButton(tk.Canvas):
 
     # ------------------------------------------------------------ 事件
     def _on_click(self, event=None):
-        if self._disabled or self._cmd is None:
+        if self._disabled or self._inert or self._cmd is None:
             return
         now = time.time()
         if self._click_guard_ms and (now - self._click_at) * 1000 < self._click_guard_ms:

@@ -1417,7 +1417,7 @@ class MigrationMixin:
         self._starting = True
         # 立刻禁用：既是视觉反馈，也让"点了没反应"变成"按钮本来就是灰的"
         try:
-            self.start_btn.state("disabled")
+            self.start_btn.set_inert(True)
         except Exception:
             pass
         try:
