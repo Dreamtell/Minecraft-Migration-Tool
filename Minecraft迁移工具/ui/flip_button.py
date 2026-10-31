@@ -82,7 +82,8 @@ _STRIPE_ALPHA = 26      # 背面斜纹 alpha（原型 stripes.setAlpha(26)）
 _STRIPE_W = 6.0         # 斜纹线宽
 _STRIPE_STEP = 28.0     # 斜纹间距
 _STRIPE_SPEED = 55.0    # 斜纹流速 px/s
-_PROGRESS_H = 3         # 底部进度条高度
+_PROGRESS_H = 3
+_BAR_INSET = 6          # 条本身左右各内缩多少（保证两端是直角、左右一样）         # 底部进度条高度
 _BAR_SUBPX = 4          # 条宽按 1/4 像素量化（头子能半格半格挪）
 _DECOR_WID = 0.24       # 装饰性"滚动"那一块的长度（占按钮宽的比例）
 _DECOR_SPEED = 0.30     # 那块每秒走几倍按钮宽（慢一点更像"在加载"，不那么跳）
@@ -761,8 +762,14 @@ class FlipButton(tk.Canvas):
         w, h = self._cw, self._ch
         strip = _Image.new("RGBA", (w, _PROGRESS_H),
                            _rgb(self._pal["search"]["accent"]) + (255,))
-        strip.putalpha(_ImageChops.multiply(
-            strip.getchannel("A"), _clip_mask(w, h).crop((0, h - _PROGRESS_H, w, h))))
+        # 条的"外形"必须左右一样：以前用按钮的圆角遮罩裁条，条贴到两端时会被
+        # 圆角切出斜角，一头方一头斜 —— 用户说的"外形不对称"就是这个。
+        # 现在改成左右各内缩 `_BAR_INSET` 的直角条，两端永远是齐的。
+        遮 = _Image.new("L", (w, _PROGRESS_H), 0)
+        _ImageDraw.Draw(遮).rectangle(
+            [_BAR_INSET, 0, max(_BAR_INSET, w - 1 - _BAR_INSET), _PROGRESS_H - 1],
+            fill=255)
+        strip.putalpha(_ImageChops.multiply(strip.getchannel("A"), 遮))
         if len(_layer_cache) > 220:
             _layer_cache.clear()
         _layer_cache[key] = strip
