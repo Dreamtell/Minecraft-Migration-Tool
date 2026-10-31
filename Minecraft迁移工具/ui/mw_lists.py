@@ -811,13 +811,47 @@ class ListsMixin:
         if files:
             self._mod_add_result(files, self._append_mods(files))
 
+    def _展开拖入的jar(self, 路径们):
+        """把拖进来的东西摊平成 jar 列表。
+
+        拖一整个文件夹（最常见：直接把 mods 目录拖过来）以前是**一声不响什么都不加**
+        —— 这里把目录摊平成里面那一层的 *.jar。
+        返回 (jar 列表, 目录数, 被忽略的文件数)。
+        """
+        jars, 目录数, 忽略 = [], 0, 0
+        for 原 in 路径们:
+            p = Path(原)
+            try:
+                if p.is_dir():
+                    目录数 += 1
+                    jars.extend(sorted(q for q in p.glob("*.jar") if q.is_file()))
+                elif p.suffix.lower() == ".jar":
+                    jars.append(p)
+                else:
+                    忽略 += 1
+            except OSError:
+                忽略 += 1
+        return jars, 目录数, 忽略
+
     def _on_mod_drop(self, event):
-        """从资源管理器拖入文件时，把 .jar 添加到模组清单。"""
+        """从资源管理器拖入文件/文件夹时，把 .jar 添加到模组清单。"""
         try:
             files = self.root.tk.splitlist(event.data)
         except Exception:
             files = event.data
-        self._mod_add_result(files, self._append_mods(files))
+        jars, 目录数, 忽略 = self._展开拖入的jar(files)
+        加 = self._append_mods(jars)
+        if 加 == 0:
+            # 以前这里什么都不说，用户完全不知道拖进去为什么没反应
+            if not jars and 忽略:
+                self.toast(trp("⚠️ 只认 .jar 文件（收到 {0} 个其它文件）", 忽略), level="warn")
+            elif jars:
+                self.toast(trp("⚠️ 这几个模组已经在清单里了（{0} 个）", len(jars)), level="warn")
+            elif 目录数:
+                self.toast(trp("⚠️ 文件夹里没找到 .jar（{0} 个文件夹）", 目录数), level="warn")
+            return
+        if 目录数:
+            self.toast(trp("📂 从文件夹里加了 {0} 个模组", 加), level="ok")
 
     def _add_paths_to(self, text_widget, base_dir, paths):
         """把绝对/相对路径转成"相对 base_dir"的条目，追加进某个清单文本框。

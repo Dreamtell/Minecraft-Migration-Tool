@@ -394,11 +394,14 @@ class PagesMixin:
 
     def _create_modlist_page(self, parent):
         """模组清单页：每行一个 .jar 文件名。"""
-        tk.Label(parent,
-                 text=("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，或直接把 jar 拖进来）。"
+        self._mod_hint = tk.Label(parent,
+                 text=("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，"
+                       "或直接把 jar / mods 文件夹拖进来）。"
                        "同名匹配不区分大小写，改过名的也能对上。"),
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
-                 font=("微软雅黑", 8), justify="left").pack(anchor="w", padx=5, pady=(2, 0))
+                 font=("微软雅黑", 8), justify="left")
+        # pack 返回 None，不能直接赋给 self._mod_hint（注册拖放失败时要往里追加提示）
+        self._mod_hint.pack(anchor="w", padx=5, pady=(2, 0))
 
         self.mod_text_box = RoundedTextArea(parent, self.theme, height=8,
                                             wrap=tk.NONE, undo=True,
@@ -430,13 +433,25 @@ class PagesMixin:
         self.mod_text.tag_configure(
             "mod_duplicate", background=self.theme.get("warn_bg", "#ffeaa7"),
             foreground=self.theme.get("warn_fg", "#000000"))
-        # 支持从资源管理器拖拽 .jar 到清单
+        # 支持从资源管理器拖拽 .jar 到清单。拖放靠 tkinterdnd2（打包时由
+        # hook-tkinterdnd2.py 把 tkdnd 的 dll/tcl 一起带进去）；注册失败时留个记号 +
+        # 打一行日志，清单说明那行会补一句"拖放不可用"，否则用户只能猜为什么拖不进去
+        self._dnd_ok = False
         try:
             from tkinterdnd2 import DND_FILES
             self.mod_text.drop_target_register(DND_FILES)
             self.mod_text.dnd_bind('<<Drop>>', self._on_mod_drop)
-        except Exception:
-            pass
+            self._dnd_ok = True
+        except Exception as e:
+            from utils.helpers import trace_exc
+            trace_exc("mw_pages/注册拖放", e)
+            try:
+                # 拖放用不了就直说，别让用户对着"拖不进去"发呆
+                self._mod_hint.configure(
+                    text=str(self._mod_hint.cget("text"))
+                    + "　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。")
+            except Exception:
+                pass
         self._bind_badge_refresh(self.mod_text)
         self._stage()               # ScrolledText 建一个要一百来毫秒，建完先让一帧
 

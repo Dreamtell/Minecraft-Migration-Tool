@@ -434,10 +434,10 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "每行一个相对路径，「相对源实例的 config 目录」（例：jei/jei.toml、sodium-options.json）。":
         "One relative path per line, relative to the source instance's config folder "
         "(e.g. jei/jei.toml, sodium-options.json).",
-    "每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，或直接把 jar 拖进来）。"
-    "同名匹配不区分大小写，改过名的也能对上。":
-        "One .jar file name per line (import from a changelog, pick with \"Add mods\", or just "
-        "drag jars in). Name matching ignores case, so renamed files still match.",
+    "每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，"
+    "或直接把 jar / mods 文件夹拖进来）。同名匹配不区分大小写，改过名的也能对上。":
+        "One .jar per line (import from a changelog, pick with \"Add mods\", or drag jars / "
+        "a whole mods folder in). Name matching ignores case, so renamed files still match.",
     "https://github.com/Dreamtell/Minecraft-Migration-Tool\n欢迎反馈问题或提交建议。":
         "https://github.com/Dreamtell/Minecraft-Migration-Tool\n"
         "Bug reports and suggestions are welcome.",
@@ -2093,6 +2093,16 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "Other files",
     "🌐 界面语言已切换为「{0}」，立即生效":
         "🌐 UI language switched to \"{0}\" — applied immediately",
+    "⚠️ 只认 .jar 文件（收到 {0} 个其它文件）":
+        "⚠️ Only .jar files are accepted ({0} other files dropped)",
+    "⚠️ 这几个模组已经在清单里了（{0} 个）":
+        "⚠️ These mods are already in the list ({0} of them)",
+    "⚠️ 文件夹里没找到 .jar（{0} 个文件夹）":
+        "⚠️ No .jar found in the folder(s) ({0} folders)",
+    "📂 从文件夹里加了 {0} 个模组":
+        "📂 Added {0} mods from the folder",
+    "　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。":
+        "  ⚠ Drag & drop unavailable (tkinterdnd2 missing) — use the \"Add mods\" button.",
 }
 
 
