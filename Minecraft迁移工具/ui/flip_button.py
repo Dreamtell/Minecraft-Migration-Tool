@@ -1297,17 +1297,30 @@ class FlipButton(tk.Canvas):
                 pass
             self._text_fade_job = None
         步 = [0.45, 0.66, 0.82, 0.93, 1.0]
+        # 每帧间隔跟刷新率走（顺手 hold 住定时器精度）；总时长仍约 90ms ——
+        # 档位不变，只是把"每档 18ms"换成"按帧摊"，高刷屏上就不再是一跳一跳。
+        self._text_fade_t0 = time.perf_counter()
+        self._text_fade_dur = 0.09
 
         def 一步(i=0):
             self._text_fade_job = None
             if not self.winfo_exists():
-                return
+                return False
+            # 按已经过的时间决定画到第几档（掉帧也不会拖长总时长）
             try:
-                self.itemconfigure(self._txt_id, fill=_mix(起, 目标, 步[i]))
+                进度 = (time.perf_counter() - self._text_fade_t0) / self._text_fade_dur
             except Exception:
-                return
-            if i + 1 < len(步):
-                self._text_fade_job = self.after(18, lambda: 一步(i + 1))
+                进度 = 1.0
+            档 = min(len(步) - 1, max(0, int(进度 * len(步))))
+            try:
+                self.itemconfigure(self._txt_id, fill=_mix(起, 目标, 步[档]))
+            except Exception:
+                return False
+            if 档 + 1 >= len(步):
+                return False
+            self._text_fade_job = self.after(
+                max(1, int(_anim.frame_ms(self))), lambda: 一步(档 + 1))
+            return True
 
         一步()
 
