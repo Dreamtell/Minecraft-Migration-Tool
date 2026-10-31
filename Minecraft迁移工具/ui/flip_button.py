@@ -414,6 +414,7 @@ class FlipButton(tk.Canvas):
         self._tk_font = None
         self._frames = {}                    # 帧图/静止图缓存（key 里带状态，见各处）
         self._t0 = time.perf_counter()
+        self._back_dots_on = True
         # 开始前倒计时要用：背面临时文案（「⏳ 3 秒后开始」）和真实进度（0..1）。
         # 都留 None = 保持原来的样子（省略号动画 + 来回扫的装饰条）。
         self._back_txt_custom = None
@@ -1540,8 +1541,8 @@ class FlipButton(tk.Canvas):
         """背面标题的三个点：固定槽位里 1→2→3 循环（原型 int(t*3)%3）。"""
         if self._dots_id is None or self._icon is not None:
             return
-        if self._back_txt_custom:
-            return          # 倒计时文案是完整的，不加省略号
+        if not getattr(self, "_back_dots_on", True):
+            return
         n = 1 + int((now - self._t0) * 3.0) % 3
         if n != self._dots_n:
             self._dots_n = n
@@ -1642,16 +1643,12 @@ class FlipButton(tk.Canvas):
             if 换字:
                 self._文案淡入(pal)
             return
-        if self._back_txt_custom:
-            # 自定义文案原样画（「⚠️ 等待中...」的省略号不能再被剥掉 ——
-            # 剥掉是给默认那套"点点点"动画留槽位用的）
+        # 一律剥掉尾巴的点：省略号由单独的槽位（_dots_id）做 1→2→3 动画，
+        # 这是"最开始那样"的做法 —— 自定义文案也走它，过渡才不会一跳一跳。
+        base = text.rstrip(".．… ")
+        if not base:
             base = text
-        else:
-            base = text.rstrip(".．… ")
-            if not base:
-                base = text
-        if self._back_txt_custom:
-            # 倒计时文案整行居中（"..." 槽位在 set_back_text 里已经藏起来了）
+        if not getattr(self, "_back_dots_on", True):
             if self._dots_id is not None:
                 self.itemconfigure(self._dots_id, state="hidden")
             self.itemconfigure(self._txt_id, text=base, anchor="center", fill=title,
@@ -1668,6 +1665,18 @@ class FlipButton(tk.Canvas):
         cy = self._ch // 2
         self.itemconfigure(self._txt_id, text=base, anchor="w", fill=title, state="normal")
         self.coords(self._txt_id, x0, cy)
+        # `_text_w`（tkfont.measure）对「⚠️ 等待中」这种带 emoji 的串会高估十几像素，
+        # 点就被推到很远的地方（中间一大片空白）。按画布上真实的 bbox 再校对一次。
+        try:
+            框 = self.bbox(self._txt_id)
+            if 框:
+                实宽 = float(框[2] - 框[0])
+                if abs(实宽 - tw) > 2.0:
+                    tw = 实宽
+                    x0 = (self._cw - (tw + gap + slot)) / 2.0
+                    self.coords(self._txt_id, x0, cy)
+        except Exception:
+            pass
         if self._dots_id is not None:
             self._dots_n = 1 + int((time.perf_counter() - self._t0) * 3.0) % 3
             self.itemconfigure(self._dots_id, text="." * self._dots_n, anchor="w",
@@ -1765,7 +1774,7 @@ class FlipButton(tk.Canvas):
             except Exception:
                 pass
 
-    def set_back_text(self, text=None):
+    def set_back_text(self, text=None, dots=None):
         """临时换掉背面文案（倒计时要用：「⏳ 3 秒后开始」）。
 
         传 None 恢复默认的「⏳ 迁移中...」/「⏳ 模拟中...」。自定义文案不加省略号动画、
@@ -1778,6 +1787,10 @@ class FlipButton(tk.Canvas):
         if 新 == self._back_txt_custom:
             return
         self._back_txt_custom = 新
+        if dots is not None:
+            # 省略号要不要跟着动：状态词（等待中/模拟中/迁移中）要，
+            # 倒计时的「N 秒后开始」不要（它本身就是一句完整的话）
+            self._back_dots_on = bool(dots) if 新 else True
         if self._at_back and not self._animating:
             self._draw_rest()
 

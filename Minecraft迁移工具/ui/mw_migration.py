@@ -1414,14 +1414,20 @@ class MigrationMixin:
         except Exception:
             return 3
 
-    def _flip_back_text(self, text=None):
-        """换背面文案（倒计时用）；旧按钮没有这个方法，getattr 兜着。"""
+    def _flip_back_text(self, text=None, dots=None):
+        """换背面文案；旧按钮没有这个方法，getattr 兜着。
+
+        `dots=False` 表示别再跟 1→2→3 的省略号动画（倒计时那种完整句子用）。
+        """
         btn = getattr(self, "start_btn", None)
         方法 = getattr(btn, "set_back_text", None)
         if 方法 is None:
             return
         try:
-            方法(text)
+            if dots is None:
+                方法(text)
+            else:
+                方法(text, dots=dots)
         except Exception:
             pass
 
@@ -1652,7 +1658,7 @@ class MigrationMixin:
                 self._countdown_zero_at = time.perf_counter()
                 文案 = trp("⏳ {0} 秒后开始", 0)
                 self._countdown_txt = 文案
-                self._flip_back_text(文案)
+                self._flip_back_text(文案, dots=False)
                 # 0 秒时条已经空了 —— 直接藏掉，别留一条 0 宽的细线在左边
                 self._flip_progress(None)
             elif time.perf_counter() - self._countdown_zero_at >= self._倒计时零秒ms / 1000.0:
@@ -1669,7 +1675,7 @@ class MigrationMixin:
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
             self._countdown_txt = 文案
-            self._flip_back_text(文案)
+            self._flip_back_text(文案, dots=False)
         # 16ms：条单独画了之后刷新很便宜，25 次/秒看着会一格一格跳
         self._countdown_job = self.root.after(16, self._countdown_tick)
 
