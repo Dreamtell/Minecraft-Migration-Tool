@@ -5,6 +5,7 @@
 状态仍在 MigrationGUI 实例上，这个类只提供方法。
 """
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -22,6 +23,17 @@ from utils import i18n
 from utils import secrets
 from utils.dpi import px
 from ui.slider_row import SliderRow
+
+# Treeview 里渲染不了彩色 emoji（会变成小方块），这里把图标从文字里剥掉
+_图标正则 = re.compile(
+    "[" + "\U0001F000-\U0001FAFF" + "\u2600-\u27BF" + "\u2B00-\u2BFF"
+    + "\uFE0F" + "\u200D" + "]+")
+
+
+def _去图标(文本):
+    """去掉字符串里的 emoji / 变体选择符，并压掉多余空格。"""
+    return _图标正则.sub("", str(文本)).strip()
+
 from utils.helpers import (
     DataText, OptionCards, RoundedEntry, SegmentedControl, SmoothScroller, SwitchRow,
     center_window, create_gradient_button, focus_window, set_window_icon,
@@ -610,19 +622,27 @@ class SettingsMixin:
         self.settings_btn_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.settings_btn_tree.bind("<Double-1>", self._on_button_tree_double_click)
+        self.settings_btn_tree.bind("<<TreeviewSelect>>",
+                                    lambda _e: self._sync_btn_ops())
         self._smooth(self.settings_btn_tree, rows=True)
 
         row_btn = tk.Frame(box2, bg=self.theme["bg"])
         row_btn.pack(fill="x", pady=(6, 0))
-        create_gradient_button(row_btn, "显示 / 隐藏", self._toggle_selected_button,
-                               colors=("#00acc1", "#26c6da"), width=110, height=28,
-                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=(0, 6))
-        create_gradient_button(row_btn, "↑ 上移", lambda: self._move_selected_button(-1),
-                               colors=("#42a5f5", "#64b5f6"), width=80, height=28,
-                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
-        create_gradient_button(row_btn, "↓ 下移", lambda: self._move_selected_button(1),
-                               colors=("#42a5f5", "#64b5f6"), width=80, height=28,
-                               font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
+        self._btn_op_hide = create_gradient_button(
+            row_btn, "显示 / 隐藏", self._toggle_selected_button,
+            colors=("#00acc1", "#26c6da"), width=110, height=28,
+            font=("微软雅黑", 9, "bold"))
+        self._btn_op_hide.pack(side="left", padx=(0, 6))
+        self._btn_op_up = create_gradient_button(
+            row_btn, "↑ 上移", lambda: self._move_selected_button(-1),
+            colors=("#42a5f5", "#64b5f6"), width=80, height=28,
+            font=("微软雅黑", 9, "bold"))
+        self._btn_op_up.pack(side="left", padx=6)
+        self._btn_op_down = create_gradient_button(
+            row_btn, "↓ 下移", lambda: self._move_selected_button(1),
+            colors=("#42a5f5", "#64b5f6"), width=80, height=28,
+            font=("微软雅黑", 9, "bold"))
+        self._btn_op_down.pack(side="left", padx=6)
         create_gradient_button(row_btn, "恢复默认", self.reset_button_layout,
                                colors=("#757575", "#9e9e9e"), width=100, height=28,
                                font=("微软雅黑", 9, "bold")).pack(side="left", padx=6)
@@ -784,9 +804,10 @@ class SettingsMixin:
         for gkey, glabel, _side in _BUTTON_GROUPS:
             # ⚠ 树行文字是**拼出来的**（缩进 + 标签 / 图标 + 组名），语言层按整串查表
             # 对不上 —— 得在拼之前把"部件"过一遍 tr（用户报过这页整棵没翻）
+            # Treeview 画不了彩色 emoji（会变成小方块/豆腐块），这里只留纯文字；
+            # 分组靠整行底色区分，按钮名字本身已经够清楚。
             parent = tree.insert("", "end", iid=f"grp:{gkey}",
-                                 text=" %s %s" % (_GROUP_ICONS.get(gkey, ""),
-                                                  i18n.tr(glabel)),
+                                 text=" " + i18n.tr(glabel),
                                  values=("",), open=True, tags=(f"grp_{gkey}",))
             for key in self._resolved_order(gkey):
                 # 主界面那几排看控件登记表；窗口工具栏的按钮（放大查看/日志放大查看）
@@ -795,7 +816,7 @@ class SettingsMixin:
                     continue
                 is_hidden = key in hidden
                 tree.insert(parent, "end", iid=f"btn:{key}",
-                            text="   " + i18n.tr(_BUTTON_LABELS.get(key, key)),
+                            text="   " + _去图标(i18n.tr(_BUTTON_LABELS.get(key, key))),
                             values=(i18n.tr("☐ 隐藏") if is_hidden else i18n.tr("☑ 显示"),),
                             tags=("hidden",) if is_hidden else ())
         if selected:
@@ -804,6 +825,19 @@ class SettingsMixin:
                 tree.see(selected)
             except Exception:
                 pass
+        self._sync_btn_ops()
+
+    def _sync_btn_ops(self):
+        """没选中按钮行时，上移/下移/显示隐藏 应该是灰的（点不动也不弹框）。"""
+        有 = self._selected_button_key() is not None
+        态 = "normal" if 有 else "disabled"
+        for 名 in ("_btn_op_hide", "_btn_op_up", "_btn_op_down"):
+            钮 = getattr(self, 名, None)
+            try:
+                # create_gradient_button 把 tk.Button 那个接口挂成 `.state(new_state)`
+                钮.state(态)
+            except Exception as e:
+                trace_exc("settings/同步按钮可用状态", e)
 
     def _theme_settings_tree(self):
         """列表配色：每一排分组自己的主色，隐藏行标红。
@@ -849,15 +883,13 @@ class SettingsMixin:
     def _toggle_selected_button(self):
         key = self._selected_button_key()
         if key is None:
-            messagebox.showinfo("提示", "请先在列表里选中一个按钮。", parent=self.settings_win)
-            return
+            return                      # 按钮本来就是灰的，点不到
         self.set_button_hidden(key, key not in set(self.hidden_buttons or ()))
 
     def _move_selected_button(self, delta):
         key = self._selected_button_key()
         if key is None:
-            messagebox.showinfo("提示", "请先在列表里选中一个按钮。", parent=self.settings_win)
-            return
+            return                      # 按钮本来就是灰的，点不到
         if not self.move_button(key, delta):
             self.toast("ℹ️ 已经在所在那一排的边界了，无法继续移动", level="warn")
 
