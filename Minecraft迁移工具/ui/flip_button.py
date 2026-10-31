@@ -90,7 +90,7 @@ _HV_IN, _HV_OUT = 0.09, 0.15    # 悬停淡入 90ms / 淡出 150ms（原型 step
 # 而淡入是指数逼近（_HV_IN=90ms，实际要 ~200ms 才到 0.99），于是鼠标一碰，亮度只跳
 # 4 下，看着就是「高亮帧数低」。改 25 档（步长 0.04）≈ 5ms 一档，跟刷新率对上。
 _HV_LEVELS = tuple(i / 24.0 for i in range(25))  # 0, 0.04, ... 1.0
-_BACK_PHASES = 72       # 背面相位表长度
+_BACK_PHASES = 180      # 背面相位表长度（72 时每步 33.6ms，斜纹看着一顿一顿）
 _BACK_DT = (2.0 * math.pi / 2.6) / _BACK_PHASES   # 让进度条的 cos 周期正好一圈（2.417s）
 
 # ---------------------------------------------------------------- 配色（原型 FACE_IDLE / FACE_SEARCH 原值）
@@ -1089,14 +1089,12 @@ class FlipButton(tk.Canvas):
         if self._at_back:
             # 悬停淡入的那一小段要跟刷新率走（否则 33ms 一格，25 档要 0.8 秒，
             # 看着是一跳一跳地亮起来）；淡完之后仍回到 30fps，别一直挂着快定时器。
-            在追 = abs((1.0 if self._hover else 0.0) - self._hv) > 0.02
-            if self._prog_override is not None or 在追:
-                # 有条真进度在跑 / 正在淡入：要跟刷新率走。
-                try:
-                    return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
-                except Exception:
-                    return _UI_MS
-            return _UI_MS
+            # 背面一直在动（斜纹在流、底部条在扫）：一律跟刷新率走。
+            # 以前这里非"有真进度/正在淡入"就退回 30fps，用户看着就是掉帧。
+            try:
+                return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
+            except Exception:
+                return _UI_MS
         try:
             return max(_TABLE_MS_MIN, min(_UI_MS, int(_anim.frame_ms(self))))
         except Exception:
