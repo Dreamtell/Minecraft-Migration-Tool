@@ -347,9 +347,27 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
         窗.grab_set()
     except Exception:
         pass
+    # 回车/Esc 直接选，不用先点一下窗口（焦点落在哪里都认）
+    _绑键(窗, 关, (按钮[0][1] if 按钮 else None), (按钮[-1][1] if 按钮 else None))
     窗.focus_force()
+    窗.after(80, lambda: (窗.lift(), 窗.focus_force()))
     窗.wait_window()
     return 结果["值"]
+
+
+def _绑键(窗, 关, 主值, 次值):
+    """回车 = 主按钮，Esc = 次按钮；绑到整棵子树，焦点落在哪个控件上都管用。"""
+    def 全绑(w):
+        try:
+            w.bind("<Return>", lambda e: 关(主值))
+            w.bind("<KP_Enter>", lambda e: 关(主值))
+            w.bind("<Escape>", lambda e: 关(次值))
+        except Exception:
+            pass
+        for c in w.winfo_children():
+            全绑(c)
+    全绑(窗)
+
 
 
 def ask_errors(父窗, 主题, 条目, 标题=None):
