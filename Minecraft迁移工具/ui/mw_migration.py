@@ -2076,7 +2076,8 @@ class MigrationMixin:
             # 日志还没滚完的这段时间也要算「忙」：否则按钮先亮了、按钮却还在背面，
             # 看着像两个状态打架。
             self._ending_wait_log = True
-            self._ui_post(lambda: self.when_log_bottom(_收尾))
+            # 3 秒兜底：日志太长时不能一直把按钮按在背面（用户会当成卡死）。
+            self._ui_post(lambda: self.when_log_bottom(_收尾, timeout=3.0))
             # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
             if getattr(self, "_silent_notify_on_finish", False):
                 self._silent_notify_on_finish = False

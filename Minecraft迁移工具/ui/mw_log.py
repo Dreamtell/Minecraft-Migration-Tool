@@ -818,7 +818,7 @@ class LogMixin:
     # 匀速推，任何情况下单帧位移都不超过 24px。
     _FOLLOW_MAX_PX = 24.0
 
-    def when_log_bottom(self, cb, timeout=12.0):
+    def when_log_bottom(self, cb, timeout=3.0):
         """日志真的滚到底（用户看见最后一行）之后回调。
 
         迁移的「结束」标志靠它：日志还在滚就把按钮翻回正面，用户会觉得
