@@ -389,6 +389,9 @@ class FlipButton(tk.Canvas):
         # 开始前倒计时要用：背面临时文案（「⏳ 3 秒后开始」）和真实进度（0..1）。
         # 都留 None = 保持原来的样子（省略号动画 + 来回扫的装饰条）。
         self._back_txt_custom = None
+        # 文案淡入：换字那一下从暗到亮，别「啪」地换（倒计时 → 迁移中就是这种）
+        self._shown_text = None
+        self._text_fade_job = None
         self._prog_override = None
         # 条实际画到哪儿（缓动追 _prog_override）：日志一条一条地来，直接照抄目标值
         # 就是一跳一跳；这里让它每帧追一点，观感是连续推过去的。
@@ -1238,15 +1241,48 @@ class FlipButton(tk.Canvas):
         self.tag_raise("text")
         self.tag_raise("icon")
 
+    def _文案淡入(self, pal):
+        """文案换了：从接近面底色的暗色淡到正常色，约 90ms。"""
+        目标 = pal["title"]
+        起 = _mix(pal["face_bot"], 目标, 0.18)
+        try:
+            self.itemconfigure(self._txt_id, fill=起)
+        except Exception:
+            return
+        if self._text_fade_job is not None:
+            try:
+                self.after_cancel(self._text_fade_job)
+            except Exception:
+                pass
+            self._text_fade_job = None
+        步 = [0.45, 0.66, 0.82, 0.93, 1.0]
+
+        def 一步(i=0):
+            self._text_fade_job = None
+            if not self.winfo_exists():
+                return
+            try:
+                self.itemconfigure(self._txt_id, fill=_mix(起, 目标, 步[i]))
+            except Exception:
+                return
+            if i + 1 < len(步):
+                self._text_fade_job = self.after(18, lambda: 一步(i + 1))
+
+        一步()
+
     def _set_text_items(self, text, front, pal):
         """正面：一行居中；背面：标题 + 三个点的固定槽位（点变多时整行不左右跳）。"""
         title = pal["title"]
+        换字 = getattr(self, "_shown_text", None) != (text, front)
+        self._shown_text = (text, front)
         if front:
             self.itemconfigure(self._txt_id, text=text, anchor="center", fill=title,
                                state="normal")
             self.coords(self._txt_id, self._cw // 2, self._ch // 2)
             if self._dots_id is not None:
                 self.itemconfigure(self._dots_id, state="hidden")
+            if 换字:
+                self._文案淡入(pal)
             return
         base = text.rstrip(".．… ")
         if not base:
@@ -1258,6 +1294,8 @@ class FlipButton(tk.Canvas):
             self.itemconfigure(self._txt_id, text=base, anchor="center", fill=title,
                                state="normal")
             self.coords(self._txt_id, self._cw // 2, self._ch // 2)
+            if 换字:
+                self._文案淡入(pal)
             return
         self._ensure_dots_item()
         tw = self._text_w(base)

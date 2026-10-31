@@ -989,7 +989,7 @@ class MigrationMixin:
                             self.root.after_cancel(self.after_id)
                             self.after_id = None
                         self._migration_running = False
-                        # 停在 85%：剩下的 15% 交给"日志滚完"那一段推（用户要的是
+                        # 停在 85%：剩下 15% 交给"日志滚完"那一段推（用户要的是
                         # 日志滚完条才满，不是活儿干完就满）。
                         self._flip_progress(0.85)
                         self._日志尾巴起步()
@@ -1005,8 +1005,9 @@ class MigrationMixin:
                     try:
                         总 = float(getattr(self, "_mig_total_size", 0) or 0)
                         if 总 > 0:
-                            # 只推到 85%：剩下 15% 留给"日志还在一行行滚"那一段
-                            self._flip_progress(min(1.0, float(msg[2]) / 总) * 0.85)
+                            # 15% → 85%：干活这一段；剩下 15% 留给"日志还在一行行滚"
+                            self._flip_progress(
+                                0.15 + 0.70 * min(1.0, float(msg[2]) / 总))
                     except Exception:
                         pass
             except queue.Empty:
@@ -1418,8 +1419,10 @@ class MigrationMixin:
             self._finish_start_countdown()
             return
         总 = self._countdown_total or 1.0
-        # 条从满格一路缩到空：数完正好接上迁移的 0.0，中间不会出现「满格突然掉回空」那种看着像重来的跳变。
-        self._flip_progress(max(0.0, 剩) / 总)
+        # 整段进度：倒计时占前 15%（0 → 15%），干活 15% → 85%，日志滚完再 85% → 100%。
+        # 以前倒计时是"从满格缩到空"，数完正好接上"从 0 涨"，一缩一涨是在换向，
+        # 观感上像倒回去了。
+        self._flip_progress(0.15 * (1.0 - max(0.0, 剩) / 总))
         秒数 = max(1, int(剩 + 0.9999))
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
@@ -1435,9 +1438,8 @@ class MigrationMixin:
         self._flip_back_text(None)      # 换回「⏳ 迁移中...」
         # 真迁移：条归零，接下来由进度队列推真值；模拟运行没有进度队列，
         # 让它回到默认的来回扫（否则整段时间都停在 0，像死了）。
-        # 开跑就从 0 起步：模拟运行现在也有进度队列，交给真实进度推。
-        # （以前模拟运行这里给 None，条就一直在 6%~100% 之间来回扫 —— 看着像乱跑。）
-        self._flip_progress(0.0)
+        # 倒计时收在 15%，这里就从 15% 接着往下走，中间的衔接不跳。
+        self._flip_progress(0.15)
         self._run_migration_entry()
 
     def _cancel_start_countdown(self):
