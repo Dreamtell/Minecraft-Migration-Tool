@@ -1376,6 +1376,16 @@ class MigrationMixin:
         两个方法 —— 翻转组件构造失败时会降级回旧按钮，所以这里全程 getattr 兜着。
         """
         btn = getattr(self, "start_btn", None)
+        if front:
+            # 翻回正面时无条件复原背面样式：黄色/满条/⚠️ 文案都是"干活中"的临时态，
+            # 不复原的话第一次跑完按钮就永远停在黄面 ⚠️ 上（用户 m09684 报的故障）。
+            try:
+                btn.set_back_warn(False)
+                btn.set_bar_off(False)
+                btn.set_back_progress(None)
+            except Exception:
+                pass
+            self._flip_back_text(None)
         方法 = getattr(btn, "flip_to_front" if front else "flip_to_back", None)
         if 方法 is None:
             if 结束后 is not None:
