@@ -851,9 +851,24 @@ class LogMixin:
             except Exception:
                 pass
 
+    def _放跟随精度(self):
+        """跟随循环结束：把定时器精度还回去（hold/release 必须配平）。"""
+        if getattr(self, "_follow_hr", False):
+            try:
+                anim.release()
+            except Exception:
+                pass
+            self._follow_hr = False
+
     def _排跟随(self):
         if getattr(self, "_follow_job", None) is not None:
             return
+        if not getattr(self, "_follow_hr", False):
+            try:
+                anim.hold()          # 不 hold 的话 7ms 的目标会被 15.6ms 粒度卡成 64fps
+                self._follow_hr = True
+            except Exception:
+                pass
         try:
             # 间隔必须有下限：anim.frame_ms 在失焦/最小化时会给出很小甚至 0，
             # after(0) 会让这个循环在同一帧里连跑几十次，每帧 24px 就累成几千像素的大跳。
@@ -865,9 +880,11 @@ class LogMixin:
     def _跟随一步(self):
         self._follow_job = None
         if not getattr(self, "_log_follow", True):
+            self._放跟随精度()
             return
         剩 = self._log_remain_px()
         if 剩 <= 0.5:
+            self._放跟随精度()
             return
         视口 = max(1, int(self.log_text.winfo_height()))
         # 追的时候按比例加速，但**不做「直接跳到底」**：跳会让收尾那一批看着像闪现
@@ -881,6 +898,8 @@ class LogMixin:
             return
         if 剩 - 步 > 0.5:
             self._排跟随()
+        else:
+            self._放跟随精度()
 
     def _log_remain_px(self):
         """从当前视口底边到文末还有多少像素（拿不到就返回 0）。"""
