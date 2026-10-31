@@ -962,9 +962,21 @@ class FlipButton(tk.Canvas):
         except Exception:
             pass
 
+    def set_bar_off(self, flag=True):
+        """打开后这一阶段完全不画底条（倒计时用：长度不能变，只能看文字）。"""
+        self._bar_off = bool(flag)
+        try:
+            self._draw_bar_now()
+        except Exception:
+            pass
+
     def _draw_bar_now(self):
         """按当前状态刷一次条：正面藏起来 / 背面有真进度就画进度 / 否则滚动。"""
         if not self._at_back:
+            self._apply_bar(None)
+            return
+        if getattr(self, "_bar_off", False):
+            # 倒计时这种阶段：用户要求"长度不要变化"，干脆不画条（秒数靠文字）
             self._apply_bar(None)
             return
         u = self._bar_u()

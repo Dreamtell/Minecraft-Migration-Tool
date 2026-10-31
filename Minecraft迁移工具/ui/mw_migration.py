@@ -1610,8 +1610,14 @@ class MigrationMixin:
         self._refresh_busy_state()      # 别的按钮先灰掉
         self._close_child_windows()     # 子窗口全关（设置窗/差异窗/大视图）
         self._flip_start_btn(front=False)
-        # 倒计时是"沙漏"：从满格往回收，数到 0 正好收空，然后干活段从 0 重新长。
-        self._flip_progress(1.0)
+        # 倒计时期间不画条：用户明确要求"这个进度条长度不要变化"，
+        # 秒数靠按钮上的文字表达；条只在真正干活时出现（模拟运行=匀速滚动，
+        # 真迁移=按已拷比例长）。
+        try:
+            self.start_btn.set_bar_off(True)
+        except Exception:
+            pass
+        self._flip_progress(None)
         self.log(trp("⏳ 开始前倒计时 {0} 秒：期间再点一下「开始迁移」可取消", 秒),
                  level="INFO")
         self._countdown_tick()
@@ -1639,7 +1645,7 @@ class MigrationMixin:
         # 倒计时 = 沙漏：条从满格往回收（1 → 0），数到 0 收空；
         # 关键是拿"屏幕上显示的那个秒数"算条宽 —— 用 剩/总 会差一整格：
         # 剩 = 2.99 秒时文字已经写"3 秒"了，条却只有 60%。
-        self._flip_progress(max(0.0, min(1.0, 秒数 / 总)))
+        self._flip_progress(None)
         文案 = trp("⏳ {0} 秒后开始", 秒数)
         if 文案 != self._countdown_txt:
             self._countdown_txt = 文案
@@ -1656,6 +1662,10 @@ class MigrationMixin:
         # 模拟运行不推数值，条自己滚动）。
         # 数完了：真跑从 0 接着长；模拟运行不接数值（推 None 让条回到"滚动"，
         # 否则 override 停在 0.0，条就是一条 0 宽的线 —— 看着像不动了）
+        try:
+            self.start_btn.set_bar_off(False)
+        except Exception:
+            pass
         self._flip_progress(self._条真进度(0.0))
         self._run_migration_entry()
 
