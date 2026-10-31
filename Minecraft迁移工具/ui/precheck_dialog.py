@@ -171,6 +171,7 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
 
     位置 = {"x": 0, "y": 0, "宽": 宽, "高": 0}
     已关 = {"值": False}
+    按住 = {"id": None}
 
     def 关(值=None):
         if 已关["值"]:
@@ -184,6 +185,11 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
 
         def 销毁():
             try:
+                if 按住["id"]:
+                    父窗.unbind("<FocusIn>", 按住["id"])
+            except Exception:
+                pass
+            try:
                 窗.destroy()
             except Exception:
                 pass
@@ -195,6 +201,27 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
             销毁()
 
     窗.bind("<Escape>", lambda e: 关(按钮[-1][1] if 按钮 else None))
+
+    # 无边框窗（overrideredirect）不参与"从属窗口"那套层叠，transient 说了不算：
+    # 主界面被点一下就能盖到它上面。两手一起用 —— 置顶 + 主界面一拿焦点就把它抬起来。
+    try:
+        窗.attributes("-topmost", True)
+    except Exception:
+        pass
+
+    def _父窗聚焦(_e=None):
+        if 已关["值"]:
+            return
+        for 做 in (lambda: 窗.lift(), lambda: 窗.attributes("-topmost", True)):
+            try:
+                做()
+            except Exception:
+                pass
+
+    try:
+        按住["id"] = 父窗.bind("<FocusIn>", _父窗聚焦, add="+")
+    except Exception:
+        按住["id"] = None
 
     # 不画矩形描边：窗口本身是 DWM 圆角，方形描边会在圆角处露出来
     框 = tk.Frame(窗, bg=配色["卡"])
