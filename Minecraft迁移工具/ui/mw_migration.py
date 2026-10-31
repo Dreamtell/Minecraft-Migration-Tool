@@ -1397,10 +1397,15 @@ class MigrationMixin:
             return
         self._begin_start_countdown(秒)
 
+    # 读到 0 秒后停留多久（毫秒）。留足一档，肉眼能看清，又不至于像卡住。
+    _倒计时零秒ms = 900
+
     def _begin_start_countdown(self, 秒):
         self._countdown_running = True
         self._countdown_total = float(秒)
         self._countdown_end = time.perf_counter() + self._countdown_total
+        # 读到 0 秒之后再停这么久才真正开跑：3/2/1 之后得看见 0，不能直接跳
+        self._countdown_zero_at = None
         self._countdown_job = None
         self._countdown_txt = None
         self._refresh_busy_state()      # 别的按钮先灰掉
@@ -1416,7 +1421,17 @@ class MigrationMixin:
             return
         剩 = self._countdown_end - time.perf_counter()
         if 剩 <= 0:
-            self._finish_start_countdown()
+            # 0 秒也当成一档：先把「0 秒后开始」摆出来停一会儿，再进下一步
+            if self._countdown_zero_at is None:
+                self._countdown_zero_at = time.perf_counter()
+                文案 = trp("⏳ {0} 秒后开始", 0)
+                self._countdown_txt = 文案
+                self._flip_back_text(文案)
+                self._flip_progress(0.15)
+            elif time.perf_counter() - self._countdown_zero_at >= self._倒计时零秒ms / 1000.0:
+                self._finish_start_countdown()
+                return
+            self._countdown_job = self.root.after(16, self._countdown_tick)
             return
         总 = self._countdown_total or 1.0
         # 整段进度：倒计时占前 15%（0 → 15%），干活 15% → 85%，日志滚完再 85% → 100%。
