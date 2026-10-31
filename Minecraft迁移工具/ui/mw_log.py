@@ -512,10 +512,16 @@ class LogMixin:
             self.log_text.event_generate("<<LogChanged>>")
         except Exception:
             pass
-        try:
-            self.root.update_idletasks()
-        except Exception:
-            pass
+        # 每批都强制刷（泵 50ms 一轮 = 20 次/秒全量重绘）在锁屏那种"整窗遮罩 + 两个
+        # 日志框"的界面上很贵，用户感觉就是一直在抖。缩到 120ms 一次；剩下的重绘
+        # 交给 Tk 自己的 idle 时机（不强制反而更省）。
+        现在刷 = time.monotonic()
+        if 现在刷 - getattr(self, "_批次刷图t", 0.0) >= 0.12:
+            self._批次刷图t = 现在刷
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
 
     def log(self, message, level="INFO", save=True):
         # 所有日志的唯一入口：先脱敏再往下走。日志会同时进主界面、锁屏日志和第二视图，

@@ -27,9 +27,10 @@ import threading
 import time
 from pathlib import Path
 
-# 超过这个秒数就记一笔。设 1 秒：Windows 判定"未响应"大约是 5 秒，留足余量，
-# 又能在真正卡死之前就抓到线索。
-THRESHOLD_SEC = 1.0
+# 超过这个秒数就记一笔。默认 0.4 秒：Windows 判定"未响应"是 5 秒，但用户嘴里的
+# "卡"往往只有两三百毫秒的连击 —— 1 秒阈值会把这类全放过（用户报卡、日志里却一条
+# 都没有）。想更安静就设环境变量 MCTOOL_STALL_S，比如 1.0。
+THRESHOLD_SEC = float(os.environ.get("MCTOOL_STALL_S") or 0.4)
 TICK_MS = 100
 CHECK_SEC = 0.5
 
@@ -73,8 +74,31 @@ def _write(间隔):
         _state["writing"] = False
 
 
+def _构建指纹():
+    """把几个关键文件的"大小+mtime"拼成一行写进日志开头。
+
+    用来确认"用户跑的是不是最新一版"：踩过 —— 改完让他重启，他说还是卡，
+    而日志里那条栈的行号还是旧代码的，分不清是"没生效"还是"没修好"。
+    """
+    本 = Path(__file__).resolve().parent.parent
+    份 = []
+    for 名 in ("ui/mw_log.py", "ui/mw_migration.py", "ui/mw_lock.py", "ui/mw_common.py"):
+        try:
+            统 = (本 / 名).stat()
+            份.append("%s=%d/%d" % (Path(名).name, 统.st_size, int(统.st_mtime)))
+        except Exception:
+            份.append("%s=?" % Path(名).name)
+    return " ".join(份)
+
+
 def start(root, threshold=THRESHOLD_SEC, tick_ms=TICK_MS, check_sec=CHECK_SEC):
     """挂上心跳。root 是主窗口（只用来写窗口标题，方便对上用户当时的界面）。"""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as _f:
+            _f.write("\n---- 启动 %s ｜ 构建 %s ----\n"
+                     % (time.strftime("%Y-%m-%d %H:%M:%S"), _构建指纹()))
+    except Exception:
+        pass
     _state["root"] = root
     _state["beat"] = time.monotonic()
     _state["stop"] = False
