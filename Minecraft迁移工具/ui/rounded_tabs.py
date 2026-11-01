@@ -51,6 +51,7 @@ class RoundedTabs(tk.Frame):
         self._cur = -1
         self._tails = []           # 标签条右端的几个小按钮（跟标签同款药丸）
         self._tail_photos = {}
+        self._tail_fill = {}       # (宽, 档) -> PhotoImage：长按进度"填满"用
         self._anim = None
         self._page_anim = None
         self._sel_item = None
@@ -166,6 +167,41 @@ class RoundedTabs(tk.Frame):
             imgs = _rounded_gradient(w, PILL_H, (c, c), (c, c), RADIUS, self)
             hit = ImageTk.PhotoImage(imgs["normal"])
             self._tail_photos[key] = hit
+        return hit
+
+    _长按档数 = 24
+
+    def _tail_fill_photo(self, w, kind, 档):
+        """长按进度：把药丸从左往右填满。
+
+        档 = 0..24。Tk 的 Canvas 裁不了图，所以按档预烤一张"已填充到 p"的圆角图缓存起来；
+        24 档 = 1 秒里 24 步（约 40ms 一步），看着就是连续填过去。
+        """
+        from PIL import Image, ImageDraw, ImageTk
+        w = max(8, int(w))
+        档 = max(0, min(self._长按档数, int(档)))
+        key = (w, kind, 档)
+        hit = self._tail_fill.get(key)
+        if hit is not None:
+            return hit
+        底 = Image.new("RGBA", (w, PILL_H), (0, 0, 0, 0))
+        画 = ImageDraw.Draw(底)
+        画.rounded_rectangle([0, 0, w - 1, PILL_H - 1], radius=RADIUS,
+                             fill=self._tail_color("normal", kind))
+        比 = 档 / float(self._长按档数)
+        if 比 > 0:
+            亮 = Image.new("RGBA", (w, PILL_H), (0, 0, 0, 0))
+            笔 = ImageDraw.Draw(亮)
+            # 用"常态色提亮 45%"而不是 hover 色：hover 跟常态差太小，
+            # 细长药丸上几乎看不出填到哪了
+            亮色 = lighten_color(self._tail_color("normal", kind), 46)   # 参数是 0~255 的绝对量，不是比例
+            笔.rounded_rectangle([0, 0, w - 1, PILL_H - 1], radius=RADIUS,
+                                 fill=亮色)
+            遮 = Image.new("L", (w, PILL_H), 0)
+            ImageDraw.Draw(遮).rectangle([0, 0, int(round(w * 比)), PILL_H], fill=255)
+            底 = Image.composite(亮, 底, 遮)
+        hit = ImageTk.PhotoImage(底)
+        self._tail_fill[key] = hit
         return hit
 
     def _refresh_tail(self):
@@ -527,14 +563,8 @@ class RoundedTabs(tk.Frame):
         t = self._tails[尾]
         self._长按 = {"i": 尾, "t0": time.perf_counter(), "job": None, "弧": None,
                      "完成": False}
-        # 进度环：贴着药丸内沿画一段弧，从 12 点顺时针转满一圈
-        try:
-            色 = self._tail_fg(t["kind"])
-            self._长按["弧"] = c.create_arc(
-                t["x"] + 1, PILL_Y + 1, t["x"] + t["w"] - 1, PILL_Y + PILL_H - 1,
-                start=90, extent=-1, style="arc", width=2, outline=色)
-        except Exception:
-            self._长按["弧"] = None
+        # 进度是"把药丸从左往右填满"，靠换一张预烤的填充图，不用画弧
+        self._长按["弧"] = None
         self._长按tick()
 
     def _长按tick(self):
@@ -544,8 +574,11 @@ class RoundedTabs(tk.Frame):
         已 = time.perf_counter() - 状态["t0"]
         比 = min(1.0, 已 / max(0.05, self._长按秒))
         try:
-            if 状态["弧"] is not None:
-                self.bar.itemconfigure(状态["弧"], extent=-max(1.0, 360.0 * 比))
+            t = self._tails[状态["i"]]
+            档 = int(round(比 * self._长按档数))
+            if self._use_images:
+                self.bar.itemconfigure(t["pill"],
+                                       image=self._tail_fill_photo(t["w"], t["kind"], 档))
         except Exception:
             pass
         if 比 >= 1.0:
@@ -573,6 +606,16 @@ class RoundedTabs(tk.Frame):
         try:
             if 状态.get("弧") is not None:
                 self.bar.delete(状态["弧"])
+        except Exception:
+            pass
+        try:
+            # 进度是拿图盖的，取消时要把那张常态图放回去
+            i = 状态.get("i", -1)
+            if 0 <= i < len(self._tails):
+                t = self._tails[i]
+                if self._use_images and t["pill"] is not None:
+                    self.bar.itemconfigure(t["pill"],
+                                           image=self._tail_photo(t["w"], "normal", t["kind"]))
         except Exception:
             pass
         self._长按 = {"i": -1, "t0": 0.0, "job": None, "弧": None, "完成": False}
