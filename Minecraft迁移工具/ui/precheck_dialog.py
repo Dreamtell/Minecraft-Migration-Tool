@@ -232,6 +232,14 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
     已关 = {"值": False}
     按住 = {"id": None}
 
+    def _关并回调(值, 附带=None):
+        """先关窗、再执行附加回调（重启/提权这类动作不该带着窗口跑）。"""
+        关(值)
+        if callable(附带):
+            try:
+                附带()
+            except Exception as e:
+                trace_exc("precheck_dialog/按钮回调", e)
     def 关(值=None):
         if 已关["值"]:
             return
@@ -393,14 +401,17 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
     底 = tk.Frame(框, bg=配色["卡"])
     底.pack(fill="x", padx=px(20), pady=(px(4), px(16)))
     # 按声明顺序 pack(side="right")：第一个声明的最靠右（主按钮在右，符合 Windows 习惯）
-    for 文字, 值, 主 in 按钮:
+    for 项 in 按钮:
+        # 允许 (文字, 返回值, 是否主按钮) 或 (文字, 返回值, 是否主按钮, 附加回调)
+        文字, 值, 主 = 项[0], 项[1], 项[2]
+        附带 = 项[3] if len(项) > 3 else None
         if 主:
-            钮 = create_gradient_button(底, 文字, lambda v=值: 关(v),
+            钮 = create_gradient_button(底, 文字, lambda v=值, c=附带: _关并回调(v, c),
                                         colors=(配色["主"], 配色["主"]),
                                         font=("微软雅黑", 10, "bold"),
                                         width=px(96), height=px(32))
         else:
-            钮 = create_gradient_button(底, 文字, lambda v=值: 关(v),
+            钮 = create_gradient_button(底, 文字, lambda v=值, c=附带: _关并回调(v, c),
                                         colors=(配色["次"], 配色["次"]),
                                         font=("微软雅黑", 10),
                                         width=px(96), height=px(32))
@@ -475,12 +486,19 @@ def 确认(父窗, 主题, 标题, 正文, 主按钮="确定", 次按钮="取消
         return False
 
 
-def ask_errors(父窗, 主题, 条目, 标题=None):
-    """有错误：只有一个「知道了」。"""
+def ask_errors(父窗, 主题, 条目, 标题=None, 可提权=None):
+    """有错误：默认只有一个「知道了」。
+
+    传了 可提权（可调用对象）时多给一颗「以管理员身份重启」——目录权限这类
+    问题程序自己修不了，重启成管理员是最快的出路。
+    """
+    按钮 = []
+    if callable(可提权):
+        按钮.append((trp("以管理员身份重启"), False, False, 可提权))
+    按钮.append((trp("知道了"), True, True))
     return _弹(父窗, 主题, 标题 or trp("迁移前自检没通过"),
                trp("下面这些不解决，迁移跑不起来："),
-               [("fail", x) for x in 条目],
-               [(trp("知道了"), True, True)], 图标级别="fail")
+               [("fail", x) for x in 条目], 按钮, 图标级别="fail")
 
 
 def ask_warnings(父窗, 主题, 条目, 标题=None):

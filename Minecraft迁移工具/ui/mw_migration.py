@@ -29,7 +29,8 @@ from ui.mw_common import (
 from ui.virtual_table import VirtualTable
 from utils import anim            # 帧节奏（跟随显示器刷新率）—— 只用来问"多久排下一帧"
 from utils.dpi import px, window_geometry
-from utils.helpers import DataText, create_gradient_button, focus_window, set_window_icon
+from utils.helpers import (DataText, create_gradient_button, focus_window,
+                            set_window_icon, trace_exc)
 from utils.theme import apply_theme_to_widget_tree
 
 # 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
@@ -1692,7 +1693,14 @@ class MigrationMixin:
             self._按钮待确认(True)
             try:
                 from ui import precheck_dialog as _pd
-                _pd.ask_errors(self.root, self.theme, 错误[:12])
+                # 只有"写不进去/权限"这类错误才给提权重启这颗按钮
+                要提权 = any(("权限" in x) or ("Permission denied" in x)
+                          or ("拒绝访问" in x) for x in 错误)
+                提权 = None
+                if 要提权:
+                    提权 = getattr(self, "重启管理员", None)
+                _pd.ask_errors(self.root, self.theme, 错误[:12],
+                              可提权=提权)
             except Exception as _e:
                 trace_exc("main_window/自检错误弹窗", _e)
                 messagebox.showerror(

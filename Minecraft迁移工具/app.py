@@ -433,6 +433,64 @@ def main():
     except Exception as e:
         trace_exc("app/挂重启入口", e)
 
+    def relaunch_as_admin():
+        """以管理员身份重新启动（目标的目录要管理员权限时才用得上）。
+
+        走 ShellExecuteW 的 runas：会弹一次 UAC。锁要先放掉，道理同 restart_app。
+        """
+        global _LOCK_HOLDER
+        try:
+            app.save_config()
+        except Exception:
+            pass
+        if tray is not None:
+            try:
+                tray.stop()
+            except Exception:
+                pass
+        try:
+            app.stop_qt_host()
+        except Exception:
+            pass
+        _LOCK_HOLDER = None
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        ok = False
+        try:
+            import ctypes
+            参数 = " ".join([a for a in sys.argv[1:] if not a.startswith("--qt-host")])
+            if getattr(sys, "frozen", False):
+                程序 = sys.executable
+                参数字符串 = 参数
+            else:
+                程序 = sys.executable
+                参数字符串 = '"' + os.path.abspath(sys.argv[0]) + '" ' + 参数
+            r = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", 程序, 参数字符串, None, 1)
+            ok = int(r) > 32          # ShellExecuteW 返回 >32 才算成功
+        except Exception as e:
+            trace_exc("app/提权重启", e)
+        if not ok:
+            # 用户在 UAC 上点了"否"：把锁拿回来，程序继续用普通权限跑
+            try:
+                app.log("以管理员身份重启被取消，继续用普通权限运行。", level="WARNING")
+            except Exception:
+                pass
+            return
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        app.重启管理员 = relaunch_as_admin
+    except Exception as e:
+        trace_exc("app/挂提权入口", e)
+
     def request_quit():
         """请求退出：先跳出主循环，存盘和销毁统一放到 mainloop 之后做。
 

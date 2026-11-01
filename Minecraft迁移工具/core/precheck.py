@@ -62,7 +62,14 @@ def _查路径(src_path, tgt_path):
         临时.write_bytes(b"mctool")
         临时.unlink()
     except OSError as e:
-        条们.append(_条("fail", trp("新版目录（目标）写不进去：{0}", e)))
+        权限不足 = isinstance(e, PermissionError) or getattr(e, "winerror", None) == 5
+        if 权限不足:
+            # 目录在 C:\ 根下这类位置时，普通权限写不进去；提示里直接给出解决办法
+            条们.append(_条("fail", trp(
+                "新版目录（目标）写不进去：{0}\n（这个目录需要管理员权限，"
+                "可以点下面的「以管理员身份重启」，或把整合包放到用户目录下再迁移。）", e)))
+        else:
+            条们.append(_条("fail", trp("新版目录（目标）写不进去：{0}", e)))
     finally:
         try:
             if 临时.exists():
