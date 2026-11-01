@@ -259,9 +259,32 @@ def main():
         focus_window(root)
 
     def reveal_main_window():
-        """主界面显形——直接让 Tk / Windows 原生显示，不做动画、不提前预画。"""
+        """主界面显形——先把窗口显出来并**同步画完**，再让它变回不透明。
+
+        背景：Tk 的顶层窗口类用的是系统窗口底色（Windows 上就是白），
+        deiconify() 之后到 Tk 完成第一次重绘之间，屏幕上就是那块白色 ——
+        这就是启动时白屏闪一下的来源。光给 root 设 bg 没用（窗口类背景刷子不认它）。
+
+        做法：deiconify 前把整窗设成全透明（-alpha 0，会临时变成分层窗口），
+        显形后立刻 update() 逼 Tk 把该画的都画完 —— 这段时间窗口看不见，
+        用户看不到白底；画完再恢复 -alpha 1，随后 _make_sure_visible() 里
+        clear_layered_style() 会把分层样式去掉，回到普通窗口（不影响动画性能）。
+        """
+        try:
+            root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         try:
             root.deiconify()
+        except Exception:
+            pass
+        try:
+            root.update_idletasks()
+            root.update()
+        except Exception:
+            pass
+        try:
+            root.attributes("-alpha", 1.0)
         except Exception:
             pass
 
