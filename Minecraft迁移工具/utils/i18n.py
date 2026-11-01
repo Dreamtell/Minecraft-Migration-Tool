@@ -611,6 +611,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "（该模组未提供描述）": "(this mod provides no description)",
     "★为最相似项，已置顶。": "★ marks the best match, pinned to the top.",
     "★为各平台各自最相似的那条。": "★ marks each source's best match.",
+    "🔊 按钮音效（悬停 / 按下）": "🔊 Button sounds (hover / press)",
+    "▶ 试听": "▶ Preview",
     "先搜出结果、再点一行。": "Search first, then click a row.",
     "已添加 %d 个条目。": "Added %d entries.",
     "已添加 %d 个模组。": "Added %d mods.",

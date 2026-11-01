@@ -313,6 +313,19 @@ class SettingsMixin:
              (("zh", "中文", "cn"), ("en", "English", "us")),
              lambda v: self._set_language(v), 名="lang")
 
+        # 按钮音效：默认关。音源是用户本机的文件（CS2 那套），不随包发布。
+        # 用和其它行一样的自绘开关，别混一个系统 Checkbutton 进来（观感会断层）
+        self.settings_sfx_var = tk.BooleanVar(
+            value=bool(getattr(self, "sfx_enabled", False)))
+        _音效行 = tk.Frame(box1, bg=self.theme["bg"])
+        _音效行.pack(fill="x", pady=(6, 0))
+        开关(_音效行, trp("🔊 按钮音效（悬停 / 按下）"), self.settings_sfx_var,
+             self._toggle_sfx, 名="sfx").pack(side="left")
+        create_gradient_button(_音效行, trp("▶ 试听"), self._试听音效,
+                               colors=("#7e57c2", "#5e35b1"), height=26,
+                               font=("微软雅黑", 9, "bold"),
+                               sfx=False, sfx_hover=False).pack(side="left", padx=(12, 0))
+
         self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
         开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
              self._toggle_splash, 名="splash").pack(fill="x", pady=(6, 0))
@@ -1000,6 +1013,38 @@ class SettingsMixin:
                 pass
         名 = dict(i18n.CHOICES).get(值, 值)
         self.toast(trp("🌐 界面语言已切换为「{0}」，立即生效", 名), level="ok")
+
+    def _toggle_sfx(self):
+        """按钮音效开关（音源路径沿用配置里的，默认指向本机那两个 CS2 音效）。"""
+        self.sfx_enabled = bool(self.settings_sfx_var.get())
+        try:
+            from utils import sfx as _sfx
+            _sfx.设置(enabled=self.sfx_enabled,
+                      hover=getattr(self, "sfx_hover", ""),
+                      press=getattr(self, "sfx_press", ""))
+            if self.sfx_enabled:
+                _sfx.预热()
+                if not _sfx.可用():
+                    self.toast("⚠ 音效文件不存在，换个路径或先关掉", level="warn")
+        except Exception as e:
+            trace_exc("settings/音效开关", e)
+        self.save_config()
+
+    def _试听音效(self):
+        """先按开关状态播一下，让用户当场判断音量与音色。"""
+        try:
+            from utils import sfx as _sfx
+            _sfx.设置(enabled=True,
+                      hover=getattr(self, "sfx_hover", ""),
+                      press=getattr(self, "sfx_press", ""))
+            _sfx.预热()
+            if not _sfx.可用():
+                self.toast("⚠ 音效文件不存在", level="warn")
+                return
+            _sfx.play("hover")
+            self.root.after(320, lambda: _sfx.play("press"))
+        except Exception as e:
+            trace_exc("settings/试听音效", e)
 
     def _toggle_splash(self):
         """启动动画开关：app.py 在创建闪屏前会直接读配置文件。"""

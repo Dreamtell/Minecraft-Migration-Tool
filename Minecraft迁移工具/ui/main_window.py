@@ -116,6 +116,20 @@ class MigrationGUI(
         self.close_action = self.config.get("close_action", "ask")
         # 启动动画：设置里可关（app.py 启动时直接读配置文件，这里只负责保存）
         self.splash_enabled = bool(self.config.get("splash", True))
+        # 按钮音效：默认关。音源是用户本机的文件（CS2 那套），不随包发布。
+        # 默认路径给那两个文件；用户可以在配置里改成自己的。
+        _音效目录 = "C:/Program Files/ExLoader/data/flutter_assets/resources/audio"
+        self.sfx_enabled = bool(self.config.get("sfx_on", False))
+        self.sfx_hover = str(self.config.get("sfx_hover") or (_音效目录 + "/Csgo_hover.mp3"))
+        self.sfx_press = str(self.config.get("sfx_press") or (_音效目录 + "/Csgo_press.mp3"))
+        try:
+            from utils import sfx as _sfx
+            _sfx.设置(enabled=self.sfx_enabled, hover=self.sfx_hover,
+                      press=self.sfx_press)
+            if self.sfx_enabled:
+                self.root.after(400, _sfx.预热)     # 窗口起来之后再预热，别抢启动
+        except Exception as e:
+            trace_exc("main_window/音效初始化", e)
         # 右下角消息提示（吐司）的总开关：关掉后 self.toast() 直接返回；
         # 容器 _toast_host 要等主窗口建好才创建（见 create_widgets 之后那块）
         self.toast_on = bool(self.config.get("toast_on", True))
@@ -683,6 +697,9 @@ class MigrationGUI(
             "msg_click_outside_close": self.msg_click_outside_close.get(),
             "close_action": self.close_action,
             "splash": bool(getattr(self, "splash_enabled", True)),
+            "sfx_on": bool(getattr(self, "sfx_enabled", False)),
+            "sfx_hover": str(getattr(self, "sfx_hover", "")),
+            "sfx_press": str(getattr(self, "sfx_press", "")),
             "silent_background": bool(getattr(self, "silent_background", False)),
             "buttons_hidden": list(getattr(self, "hidden_buttons", []) or []),
             "button_order": dict(getattr(self, "button_order", {}) or {}),

@@ -1725,7 +1725,7 @@ _BTN_TEXT_PAD = 18          # 按钮左右内边距（和 _grad_width 里那句�
 
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            width=None, height=32, font=("微软雅黑", 10, "bold"),
-                           click_guard_ms=300):
+                           click_guard_ms=300, sfx=True, sfx_hover=False):
     # 文案在**函数本体**里过 tr()，不能靠在别处包一层：调用方早把原函数 import 走了。
     # 中文（默认）时 tr() 原样返回，行为不变。见 utils/i18n.py。
     原文 = text                      # 留一份中文：切语言时用它重翻
@@ -2203,8 +2203,26 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         if click_guard_ms and (now - click_at["t"]) * 1000 < click_guard_ms:
             return
         click_at["t"] = now
+        if sfx:
+            try:
+                from utils import sfx as _sfx
+                _sfx.play("press")
+            except Exception:
+                pass
         on_press(e)                      # 注意：<Button-1> 和 <ButtonPress-1> 是同一个
         cmd["fn"]()                      # 事件，绑两个会互相覆盖，所以下沉放这里
+
+    if sfx_hover:
+        def _悬停(_e=None):
+            try:
+                from utils import sfx as _sfx
+                _sfx.play("hover")
+            except Exception:
+                pass
+        try:
+            canvas.bind("<Enter>", _悬停, add="+")
+        except Exception:
+            pass
 
     _ensure_items()
     if use_img:
