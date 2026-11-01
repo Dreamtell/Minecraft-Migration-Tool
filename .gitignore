@@ -34,3 +34,6 @@ desktop.ini
 /p_*.png
 /e2.txt
 /tools/diag_icon.py
+
+# 手工备份（源码 zip / 旧包），不入库
+/_backup/
