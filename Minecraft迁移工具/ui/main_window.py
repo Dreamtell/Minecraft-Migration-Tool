@@ -297,6 +297,13 @@ class MigrationGUI(
         self._net_float = None
         try:                      # 启动时按当前上限裁剪一次档案
             from utils import history_store
+            # 老版本会把模拟运行的档案写成 None.json（每次覆盖同一份），这里改回正常 id
+            try:
+                _修好 = history_store.repair_ids()
+                if _修好:
+                    print("[history] 修正了 %d 份档案名" % _修好)
+            except Exception:
+                pass
             history_store.prune(getattr(self, "history_limit", 10))
         except Exception:
             pass

@@ -1964,11 +1964,19 @@ class MigrationMixin:
             self.log(trp("存档名称: {0}", world), level="INFO")
             self.log("模拟模式: 是", level="INFO")
             self.log("不会实际修改任何文件", level="INFO")
+            # 模拟运行不备份，但档案仍然要有自己唯一的 id —— 否则 record_id 传
+            # None 进去，档案文件名会变成 "None.json"，每次模拟都覆盖上一份
+            try:
+                from utils import history_store as _hs
+                _模拟记录id = _hs.new_id()
+            except Exception:
+                _模拟记录id = None
+            self._mig_record_id = _模拟记录id
             thread = threading.Thread(
                 target=self._run_migration_thread,
                 args=(src_path, tgt_path, world, modlist, configlist, True,
                       self.overwrite_mods.get(), extralist,
-                      self.extra_conflict.get() != "skip", None)
+                      self.extra_conflict.get() != "skip", _模拟记录id)
             )
             thread.daemon = True
             thread.start()

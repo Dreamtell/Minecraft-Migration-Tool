@@ -76,7 +76,10 @@ def save_record(record, limit=None):
     if d is None:
         return None
     rec = dict(record or {})
-    rec.setdefault("id", new_id())
+    # 注意用 get 而不是 setdefault：调用方常常会塞一个 "id": None 进来
+    # （模拟运行没有 record_id），setdefault 见到"键已存在"就什么都不做，
+    # 结果文件名变成 "None.json"，每次模拟运行都把同一份档案覆盖掉。
+    rec["id"] = str(rec.get("id") or new_id())
     rec.setdefault("time", time.strftime("%Y-%m-%d %H:%M:%S"))
     rec.setdefault("epoch", time.time())
     清单 = rec.get("lists") or {}
@@ -103,6 +106,50 @@ def save_record(record, limit=None):
 
 
 # ---------------- 读 ----------------
+def repair_ids():
+    """把旧版本写坏的档案名改回来（`None.json` / `null.json` 这种）。
+
+    旧代码在"模拟运行"时把 record_id 传成 None，而 save_record 用的是
+    `setdefault("id", …)` —— 键存在（值是 None）就不动，于是文件名成了
+    `None.json`，每次模拟都覆盖同一份档案。现在写盘已兜底，这里把历史里的
+    坏名按档案自带的 epoch 重命名成正常 id。返回改了几个。
+    """
+    d = _root()
+    if not d or not d.exists():
+        return 0
+    改了 = 0
+    for p in list(d.glob("*.json")):
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        rid = str(rec.get("id") or "").strip()
+        坏 = p.stem.strip().lower() in ("none", "null", "") or rid.strip().lower() in ("none", "null")
+        if not 坏 and rid == p.stem:
+            continue
+        try:
+            ep = float(rec.get("epoch") or 0) or p.stat().st_mtime
+        except Exception:
+            ep = p.stat().st_mtime
+        新id = time.strftime("%Y%m%d-%H%M%S", time.localtime(ep)) + "-%03d" % (int(ep * 1000) % 1000)
+        目标 = d / ("%s.json" % 新id)
+        序号 = 1
+        while 目标.exists():
+            新id = ("%s-r%d" % (新id[:19], 序号))
+            目标 = d / ("%s.json" % 新id)
+            序号 += 1
+        rec["id"] = 新id
+        try:
+            p.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(p, 目标)
+            改了 += 1
+        except Exception:
+            continue
+    return 改了
+
+
 def list_records(include_log=False):
     """按时间倒序返回档案列表（默认不带 log，列表页不需要那么大的内容）。"""
     d = _root()
