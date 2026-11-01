@@ -78,6 +78,9 @@ class RoundedTabs(tk.Frame):
         i18n.注册自绘(self, _重按语言)
 
         self.bar.bind("<Button-1>", self._on_click)
+        self.bar.bind("<ButtonRelease-1>", self._on_release)
+        # 尾按钮要「按住不放 1 秒」才触发（防误点）：记录按下的那一颗与进度
+        self._长按 = {"i": -1, "t0": 0.0, "job": None, "弧": None, "完成": False}
         self.bar.bind("<Motion>", self._on_motion)
         self.bar.bind("<Leave>", self._on_leave)
         self.bar.bind("<Configure>", self._on_configure)
@@ -509,16 +512,76 @@ class RoundedTabs(tk.Frame):
             return
         尾 = self._hit_tail(event.x)
         if 尾 >= 0:
-            cmd = self._tails[尾].get("command")
+            self._开长按(尾)
+            return
+        i = self._hit(event.x)
+        if i >= 0:
+            self.select(i)
+
+    # ---- 尾按钮：按住 1 秒才触发（带进度环）----
+    _长按秒 = 1.0
+
+    def _开长按(self, 尾):
+        c = self.bar
+        self._取消长按()
+        t = self._tails[尾]
+        self._长按 = {"i": 尾, "t0": time.perf_counter(), "job": None, "弧": None,
+                     "完成": False}
+        # 进度环：贴着药丸内沿画一段弧，从 12 点顺时针转满一圈
+        try:
+            色 = self._tail_fg(t["kind"])
+            self._长按["弧"] = c.create_arc(
+                t["x"] + 1, PILL_Y + 1, t["x"] + t["w"] - 1, PILL_Y + PILL_H - 1,
+                start=90, extent=-1, style="arc", width=2, outline=色)
+        except Exception:
+            self._长按["弧"] = None
+        self._长按tick()
+
+    def _长按tick(self):
+        状态 = getattr(self, "_长按", None)
+        if not 状态 or 状态["i"] < 0:
+            return
+        已 = time.perf_counter() - 状态["t0"]
+        比 = min(1.0, 已 / max(0.05, self._长按秒))
+        try:
+            if 状态["弧"] is not None:
+                self.bar.itemconfigure(状态["弧"], extent=-max(1.0, 360.0 * 比))
+        except Exception:
+            pass
+        if 比 >= 1.0:
+            状态["完成"] = True
+            尾 = 状态["i"]
+            self._取消长按()
+            cmd = self._tails[尾].get("command") if 尾 < len(self._tails) else None
             if cmd:
                 try:
                     cmd()
                 except Exception:
                     pass
             return
-        i = self._hit(event.x)
-        if i >= 0:
-            self.select(i)
+        状态["job"] = self.bar.after(16, self._长按tick)
+
+    def _取消长按(self):
+        状态 = getattr(self, "_长按", None)
+        if not 状态:
+            return
+        try:
+            if 状态.get("job"):
+                self.bar.after_cancel(状态["job"])
+        except Exception:
+            pass
+        try:
+            if 状态.get("弧") is not None:
+                self.bar.delete(状态["弧"])
+        except Exception:
+            pass
+        self._长按 = {"i": -1, "t0": 0.0, "job": None, "弧": None, "完成": False}
+
+    def _on_release(self, event):
+        """松手：没按满就取消（进度环收回）。"""
+        状态 = getattr(self, "_长按", None)
+        if 状态 and 状态["i"] >= 0:
+            self._取消长按()
 
     def _on_motion(self, event):
         if getattr(self, "locked", False):
@@ -546,6 +609,10 @@ class RoundedTabs(tk.Frame):
 
     def _on_leave(self, _event):
         self.bar.configure(cursor="")
+        # 鼠标移出标签条还按着：长按作废，别让它自己数到 1 秒就触发
+        状态 = getattr(self, "_长按", None)
+        if 状态 and 状态["i"] >= 0:
+            self._取消长按()
         if any(t["hover"] for t in self._tails):
             for t in self._tails:
                 t["hover"] = False
