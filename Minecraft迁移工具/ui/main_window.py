@@ -672,7 +672,8 @@ class MigrationGUI(
             "theme": self.current_theme,
             # 界面语言（下次启动生效）。i18n 是"文案入口查表"，打包层不持有语言状态，
             # 所以这里读的是当前生效值。
-            "language": str(i18n.language()),
+            # 切语言走"重启"那条路时界面还停在旧语言，得让保存先认待写入的值
+            "language": str(getattr(self, "_待写语言", None) or i18n.language()),
             "mod_list": self.mod_text.get("1.0", tk.END).strip(),
             "config_list": self.config_text.get("1.0", tk.END).strip(),
             "extra_list": self.extra_text.get("1.0", tk.END).strip(),

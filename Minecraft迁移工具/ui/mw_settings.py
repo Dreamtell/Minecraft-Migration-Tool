@@ -901,6 +901,31 @@ class SettingsMixin:
                 trace_exc("settings/切语言确认", e)
             if not 要重启:
                 return                      # 什么都没动：语言、控件、配置都保持原样
+            # 走重启这条路时**绝不能再当场翻**：翻完到进程真的退出之间会看到
+            # 界面"哗"地变成另一种语言，很别扭（用户 m13993 反馈过）。
+            # 这里只把目标语言记下来、写进配置，界面保持原样，重启后自然就是新语言。
+            try:
+                self._待写语言 = str(值)
+                self.save_config()
+            except Exception as e:
+                trace_exc("settings/保存待写语言", e)
+            名 = dict(i18n.CHOICES).get(str(值), str(值))
+            try:
+                self.toast(trp("🌐 界面语言已改成「{0}」，正在重启…", 名),
+                           level="ok", key="lang")
+            except Exception:
+                pass
+
+            def _重起():
+                try:
+                    重启()
+                except Exception as e:
+                    trace_exc("settings/重启程序", e)
+            try:
+                self.root.after(650, _重起)
+            except Exception:
+                _重起()
+            return
         try:
             值 = i18n.set_language(值)
         except Exception:
