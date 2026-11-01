@@ -4550,7 +4550,20 @@ class QtBigView(QtWidgets.QWidget):
                     _drop()
             else:
                 _drop()
-        self.store._pool.waitForDone(1500)
+        # 不要在这里阻塞：打开窗口就会把整份清单排进线程池（每个任务要开 jar 读元数据），
+        # 关窗时等它们跑完，就是用户看到的"点关闭卡一下"（m14856，最多 1.5 秒）。
+        # 清掉还没开始的任务、断开回调，正在跑的那两三个让它在后台自己结束。
+        try:
+            self.store._pool.clear()
+        except Exception:
+            pass
+        try:
+            for _名 in ("done", "failed"):
+                _信 = getattr(self.store._signals, _名, None)
+                if _信 is not None:
+                    _信.disconnect()
+        except Exception:
+            pass
         self._write_back()
         super().closeEvent(ev)
 
