@@ -1,0 +1,17 @@
+本目录下的音效文件来自公开素材库，授权如下。
+
+hover.wav / press.wav
+  来源文件：denielcz-immersivecontrol-button-click-sound-463065.mp3
+  作者：denielcz（Pixabay 用户）
+  出处：https://pixabay.com/sound-effects/（Pixabay Sound Effects，条目 id 463065）
+  授权：Pixabay Content License
+        https://pixabay.com/service/license-summary/
+        允许免费用于商业与非商业用途、允许修改，无需署名。
+        禁止把素材本身作为独立文件（原样）再分发或转售 —— 本目录里的文件是
+        某个软件内部使用的界面音效，并已做剪辑/归一化处理，不属于"原样再分发"。
+  修改说明：
+    press.wav —— 由原文件解码后归一化到 -3dBFS、加 6ms 余弦淡出；
+    hover.wav —— 取原文件前 28ms、再压低约 4.4dB，用于悬停提示（更轻更短）。
+
+如果想换成别的音效：改配置里的 sfx_hover / sfx_press 指向你自己的文件即可，
+留空则用本目录这两个。
