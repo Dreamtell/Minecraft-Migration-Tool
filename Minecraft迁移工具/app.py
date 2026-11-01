@@ -3,6 +3,7 @@ import os
 import queue
 import sys
 import ctypes
+import tempfile
 import time
 import tkinter as tk
 from tkinter import messagebox
@@ -98,14 +99,62 @@ def send_toast(title, msg):
         pass
 
 
+def _准备干净临时目录():
+    """把临时目录钉死在一个**我们自己建、确定可写**的地方。
+
+    默认走 `%TEMP%` 就够了；但如果 `%TEMP%` 不可写（公司电脑、被清理工具锁住、
+    便携盘上跑），`tempfile` 会**悄悄退回当前目录** —— 于是单实例锁文件
+    （`tendo` 用 `tempfile.gettempdir()` 定位）和 `tempfile.mkdtemp()` 的目录
+    就撒在程序目录里，用户看到的就是"跑一次多出一堆奇怪文件"。
+
+    这里先试 `%TEMP%`，写不进去就换到 `%LOCALAPPDATA%/Minecraft迁移工具/tmp`，
+    并把 `TMP`/`TEMP`/`tempfile.tempdir` 一起改过去（子进程、matplotlib 之类也跟着走）。
+    """
+    备选 = []
+    try:
+        备选.append(Path(tempfile.gettempdir()))
+    except Exception:
+        pass
+    try:
+        根 = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        备选.append(Path(根) / "Minecraft迁移工具" / "tmp")
+    except Exception:
+        pass
+
+    for 目录 in 备选:
+        try:
+            目录.mkdir(parents=True, exist_ok=True)
+            探针 = 目录 / (".w%d" % os.getpid())
+            探针.write_text("1", encoding="utf-8")
+            探针.unlink()
+        except Exception:
+            continue
+        try:
+            tempfile.tempdir = str(目录)
+            os.environ["TMP"] = str(目录)
+            os.environ["TEMP"] = str(目录)
+        except Exception:
+            pass
+        return 目录
+    return None
+
+
 def main():
     # 单实例检查
     global _LOCK_HOLDER
+    # 先把临时目录钉在确定可写的地方，锁文件才不会掉到程序目录里（见函数注释）
+    临时 = _准备干净临时目录()
     try:
         # 必须留着这个对象：它被回收就会释放单实例锁，程序就变成"可多开"了。
         # 放在模块级变量里而不是局部变量，就是为了让它活到进程结束
         # （顺带也不会被 IDE 当成"赋值了没用"的死变量）。
-        _LOCK_HOLDER = singleton.SingleInstance()
+        #
+        # ⚠ 显式给 lockfile：tendo 默认把锁放在 `tempfile.gettempdir()` 里，
+        #   虽然上面已经把它指好了，但显式传一次能从根上保证"锁永远不会落在 exe 旁边"。
+        锁名 = os.path.splitext(os.path.abspath(sys.argv[0]))[0].replace(
+            "/", "-").replace(":", "").replace("\\", "-") + "-.lock"
+        _锁路径 = str((临时 or Path(tempfile.gettempdir())) / 锁名)
+        _LOCK_HOLDER = singleton.SingleInstance(lockfile=_锁路径)
     except singleton.SingleInstanceException:
         # 已经在跑了：优先请那个实例把主界面叫出来（窗口可能正挂在托盘里，
         # 这种状态下靠标题 FindWindow + ShowWindow 是叫不动的）

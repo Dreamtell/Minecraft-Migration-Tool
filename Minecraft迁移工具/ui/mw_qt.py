@@ -274,6 +274,27 @@ class QtMixin:
             根 = Path(__file__).resolve().parent.parent
             临时 = Path(tempfile.gettempdir()) / ("mctool_qt_%d" % os.getpid())
             临时.mkdir(parents=True, exist_ok=True)
+            # 每次开窗都顺手清一下"老得没人要"的同类目录：这些请求文件只在会话
+            # 期间有用，以前从不清理，%TEMP% 里会越堆越多（用户 m15432 的截图）。
+            try:
+                import shutil
+                import time as _t
+                截止 = _t.time() - 86400
+                for 旧目录 in Path(tempfile.gettempdir()).glob("mctool_qt_*"):
+                    try:
+                        if 旧目录.is_dir() and 旧目录.stat().st_mtime < 截止:
+                            shutil.rmtree(旧目录, ignore_errors=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # 自己的那份也要在退出时收掉（Qt 子进程可能被强杀，目录会留在原地）
+            try:
+                import atexit
+                import shutil as _sh
+                atexit.register(_sh.rmtree, str(临时), True)
+            except Exception:
+                pass
             序号 = getattr(self, "_qt_host_seq", 0) + 1
             self._qt_host_seq = 序号
             req = 临时 / ("%s%d.req.json" % (kind, 序号))
