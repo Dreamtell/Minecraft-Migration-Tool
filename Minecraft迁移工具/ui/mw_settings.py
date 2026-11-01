@@ -177,9 +177,14 @@ class SettingsMixin:
             行.pack(fill="x", pady=(4, 0))
             段 = []
             说明表 = {}
-            for 值, 文案 in 选项:
+            for 项 in 选项:
+                值, 文案 = 项[0], 项[1]
                 短, 长 = _拆名(文案)
-                段.append((值, 短))
+                # 第 3 项是图标种类（"cn"/"us"…），原样透传给分段控件
+                if len(项) > 2 and 项[2]:
+                    段.append((值, 短, 项[2]))
+                else:
+                    段.append((值, 短))
                 说明表[值] = 长
             有说明 = any(v for v in 说明表.values())
             说明标签 = None
@@ -304,7 +309,8 @@ class SettingsMixin:
         row_lang.pack(fill="x", pady=(10, 0))
         tk.Label(row_lang, text="界面语言：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
-        分段(row_lang, self.settings_lang_var, i18n.CHOICES,
+        分段(row_lang, self.settings_lang_var,
+             (("zh", "中文", "cn"), ("en", "English", "us")),
              lambda v: self._set_language(v), 名="lang")
 
         self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)

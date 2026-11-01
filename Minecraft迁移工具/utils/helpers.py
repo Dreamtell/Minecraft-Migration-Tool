@@ -3412,7 +3412,13 @@ class SegmentedControl(tk.Canvas):
         super().__init__(parent, highlightthickness=0, bd=0, bg=bg,
                          height=int(height), **kw)
         self.theme = dict(theme)
-        self._opts = [(str(v), str(t)) for v, t in (options or [])]
+        原始 = list(options or [])
+        self._opts = [(str(o[0]), str(o[1])) for o in 原始]
+        # 第三项是可选的图标种类（"cn"/"us"/"gb"）：Windows 上没法用 emoji 旗
+        # （Segoe UI Emoji 会退化成 CN/US 两个字母），所以自己画（见 utils/flags.py）
+        self._图标 = [str(o[2]) if len(o) > 2 and o[2] else "" for o in 原始]
+        self._图标图 = []
+        self._图标宽 = (20 if any(self._图标) else 0)
         self._command = command
         self._font = tkfont.Font(family=font[0], size=font[1],
                                  weight=(font[2] if len(font) > 2 else "normal"))
@@ -3427,7 +3433,7 @@ class SegmentedControl(tk.Canvas):
         # 每段等宽：取最长的那条文字 + 左右内边距（等宽比分宽看着整齐）
         段宽 = (max(self._font.measure(t) for _, t in self._opts) if self._opts
                else self._font.measure("选项"))
-        self._seg_w = int(段宽 + self.PAD_X * 2)
+        self._seg_w = int(段宽 + self._图标宽 + self.PAD_X * 2)
         self._total_w = self._seg_w * len(self._opts) + self.INSET * 2
         try:
             self.configure(width=self._total_w)
@@ -3442,6 +3448,22 @@ class SegmentedControl(tk.Canvas):
         self._texts = [
             self.create_text(0, 0, text=_译分段(原文), font=self._font, anchor="center")
             for 原文 in self._原文]
+        self._图标项 = []
+        if self._图标宽:
+            try:
+                from PIL import ImageTk as _ImageTk
+                from utils.flags import 国旗图
+                for 种 in self._图标:
+                    if not 种:
+                        self._图标项.append(None)
+                        self._图标图.append(None)
+                        continue
+                    photo = _ImageTk.PhotoImage(国旗图(种))
+                    self._图标图.append(photo)
+                    self._图标项.append(
+                        self.create_image(0, 0, image=photo, anchor="center"))
+            except Exception:
+                self._图标项 = [None] * len(self._原文)
         try:
             from utils import i18n as _i18n
             _i18n.注册自绘(self, self.refresh_language)
@@ -3470,7 +3492,7 @@ class SegmentedControl(tk.Canvas):
         """切语言后重算文字与段宽（英文比中文长，宽度得跟着变）。"""
         段宽 = (max(self._font.measure(_译分段(t)) for t in self._原文) if self._原文
                else self._font.measure("选项"))
-        self._seg_w = int(段宽 + self.PAD_X * 2)
+        self._seg_w = int(段宽 + self._图标宽 + self.PAD_X * 2)
         self._total_w = self._seg_w * len(self._原文) + self.INSET * 2
         for i, 原文 in enumerate(self._原文):
             try:
@@ -3591,9 +3613,20 @@ class SegmentedControl(tk.Canvas):
         else:
             self.itemconfig(self._hover_id, state="hidden")
         选中 = self._index()
+        内宽 = max(8, self._seg_w - self.INSET * 2)
         for i, item in enumerate(self._texts):
-            cx = self._seg_x(i) + max(8, self._seg_w - self.INSET * 2) / 2.0
-            self.coords(item, int(round(cx)), self._h // 2)
+            左 = self._seg_x(i) + self.PAD_X - self.INSET
+            if self._图标宽:
+                项 = self._图标项[i] if i < len(self._图标项) else None
+                if 项 is not None:
+                    self.coords(项, int(round(左 + 9)), self._h // 2)
+                    self.tag_raise(项)
+                # 文字改成左对齐、紧贴图标右侧：居中会和图标压在一起
+                self.itemconfigure(item, anchor="w")
+                self.coords(item, int(round(左 + self._图标宽)), self._h // 2)
+            else:
+                self.coords(item, int(round(self._seg_x(i) + 内宽 / 2.0)),
+                            self._h // 2)
             if not self._enabled:
                 色 = self.theme.get("muted_fg", "#888888")
             elif i == 选中:
@@ -3604,6 +3637,9 @@ class SegmentedControl(tk.Canvas):
         # 高亮块压在底图上面、文字最上面
         self.tag_raise(self._hover_id)
         self.tag_raise(self._pill_id)
+        for 项 in getattr(self, "_图标项", []) or []:
+            if 项 is not None:
+                self.tag_raise(项)
         for item in self._texts:
             self.tag_raise(item)
 
