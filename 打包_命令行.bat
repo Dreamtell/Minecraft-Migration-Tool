@@ -75,6 +75,7 @@ rem 不要 --uac-admin：迁移只写用户自己的实例目录，不需要管�
 rem 普通双击弹 UAC，且非提权进程（快捷启动器、脚本、自动化测试）根本拉不起来。
 py -3.12 -m PyInstaller --noconfirm --onedir --windowed ^
   --icon "%PROJ%\1.ico" ^
+  --version-file "%PROJ%\version_info.txt" ^
   --add-data "%PROJ%\1.ico;." ^
   --additional-hooks-dir "%PROJ%" ^
   --hidden-import tkinterdnd2 ^
