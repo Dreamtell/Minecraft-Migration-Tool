@@ -1111,6 +1111,7 @@ class RoundedEntry(tk.Frame):
     # 把圆角矩形按周长切成 N 段，每段亮度按 sin(相位 − 段位置) 走，相位每帧推进一点。
     # 和锁屏那个"流动边框"是同一套视觉语言（那边用渐变瓦片平移，这边用分段染色，
     # 因为输入框小、段数少，直接改颜色比重建位图便宜得多）。
+    _LIQ_PERIOD_S = 2.4          # 一次完整呼吸（暗→亮→暗）的秒数
     _LIQ_TICK = 16
     _LIQ_FRAMES = 16              # 保底（≥30fps）；实际按 anim.frame_ms 跟刷新率
     _LIQ_FAST = 6               # 间隔下限，别让 240Hz 屏把定时器打满
@@ -1224,6 +1225,9 @@ class RoundedEntry(tk.Frame):
             if not getattr(self, "_liq_holding", False):
                 anim.hold()
                 self._liq_holding = True
+            # ⚠ 必须先置 True 再进 step：step 第一行就是 `if not self._liq_on: return`
+            #   （上一版漏了这一句，等于整个特效根本没跑起来 —— 用户说"没效果"）
+            self._liq_on = True
             self._liquid_step()
         except Exception as e:
             trace_exc("helpers", e)
@@ -1384,10 +1388,13 @@ class RoundedEntry(tk.Frame):
                 self._liq_rings = None
             暗, 亮 = self._liquid_ensure_rings(w, h)
             现在 = time.perf_counter()
-            相位 = (现在 - self._liq_t0) * (self._LIQ_SPEED_PX / max(1.0, self._liq_len or 400.0))
+            # ⚠ 用**固定周期**算相位，不要拿"每帧多少像素"去乘时间：
+            #   `_LIQ_SPEED_PX` 是当年按 30fps 定的（8px/帧），直接当 px/s 用，
+            #   一圈要 180 秒 —— 呼吸慢到肉眼以为"没有效果"（用户就是这么报的）。
+            相位 = ((现在 - self._liq_t0) / self._LIQ_PERIOD_S) % 1.0
             v = (math.cos(math.pi * 2.0 * 相位) + 1.0) / 2.0
             self._liq_photo.paste(_PILImage.blend(暗, 亮, v))
-            self.canvas.itemconfigure(self._liq_item, image=self._liq_photo)
+            self.canvas.itemconfigure(self._liq_img, image=self._liq_photo)
         except Exception as e:
             trace_exc("helpers/光带帧刷新", e)
         # 间隔封顶 16ms（60fps）：换图本身很便宜，但没必要超过屏幕刷新率造成白烧
