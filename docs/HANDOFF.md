@@ -1,7 +1,7 @@
 # 会话交接（Hand-off）
 
-> 基线提交：`cd38991` · 本地 = `origin/main`，工作区干净
-> 最近更新：2026-10-25
+> 基线提交：`cd38991`（v5.0.0 之前）· **后续改动以 `git log -1` 为准**
+> 最近更新：2026-11-01（v5.0.0 已发布；换机器上手看仓库根 `AGENTS.md`）
 > 这份文件是跨会话的记忆。新会话开工前先读它，能省掉一轮"你重新熟悉环境"。
 > 文中的路径与提交号都经过实测核对；与旧版记录冲突时**以本文为准**。
 
@@ -11,13 +11,15 @@
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `%USERPROFILE%\PycharmProjects\Minecraft-Migration-Tool`（分支 `main`） |
-| 源码根 | `Minecraft迁移工具\`，48 个 `.py` |
-| Python | `%LOCALAPPDATA%\Programs\Python\Python312\python.exe`（3.12.10） |
-| 远端 | `https://github.com/Dreamtell/Minecraft-Migration-Tool.git`（推送正常，GCM 凭据 `Dreamtell`） |
+| 仓库 | 放在哪个目录都行，产品在子目录 `Minecraft迁移工具\`（作者机器上是 `%USERPROFILE%\Downloads\output`，**仅作示例**）；分支 `main` |
+| 源码根 | `Minecraft迁移工具\`（Tk 主进程 + Qt 子进程） |
+| Python | 3.12（`python -V` 自行确认；作者机器 3.12.4） |
+| 远端 | `https://github.com/Dreamtell/Minecraft-Migration-Tool.git` |
+| 依赖 | `pip install -r requirements.txt`（Pillow · PyInstaller · tkinterdnd2）；**PySide6 在仓库根 `_qt\`（约 211 MB，不进 git）**，新机器要 `pip install "PySide6==6.11.2" --target _qt` |
 | 配置 | `~/.minecraft_migrate_config.json`；测试可用环境变量 `MCTOOL_CONFIG` 指向临时文件 |
+| 密钥 | `~/.minecraft_migrate_secret.json`（CurseForge Key，**永不提交**） |
 | 档案目录 | **`~/migration_history`**（= `Path(CONFIG_FILE).parent / "migration_history"`，见 `utils/history_store.py:_root()`） |
-| 已装依赖 | PySide6 6.12.0 · Pillow 13.0.0 · requests 2.34.2 · tkinterdnd2 0.6.4 · PyInstaller 6.22.3 |
+| 打包 | `cmd //c 打包_命令行.bat nopause` → `dist/app`；**先 `taskkill /F /IM app.exe` 再删 `dist/app`**（否则 WinError 32） |
 
 > ⚠ 旧版交接把档案目录写成 `~/.minecraft_migration_history/`，**是错的**。实测是
 > `%USERPROFILE%\migration_history`（当前有 6 份档案）—— 它跟着配置文件所在目录走，
@@ -33,6 +35,7 @@
 - 打印别用 ✓ 之类符号（会 `UnicodeEncodeError`）；
 - 中文是安装态零成本路径：中文下翻译层根本不装；新增文案只改 `utils/i18n.py`，
   拼接串走 `trf` / `trp` 模板；
+- 目录结构、换机器时怎么装依赖（含 `_qt`），见仓库根 `AGENTS.md`；
 - 新增配置键**必须同时出现在 `ui/main_window.py` 的 `save_config()` 里**，
   否则用户下次改任何设置都会把它抹掉（`save_config()` 是整体重建字典）。
 
@@ -193,7 +196,7 @@
 
 | 接口 | 语义 |
 |---|---|
-| `anim.frame_ms(win)` | 一帧毫秒。**跟随窗口所在那块屏的刷新率**，上限 240Hz（本机 240Hz → 4ms） |
+| `anim.frame_ms(win)` | 一帧毫秒。**跟随窗口所在那块屏的刷新率**，上限 240Hz（作者机器 240Hz → 4ms；60/144Hz 屏会按屏缩放，属正常） |
 | `anim.slow_ms()` | 降帧档 33ms（30fps） |
 | `anim.is_slow(win)` | 窗口最小化 / 失去焦点 |
 | `anim.delay(win, slow=False)` | 本帧该排多久；`slow` 或 `is_slow` 时给 33 |
@@ -216,7 +219,7 @@
 ⚠ **千万不要在"忙泵"里量定时器**（一边 `root.update()` 一边轮询）：泵一直烧消息队列，
 定时器不用等，会量出 `after(4)=228fps` 的假象——第一版就是这么错的。
 
-### 坑 2：`time.monotonic()` 在本机只有 15.6ms 粒度
+### 坑 2：`time.monotonic()` 在 Windows 上只有 15.6ms 粒度
 
 `time.get_clock_info("monotonic").resolution == 0.015625`（GetTickCount64）。4ms 排帧时
 **4 帧里有 3 帧 dt 算成 0**。算 dt 一律用 `time.perf_counter()`（分辨率 1e-7）。
@@ -252,7 +255,7 @@ CoarseTimer 与 PreciseTimer 都能排到 4ms（p50 4.00 / 4.01）。选 Precise
 **代码里根本没有实现**，每行都拽一次 —— 实测日志涌入 170 行/秒时 `see` 也是 170 次/秒，
 节流后约 10 次/秒。**注释承诺的行为一定要去代码里核对**，这个仓库已经出现过两次这种偏差。
 
-### 实测成绩（本机 240Hz）
+### 实测成绩（作者机器，240Hz 屏；不同刷新率按比例变化属正常）
 
 | 目标 | 改前 | 改后 |
 |---|---|---|
@@ -322,7 +325,7 @@ app.main()
   测出来的「每帧 1ms、很顺」是假象；真实长文案是 4 倍像素量，9.6ms/帧的合成开销就是这样
   漏掉的。压测至少用满宽度 + 栈满 4 条。
 
-## 六、浮层与真透明（吐司踩过的四个坑）
+## 八、浮层与真透明（吐司踩过的四个坑）
 
 Tk 控件**没有真透明**：圆角只能靠"四角填父容器底色"假装。这套做法对坐在固定底色上的
 控件够用，但**浮层**（吐司、浮标这类）会盖在任意内容上，四角必然露出底色方块。
