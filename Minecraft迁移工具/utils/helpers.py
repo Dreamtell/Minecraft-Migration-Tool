@@ -315,6 +315,14 @@ class SmoothScroller:
             n = acc.take(px)
             if n == 0:
                 return 0, False       # 同上：零头攒到下一帧
+            # 内容装得下就直接报「走不动」：否则画布会先挪一像素、再被各处的
+            # 回顶逻辑摁回来，来回就是抽搐（设置页短页上用户实测过）
+            try:
+                框 = widget.bbox("all")
+                if 框 and 框[3] - 框[1] <= widget.winfo_height() + 1:
+                    return 0, True
+            except Exception:
+                pass
             before = widget.canvasy(0)
             try:
                 widget.yview_scroll(n, "units")
