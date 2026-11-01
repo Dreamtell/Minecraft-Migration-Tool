@@ -245,11 +245,49 @@ def main():
         except Exception:
             pass
 
+    def _把窗口类底色改成主题色():
+        """把 Tk 顶层窗口类的背景刷子换成主题底色。
+
+        这是"启动白屏"的**根**：`deiconify()` 时 Windows 要先用窗口类的背景刷子
+        擦一遍客户区，Tk 注册的类用的是系统底色（白），而我们的第一帧要等 Tk
+        自己重绘 —— 中间那段白就是这么来的。给 root 设 `bg` 只影响 Tk 自己的
+        绘制，改不了那个刷子。
+
+        改成主题色之后：窗口一显示就是对的底色，且**窗口保持普通窗口**（不分层），
+        Windows 的原生"打开动画"照常播放 —— 用 -alpha 淡入虽然也能挡住白，
+        但分层窗口会让系统跳过打开动画（用户 m14710 要的就是那个动画）。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            user32.GetParent.restype = ctypes.c_void_p
+            user32.GetParent.argtypes = [ctypes.c_void_p]
+            hwnd = user32.GetParent(ctypes.c_void_p(root.winfo_id())) or root.winfo_id()
+            色 = str((getattr(app, "theme", None) or {}).get("bg", "") or "")
+            if not 色.startswith("#") or len(色) < 7:
+                return
+            r = int(色[1:3], 16); g = int(色[3:5], 16); b = int(色[5:7], 16)
+            刷 = gdi32.CreateSolidBrush((b << 16) | (g << 8) | r)     # COLORREF 是 BGR
+            if not 刷:
+                return
+            # GCLP_HBRBACKGROUND = -10；系统不复制刷子，所以要一直拿住这个句柄
+            if user32.SetClassLongPtrW(ctypes.c_void_p(hwnd), -10, ctypes.c_void_p(刷)) == 0:
+                gdi32.DeleteObject(ctypes.c_void_p(刷))
+                return
+            _窗口类刷子[0] = 刷
+            # 让这块区域按新刷子重画一次
+            user32.InvalidateRect(ctypes.c_void_p(hwnd), None, True)
+        except Exception:
+            pass
+
+    _窗口类刷子 = [None]
+
     def _make_sure_visible():
         """收尾：保证窗口显示出来，并且是普通窗口（不带 layered）。
 
-        layered 是"Windows 会跳过关闭动画"的那个样式。现在整条启动路径都不碰
-        -alpha，窗口本来就是普通的，这里只是兜底清一下。
+        layered 是"Windows 会跳过关闭动画"的那个样式，这里兜底清一下。
         """
         try:
             root.deiconify()
@@ -259,32 +297,16 @@ def main():
         focus_window(root)
 
     def reveal_main_window():
-        """主界面显形——先把窗口显出来并**同步画完**，再让它变回不透明。
-
-        背景：Tk 的顶层窗口类用的是系统窗口底色（Windows 上就是白），
-        deiconify() 之后到 Tk 完成第一次重绘之间，屏幕上就是那块白色 ——
-        这就是启动时白屏闪一下的来源。光给 root 设 bg 没用（窗口类背景刷子不认它）。
-
-        做法：deiconify 前把整窗设成全透明（-alpha 0，会临时变成分层窗口），
-        显形后立刻 update() 逼 Tk 把该画的都画完 —— 这段时间窗口看不见，
-        用户看不到白底；画完再恢复 -alpha 1，随后 _make_sure_visible() 里
-        clear_layered_style() 会把分层样式去掉，回到普通窗口（不影响动画性能）。
-        """
-        try:
-            root.attributes("-alpha", 0.0)
-        except Exception:
-            pass
+        """主界面显形：先把窗口类底色改成主题色，再让系统照常播"打开动画"。"""
+        _把窗口类底色改成主题色()
         try:
             root.deiconify()
         except Exception:
             pass
+        # 排好版、把该画的画掉；窗口此时可能已经可见，但底色已经是主题色，
+        # 所以即便有一两帧没画完也是深色，不会闪白
         try:
             root.update_idletasks()
-            root.update()
-        except Exception:
-            pass
-        try:
-            root.attributes("-alpha", 1.0)
         except Exception:
             pass
 
