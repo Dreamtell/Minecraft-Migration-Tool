@@ -92,12 +92,6 @@ class SettingsMixin:
             def 同步滚动条(第一, 最后):
                 # 装得下就把滚动条收起来：短页不该白拖一条灰杠
                 if float(第一) <= 0.0 and float(最后) >= 1.0:
-                    # 顺手把视图按回顶部：短页里万一残留了一点偏移，画面上就是
-                    # "内容被推下去、上面一片空"，看着像还能滚（用户 m14065 报过）
-                    try:
-                        画布.yview_moveto(0.0)
-                    except Exception:
-                        pass
                     if 条.winfo_ismapped():
                         条.pack_forget()
                 elif not 条.winfo_ismapped():
@@ -707,8 +701,19 @@ class SettingsMixin:
             if 画布 is not None and ev.widget is 画布:
                 return
             滚动器 = getattr(page, "_滚动器", None)
-            if 滚动器 is not None:
-                滚动器.wheel(ev)
+            if 滚动器 is None:
+                return
+            # 内容装得下就别滚：以前是"滚一像素再被拉回顶部"，看着像抽搐。
+            # 直接不接这个事件最干净（用户 m14137）。
+            try:
+                if 画布 is not None:
+                    框 = 画布.bbox("all")
+                    if 框 and 框[3] - 框[1] <= 画布.winfo_height() + 1:
+                        画布.yview_moveto(0.0)      # 只在这里对齐一次
+                        return
+            except Exception:
+                pass
+            滚动器.wheel(ev)
 
         win.bind("<MouseWheel>", 滚轮)
 
