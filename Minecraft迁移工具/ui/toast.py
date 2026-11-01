@@ -26,7 +26,7 @@ Tk 没有真透明，这条路走过三遍都不彻底（详见 docs/HANDOFF.md 
 
 import time
 import tkinter as tk
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from utils import anim
 from utils.dpi import px
@@ -278,7 +278,7 @@ class ToastHost:
         图 = self._card_cache.get(键)
         if 图 is not None:
             return 图.copy()
-        S = 3                                   # 3 倍超采样：2 倍时 10px 圆角仍能看出一级级台阶
+        S = 4                                   # 4 倍超采样：3 倍时 10px 圆角在小卡片上仍能看出一级级台阶
         底, 边, 字色 = self.palette()
         条 = _LEVELS.get(level, _LEVELS["info"])[1]
         W, H = int(w) * S, int(h) * S
@@ -295,7 +295,12 @@ class ToastHost:
         条层 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(条层).rounded_rectangle([0, 0, W - 1, H - 1],
                                               radius=半径, fill=条)
-        图.alpha_composite(条层.crop((0, 0, 条宽, H)), (0, 0))
+        # 条只保留"卡片轮廓内"的部分：否则它在圆角处会自己带一圈弧，
+        # 和卡片的弧叠在一起，放大看就是双台阶
+        条层 = 条层.crop((0, 0, 条宽, H))
+        条层.putalpha(ImageChops.multiply(条层.getchannel("A"),
+                                        图.getchannel("A")))
+        图.alpha_composite(条层, (0, 0))
         画.rounded_rectangle([0, 0, W - 1, H - 1], radius=半径,
                             outline=边, width=S)
         # ⚠ 图标和右侧 × **必须画在这张 2 倍图上**再缩小。以前是缩完再画 1~2px 的线，
