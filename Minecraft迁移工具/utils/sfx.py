@@ -33,6 +33,29 @@ _最短间隔 = {"hover": 0.14, "press": 0.06}
 _上次 = {"hover": 0.0, "press": 0.0}
 
 
+def 内置目录():
+    """随包自带的音效目录（assets/sfx）：开发态在产品目录，打包态在 _internal 里。"""
+    import sys as _sys
+    根 = getattr(_sys, "_MEIPASS", None)
+    if 根:
+        return Path(根) / "assets" / "sfx"
+    return Path(__file__).resolve().parent.parent / "assets" / "sfx"
+
+
+def 内置音效(种类):
+    """返回内置音效路径（没有就返回空串）。"""
+    路 = 内置目录() / ("%s.wav" % ("hover" if 种类 == "hover" else "press"))
+    return str(路) if 路.is_file() else ""
+
+
+def _实际路径(种类):
+    """配置里指定了就用手填的；没填（或文件没了）就用内置的。"""
+    自定 = _文件.get(种类) or ""
+    if 自定 and Path(自定).is_file():
+        return 自定
+    return 内置音效(种类)
+
+
 def _mci():
     import ctypes
     from ctypes import wintypes
@@ -54,10 +77,10 @@ def _发(命令):
 
 
 def 可用():
-    """能不能真的响：开关打开 + 至少有一个音源文件在。"""
+    """能不能真的响：开关打开 + 至少有一个音源文件（自定或内置）。"""
     if not _开:
         return False
-    return any(p and Path(p).is_file() for p in _文件.values())
+    return any(_实际路径(类) for 类 in ("hover", "press"))
 
 
 def 设置(enabled=None, hover=None, press=None):
@@ -115,7 +138,7 @@ def _起线程():
 def _开一个(类):
     if 类 in _已开:
         return True
-    路径 = _文件.get(类) or ""
+    路径 = _实际路径(类)
     if not 路径 or not Path(路径).is_file():
         return False
     别 = _别名[类]

@@ -118,10 +118,11 @@ class MigrationGUI(
         self.splash_enabled = bool(self.config.get("splash", True))
         # 按钮音效：默认关。音源是用户本机的文件（CS2 那套），不随包发布。
         # 默认路径给那两个文件；用户可以在配置里改成自己的。
-        _音效目录 = "C:/Program Files/ExLoader/data/flutter_assets/resources/audio"
+        # 音效：默认用随包自带的合成音（assets/sfx/*.wav，原创、可公开分发）；
+        # 配置里填了路径就用用户自己的（比如本机的 CS2 音效），那份不进仓库。
         self.sfx_enabled = bool(self.config.get("sfx_on", False))
-        self.sfx_hover = str(self.config.get("sfx_hover") or (_音效目录 + "/Csgo_hover.mp3"))
-        self.sfx_press = str(self.config.get("sfx_press") or (_音效目录 + "/Csgo_press.mp3"))
+        self.sfx_hover = str(self.config.get("sfx_hover") or "")
+        self.sfx_press = str(self.config.get("sfx_press") or "")
         try:
             from utils import sfx as _sfx
             _sfx.设置(enabled=self.sfx_enabled, hover=self.sfx_hover,

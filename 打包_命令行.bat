@@ -77,6 +77,7 @@ py -3.12 -m PyInstaller --noconfirm --onedir --windowed ^
   --icon "%PROJ%\1.ico" ^
   --version-file "%PROJ%\version_info.txt" ^
   --add-data "%PROJ%\1.ico;." ^
+  --add-data "%PROJ%\assets\sfx;assets\sfx" ^
   --additional-hooks-dir "%PROJ%" ^
   --hidden-import tkinterdnd2 ^
   --hidden-import matplotlib.backends.backend_tkagg ^
