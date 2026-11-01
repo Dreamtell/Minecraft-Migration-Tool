@@ -341,12 +341,42 @@ class MigrationGUI(
         self.net_float_shadow = bool(self.config.get("net_float_shadow", True))
         self.net_float_dock = bool(self.config.get("net_float_dock", True))
         self._stage("就绪")
+        # 拖放状态要在**日志框建好之后**才能写进去：`mw_pages` 里注册拖放的时机
+        # 比日志框早，那句日志会被静默丢掉（打包后这一条最容易坏，必须能看见）
+        try:
+            self.root.after(300, self._报告拖放状态)
+        except Exception:
+            pass
         self._start_net_status()
         if self.net_float_on:
             try:
                 self.open_net_float()
             except Exception:
                 pass
+
+    def _报告拖放状态(self):
+        """启动时把拖放到底有没有生效打进日志（出问题时截图就能定位）。"""
+        try:
+            if getattr(self, "_dnd_ok", False):
+                版本 = ""
+                for 取 in (
+                    lambda: __import__("importlib.metadata", fromlist=["version"]).version("tkinterdnd2"),
+                    lambda: getattr(__import__("tkinterdnd2"), "__version__", ""),
+                ):
+                    try:
+                        版本 = str(取() or "").strip()
+                    except Exception:
+                        版本 = ""
+                    if 版本:
+                        break
+                版本 = (" " + 版本) if 版本 else "" 
+                self.log(i18n.trp("🧩 拖放已就绪（tkinterdnd2{0}）：可以把 jar / mods 文件夹直接拖进清单",
+                             版本), level="OK")
+            else:
+                self.log(i18n.tr("⚠ 拖放不可用：缺少 tkinterdnd2 或 tkdnd 未加载（请用「添加模组」按钮）"),
+                         level="WARNING")
+        except Exception:
+            pass
 
     @staticmethod
     def _整理模组清单文本(文本):

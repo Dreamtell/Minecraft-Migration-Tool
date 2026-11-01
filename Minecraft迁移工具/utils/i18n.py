@@ -92,6 +92,14 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "覆盖已存在的模组": "Overwrite existing mods",
     "查看历史": "History",
     "回滚": "Roll back",
+    "🧩 拖放已就绪（tkinterdnd2{0}）：可以把 jar / mods 文件夹直接拖进清单":
+        "🧩 Drag & drop ready (tkinterdnd2{0}): you can drop jars or a mods folder into the list",
+    "⚠ 拖放不可用：缺少 tkinterdnd2 或 tkdnd 未加载（请用「添加模组」按钮）":
+        "⚠ Drag & drop unavailable: tkinterdnd2 or tkdnd is not loaded (use the Add mods button)",
+    "🧩 拖放已就绪（tkinterdnd2%s）：可以把 jar / mods 文件夹直接拖进清单":
+        "🧩 Drag & drop ready (tkinterdnd2%s): you can drop jars or a mods folder into the list",
+    "⚠ 拖放不可用：%s（请用「添加模组」按钮）":
+        "⚠ Drag & drop unavailable: %s (use the \"Add mods\" button)",
     "🔒 迁移期间主界面按钮全部禁用（锁屏遮罩已移除）": "🔒 Buttons are disabled during migration (the lock overlay was removed)",
     "🧹 已清理旧版留下的单一备份（{0} 项）":
         "🧹 Removed the old single backup ({0} items)",

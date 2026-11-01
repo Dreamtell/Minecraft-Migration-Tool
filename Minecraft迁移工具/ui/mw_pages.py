@@ -547,9 +547,27 @@ class PagesMixin:
                 self._刷新模组说明()
             except Exception:
                 pass
+            # 打包后这一条最容易坏（tkdnd 的 dll/tcl 没被带进去时，导入成功但注册失败）。
+            # 打一行日志，出问题时截图就能看出到底有没有生效，不用猜。
+            try:
+                版本 = ""
+                try:
+                    import tkinterdnd2 as _dnd
+                    版本 = " " + str(getattr(_dnd, "__version__", "") or "").strip()
+                except Exception:
+                    pass
+                # 不在这里写日志：此时日志框还没建出来（写进去会被静默丢掉）。
+                # 启动后由 main_window._报告拖放状态() 统一播报一次。
+                pass
+            except Exception:
+                pass
         except Exception as e:
             from utils.helpers import trace_exc
             trace_exc("mw_pages/注册拖放", e)
+            try:
+                self.log("⚠ 拖放不可用：%s（请用「添加模组」按钮）" % e, level="WARNING")
+            except Exception:
+                pass
             try:
                 # 拖放用不了就直说，别让用户对着"拖不进去"发呆
                 self._刷新模组说明()
