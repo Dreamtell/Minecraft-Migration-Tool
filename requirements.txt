@@ -1,0 +1,8 @@
+# 运行时 / 打包所需（PySide6 不在这里，见下）
+Pillow==11.3.0
+pyinstaller==6.22.3
+tkinterdnd2==0.6.2
+
+# PySide6（大视图 / 图表）不进 site-packages，而是放在仓库根的 _qt/ 目录，
+# 由 打包_命令行.bat 的 --paths _qt 找到。新机器上这样装：
+# pip install "PySide6==6.11.2" --target _qt
