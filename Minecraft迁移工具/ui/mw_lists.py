@@ -930,34 +930,81 @@ class ListsMixin:
         widget.bind("<Control-z>", _undo)
         widget.bind("<Control-y>", _redo)
 
+    @staticmethod
+    def _模组条目名(行):
+        """清单里每一行的"模组名"：正常是文件名，历史遗留可能是整条绝对路径。"""
+        行 = str(行).strip()
+        if not 行:
+            return ""
+        return Path(行).name
+
+    def _normalize_mod_lines(self, content):
+        """把清单里"整条路径"的行收成文件名，并去掉重名。返回 (新内容, 改了行数)。
+
+        为什么会混进整条路径：早期「添加模组」把 file dialog 给的绝对路径直接写进清单，
+        而清单的约定是"每行一个 .jar 文件名"。于是同一个模组能同时以
+        `BetterF3-7.0.2.jar` 和 `C:/.../mods/BetterF3-7.0.2.jar` 两条存在 —— 看着是重复，
+        自检还会因为按名字找不到而报"源目录里没有"。
+        """
+        行们 = [ln.strip() for ln in content.splitlines()]
+        出 = []
+        见过 = set()
+        改 = 0
+        for ln in 行们:
+            if not ln:
+                continue
+            名 = self._模组条目名(ln)
+            if 名 != ln:
+                改 += 1
+            键 = 名.lower()
+            if 键 in 见过:
+                改 += 1
+                continue
+            见过.add(键)
+            出.append(名)
+        return chr(10).join(出), 改
+
     def _append_mods(self, paths):
-        """把若干 .jar 完整路径追加到模组清单（自动去重）。返回新增数量。"""
+        """把若干 .jar 追加到模组清单（按文件名去重）。返回新增数量。"""
         paths = [str(Path(p)) for p in paths if Path(p).suffix.lower() == ".jar"]
+        content = self.mod_text.get("1.0", tk.END).rstrip(chr(10))
+        content, 整理 = self._normalize_mod_lines(content)
         if not paths:
+            if 整理:
+                self._写回模组清单(content)
             return 0
-        content = self.mod_text.get("1.0", tk.END).rstrip("\n")
-        lines = set(content.splitlines()) if content else set()
+        已有 = {self._模组条目名(ln).lower() for ln in content.splitlines() if ln.strip()}
         new = []
         for p in paths:
-            if p not in lines:
-                lines.add(p)
-                new.append(p)
+            名 = Path(p).name
+            键 = 名.lower()
+            if 键 in 已有:
+                continue
+            已有.add(键)
+            new.append(名)
         if not new:
+            if 整理:
+                self._写回模组清单(content)
             return 0
         merged = content
-        for p in new:
-            merged = (merged + "\n" if merged else "") + p
-        self.mod_text.configure(state=tk.NORMAL)
-        self.mod_text.delete("1.0", tk.END)
-        self.mod_text.insert("1.0", merged + ("\n" if merged else ""))
+        for 名 in new:
+            merged = (merged + chr(10) if merged else "") + 名
+        self._写回模组清单(merged)
         # 记录本次新添加的模组（文件名小写），主清单用黄色高亮
-        self._new_mod_keys.update(Path(p).name.lower() for p in new)
+        self._new_mod_keys.update(名.lower() for 名 in new)
         self._apply_mod_new_tags()
         self.save_config()
         self._update_text_states()
+        if 整理:
+            self.toast(trp("🧹 顺手整理了 {0} 行重复/带路径的旧条目", 整理), level="ok")
         self.toast(trp("✅ 已添加 {0} 个模组", len(new)), level="ok")
         self._notify_modlist_change()
         return len(new)
+
+    def _写回模组清单(self, content):
+        self.mod_text.configure(state=tk.NORMAL)
+        self.mod_text.delete("1.0", tk.END)
+        self.mod_text.insert("1.0", content + (chr(10) if content else ""))
 
     def _apply_mod_new_tags(self):
         """给主模组清单中"本会话新添加"的行重新染上黄色高亮。"""

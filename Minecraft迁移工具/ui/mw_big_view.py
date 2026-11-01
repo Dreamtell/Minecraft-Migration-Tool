@@ -806,6 +806,31 @@ class BigViewMixin:
                 except Exception:
                     pass
 
+        def _模组名(e):
+            """清单条目的规范化名字：清单约定是"每行一个 .jar 文件名"。"""
+            t = str(e).strip()
+            return Path(t).name if t else ""
+
+        def _整理清单():
+            """把"整条路径"的旧条目收成文件名，并按名字去掉重复。"""
+            见, 出, 改 = set(), [], 0
+            for e in entries:
+                名 = _模组名(e)
+                if not 名:
+                    改 += 1
+                    continue
+                键 = 名.lower()
+                if 名 != str(e).strip():
+                    改 += 1
+                if 键 in 见:
+                    改 += 1
+                    continue
+                见.add(键)
+                出.append(名)
+            if 出 != entries:
+                entries[:] = 出
+            return 改
+
         def add_mods():
             if big_scanning["flag"]:
                 return
@@ -815,8 +840,15 @@ class BigViewMixin:
                                                 filetypes=[("Minecraft 模组", "*.jar"), (trp("所有文件"), "*.*")])
             if not files:
                 return
-            existing = set(entries)
-            new_entries = [str(Path(f)) for f in files if str(Path(f)) not in existing]
+            _整理清单()          # 老数据里可能还留着整条路径，先收成文件名
+            existing = {_模组名(e).lower() for e in entries}
+            new_entries = []
+            for f in files:
+                名 = Path(f).name
+                if 名.lower() in existing:
+                    continue
+                existing.add(名.lower())
+                new_entries.append(名)
             if not new_entries:
                 messagebox.showinfo("提示", "所选模组已在清单中。")
                 return
@@ -851,9 +883,15 @@ class BigViewMixin:
                 files = self.root.tk.splitlist(event.data)
             except Exception:
                 files = event.data
-            jars = [str(Path(f)) for f in files if Path(f).suffix.lower() == ".jar"]
-            existing = set(entries)
-            new_entries = [p for p in jars if p not in existing]
+            jars = [Path(f).name for f in files if Path(f).suffix.lower() == ".jar"]
+            _整理清单()
+            existing = {_模组名(e).lower() for e in entries}
+            new_entries = []
+            for 名 in jars:
+                if 名.lower() in existing:
+                    continue
+                existing.add(名.lower())
+                new_entries.append(名)
             if not new_entries:
                 return
             entries.extend(new_entries)
