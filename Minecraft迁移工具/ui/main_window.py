@@ -224,7 +224,7 @@ class MigrationGUI(
         self._update_world_status()
 
         self._stage("正在载入清单…")
-        self.mod_text.insert("1.0", self.config.get("mod_list", ""))
+        self.mod_text.insert("1.0", self._整理模组清单文本(self.config.get("mod_list", "")))
         self.config_text.insert("1.0", self.config.get("config_list", ""))
         self.extra_text.insert("1.0", self.config.get("extra_list", ""))
         self.mod_text.edit_reset()
@@ -325,6 +325,27 @@ class MigrationGUI(
                 self.open_net_float()
             except Exception:
                 pass
+
+    @staticmethod
+    def _整理模组清单文本(文本):
+        """把清单里的"整条路径"收成文件名，并按名字去重。
+
+        清单约定是每行一个 .jar 文件名；历史版本或手工粘贴会把绝对路径写进来，
+        于是同一个模组会出现两条（一条名字、一条路径），自检还会把那条路径当成
+        名字去源目录里找、报"源目录里没有"。载入时就地修好，用户不用手工清。
+        """
+        行们, 见 = [], set()
+        for ln in str(文本 or "").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            名 = Path(ln).name
+            键 = 名.lower()
+            if 键 in 见:
+                continue
+            见.add(键)
+            行们.append(名)
+        return chr(10).join(行们)
 
     def _start_net_status(self):
         """右下角的网络状态灯：子线程探测，结果回主线程改字。"""

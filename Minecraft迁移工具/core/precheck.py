@@ -132,15 +132,18 @@ def _查模组清单(src_path, modlist):
     except OSError as e:
         return [_条("warn", trp("读不了源目录的 mods 文件夹：{0}", e))]
 
-    缺 = [n for n in modlist if n.lower() not in 实际]
+    # 清单里偶尔会混进"整条路径"（早期版本添加模组写的是绝对路径，或手工粘贴）
+    # 按名字比对才不会把路径当文件名去源目录里找、报"源目录里没有"。
+    名单 = [Path(str(n).strip()).name for n in modlist if str(n).strip()]
+    缺 = [n for n in 名单 if n.lower() not in 实际]
     if 缺:
         条们.append(_条("warn", trp("清单里有 {0} 个模组在源目录找不到：{1}",
                                     len(缺), _列名(缺))))
-    重复 = len(modlist) - len({n.lower() for n in modlist})
+    重复 = len(名单) - len({n.lower() for n in 名单})
     if 重复 > 0:
         条们.append(_条("info", trp("清单里有 {0} 个重复条目（不会重复复制）", 重复)))
     清单外 = [v for k, v in 实际.items() if k.endswith(".jar") and
-              k not in {n.lower() for n in modlist}]
+              k not in {n.lower() for n in 名单}]
     if 清单外:
         条们.append(_条("info", trp("源目录里还有 {0} 个 jar 不在清单里，不会被复制（{1}）",
                                     len(清单外), _列名(清单外))))
