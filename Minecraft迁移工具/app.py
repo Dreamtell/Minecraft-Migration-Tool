@@ -411,9 +411,13 @@ def main():
             pass
         try:
             import subprocess
-            脚本 = os.path.abspath(sys.argv[0])
             参数 = [a for a in sys.argv[1:] if not a.startswith("--qt-host")]
-            subprocess.Popen([sys.executable, 脚本] + 参数, close_fds=True)
+            if getattr(sys, "frozen", False):
+                # 打包后 sys.executable 就是 exe 本身，别再拼 app.py
+                命令 = [sys.executable] + 参数
+            else:
+                命令 = [sys.executable, os.path.abspath(sys.argv[0])] + 参数
+            subprocess.Popen(命令, close_fds=True)
         except Exception as e:
             trace_exc("app/重启", e)
         try:

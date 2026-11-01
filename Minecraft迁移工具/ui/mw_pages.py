@@ -541,6 +541,12 @@ class PagesMixin:
             self.mod_text.drop_target_register(DND_FILES)
             self.mod_text.dnd_bind('<<Drop>>', self._on_mod_drop)
             self._dnd_ok = True
+            # 说明行是**先于**文本框建出来的（那时 _dnd_ok 还是 False），
+            # 注册成功后必须重刷一次，否则会一直挂着"拖放不可用"的假警报
+            try:
+                self._刷新模组说明()
+            except Exception:
+                pass
         except Exception as e:
             from utils.helpers import trace_exc
             trace_exc("mw_pages/注册拖放", e)
