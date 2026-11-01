@@ -814,11 +814,29 @@ class BusyBar(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         self._t0 = time.perf_counter()
         self._timer = QtCore.QTimer(self)
-        self._timer.setInterval(16)          # ~60fps
+        self._timer.setInterval(self._帧毫秒())
         self._timer.timeout.connect(self._tick)
         self._paints = 0
 
+    @staticmethod
+    def _帧毫秒():
+        """按显示器刷新率给间隔（写死 16ms 在 144Hz 上大概是 62fps，比桌面其它动画慢一半）。"""
+        try:
+            from PySide6 import QtGui as _QG
+            屏 = _QG.QGuiApplication.primaryScreen()
+            率 = float(屏.refreshRate()) if 屏 is not None else 0.0
+            if 率 >= 30:
+                return max(1, int(round(1000.0 / 率)))
+        except Exception:
+            pass
+        return 16
+
     def start(self):
+        # 每次开始重新问一次：窗口被拖到另一块刷新率不同的屏上也能跟上
+        try:
+            self._timer.setInterval(self._帧毫秒())
+        except Exception:
+            pass
         self._t0 = time.perf_counter()
         self._timer.start()
 
