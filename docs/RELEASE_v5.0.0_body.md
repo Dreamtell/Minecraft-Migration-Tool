@@ -55,6 +55,6 @@
 
 ### 📦 下载与校验
 
-- `Minecraft迁移工具_v5.0.0_win64.zip` — 172.8 MB（181,244,964 字节）
-- SHA256：`f260a43e80f9a4cf71ca904ff48bf88e5e3cb097b3273d104f5f863581e13c47`
+- `Minecraft迁移工具_v5.0.0_win64.zip` — 172.9 MB（181,248,346 字节）
+- SHA256：`804d03ed53ddb639a712ff971be6261e53d760bd66ace1f83961a3bd664c820b`
 - 系统要求：Windows 10 / 11 64 位（自带 Python 与 Qt，无需另装）
