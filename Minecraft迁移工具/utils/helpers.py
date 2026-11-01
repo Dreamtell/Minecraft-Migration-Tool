@@ -1111,7 +1111,8 @@ class RoundedEntry(tk.Frame):
     # 把圆角矩形按周长切成 N 段，每段亮度按 sin(相位 − 段位置) 走，相位每帧推进一点。
     # 和锁屏那个"流动边框"是同一套视觉语言（那边用渐变瓦片平移，这边用分段染色，
     # 因为输入框小、段数少，直接改颜色比重建位图便宜得多）。
-    _LIQ_TICK = 33              # 保底（≥30fps）；实际按 anim.frame_ms 跟刷新率
+    _LIQ_TICK = 16
+    _LIQ_FRAMES = 16              # 保底（≥30fps）；实际按 anim.frame_ms 跟刷新率
     _LIQ_FAST = 6               # 间隔下限，别让 240Hz 屏把定时器打满
     _LIQ_SPEED_PX = 8.0         # 每帧走过的**像素**（一圈约 4.5 秒）
     #   ⚠ 锁屏那边是每帧 3.5px 左右，但它的边框是四边同时有带、窗口又大，慢得看不出来；
@@ -1202,6 +1203,11 @@ class RoundedEntry(tk.Frame):
             self._liq_sf, self._liq_len = sf, 总长
             self._liq_pts = 点
             if changed:
+                self._liq_rings = None
+            if getattr(self, "_liq_t0", None) is None:
+                self._liq_t0 = time.perf_counter()
+            self._liq_pts = 点
+            if changed:
                 # 复用同一个 PhotoImage：`paste` 换内容比每帧新建 PhotoImage 省约 5ms
                 self._liq_photo = _PILImageTk.PhotoImage(
                     _PILImage.new("RGBA", (w, h), (0, 0, 0, 0)))
@@ -1253,7 +1259,7 @@ class RoundedEntry(tk.Frame):
         再细分，一帧要画一千多条短线，实测 4.4ms/帧 —— 30fps 就已经吃掉 13% CPU，
         144Hz 根本带不动。改成"底图只烤一次，每帧只画那一段光带"，实测 ~1.9ms/帧。
         """
-        s = 2
+        s = 3
         键 = (w, h, self._liquid_trough())   # 主题/底色变了要重烤
         if getattr(self, "_liq_base_key", None) == 键 and                 getattr(self, "_liq_base", None) is not None:
             return self._liq_base
@@ -1272,92 +1278,121 @@ class RoundedEntry(tk.Frame):
         self._liq_base, self._liq_base_key = im, 键
         return im
 
-    def _liquid_frame(self, w, h, 相位):
-        """渲染一帧光环：底图照着，只把"光带"那一段染亮。
+    def _liquid_xy(self, 弧):
+        """按弧长取路径上的点（分段线性插值）。
 
-        ⚠ 必须走 PIL + 超采样：Tk canvas 的 `create_line` 在 Windows 上是 GDI 画线，
-        **没有抗锯齿**，圆弧上锯齿非常明显（用户提过）。
+        ⚠ 一定要插值：路径点之间隔了七八个像素，直接取"落在窗口里的那几个点"
+        会让每一层的端点落在不同位置，画出来是一串断续的短棒（用户看到的锯齿）。
         """
-        s = 2
+        总 = self._liq_len or 1.0
+        点 = self._liq_pts or ()
+        sf = self._liq_sf or ()
+        n = len(点)
+        if n < 2:
+            return 0.0, 0.0
+        a = (弧 % 总) / 总
+        i = 1
+        低, 高 = 1, n
+        while 低 < 高:
+            中 = (低 + 高) // 2
+            if sf[中] < a:
+                低 = 中 + 1
+            else:
+                高 = 中
+        i = max(1, min(低, n))
+        a0 = sf[i - 1]
+        a1 = sf[i] if i < n else 1.0
+        t = 0.0 if a1 <= a0 else min(1.0, (a - a0) / (a1 - a0))
+        x0, y0 = 点[i - 1]
+        x1, y1 = 点[i % n]
+        return x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+
+    def _liquid_ring(self, w, h, 颜色):
+        """按给定颜色画一整圈描边（3 倍超采样 + Lanczos），缓存。
+
+        ⚠ 为什么放弃"光带沿边流动"：PIL 没有沿路径的渐变描边，只能用很多段折线/圆点
+        拼；拼出来要么有接缝毛刺（用户说的锯齿），要么端头一刀切（像荧光笔划痕）。
+        现在改成"整圈颜色呼吸" —— 只在这两种颜色之间按相位混合，几何完全不动，
+        所以怎么跑都不会有锯齿，成本也只是一次 Image.blend。
+        """
+        s = 3
+        键 = (w, h, 颜色)
+        缓存 = getattr(self, "_liq_ring_cache", None)
+        if 缓存 is None:
+            缓存 = self._liq_ring_cache = {}
+        if 键 in 缓存:
+            return 缓存[键]
         总长 = self._liq_len or 400.0
-        亮 = self._liquid_crest()
-        暗 = self._liquid_trough()
-        暗rgb = (int(暗[1:3], 16), int(暗[3:5], 16), int(暗[5:7], 16))
-        亮rgb = (int(亮[1:3], 16), int(亮[3:5], 16), int(亮[5:7], 16))
-        半带 = max(50.0, min(self._LIQ_BAND, 总长 * self._LIQ_BAND_MIN)) / 2.0
-        im = self._liquid_base_img(w, h).copy()
+        半带 = 1.0
+        im = _PILImage.new("RGBA", (w * s, h * s), (0, 0, 0, 0))
         d = _PILDraw.Draw(im)
         点 = self._liq_pts
-        n = len(点)
-        宽 = max(2, int(round(self._liquid_宽() * s)))
-        for i in range(n):
-            x0, y0 = 点[i]
-            x1, y1 = 点[(i + 1) % n]
-            弧0 = self._liq_sf[i] * 总长
-            段长 = math.hypot(x1 - x0, y1 - y0)
-            # 先按"整段的弧长区间"粗筛，完全落在光带外的段直接跳过（这是省下来的主要开销）
-            弧中 = 弧0 + 段长 / 2.0
-            dd中 = abs(弧中 / 总长 - 相位)
-            dd中 = min(dd中, 1.0 - dd中) * 总长
-            if dd中 - 段长 / 2.0 >= 半带:
-                continue
-            子 = max(1, int(段长 * s / 2.0))
-            for k in range(子):
-                t = k / 子
-                弧 = 弧0 + 段长 * t
-                dd = abs(弧 / 总长 - 相位)
-                dd = min(dd, 1.0 - dd) * 总长
-                if dd >= 半带:
-                    continue
-                v = (math.cos(math.pi * dd / 半带) + 1.0) / 2.0
-                v = v ** 1.25                 # 略集中一点，别让亮心糊成一整段均匀亮线
-                # 先铺一条更宽、更淡的外圈：这是"液体"的柔和感来源（只有光带才画）。
-                # ⚠ 外圈只隔一个子段画一次（宽线本来就会互相重叠），线数减半、观感不变
-                淡 = 0.45 * v
-                if k % 2 == 0:
-                    d.line([((x0 + (x1 - x0) * t) * s, (y0 + (y1 - y0) * t) * s),
-                            ((x0 + (x1 - x0) * (t + 1.0 / 子)) * s,
-                             (y0 + (y1 - y0) * (t + 1.0 / 子)) * s)],
-                           fill=(int(暗rgb[0] + (亮rgb[0] - 暗rgb[0]) * 淡),
-                                 int(暗rgb[1] + (亮rgb[1] - 暗rgb[1]) * 淡),
-                                 int(暗rgb[2] + (亮rgb[2] - 暗rgb[2]) * 淡), 255),
-                           width=int(宽 * 2.1))
-                d.line([((x0 + (x1 - x0) * t) * s, (y0 + (y1 - y0) * t) * s),
-                        ((x0 + (x1 - x0) * (t + 1.0 / 子)) * s,
-                         (y0 + (y1 - y0) * (t + 1.0 / 子)) * s)],
-                       fill=(int(暗rgb[0] + (亮rgb[0] - 暗rgb[0]) * v),
-                             int(暗rgb[1] + (亮rgb[1] - 暗rgb[1]) * v),
-                             int(暗rgb[2] + (亮rgb[2] - 暗rgb[2]) * v), 255),
-                       width=宽)
-        return im.resize((w, h), _PILImage.LANCZOS)
+        if not 点:
+            return im.resize((w, h), _PILImage.LANCZOS)
+        宽 = max(2.0, self._liquid_宽() * s)
+        亮rgb = (int(颜色[1:3], 16), int(颜色[3:5], 16), int(颜色[5:7], 16))
+        连续 = [(x * s, y * s) for x, y in 点]
+        if len(连续) >= 2:
+            连续.append(连续[0])
+            # 闭合折线一次画完，`joint="curve"` 负责转角处的圆接；
+            # ⚠ 别在每个路径点上再补一个圆 —— 点间距 7px 而圆心半径不足时，
+            #   外缘会串成一圈"珠子"（那就是新的锯齿）。
+            d.line(连续, fill=亮rgb + (255,), width=int(宽), joint="curve")
+        图 = im.resize((w, h), _PILImage.LANCZOS)
+        if len(缓存) > 8:
+            缓存.clear()
+        缓存[键] = 图
+        return 图
+
+    def _liquid_frame(self, w, h, 相位):
+        """一帧：暗环与亮环按相位混合（0 → 暗，0.5 → 最亮，1 → 暗）。"""
+        暗 = self._liquid_ring(w, h, self._liquid_trough())
+        亮 = self._liquid_ring(w, h, self._liquid_crest())
+        v = (math.cos(math.pi * 2.0 * 相位) + 1.0) / 2.0     # 0..1 的余弦呼吸
+        return _PILImage.blend(暗, 亮, v)
+
+
+    def _liquid_ensure_rings(self, w, h):
+        """准备这两圈环（暗/亮各一张），按尺寸与色缓存；之后每帧只做一次混合。"""
+        键 = (w, h, self._liquid_crest(), self._liquid_trough(), int(self._liquid_宽() * 10))
+        if getattr(self, "_liq_rings", None) is None or self._liq_rings_key != 键:
+            self._liq_rings_key = 键
+            self._liq_rings = (self._liquid_ring(w, h, self._liquid_trough()),
+                               self._liquid_ring(w, h, self._liquid_crest()))
+        return self._liq_rings
 
 
     def _liquid_step(self):
-        """每帧重渲染一帧光环（PIL 超采样 → 抗锯齿），比 Tk 分段画线平滑得多。"""
+        if not self.winfo_exists():
+            return
         self._liq_job = None
+        if not self._liq_on:
+            return
         try:
-            if not self._focus:
+            w = self.canvas.winfo_width()
+            if w <= 1:
+                w = self._px_w
+            h = self._h
+            if w <= 8 or h <= 8:
                 return
-            # 窗口正在销毁时 after 回调还会再来一次，winfo 会抛 TclError
-            if not self.winfo_exists():
-                return
-            w, h = self._liq_w, self._liq_h
-            if w <= 8 or h <= 8 or not getattr(self, "_liq_pts", None):
-                return
-            总长 = self._liq_len or 1.0
-            # 速度按**像素**算（和锁屏流动边同一套手感），换算成沿周长的比例
-            self._liq_t = (getattr(self, "_liq_t", 0.0)
-                           + self._LIQ_SPEED_PX / 总长) % 1.0
-            图 = self._liquid_frame(w, h, self._liq_t)
-            if 图 is not None and getattr(self, "_liq_photo", None) is not None:
-                self._liq_photo.paste(图)
-            # ⚠ 这一条**不跟满刷新率**：每帧要在 2 倍画布上重画一圈抗锯齿光带（约 3ms），
-            #   144Hz 下就是 40% 的 CPU 白烧；而光带本身是慢速平移，60fps 肉眼分不出。
-            间隔 = max(16, min(self._LIQ_TICK, anim.frame_ms(self) or 16))
-            self._liq_job = self.after(间隔, self._liquid_step)
+            if getattr(self, "_liq_photo", None) is None or self._liq_w != w or self._liq_h != h:
+                self._liq_w, self._liq_h = w, h
+                self._liq_photo = _PILImageTk.PhotoImage(
+                    _PILImage.new("RGBA", (w, h), (0, 0, 0, 0)), master=self)
+                点, sf, 总长 = self._liquid_geom(w, h)
+                self._liq_pts, self._liq_sf, self._liq_len = 点, sf, 总长
+                self._liq_rings = None
+            暗, 亮 = self._liquid_ensure_rings(w, h)
+            现在 = time.perf_counter()
+            相位 = (现在 - self._liq_t0) * (self._LIQ_SPEED_PX / max(1.0, self._liq_len or 400.0))
+            v = (math.cos(math.pi * 2.0 * 相位) + 1.0) / 2.0
+            self._liq_photo.paste(_PILImage.blend(暗, 亮, v))
+            self.canvas.itemconfigure(self._liq_item, image=self._liq_photo)
         except Exception as e:
-            trace_exc("helpers", e)
-            self._liq_job = None
+            trace_exc("helpers/光带帧刷新", e)
+        # 间隔封顶 16ms（60fps）：换图本身很便宜，但没必要超过屏幕刷新率造成白烧
+        间隔 = max(16, min(self._LIQ_TICK, anim.frame_ms(self) or 16))
+        self._liq_job = self.after(间隔, self._liquid_step)
 
     def _liquid_stop(self):
         """停表 + 清掉高光段（失焦、切主题、销毁都要走这里）。"""
