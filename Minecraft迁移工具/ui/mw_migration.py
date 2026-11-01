@@ -2024,7 +2024,10 @@ class MigrationMixin:
             self.progress_queue = queue.Queue()
             # 背面那条 3px 条按真实进度走，换算要用到总量
             self._mig_total_size = float(total_size or 0)
-            self.progress_window = ProgressWindow(self.root, total_files, total_size)
+            # theme 一定要显式传：ProgressWindow 从 parent 上取不到（这里传的是 Tk 根窗口），
+            # 不传就一律退回 LIGHT_THEME —— 深色主题下这条进度条会一直是浅色。
+            self.progress_window = ProgressWindow(self.root, total_files, total_size,
+                                                  theme=self.theme)
             if self.after_id is None:
                 self._poll_progress()
 
