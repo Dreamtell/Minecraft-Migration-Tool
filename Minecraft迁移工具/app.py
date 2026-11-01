@@ -4,6 +4,12 @@ import queue
 import sys
 import ctypes
 import tempfile
+from pathlib import Path
+
+# ⚠ 必须**在导入其它项目模块之前**就把临时目录定好：只要有任何一个模块在 import 期
+#   调用了 tempfile.mkdtemp()，Python 就会把"解析出来的临时目录"缓存下来，之后再改
+#   tempfile.tempdir 也救不回来（用户 m15432 的 tmpXXXX 目录就是这么掉进程序目录的）。
+_启动临时目录 = None  # 由 _准备干净临时目录() 填充，见下
 import time
 import tkinter as tk
 from tkinter import messagebox
@@ -120,8 +126,27 @@ def _准备干净临时目录():
         备选.append(Path(根) / "Minecraft迁移工具" / "tmp")
     except Exception:
         pass
+    try:
+        备选.append(Path.home() / "Minecraft迁移工具" / "tmp")
+    except Exception:
+        pass
+
+    # ⚠ 关键：`tempfile.gettempdir()` 在 TMP/TEMP 没设、系统临时目录也不可写时，
+    #   会**返回当前目录** —— 那正是"文件撒在程序目录里"的元凶。这种答案要直接否决，
+    #   否则第一项永远"可写"，永远轮不到后面的兜底目录。
+    禁区 = set()
+    for 处 in (Path.cwd(), Path(sys.argv[0]).resolve().parent):
+        try:
+            禁区.add(处.resolve())
+        except Exception:
+            pass
 
     for 目录 in 备选:
+        try:
+            if 目录.resolve() in 禁区:
+                continue
+        except Exception:
+            continue
         try:
             目录.mkdir(parents=True, exist_ok=True)
             探针 = 目录 / (".w%d" % os.getpid())
@@ -139,11 +164,68 @@ def _准备干净临时目录():
     return None
 
 
+# 导入期就执行（见上面的注释）：失败也不抛，留 None 走 Python 默认行为
+try:
+    _启动临时目录 = _准备干净临时目录()
+except Exception:
+    _启动临时目录 = None
+
+
+def _清理程序目录里的空临时目录():
+    """删掉 exe 旁边 / 当前工作目录里**空的** `tmp*` 目录。
+
+    起因（用户 m15432）：`tempfile.mkdtemp()` 在 `tempfile.tempdir` 还没被我们
+    钉死之前（PyInstaller 启动早期、或某个依赖在 import 期就建了一次）会落进程序
+    目录，留下一个个空目录。这里做两件事的兜底清理：启动时扫一遍、退出时再扫一遍。
+
+    只删「`tmp` 开头 + 完全不空不碰 + 是目录」的，用户自己的东西一律不动。
+    """
+    处们 = set()
+    for 处 in (Path(sys.argv[0]).resolve().parent, Path(sys.executable).resolve().parent, Path.cwd()):
+        try:
+            处们.add(处.resolve())
+        except Exception:
+            pass
+    删 = 0
+    for 处 in 处们:
+        try:
+            if not 处.is_dir():
+                continue
+            项们 = list(处.iterdir())
+        except Exception:
+            continue
+        for 项 in 项们:
+            try:
+                if not 项.is_dir() or not 项.name.startswith("tmp"):
+                    continue
+                if any(项.iterdir()):      # 非空 → 不是我们建的那种空壳，别碰
+                    continue
+                项.rmdir()
+                删 += 1
+            except Exception:
+                continue
+    return 删
+
+
+try:
+    _清理程序目录里的空临时目录()
+    import atexit as _atexit
+
+    _atexit.register(_清理程序目录里的空临时目录)
+except Exception:
+    pass
+
+
 def main():
     # 单实例检查
     global _LOCK_HOLDER
     # 先把临时目录钉在确定可写的地方，锁文件才不会掉到程序目录里（见函数注释）
-    临时 = _准备干净临时目录()
+    临时 = _启动临时目录 or _准备干净临时目录()
+    # 再清一遍：有些依赖是在我们导入期之后才第一次建临时目录的
+    try:
+        _清理程序目录里的空临时目录()
+    except Exception:
+        pass
     try:
         # 必须留着这个对象：它被回收就会释放单实例锁，程序就变成"可多开"了。
         # 放在模块级变量里而不是局部变量，就是为了让它活到进程结束
