@@ -92,6 +92,12 @@ class SettingsMixin:
             def 同步滚动条(第一, 最后):
                 # 装得下就把滚动条收起来：短页不该白拖一条灰杠
                 if float(第一) <= 0.0 and float(最后) >= 1.0:
+                    # 顺手把视图按回顶部：短页里万一残留了一点偏移，画面上就是
+                    # "内容被推下去、上面一片空"，看着像还能滚（用户 m14065 报过）
+                    try:
+                        画布.yview_moveto(0.0)
+                    except Exception:
+                        pass
                     if 条.winfo_ismapped():
                         条.pack_forget()
                 elif not 条.winfo_ismapped():
@@ -105,7 +111,10 @@ class SettingsMixin:
             page._滚动画布 = 画布                          # 滚轮处理器按页找它
             # 只绑在画布本身上：内容（子控件）上的滚轮由顶层那个处理器按"当前页"转发，
             # 落在画布空白处的才由它自己接 —— 见 滚轮()，两边不会各滚一格
-            page._滚动器 = SmoothScroller.for_canvas(画布, bind_widgets=[画布])
+            # ease 调小 = 每帧只走更小一步、同样一格滚轮摊更多帧 —— 设置页内容
+            # 元素多、每帧重排较重，慢一点反而更顺（用户 m14065「不流畅」）
+            page._滚动器 = SmoothScroller.for_canvas(画布, bind_widgets=[画布],
+                                                   ease=0.22)
             return inner
 
         def tab(label):
