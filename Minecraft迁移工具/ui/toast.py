@@ -287,12 +287,17 @@ class ToastHost:
         半径 = _u(10) * S
         画.rounded_rectangle([0, 0, W - 1, H - 1], radius=半径, fill=底,
                             outline=边, width=S)
-        # 左侧等级色：内缩胶囊（两端自己圆角；4px 宽的圆角矩形会被 PIL 夹成方头）
+        # 左侧等级色：**贴着左边**的一条（用户要求"竖线贴紧左边"）。
+        # 做法是拿和整卡同样圆角的矩形、只裁出左边一条 —— 左侧两个圆角跟卡片重合，
+        # 右边是直切边；再补画一次描边，免得这条把卡片左边框盖掉。
         内缩 = _u(3) * S
-        条宽 = max(2, _u(5) * S)
-        条高 = max(1, H - 内缩 * 2)
-        画.rounded_rectangle([内缩, 内缩, 内缩 + 条宽 - 1, 内缩 + 条高 - 1],
-                            radius=max(1, 条宽 // 2), fill=条)
+        条宽 = max(2, _u(6) * S)
+        条层 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(条层).rounded_rectangle([0, 0, W - 1, H - 1],
+                                              radius=半径, fill=条)
+        图.alpha_composite(条层.crop((0, 0, 条宽, H)), (0, 0))
+        画.rounded_rectangle([0, 0, W - 1, H - 1], radius=半径,
+                            outline=边, width=S)
         # ⚠ 图标和右侧 × **必须画在这张 2 倍图上**再缩小。以前是缩完再画 1~2px 的线，
         # 完全享受不到超采样：笔画边上全是台阶，还细得看不清（用户说"等级符号显示
         # 不清晰"）。文字反过来 —— 它必须画在缩小后的图上，才有字体自己的抗锯齿。
