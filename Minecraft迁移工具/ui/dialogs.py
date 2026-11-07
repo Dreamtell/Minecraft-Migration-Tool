@@ -25,13 +25,14 @@ from utils.i18n import tr, trp
 class ProgressWindow:
     """迁移进度模态窗口"""
 
-    def __init__(self, parent, total_files, total_size, theme=None):
+    def __init__(self, parent, total_files, total_size, theme=None, cancel_event=None):
         # theme 必须由调用方传进来：以前从 parent 上取，而调用方传的是 Tk 根窗口
         # （没有 .theme），于是一律退回 LIGHT_THEME —— 深色主题下这条进度条永远是浅色。
         self.parent = parent
         self.total_files = total_files
         self.total_size = total_size
         self.cancelled = False
+        self.cancel_event = cancel_event
 
         self.win = tk.Toplevel(parent)
         self.win.withdraw()
@@ -109,6 +110,8 @@ class ProgressWindow:
 
     def on_cancel(self):
         self.cancelled = True
+        if self.cancel_event is not None:
+            self.cancel_event.set()
         self.cancel_btn.state(tk.DISABLED)
         self.cancel_btn.set_text("正在取消...")
 

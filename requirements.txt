@@ -1,8 +1,12 @@
-# 运行时 / 打包所需（PySide6 不在这里，见下）
+# Runtime dependencies (Python 3.12, Windows)
 Pillow==11.3.0
-pyinstaller==6.22.3
 tkinterdnd2==0.6.2
+tendo>=0.3.0,<0.4
+winotify>=1.1.0,<2
+matplotlib>=3.9,<4
 
-# PySide6（大视图 / 图表）不进 site-packages，而是放在仓库根的 _qt/ 目录，
-# 由 打包_命令行.bat 的 --paths _qt 找到。新机器上这样装：
+# Packaging
+pyinstaller==6.22.3
+
+# Optional Qt views: install separately into the repository root.
 # pip install "PySide6==6.11.2" --target _qt

@@ -156,24 +156,19 @@ class MigrationGUI(
         # 注：以前这里有个 `extra_defaults`（"默认携带的目录"勾选）—— 那套在迁移那一刻
         # 自动往清单里并东西，用户要求"一切都要自己选"，已经删掉、统一到「其它文件」清单。
         # 老配置里勾过的条目由 _并入旧的默认携带目录() 一次性并进清单，不会悄悄丢掉。
-        # 放大查看窗口用哪个实现：qt=PySide6 试点（缺库时自动回落）/ tk=经典 Tk
-        self.big_view_backend = str(self.config.get("big_view_backend", "qt") or "qt")
-        if self.big_view_backend not in ("qt", "tk"):
-            self.big_view_backend = "qt"
-        # 差异窗口用哪个实现（同样的 qt / tk 二选一；出问题时可以切回 Tk 版）
-        self.diff_backend = str(self.config.get("diff_backend", "qt") or "qt")
-        if self.diff_backend not in ("qt", "tk"):
-            self.diff_backend = "qt"
+        # 列表窗口统一使用独立 Qt 卡片视图；旧配置键仍保留，便于平滑升级，
+        # 但不再允许它们把放大查看或差异结果切回 Tk / 表格。
+        self.big_view_backend = "qt"
+        self.diff_backend = "qt"
+        # 主界面实现（app.py 启动时读；这里只负责保存时不丢）
+        self.main_window_backend = str(self.config.get("main_window_backend", "tk") or "tk")
+        if self.main_window_backend not in ("qt", "tk"):
+            self.main_window_backend = "tk"
         # 总开关：关掉后主进程完全不加载/不使用 Qt（排查"Tk 与 Qt 同进程"用）
         self.qt_enabled = bool(self.config.get("qt_enabled", True))
-        # 放大查看窗口打开时用哪个视图：table=表格 / cards=卡片（设置里能选）
-        self.big_view_view = str(self.config.get("big_view_view", "table") or "table")
-        if self.big_view_view not in ("table", "cards"):
-            self.big_view_view = "table"
-        # 模组差异窗口打开时用哪个视图（同样是 table / cards，设置里能选）
-        self.diff_view = str(self.config.get("diff_view", "table") or "table")
-        if self.diff_view not in ("table", "cards"):
-            self.diff_view = "table"
+        # 两个列表窗口统一为卡片视图；旧配置键仍读取为兼容字段，但实际固定为 cards。
+        self.big_view_view = "cards"
+        self.diff_view = "cards"
         # 双击已经全部交给 Tk / Qt 原生事件（间隔 = 系统设置里的鼠标双击速度），
         # 程序里不再有判定阈值。double_click_sec / double_click_auto 这两个键只是
         # "双击间隙测试"留下的历史记录，读进来是为了保存设置时原样写回去、不丢数据。
@@ -195,6 +190,7 @@ class MigrationGUI(
         self._failed_items = []
         self._fail_cursor = 0
 
+        self._init_execution_log()
         self._stage("正在构建界面…")
         self.create_widgets()
 
@@ -289,10 +285,6 @@ class MigrationGUI(
         self.on_path_change()
         self._stage()
         self._update_text_states()
-        self._log_cache_limit = 500
-        self._saved_logs = []
-        self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
-        self._last_log_key = None
         # 桌面浮标（网络延迟小窗）：状态与位置都记在配置里，下次启动回到原处
         self._net_float = None
         try:                      # 启动时按当前上限裁剪一次档案
@@ -701,13 +693,8 @@ class MigrationGUI(
             pass
 
     def load_config(self):
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except:
-                pass
-        return {}
+        from utils.config import load_raw_config
+        return load_raw_config()
 
     def save_config(self):
         # ⚠ 这里**故意没有** CurseForge API Key：key 存在 ~/.minecraft_migrate_secret.json
@@ -753,6 +740,7 @@ class MigrationGUI(
             "rollback_parts_remember": bool(getattr(self, "rollback_parts_remember", False)),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
+            "main_window_backend": str(getattr(self, "main_window_backend", "tk")),
             "qt_enabled": bool(getattr(self, "qt_enabled", True)),
             "big_view_view": str(getattr(self, "big_view_view", "table")),
             "diff_view": str(getattr(self, "diff_view", "table")),
@@ -781,16 +769,8 @@ class MigrationGUI(
         try:
             # 原子写：直接 "w" 打开会先截断原文件，写到一半崩溃/断电就只剩半个 JSON，
             # 而 load_config 对坏文件是静默回退默认值 —— 用户的清单/路径/设置全没。
-            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".mctmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=4)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, CONFIG_FILE)
+            from utils.file_io import atomic_json
+            atomic_json(CONFIG_FILE, config, indent=4)
         except Exception:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
+            pass
         self._check_overflow()

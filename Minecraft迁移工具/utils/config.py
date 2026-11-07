@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from utils.file_io import atomic_json
 
 # 配置默认放用户主目录；`MCTOOL_CONFIG` 可以指到别处 ——
 # 验证脚本跑真程序（比如测"开第二个实例"）时用它指向临时文件，
@@ -36,17 +37,7 @@ def save_raw_config(data):
         merged.update(dict(data or {}))
         # 原子写：直接 write_text 的话，写一半崩溃会留下坏 JSON，
         # 而 load_raw_config 对坏文件是静默返回 {} —— 用户的全部设置就这么"没了"。
-        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".mctmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, CONFIG_FILE)
+        atomic_json(CONFIG_FILE, merged)
         return True
     except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
         return False

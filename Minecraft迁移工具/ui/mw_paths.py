@@ -7,6 +7,7 @@
 import tkinter as tk
 from core.scanner import detect_instance_env
 from pathlib import Path
+from utils.file_io import check_writable
 from tkinter import filedialog
 from ui.mw_common import _grad_width
 from utils.helpers import RoundedEntry, create_gradient_button
@@ -32,9 +33,7 @@ class PathsMixin:
 
         # 检查读写权限（尝试创建临时文件）
         try:
-            test_file = p / ".permission_test"
-            test_file.touch()
-            test_file.unlink()
+            check_writable(p)
             details["read_write"] = True
         except:
             details["read_write"] = False

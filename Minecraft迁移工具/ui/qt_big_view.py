@@ -1197,15 +1197,15 @@ class _SmoothWheel:
     调，但只算补充，不会改变速度（缓动按真实 dt 算，见下）。
 
     **帧间隔跟随显示器刷新率**：`anim.frame_ms(self)`（本机 240Hz -> 4ms，约 228fps），
-    原来是写死的 12ms。缓动系数按**真实经过时间**换算（`1-(1-0.3)^(dt/12ms)`），
+    原来是写死的 12ms。缓动系数按**真实经过时间**换算（`1-(1-WHEEL_EASE)^(dt/12ms)`），
     所以换帧率只改变切分密度，不改变滚动速度和收敛时间（12ms 与 4ms 实测总耗时差 < 10%）。
 
     **定时器精度**：动画期间 `anim.hold()` 把系统定时器精度提到 1ms，走完/让位/隐藏/
     销毁就 `anim.release()`（引用计数在 anim 里；`_PrecHold` 保证一次动画只 hold
     一次，绝不是每帧一进一出）。
     """
-    WHEEL_FRAME_S = 0.012      # 手感标定基准：Tk 版一帧 = 12ms（"每帧走 30%"就是这个节奏）
-    WHEEL_EASE = 0.30
+    WHEEL_FRAME_S = 0.012      # 仅作时间标定基准，实际排帧跟随刷新率
+    WHEEL_EASE = 0.44         # 缩短松手后的拖尾，每格距离仍由 wheel_px 决定
     WHEEL_SNAP_PX = 0.6        # 离目标不足这么多像素就吸附收工
 
     def wheel_px(self) -> float:
@@ -1268,12 +1268,14 @@ class _SmoothWheel:
         self._sw_last = now
         bar = self.verticalScrollBar()
         left = self._sw_target - self._sw_cur
-        if abs(left) < self.WHEEL_SNAP_PX or dt <= 0.0:
+        if abs(left) < self.WHEEL_SNAP_PX:
             self._sw_cur = self._sw_target
             bar.setValue(int(round(self._sw_cur)))
             self._sw_active = False
             self._sw_release()                            # 收工就把定时器精度还回去
             return False
+        if dt <= 0.0:
+            return True
         k = 1.0 - (1.0 - self.WHEEL_EASE) ** (dt / self.WHEEL_FRAME_S)
         self._sw_cur += left * k
         bar.setValue(int(round(self._sw_cur)))
@@ -1294,7 +1296,8 @@ class _SmoothWheel:
         if timer.interval() != ms:
             timer.setInterval(ms)
         self._sw_hold()                   # 只有动画期间才占高精度定时器
-        timer.start()
+        if not timer.isActive():
+            timer.start()
 
     def _sw_step(self):
         if not self.isVisible():          # 窗口已经藏了：动画没人看，收掉并还精度
@@ -1311,7 +1314,7 @@ class _SmoothWheel:
         pix = ev.pixelDelta()
         ang = ev.angleDelta()
         if not pix.isNull() and pix.y():          # 触控板：本身就是连续小步，直接跟手
-            delta = float(pix.y())
+            delta = -float(pix.y())
             self._sw_cancel()
             self._sw_target = max(float(bar.minimum()),
                                   min(float(bar.maximum()), bar.value() + delta))
@@ -1327,7 +1330,7 @@ class _SmoothWheel:
         if not self._sw_active:
             self._sw_cur = float(bar.value())
             self._sw_target = self._sw_cur
-        self._sw_last = time.perf_counter()
+            self._sw_last = time.perf_counter()
         self._sw_target = max(float(bar.minimum()),
                               min(float(bar.maximum()), self._sw_target + delta))
         self._sw_active = True
@@ -3222,8 +3225,8 @@ class QtBigView(QtWidgets.QWidget):
         self.setWindowTitle(tr("放大查看 - %s") % title)
         self.setMinimumSize(880, 560)
         self.resize(1060, 680)
-        # 打开时用表格还是卡片：默认视图在设置里选（_BIG_VIEW_VIEWS），这里只管摆好初始状态
-        self._start_cards = bool(cards)
+        # 放大查看统一使用卡片视图。保留 cards 参数以兼容旧调用方，实际不再允许切回表格。
+        self._start_cards = True
         # 原生窗口框（不是无边框 + 半透明）：
         # layered 窗口会被 DWM 跳过弹出/关闭/最小化动画，换成原生框后系统动画、原生
         # 阴影、四边拖拽缩放全都回来了；圆角和深色标题栏走 DWM 属性（见 showEvent）。
@@ -3277,7 +3280,6 @@ class QtBigView(QtWidgets.QWidget):
         self.btn_none.setToolTip(tr("取消所有勾选（只清选中态，清单内容不动）"))
         self.btn_online = (AnimButton(tr("🌐 联网搜索"), "#7e57c2", "#5e35b1", th)
                            if is_mod else None)
-        self.btn_view = AnimButton(tr("🗂 卡片视图"), "#0ea5a4", "#0b7f7f", th)
         # 定位错误：跳到下一个"迁移/扫描时报过错的条目"（主界面记着那份名单，见 hooks.failed）
         self.btn_fail = AnimButton(tr("📍 定位错误"), "#e53935", "#c62828", th)
         self.btn_fail.setToolTip(tr("跳到下一个出错的条目（清单里标红的那几条）"))
@@ -3286,7 +3288,7 @@ class QtBigView(QtWidgets.QWidget):
         _btns = {"bv_detect": self.btn_detect, "bv_remove": self.btn_del,
                  "bv_add": self.btn_add, "bv_all": self.btn_all,
                  "bv_invert": self.btn_inv, "bv_none": self.btn_none,
-                 "bv_online": self.btn_online, "bv_view": self.btn_view,
+                 "bv_online": self.btn_online,
                  "bv_fail": self.btn_fail}
         try:
             from ui import button_prefs as _bp
@@ -3327,7 +3329,6 @@ class QtBigView(QtWidgets.QWidget):
         self.btn_all.clicked.connect(lambda: self._on_check("all"))
         self.btn_inv.clicked.connect(lambda: self._on_check("invert"))
         self.btn_none.clicked.connect(lambda: self._on_check("none"))
-        self.btn_view.clicked.connect(self._toggle_view)
         self.btn_fail.clicked.connect(self._goto_next_failed)
         if self.btn_online is not None:
             self.btn_online.clicked.connect(self._on_online_search)
@@ -3427,9 +3428,8 @@ class QtBigView(QtWidgets.QWidget):
             sb.valueChanged.connect(self._update_scroll_progress)
             sb.rangeChanged.connect(lambda *_a: self._update_scroll_progress())
         self.stack.currentChanged.connect(lambda *_a: self._update_scroll_progress())
-        if self._start_cards:                 # 设置里选了"打开就是卡片"
-            self.stack.setCurrentIndex(1)
-            self.btn_view.setText(tr("📋 表格视图"))
+        # 只保留卡片视图；表格模型暂时保留用于兼容内部排序/滚动代码。
+        self.stack.setCurrentIndex(1)
 
         # ---- 底栏 ----
         # 原生窗口框自己就能从四边拖拽缩放，不需要 QSizeGrip
@@ -4122,9 +4122,12 @@ class QtBigView(QtWidgets.QWidget):
             self._hint_backup = None
 
     def _toggle_view(self):
-        to_cards = self.stack.currentIndex() == 0
-        self.stack.setCurrentIndex(1 if to_cards else 0)
-        self.btn_view.setText(tr("📋 表格视图") if to_cards else tr("🗂 卡片视图"))
+        """兼容旧调用方：视图固定为卡片，不再提供表格切换。"""
+        try:
+            self.stack.setCurrentIndex(1)
+            self._update_scroll_progress()
+        except Exception:
+            pass
 
     def _reveal(self, path):
         if not path or not Path(path).exists():
@@ -4454,9 +4457,29 @@ class QtBigView(QtWidgets.QWidget):
         return self._alive
 
     def show_centered(self):
-        scr = QtWidgets.QApplication.primaryScreen().availableGeometry()
-        self.move(scr.center().x() - self.width() // 2,
-                  scr.center().y() - self.height() // 2)
+        """在首次显示前完成原生窗口定位，避免先出现在默认位置再居中瞬移。"""
+        self.ensurePolished()
+        try:
+            if self.layout() is not None:
+                self.layout().activate()
+        except Exception:
+            pass
+        try:
+            self.setAttribute(QtCore.Qt.WA_NativeWindow, True)
+            self.winId()
+        except Exception:
+            pass
+        try:
+            scr_obj = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos())
+        except Exception:
+            scr_obj = None
+        if scr_obj is None:
+            scr_obj = self.screen() or QtWidgets.QApplication.primaryScreen()
+        scr = scr_obj.availableGeometry()
+        frame = self.frameGeometry()
+        frame.moveCenter(scr.center())
+        border = self.frameGeometry().topLeft() - self.geometry().topLeft()
+        self.move(frame.topLeft() - border)
         self.show()
         self.raise_()
         self.activateWindow()

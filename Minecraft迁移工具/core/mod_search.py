@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 from pathlib import Path
+from utils.file_io import atomic_json
 
 # 界面语言：下载量单位（万/亿 ↔ k/M）走 trp 模板
 from utils import i18n
@@ -340,10 +341,12 @@ _TAG_CACHE_LOCK = threading.Lock()
 TAG_CACHE_FILE = Path.home() / ".minecraft_migrate_tags.json"
 
 # 熔断：断网时别让几百个模组各等一次超时（6 个扫描线程会被一起拖住）。
-# 连续失败 3 次后就当"没网"，本次运行不再尝试；成功一次即清零。
+# 连续失败 3 次后暂停 30 秒，再允许恢复探测；成功一次即清零。
 _NET_FAILS = [0]
 _NET_DEAD = [False]
 _NET_FAIL_LIMIT = 3
+_NET_RETRY_AT = [0.0]
+_NET_COOLDOWN = 30.0
 
 
 def _tag_cache():
@@ -363,10 +366,7 @@ def _tag_cache():
 def _save_tag_cache():
     try:
         cache = _tag_cache()
-        tmp = str(TAG_CACHE_FILE) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False)
-        os.replace(tmp, TAG_CACHE_FILE)
+        atomic_json(TAG_CACHE_FILE, cache, indent=None)
     except Exception:
         pass
 
@@ -379,7 +379,10 @@ def fetch_categories(modid="", name="", timeout=10):
     分类贴到本地模组上。断网、超时、查不到都返回 None，调用方继续用"关键词推测"。
     """
     if _NET_DEAD[0]:
-        return None
+        if time.monotonic() < _NET_RETRY_AT[0]:
+            return None
+        _NET_DEAD[0] = False
+        _NET_FAILS[0] = 0
     for query in (modid, name):
         q = str(query or "").strip()
         if not q:
@@ -392,6 +395,7 @@ def fetch_categories(modid="", name="", timeout=10):
             _NET_FAILS[0] += 1
             if _NET_FAILS[0] >= _NET_FAIL_LIMIT:
                 _NET_DEAD[0] = True
+                _NET_RETRY_AT[0] = time.monotonic() + _NET_COOLDOWN
             return None
         hits = data.get("hits") or []
         if not hits:
@@ -418,20 +422,22 @@ def fetch_categories(modid="", name="", timeout=10):
 def fetch_categories_cached(key, modid="", name="", timeout=10):
     """带磁盘缓存的分类查询；key 用 Mod ID（没有就用文件名的去扩展名形式）。
 
-    缓存里存空列表表示"查过了但没有"，下次不再联网重查。
+    只保存成功的非空分类；超时和无结果允许下次重试。
     """
     key = str(key or "").strip().lower()
     if not key:
         return None
     with _TAG_CACHE_LOCK:
         cache = _tag_cache()
-        if key in cache:
-            hit = cache[key]
-            return list(hit) if hit else None
+        hit = cache.get(key)
+        if isinstance(hit, list) and hit and all(isinstance(v, str) for v in hit):
+            return list(hit)
+        cache.pop(key, None)  # Recover legacy negative entries, including offline failures.
     cats = fetch_categories(modid=modid, name=name, timeout=timeout)
-    with _TAG_CACHE_LOCK:
-        _tag_cache()[key] = list(cats or [])
-        _save_tag_cache()
+    if cats:
+        with _TAG_CACHE_LOCK:
+            _tag_cache()[key] = list(cats)
+            _save_tag_cache()
     return cats
 
 

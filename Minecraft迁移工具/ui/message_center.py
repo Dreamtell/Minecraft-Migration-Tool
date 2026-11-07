@@ -34,121 +34,12 @@ from utils.config import CONFIG_FILE
 from utils.dpi import px
 from utils.i18n import trp
 
-容量 = 200
-_重要级别 = ("warn", "error")
-
-
-def _存盘路径():
-    try:
-        return Path(CONFIG_FILE).parent / ".minecraft_migrate_messages.json"
-    except Exception:
-        return Path.home() / ".minecraft_migrate_messages.json"
-
-
-class MessageStore:
-    """消息存档：内存里全留，磁盘上只留重要的。"""
-
-    def __init__(self, 上限=容量, 路径=None):
-        self.上限 = int(上限)
-        self.路径 = Path(路径) if 路径 else _存盘路径()
-        self.items = []          # [{t: 时间戳, level: 级别, text: 文本, 旧: 是否上次运行}]
-        self.未读 = 0
-        self._读盘()
-
-    def _读盘(self):
-        try:
-            with open(self.路径, "r", encoding="utf-8") as fp:
-                数据 = json.load(fp)
-            项 = 数据.get("items") if isinstance(数据, dict) else None
-            if isinstance(项, list):
-                for x in 项[-self.上限:]:
-                    if not isinstance(x, dict):
-                        continue
-                    文 = str(x.get("text") or "")
-                    if not 文:
-                        continue
-                    self.items.append({
-                        "t": float(x.get("t") or 0) or time.time(),
-                        "level": str(x.get("level") or "info"),
-                        "text": 文,
-                        "旧": True,
-                        "未读": False,      # 上次运行的记录，打开面板不该算新消息
-                    })
-        except Exception:
-            pass
-
-    def _写盘(self):
-        """只写重要的；原子写（写一半崩掉不会留下坏 JSON）。"""
-        try:
-            项 = [x for x in self.items if x.get("level") in _重要级别][-self.上限:]
-            self.路径.parent.mkdir(parents=True, exist_ok=True)
-            临时 = self.路径.with_name(self.路径.name + ".mctmp")
-            with open(临时, "w", encoding="utf-8") as fp:
-                json.dump({"v": 1, "items": [
-                    {"t": x["t"], "level": x["level"], "text": x["text"]} for x in 项
-                ]}, fp, ensure_ascii=False, indent=1)
-                fp.flush()
-                os.fsync(fp.fileno())
-            os.replace(临时, self.路径)
-        except Exception:
-            pass
-
-    def add(self, text, level="info", key=None):
-        文 = str(text or "").strip()
-        if not 文:
-            return
-        # 同一个 key = 同一条消息的"状态变化"（开/关这类开关反复拨）。
-        # 直接并进上一条：面板只留一行最新状态 + ×N，而不是被十条糊满。
-        上 = self.items[-1] if self.items else None
-        if key and 上 is not None and 上.get("key") == key:
-            # 合并的这一行如果本来就是未读，就不该再 +1 —— 未读数是"面板里有几行
-            # 是新消息"，不是"add 被调用过几次"（合并三次仍是一行）。
-            self.items[-1] = {"t": time.time(), "level": level or "info",
-                              "text": 文, "旧": False, "key": key,
-                              "n": int(上.get("n") or 1) + 1, "未读": True}
-            if not 上.get("未读"):
-                self.未读 += 1
-            if (level or "info") in _重要级别:
-                self._写盘()
-            return
-        self.items.append({"t": time.time(), "level": level or "info",
-                           "text": 文, "旧": False, "key": key, "n": 1,
-                           "未读": True})
-        if len(self.items) > self.上限:
-            del self.items[:-self.上限]
-        self.未读 += 1
-        if (level or "info") in _重要级别:
-            self._写盘()
-
-    def 全部(self):
-        return list(self.items)
-
-    def clear(self):
-        self.items = []
-        self.未读 = 0
-        try:
-            if self.路径.exists():
-                self.路径.unlink()
-        except Exception:
-            pass
-
-    def 标记已读(self):
-        for x in self.items:
-            if x.get("未读"):
-                x["未读"] = False
-        self.未读 = 0
-
-
-# 级别 → 中文名（列表里写 ok/warn/error 是开发者语言，用户看的是中文）
-_级别名 = {"ok": "成功", "info": "提示", "warn": "警告", "error": "错误"}
-
-# 级别 → (图标, 颜色)
-_外观 = {
-    "ok":    ("✓", "#4caf50"),
-    "info":  ("i", "#4c9aff"),
-    "warn":  ("!", "#ffa000"),
-    "error": ("×", "#e53935"),
-}
+# 存储层搬到 utils/message_store.py(Qt 主界面也用,那边不能 import 本模块的 tkinter)。
+# 这里原名 re-export,老调用方 `from ui.message_center import MessageStore` 不受影响。
+from utils.message_store import (  # noqa: E402,F401
+    容量, _重要级别, _存盘路径, MessageStore,
+    级别名 as _级别名, 外观 as _外观,
+)
 
 _宽 = 372          # 抽屉卡片宽度（设计像素）
 _边距 = 10         # 卡片离主窗右/上/下的留白（设计像素），留白透明
@@ -734,68 +625,16 @@ class _抽屉:
             except Exception:
                 pass
 
-        # 平滑滚动：滚轮不再"一格一跳"，而是逐帧朝目标位置滑过去。
-        # Canvas 的 yview_scroll(units) 一格就是一大截，看着很硬；这里自己按
-        # "每格 60px / 内容总高" 换算成比例，再用 after 逐帧缓动。
-        平滑 = {"目标": None}
-
-        def _一步():
-            """朝目标滑一帧；返回 False 表示这一轮结束。
-
-            帧间隔与定时器精度交给 anim.FrameLoop（它会 top up 精度并在结束时还回去）。
-            """
-            目标 = 平滑["目标"]
-            if 目标 is None:
-                return False
-            try:
-                当前 = 列表.yview()[0]
-            except Exception:
-                return False
-            差 = 目标 - 当前
-            if abs(差) < 0.0006:
-                try:
-                    列表.yview_moveto(目标)
-                except Exception:
-                    pass
-                平滑["目标"] = None
-                return False
-            try:
-                列表.yview_moveto(当前 + 差 * 0.28)
-            except Exception:
-                return False
-            return True
-
-        环 = anim.FrameLoop(列表, _一步)
-
-        def _可视比():
-            """当前可见高度占全部内容的比例（算不出就返回 1，等于不能滚）。"""
-            try:
-                头, 尾 = 列表.yview()
-                return max(0.0, min(1.0, 尾 - 头))
-            except Exception:
-                return 1.0
-
-        def _夹(目标):
-            return max(0.0, min(1.0 - _可视比(), 目标))
-
-        def _轮(e):
-            try:
-                reg = 列表.cget("scrollregion")
-                总 = float(str(reg).split()[3]) if reg else 0.0
-                if 总 <= 1.0:
-                    总 = float(列表.bbox("all")[3]) if 列表.bbox("all") else 1.0
-            except Exception:
-                总 = 0.0
-            格 = 1 if int(getattr(e, "delta", 0)) < 0 else -1
-            基准 = 列表.yview()[0] if 平滑["目标"] is None else 平滑["目标"]
-            平滑["目标"] = _夹(基准 + (格 * 60.0) / max(1.0, 总))
-            环.start()
-            return "break"
-
-        列表.bind("<MouseWheel>", _轮)
+        # Use the shared pixel scroller: small touchpad deltas keep their
+        # magnitude, animation speed follows elapsed time, and edges settle.
+        from utils.helpers import SmoothScroller
+        列表.configure(yscrollincrement=1)
+        滚动器 = SmoothScroller.for_canvas(列表, px_per_notch=60, ease=0.28)
+        列表._smooth_scroller = 滚动器
         列表.bind("<Configure>", lambda e: _重画())
 
         def _拖(e):
+            滚动器.stop()
             try:
                 列表.yview_moveto(max(0.0, min(1.0, e.y / max(1, 滚.winfo_height()))))
             except Exception:

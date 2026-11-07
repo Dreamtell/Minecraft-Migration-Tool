@@ -216,6 +216,23 @@ except Exception:
     pass
 
 
+def _想用Qt主界面():
+    """配置要求用 Qt 主界面，且没有被「纯 Tk 模式」总开关关掉。
+
+    环境变量 MCTOOL_MAIN=tk / qt 可以临时覆盖配置（排查问题、验证脚本用）。
+    """
+    强制 = (os.environ.get("MCTOOL_MAIN") or "").strip().lower()
+    if 强制 in ("tk", "qt"):
+        return 强制 == "qt"
+    try:
+        cfg = load_raw_config()
+    except Exception:
+        return False
+    if not bool(cfg.get("qt_enabled", True)):
+        return False
+    return str(cfg.get("main_window_backend", "tk") or "tk") == "qt"
+
+
 def main():
     # 单实例检查
     global _LOCK_HOLDER
@@ -246,6 +263,17 @@ def main():
             ctypes.windll.user32.AllowSetForegroundWindow(-1)     # ASFW_ANY
         except Exception:
             pass
+        # 已经在跑的可能是 Qt 主界面：先走命名管道叫它（失败不要紧，下面还有 Tk 那条路）
+        if _想用Qt主界面():
+            try:
+                # tray.py 自己会把 _qt 加进 sys.path 再 import PySide6
+                from ui.qt_main.tray import request_show_existing as _qt_show
+                if _qt_show():
+                    sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception:
+                pass
         from ui import tray as _tray_mod
         if not _tray_mod.request_show_existing():
             try:
@@ -256,6 +284,20 @@ def main():
             except Exception:
                 pass
         sys.exit(0)
+
+    # ---- Qt 主界面分支（配置 main_window_backend == "qt"）----
+    # 必须在建 Tk() 之前分流：一旦建了 Tk 根窗口，这个进程就不能再跑 Qt 主循环
+    # （两个 GUI 库共享主线程 = HANDOFF 里那个 GIL 致命错误）。
+    # Qt 起不来（没装 PySide6 / 导入失败 / 建窗口炸了）就回落到下面的 Tk 版。
+    if _想用Qt主界面():
+        try:
+            from ui.qt_main.app_qt import run as _run_qt, qt_available as _qt_ok
+            if _qt_ok():
+                sys.exit(_run_qt(icon_path=get_icon_path()))
+        except SystemExit:
+            raise
+        except Exception as e:
+            trace_exc("app/Qt主界面启动失败，回落Tk", e)
 
     # 创建主窗口（先隐藏，避免瞬移）；使用 TkinterDnD 以支持文件拖拽
     try:

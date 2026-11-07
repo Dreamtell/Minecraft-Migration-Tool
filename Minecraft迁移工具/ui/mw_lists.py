@@ -15,6 +15,7 @@ from ui.mw_common import _EXTRA_PRESETS, _center_window, _file_task_lock, _grad_
 from utils import i18n
 from utils.helpers import (
     DataText, RoundedTextArea, create_gradient_button, focus_window, set_window_icon,
+    trace_exc,
 )
 from utils.theme import apply_theme_to_widget_tree
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
@@ -515,30 +516,9 @@ class ListsMixin:
         focus_window(dialog)
 
     def extract_mods_from_changelog(self, text):
-        lines = text.splitlines()
-        added = []
-        updated = []
-        added_pattern = re.compile(r'^[\s]*\+[\s]*(.+\.jar)', re.IGNORECASE)
-        updated_pattern = re.compile(r'^[\s]*\-[\s]*(.+\.jar)', re.IGNORECASE)
-        for line in lines:
-            line_stripped = line.strip()
-            m = added_pattern.match(line_stripped)
-            if m:
-                added.append(m.group(1))
-                continue
-            m = updated_pattern.match(line_stripped)
-            if m:
-                updated.append(m.group(1))
-                continue
-            if re.match(r"^Added\s+mods[:：]", line_stripped, re.IGNORECASE):
-                continue
-            if re.match(r"^Updated\s+mods[:：]", line_stripped, re.IGNORECASE):
-                continue
-            if line_stripped.endswith(".jar"):
-                if not (line_stripped.startswith("Added") or line_stripped.startswith("Updated") or
-                        line_stripped.startswith("Removed")):
-                    added.append(line_stripped)
-        return added, updated
+        # 规则搬到 core/changelog.py(Qt 主界面也用),这里保留方法名给老调用方/打桩
+        from core.changelog import extract_mods
+        return extract_mods(text)
 
     # ---------- Config 清单相关 ----------
     def browse_add_config_entry(self):

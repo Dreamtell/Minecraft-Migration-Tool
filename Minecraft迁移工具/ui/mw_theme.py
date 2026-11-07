@@ -377,6 +377,12 @@ class ThemeMixin:
             except Exception:
                 pass
 
+        # 通用主题遍历后，统一日志正文、滚动条轨道和浮动按钮的底色。
+        for name in ("_log_view", "_log_big_live_view"):
+            view = getattr(self, name, None)
+            if view is not None and not view._closed:
+                view.set_theme(self.theme)
+
         # 把重绘在"覆盖层还盖着"的时候一次性冲掉。否则这些彩色文字（日志分类色、
         # 清单高亮）的重新着色会被推迟到圆形揭示把它们露出来的那一刻，用户就会
         # 看到"新底色 + 旧字色"闪一下——因为此刻窗口被截图覆盖层挡着，冲掉是看不见的。

@@ -18,6 +18,7 @@ from utils.helpers import (
     log_font,
     LiquidProgress, RoundedTextArea, SegmentedControl, SmoothScroller, SwitchRow,
     bind_text_scroll, create_gradient_button, is_dark_theme, style_window,
+    set_window_icon,
 )
 # 「开始迁移」一个按钮换成 3D 翻转组件（视觉取自 特效2.py 原型）；其余按钮不动。
 from ui.flip_button import create_flip_button
@@ -898,8 +899,7 @@ class PagesMixin:
 
     def _create_log_widgets(self):
         frame_log = tk.LabelFrame(self.root, text="执行日志", padx=5, pady=5)
-        # 日志区**不参与纵向抢空间**：给它固定高度，多出来的全给上面的清单区
-        # （清单才是经常要翻的；日志平常看最后几行就够）
+        # 日志高度随窗口调整；小窗口仍为清单保留足够空间。
         frame_log.pack(fill="x", expand=False, padx=10, pady=5)
 
         log_toolbar = WrapRow(frame_log)
@@ -985,8 +985,6 @@ class PagesMixin:
                                             bg=self.theme["log_bg"],
                                             fg=self.theme["log_fg"],
                                             font=log_font(), spacing1=1, spacing3=1)
-        # 日志框不再"抢"竖直空间：给它固定高度，剩下的都给上面的清单区
-        # （清单才是经常要翻的东西）
         self.log_text_box.pack(fill="both", expand=False, padx=2, pady=2)
         try:
             # RoundedTextArea 里全是 place 摆的，自身没有"请求高度"，只能硬给
@@ -994,20 +992,36 @@ class PagesMixin:
             self.log_text_box.pack_propagate(False)
         except Exception:
             pass
+        def _resize_log_area(event=None):
+            if event is not None and event.widget is not self.root:
+                return
+            # Transfer part of the list's surplus height to the log, retaining
+            # the compact layout on smaller screens. Sizes use the same DPI
+            # scale as the main window's 1080px design height.
+            extra = max(0, self.root.winfo_height() - px(720))
+            height = 150 + min(px(180), int(extra * 0.45))
+            if int(self.log_text_box.cget("height")) != height:
+                self.log_text_box.configure(height=height)
+
+        self.root.bind("<Configure>", _resize_log_area, add="+")
+        self.root.after_idle(_resize_log_area)
         self.log_text = self.log_text_box.text
         self._bind_log_locate(self.log_text)     # 双击日志行 → 定位到清单条目
-        # 试验：日志区平滑滚动。手动往上滚时暂停"自动跟到底"，滚回底部再恢复，
-        # 否则日志一边涌入、一边把你拽回底部，根本翻不上去。
-        self._log_follow = True
-        self._log_scroller = SmoothScroller.for_text(
-            self.log_text,
-            on_user_scroll=self._on_log_user_scroll,
-            on_settle=self._on_log_scroll_settle)
-        try:
-            self.log_text.vbar.bind(
-                "<ButtonRelease-1>", lambda e: self._on_log_scroll_settle())
-        except Exception:
-            pass
+        from ui.live_log import LiveLogView, create_log_button
+        self._log_view = LiveLogView(self.log_text, self.log_text_box,
+                                    self._session_log, self.theme)
+        self._log_scroller = self._log_view.scroller
+        status_row = tk.Frame(frame_log, bg=self.theme["bg"])
+        status_row.pack(fill="x", padx=8)
+        self._log_status_label = tk.Label(
+            status_row, text=trp("界面最多显示 {0} 行；完整日志单独保存", 5000),
+            bg=self.theme["bg"], fg=self.theme.get("muted_fg", "gray"),
+            font=("微软雅黑", 8), anchor="w")
+        self._log_status_label.pack(side="left", fill="x", expand=True)
+        self._log_full_button = create_log_button(
+            status_row, trp("打开完整日志"), self.open_full_log)
+        self._log_full_button.pack(side="right", pady=2)
+        self._start_log_updates()
         self._stage()
 
     # ---------- 原生窗口外观（暗色标题栏 + Win11 圆角）----------

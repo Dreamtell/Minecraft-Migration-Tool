@@ -5,6 +5,8 @@ import zipfile
 import json
 import re
 import threading
+import tempfile
+import tomllib
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -49,37 +51,30 @@ def _version_parts(v):
 
 
 def compare_versions(a, b):
-    """比较两个版本号：a > b 返回 1，a < b 返回 -1，相等 0，**没法比返回 None**。
-
-    规则：逐段比，数字段按数值；数字段排在字母段前面（所以 1.0 > 1.0-beta）；
-    某一边少一段时，缺的当"正式版"看 —— 没有后缀比带 beta/rc 的大，补 0 则算相等
-    （`1.0` == `1.0.0`）。
-    """
-    pa, pb = _version_parts(a), _version_parts(b)
+    """Compare release numbers first, then numeric/alphabetic prerelease segments."""
+    def parse(value):
+        value = str(value or "").strip().lstrip("vV").split("+", 1)[0]
+        match = re.fullmatch(r"(\d+(?:\.\d+)*)(?:[-_.]?([a-zA-Z][a-zA-Z0-9._-]*|\d+(?:\.\d+)*))?", value)
+        if not match:
+            return None
+        numbers = [int(p) for p in match[1].split(".")]
+        while numbers and numbers[-1] == 0:
+            numbers.pop()
+        suffix = match[2]
+        # Numeric suffix segments compare numerically as well (MC/mod pairs).
+        pre = None if suffix is None else tuple(
+            (0, int(p)) if p.isdigit() else (1, p.casefold())
+            for p in re.findall(r"[a-zA-Z]+|\d+", suffix))
+        return numbers, pre
+    pa, pb = parse(a), parse(b)
     if pa is None or pb is None:
         return None
-    for i in range(max(len(pa), len(pb))):
-        if i >= len(pa):                    # a 没有这一段了
-            y = pb[i]
-            if y[0] == 1:
-                return 1                    # b 是预发布后缀 → a 更大
-            if y[1] != 0:
-                return -1
-            continue
-        if i >= len(pb):
-            x = pa[i]
-            if x[0] == 1:
-                return -1
-            if x[1] != 0:
-                return 1
-            continue
-        x, y = pa[i], pb[i]
-        if x == y:
-            continue
-        if x[0] != y[0]:                    # 一个数字段一个字母段：数字段在前
-            return -1 if x[0] < y[0] else 1
-        return -1 if x[1] < y[1] else 1
-    return 0
+    for x, y in itertools.zip_longest(pa[0], pb[0], fillvalue=0):
+        if x != y:
+            return 1 if x > y else -1
+    if pa[1] is None or pb[1] is None:
+        return 0 if pa[1] == pb[1] else (1 if pa[1] is None else -1)
+    return (pa[1] > pb[1]) - (pa[1] < pb[1])
 
 
 def split_cn_name(filename):
@@ -204,11 +199,32 @@ def get_mod_icon(jar_path, cache_dir=None):
         return None
 
 
+def _read_forge_metadata(zf):
+    """Read a declared mod table, never a dependency or a commented example."""
+    for entry, loader in (("META-INF/mods.toml", "Forge"),
+                          ("META-INF/neoforge.mods.toml", "NeoForge")):
+        try:
+            content = zf.read(entry).decode("utf-8-sig")
+            data = tomllib.loads(content)
+        except (KeyError, ValueError, UnicodeError):
+            continue  # Unknown is safer than retiring an unrelated installed mod.
+        mods = data.get("mods")
+        if not isinstance(mods, list):
+            continue
+        for mod in mods:
+            if (isinstance(mod, dict) and isinstance(mod.get("modId"), str)
+                    and mod["modId"].strip()):
+                return mod, data, loader
+    return {}, {}, ""
+
+
 def get_mod_metadata(jar_path):
     """
     从 jar 中读取 modid、version、mod_type
     返回: (modid, version, mod_type)
     """
+    jar_path = Path(jar_path)
+
     def is_placeholder(v):
         if not v:
             return True
@@ -258,27 +274,16 @@ def get_mod_metadata(jar_path):
                     return "未知", ver_match.group(1), "Fabric(仅文件名)"
                 return "未知", "?", "Fabric(未知)"
 
-            try:
-                with zf.open('META-INF/mods.toml') as f:
-                    content = f.read().decode('utf-8', errors='ignore')
-                    modid_match = re.search(r'modId\s*=\s*"([^"]+)"', content)
-                    version_match = re.search(r'version\s*=\s*"([^"]+)"', content)
-                    if not modid_match:
-                        modid_match = re.search(r"modId\s*=\s*'([^']+)'", content)
-                    if not version_match:
-                        version_match = re.search(r"version\s*=\s*'([^']+)'", content)
-                    if modid_match:
-                        modid = modid_match.group(1)
-                        version = version_match.group(1) if version_match else None
-                        if is_placeholder(version):
-                            filename = jar_path.name
-                            ver_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)', filename)
-                            if ver_match:
-                                return modid, ver_match.group(1), "Forge(文件名推断)"
-                            return modid, "?", "Forge(占位符)"
-                        return modid, version or "?", "Forge"
-            except (KeyError, zipfile.BadZipFile):
-                pass
+            mod, _, loader = _read_forge_metadata(zf)
+            if mod:
+                modid = mod["modId"].strip()
+                version = str(mod.get("version") or "")
+                if is_placeholder(version):
+                    ver_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)', jar_path.name)
+                    if ver_match:
+                        return modid, ver_match.group(1), loader + "(文件名推断)"
+                    return modid, "?", loader + "(占位符)"
+                return modid, version, loader
 
             filename = jar_path.name
             version_match = re.search(r'[-_]v?(\d+\.\d+(\.\d+)?)', filename)
@@ -337,20 +342,22 @@ def get_full_mod_metadata(jar_path):
                         info["env"] = {"client": "客户端", "server": "服务端"}.get(env, "")
                     except:
                         pass
-            elif 'META-INF/mods.toml' in zf.namelist():
-                with zf.open('META-INF/mods.toml') as f:
-                    content = f.read().decode('utf-8', errors='ignore')
-                    modid = re.search(r'modId\s*=\s*"([^"]+)"', content)
-                    version = re.search(r'version\s*=\s*"([^"]+)"', content)
-                    name = re.search(r'displayName\s*=\s*"([^"]+)"', content)
-                    desc = re.search(r'description\s*=\s*"([^"]+)"', content)
-                    author = re.search(r'author\s*=\s*"([^"]+)"', content)
-                    info["modid"] = _clean_meta(modid.group(1) if modid else "未知")
-                    info["version"] = _clean_meta(version.group(1) if version else "未知")
-                    info["name"] = _clean_meta(name.group(1) if name else "未知")
-                    info["description"] = desc.group(1) if desc else "无"
-                    info["authors"] = author.group(1) if author else "无"
-                    info["mod_type"] = "Forge"
+            else:
+                mod, data, loader = _read_forge_metadata(zf)
+                if mod:
+                    info["modid"] = _clean_meta(mod.get("modId"))
+                    info["version"] = _clean_meta(mod.get("version"))
+                    info["name"] = _clean_meta(mod.get("displayName"))
+                    info["description"] = mod.get("description") or "无"
+                    info["authors"] = mod.get("authors") or mod.get("author") or "无"
+                    dependencies = data.get("dependencies", {})
+                    if isinstance(dependencies, dict):
+                        entries = dependencies.get(mod["modId"], [])
+                        if isinstance(entries, list):
+                            info["dependencies"] = ", ".join(
+                                str(d["modId"]) for d in entries
+                                if isinstance(d, dict) and d.get("modId")) or "无"
+                    info["mod_type"] = loader
     except Exception as e:
         info["description"] = f"读取错误: {e}"
     return info
@@ -364,6 +371,9 @@ def get_full_mod_metadata(jar_path):
 # 解析是"解 zip + 解 JSON"的 Python 活，**卡在 GIL 上**，多开线程换不来速度；
 # 却会让界面线程在 GIL 上排队。3 和 Qt 那侧调好的并发数一致（见 ui/qt_big_view.py）。
 SCAN_WORKERS = 3
+
+# Old parser results may have mistaken a dependency ID for the mod's own ID.
+_METADATA_CACHE_VERSION = 2
 
 
 def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
@@ -387,26 +397,40 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
         return None
 
     def load_cache(cache_path):
-        cache = {}
-        if cache_path.exists():
-            try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cache = json.load(f)
-            except:
-                pass
-        return cache
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+            return cache if isinstance(cache, dict) else {}
+        except (OSError, ValueError):
+            return {}
 
     def save_cache(cache_path, cache):
+        temp_path = None
         try:
-            with open(cache_path, 'w', encoding='utf-8') as f:
+            # Replace only after a complete write; concurrent scans use distinct temps.
+            with tempfile.NamedTemporaryFile(
+                    mode='w', encoding='utf-8', dir=cache_path.parent,
+                    prefix=f".{cache_path.name}.", suffix='.tmp', delete=False) as f:
+                temp_path = Path(f.name)
                 json.dump(cache, f, indent=2)
-        except:
+            temp_path.replace(cache_path)
+            temp_path = None
+        except (OSError, TypeError, ValueError):
             pass
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     src_cache_file = src_path / "mods_meta_cache.json"
     tgt_cache_file = tgt_path / "mods_meta_cache.json"
-    src_cache = load_cache(src_cache_file)
-    tgt_cache = load_cache(tgt_cache_file)
+    src_cached_metadata = load_cache(src_cache_file)
+    tgt_cached_metadata = load_cache(tgt_cache_file)
+    # Rebuild from the current inventory so deleted/renamed files do not linger.
+    src_cache = {}
+    tgt_cache = {}
 
     src_files = {}
     tgt_files = {}
@@ -418,13 +442,31 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
         total = total_files
 
     def parse_jar(file_path, is_source):
-        modid, version, mod_type = get_mod_metadata(file_path)
         stat = file_path.stat()
+        fingerprint = f"{stat.st_mtime_ns}_{stat.st_size}"
+        cache = src_cached_metadata if is_source else tgt_cached_metadata
+        cached = cache.get(file_path.name)
+        metadata_keys = ("modid", "version", "mod_type")
+        if (isinstance(cached, dict)
+                and cached.get("parser_version") == _METADATA_CACHE_VERSION
+                and cached.get("fingerprint") == fingerprint
+                and all(key in cached and (cached[key] is None or
+                                          isinstance(cached[key], str))
+                        for key in metadata_keys)):
+            modid, version, mod_type = (cached[key] for key in metadata_keys)
+        else:
+            modid, version, mod_type = get_mod_metadata(file_path)
+            final_stat = file_path.stat()
+            if (final_stat.st_mtime_ns, final_stat.st_size) != (stat.st_mtime_ns, stat.st_size):
+                # Do not associate metadata with a file that changed during parsing.
+                fingerprint = None
+            stat = final_stat
         return {
             "name": file_path.name,
             "path": file_path,
             "size": stat.st_size,
             "mtime": stat.st_mtime,
+            "fingerprint": fingerprint,
             "norm": normalize_mod_name(file_path.name),
             "modid": modid,
             "version": version,
@@ -441,18 +483,13 @@ def scan_mod_differences(src_path, tgt_path, progress_queue=None, total=0):
         """
         nonlocal current
         current += 1
-        if 是源:
-            src_files[result["name"]] = result
-            src_cache[result["name"]] = {
-                "fingerprint": f"{result['mtime']}_{result['size']}",
-                "modid": result["modid"],
-                "version": result["version"],
-                "mod_type": result["mod_type"],
-            }
-        else:
-            tgt_files[result["name"]] = result
-            tgt_cache[result["name"]] = {
-                "fingerprint": f"{result['mtime']}_{result['size']}",
+        files = src_files if 是源 else tgt_files
+        cache = src_cache if 是源 else tgt_cache
+        files[result["name"]] = result
+        if result["fingerprint"] is not None:
+            cache[result["name"]] = {
+                "parser_version": _METADATA_CACHE_VERSION,
+                "fingerprint": result["fingerprint"],
                 "modid": result["modid"],
                 "version": result["version"],
                 "mod_type": result["mod_type"],
@@ -591,6 +628,24 @@ _ENV_CACHE = {}
 _ENV_CACHE_LOCK = threading.Lock()
 _JAR_SAMPLE = 8          # 抽查几个 jar 判加载器就够，别为几百个模组挨个开压缩包
 _NAME_SAMPLE = 40        # 文件名只看名字、不用解压，多抽几个让"投票"更准
+
+
+def _env_stamp(root):
+    """Stat inputs cheaply; avoid re-opening sampled JARs on every query."""
+    try:
+        paths = [root, root / "mods", root / "versions", root / (root.name + ".json")]
+        paths.extend(sorted((root / "versions").glob("*/version.json")))
+        paths.extend(sorted((root / "mods").glob("*.jar")))
+        stamp = []
+        for path in paths:
+            try:
+                st = path.stat()
+                stamp.append((str(path), st.st_mtime_ns, st.st_size))
+            except FileNotFoundError:
+                stamp.append((str(path), None, None))
+        return tuple(stamp)
+    except OSError:
+        return None
 
 
 def _loader_of(text):
@@ -765,12 +820,13 @@ def detect_instance_env(root):
         键 = str(Path(root).resolve())
     except Exception:
         键 = str(root)
-    with _ENV_CACHE_LOCK:
-        hit = _ENV_CACHE.get(键)
-    if hit is not None:
-        return dict(hit)
 
     p = Path(root)
+    stamp = _env_stamp(p)
+    with _ENV_CACHE_LOCK:
+        hit = _ENV_CACHE.get(键)
+        if stamp is not None and hit and hit[0] == stamp:
+            return dict(hit[1])
     mc, loader = "", ""
     mc_src, loader_src = "", ""      # 版本和加载器可能来自不同的层，分别记来源
     if p.is_dir():
@@ -801,6 +857,9 @@ def detect_instance_env(root):
     if loader:
         来源.append(trp("加载器来自{0}", trp(loader_src) if loader_src else trp("未知来源")))
     结果 = {"mc": mc, "loader": loader, "src": "；".join(来源)}
-    with _ENV_CACHE_LOCK:
-        _ENV_CACHE[键] = dict(结果)
+    if stamp is not None and stamp == _env_stamp(p) and (mc or loader):
+        with _ENV_CACHE_LOCK:
+            if len(_ENV_CACHE) >= 128:
+                _ENV_CACHE.clear()
+            _ENV_CACHE[键] = (stamp, dict(结果))
     return 结果

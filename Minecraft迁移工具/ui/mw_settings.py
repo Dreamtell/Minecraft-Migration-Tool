@@ -15,7 +15,7 @@ from tkinter import messagebox, ttk
 from ui import button_prefs
 from ui.mw_common import (
     LINK_GITHUB, LINK_MCMOD, LINK_MINECRAFT, LINK_PCL,
-    _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS,
+    _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS, _MAIN_BACKENDS,
     _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS,
     _RENAME_MARKERS, _SECTION_STYLE, _mix,
 )
@@ -39,7 +39,7 @@ from utils.helpers import (
     center_window, create_gradient_button, focus_window, set_window_icon, trace_exc,
 )
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
-from utils.i18n import trp
+from utils.i18n import trp, trf
 
 
 class SettingsMixin:
@@ -566,10 +566,7 @@ class SettingsMixin:
             command=self._on_qt_switch, accent="switch_on")
         self.settings_qt_sw.pack(fill="x", pady=(0, 8))
         self.settings_qt_sw.set(getattr(self, "qt_enabled", True))
-        self.settings_view_var = tk.StringVar(value=getattr(self, "big_view_backend", "qt"))
         _qt_ok, _qt_why = self._qt_available()
-        分段(box_view, self.settings_view_var, _BIG_VIEW_BACKENDS,
-             self._set_big_view_backend, 名="view")
         tk.Label(box_view,
                  text=i18n.trf("PySide6 当前{state}。{why}",
                                state=i18n.tr("可用" if _qt_ok else "不可用"),
@@ -577,28 +574,21 @@ class SettingsMixin:
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(4, 0))
-        tk.Label(box_view, text="打开时用哪个视图：", bg=self.theme["bg"],
+        tk.Label(box_view, text="放大查看：固定使用 Qt 卡片视图", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
-        self.settings_view_mode_var = tk.StringVar(
-            value=getattr(self, "big_view_view", "table"))
-        分段(box_view, self.settings_view_mode_var, _BIG_VIEW_VIEWS,
-             self._set_big_view_view, 名="view_mode")
 
-        # ---------- 差异窗口用哪个实现 ----------
-        tk.Label(box_view, text="差异扫描窗口用哪个实现：", bg=self.theme["bg"],
+        # ---------- 主界面用哪个实现（重启后生效） ----------
+        tk.Label(box_view, text="主界面用哪个实现（重启后生效）：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
-        self.settings_diff_backend_var = tk.StringVar(
-            value=getattr(self, "diff_backend", "qt"))
-        分段(box_view, self.settings_diff_backend_var, _BIG_VIEW_BACKENDS,
-             self._set_diff_backend, 名="diff_backend")
-        tk.Label(box_view, text="差异窗口打开时用哪个视图：", bg=self.theme["bg"],
+        self.settings_main_backend_var = tk.StringVar(
+            value=getattr(self, "main_window_backend", "tk"))
+        分段(box_view, self.settings_main_backend_var, _MAIN_BACKENDS,
+             self._set_main_backend, 名="main_backend")
+
+        tk.Label(box_view, text="差异扫描：固定使用 Qt 卡片视图", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
-        self.settings_diff_view_var = tk.StringVar(
-            value=getattr(self, "diff_view", "table"))
-        分段(box_view, self.settings_diff_view_var, _DIFF_VIEWS, self._set_diff_view, 名="diff_view")
         tk.Label(box_view,
-                 text="两个窗口默认都用 PySide6；如果遇到窗口相关的异常，可以把它们切回"
-                      "经典 Tk 实现（功能和数据完全一样，只是观感旧一些）。",
+                 text="两个列表窗口不再创建 Tk 版本，也不提供表格 / 卡片切换。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(2, 0))
@@ -1337,48 +1327,51 @@ class SettingsMixin:
             return
 
     def _set_big_view_backend(self, value):
-        """放大查看窗口换实现（下一次打开生效）。"""
-        self.big_view_backend = value if value in ("qt", "tk") else "qt"
+        """兼容旧配置入口：放大查看固定使用 Qt。"""
+        self.big_view_backend = "qt"
         self.save_config()
-        used_qt = self.big_view_backend == "qt"
-        self.toast(trp("🗂 放大查看窗口已切换为：PySide6 试点窗口") if used_qt
-                   else trp("🗂 放大查看窗口已切换为：经典 Tk 窗口"),
-                   level="ok", key="big_view_backend")
-        if used_qt:
+        self.toast(trp("🗂 放大查看固定使用 Qt 卡片窗口"), level="ok",
+                   key="big_view_backend")
+        ok, why = self._qt_available()
+        if not ok:
+            self.toast("⚠ " + why, level="warn", key="big_view_backend")
+
+    def _set_main_backend(self, value):
+        """主界面用哪个实现（重启后生效；Qt 起不来时 app.py 自动回落 Tk）。"""
+        self.main_window_backend = value if value in ("qt", "tk") else "tk"
+        self.save_config()
+        self.toast(trp("🧪 下次启动使用 PySide6 主界面")
+                   if self.main_window_backend == "qt" else
+                   trp("🪟 下次启动使用经典 Tk 主界面"),
+                   level="ok", key="main_window_backend")
+        if self.main_window_backend == "qt":
             ok, why = self._qt_available()
             if not ok:
-                self.toast("⚠ " + why, level="warn", key="big_view_backend")
+                self.toast("⚠ " + why, level="warn", key="main_window_backend")
 
     def _set_diff_backend(self, value):
-        """差异窗口用哪个实现（下一次扫描生效）。"""
-        self.diff_backend = value if value in ("qt", "tk") else "qt"
+        """兼容旧配置入口：差异窗口固定使用 Qt。"""
+        self.diff_backend = "qt"
         self.save_config()
-        self.toast(trp("🧩 差异窗口已切换为：PySide6 窗口")
-                   if self.diff_backend == "qt" else
-                   trp("🧩 差异窗口已切换为：经典 Tk 窗口"),
-                   level="ok", key="diff_backend")
-        if self.diff_backend == "qt":
-            ok, why = self._qt_available()
-            if not ok:
-                self.toast("⚠ " + why, level="warn", key="diff_backend")
+        self.toast(trp("🧩 差异窗口固定使用 Qt 卡片窗口"), level="ok",
+                   key="diff_backend")
+        ok, why = self._qt_available()
+        if not ok:
+            self.toast("⚠ " + why, level="warn", key="diff_backend")
 
     def _set_big_view_view(self, value):
-        """放大查看窗口默认用哪个视图（下一次打开生效）。"""
-        self.big_view_view = value if value in ("table", "cards") else "table"
+        """兼容旧配置入口：放大查看固定使用卡片视图。"""
+        self.big_view_view = "cards"
         self.save_config()
-        self.toast(trp("🗂 放大查看窗口默认视图：卡片视图")
-                   if self.big_view_view == "cards" else
-                   trp("🗂 放大查看窗口默认视图：表格视图"),
-                   level="ok", key="big_view_view")
+        self.toast(trp("🗂 放大查看窗口固定使用卡片视图"), level="ok",
+                   key="big_view_view")
 
     def _set_diff_view(self, value):
-        """模组差异窗口默认用哪个视图（下一次打开生效）。"""
-        self.diff_view = value if value in ("table", "cards") else "table"
+        """兼容旧配置入口：差异窗口固定使用卡片视图。"""
+        self.diff_view = "cards"
         self.save_config()
-        self.toast(trp("🧩 模组差异窗口默认视图：卡片视图")
-                   if self.diff_view == "cards" else
-                   trp("🧩 模组差异窗口默认视图：列表视图"),
-                   level="ok", key="diff_view")
+        self.toast(trp("🧩 模组差异窗口固定使用卡片视图"), level="ok",
+                   key="diff_view")
 
     def _toggle_online_tags(self):
         """联网分类开关：开启后扫描会在后台去 Modrinth 取真实分类。"""

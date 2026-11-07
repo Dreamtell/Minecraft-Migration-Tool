@@ -20,7 +20,7 @@ import tkinter as tk
 
 from utils.dpi import px
 from utils.textsafe import 可见
-from utils.helpers import create_gradient_button, set_window_icon
+from utils.helpers import create_gradient_button, set_window_icon, trace_exc
 from utils.i18n import trp
 
 # 卡片配色：主题里没有 card_bg / border，就自己从 bg 往 fg 混一点出来

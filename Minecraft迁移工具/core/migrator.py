@@ -6,6 +6,7 @@ import stat
 import sys
 import time
 import traceback
+import tempfile
 from pathlib import Path
 
 # 界面语言：日志/文案模板走 trp（中文模式下与原 f-string 逐字一致）
@@ -20,42 +21,63 @@ _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL",
                    *("LPT%d" % i for i in range(1, 10))}
 
 
-def _is_safe_path(rel_path):
-    """判断一条「相对目标实例根目录」的路径能不能安全地拼进去。
+class MigrationCancelled(Exception):
+    """Cooperative cancellation; owned by the worker until it exits."""
 
-    以前只查了 `..` 和 `is_absolute()`，在 Windows 上有三个洞（实测）：
-      · "C:foo"      —— 驱动器相对路径，is_absolute() 是 False，但
-                        Path("D:/target") / "C:foo" 的结果直接变成 "C:foo"，
-                        写出去就跑到 C 盘的当前目录了；
-      · "/abs"       —— 没有盘符的根路径，is_absolute() 也是 False，
-                        Path("D:/target") / "/abs" → "D:/abs"（跑到盘根）；
-      · "nul" 这类保留名 —— 写进去等于写设备，文件不会出现。
-    这个程序是提权运行的（打包带 --uac-admin），越界写等于以管理员身份写任意位置，
-    所以这里必须卡死：只允许「纯相对、无盘符、无根、无 ..、无 ADS、非保留名」。
-    """
-    p = str(rel_path or "").strip()
-    if not p:
+
+def _is_safe_path(rel_path):
+    p = str(rel_path or "").strip().replace(chr(92), "/")
+    if not p or p.startswith("/"):
         return False
-    if p[0] in ("/", "\\"):                     # 根路径（含 UNC 的 \\\\）
-        return False
-    if len(p) >= 2 and p[1] == ":":             # 盘符，含 C: 这种 drive-relative
-        return False
-    try:
-        path = Path(p)
-    except Exception:
-        return False
-    if path.is_absolute() or path.drive:
-        return False
-    for part in path.parts:
-        if part in (".", "..") or not part.strip():
+    parts = p.rstrip("/").split("/")
+    for part in parts:
+        if (not part or part in (".", "..") or part != part.rstrip(" .")
+                or any(ord(c) < 32 or c in '<>:"|?*' for c in part)
+                or part.split(".")[0].upper() in _RESERVED_NAMES):
             return False
-        if ":" in part:                         # NTFS 备用数据流 file.txt:stream
-            return False
-        if part.split(".")[0].strip().upper() in _RESERVED_NAMES:
-            return False
-        if part != part.rstrip(" ."):           # 结尾空格/点会被 Windows 悄悄剥掉
-            return False
-    return True
+    first = parts[0].casefold()
+    return not (first.startswith(".migrate_backup")
+                or first == ".migration_history.json")
+
+
+def _is_safe_world_name(name):
+    name = str(name or "")
+    return (_is_safe_path(name) and name == name.strip()
+            and "/" not in name and chr(92) not in name)
+
+
+def _checked_path(root, rel):
+    """Resolve a child and reject links/junctions before writing or copying."""
+    if not _is_safe_path(rel):
+        raise ValueError(trp("不安全路径：{0}", rel))
+    root = Path(root).resolve()
+    child = root / str(rel).replace(chr(92), "/").rstrip("/")
+    resolved = child.resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError(trp("路径超出实例目录：{0}", rel))
+    current = root
+    for part in child.relative_to(root).parts:
+        current /= part
+        if current.is_symlink() or current.is_junction():
+            raise ValueError(trp("不支持符号链接或目录联接：{0}", current))
+    return child
+
+
+def _check_cancel(check_cancel):
+    if check_cancel and check_cancel():
+        raise MigrationCancelled(trp("用户取消了迁移"))
+
+
+def _validate_tree(path, check_cancel=None):
+    path = Path(path)
+    def fail(error):
+        raise error
+    for base, dirs, files in os.walk(path, followlinks=False, onerror=fail):
+        _check_cancel(check_cancel)
+        for name in dirs + files:
+            item = Path(base) / name
+            if item.is_symlink() or item.is_junction():
+                raise ValueError(trp("不支持符号链接或目录联接：{0}", item))
 
 
 def _rmtree(path):
@@ -129,50 +151,44 @@ def _atomic_copy_file(src, dst):
     """
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".mctmp")
     for 次 in range(_重试次数):
+        tmp = None
         try:
-            if tmp.exists():
-                _unlink(tmp)
+            fd, name = tempfile.mkstemp(prefix=".mctool-", suffix=".tmp", dir=dst.parent)
+            os.close(fd)
+            tmp = Path(name)
             shutil.copy2(src, tmp)
-            # Windows 上目标只读会让 os.replace 失败，先解锁
             if dst.exists():
                 try:
                     os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
-                except Exception:
+                except OSError:
                     pass
             os.replace(tmp, dst)
             return
         except Exception as e:
-            try:
-                if tmp.exists():
-                    _unlink(tmp)
-            except Exception:
-                pass
             if 次 + 1 >= _重试次数 or not _像是被占用(e):
                 raise
             time.sleep(_重试间隔 * (次 + 1))
-    return
+        finally:
+            if tmp is not None and tmp.exists():
+                _unlink(tmp)
 
 
 def _atomic_write_json(path, data):
     """写 JSON：临时文件 + 原子替换，避免写一半留下坏文件。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".mctmp")
+    fd, name = tempfile.mkstemp(prefix=".mctool-", suffix=".tmp", dir=path.parent)
+    tmp = Path(name)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
-    except Exception:
-        try:
-            if tmp.exists():
-                _unlink(tmp)
-        except Exception:
-            pass
-        raise
+    finally:
+        if tmp.exists():
+            _unlink(tmp)
 
 
 def _replace_tree_by_copy(src, target):
@@ -183,18 +199,25 @@ def _replace_tree_by_copy(src, target):
     <name>.mctold 留着，复制失败就把它改回去。
     """
     src, target = Path(src), Path(target)
-    old = target.with_name(target.name + ".mctold")
-    _rmtree(old)
-    if target.exists():
-        target.rename(old)
+    # Never delete a user's pre-existing .mctold file.
+    tmp = tempfile.mkdtemp(prefix=".mctool-restore-", dir=target.parent)
     try:
-        shutil.copytree(src, target)
-    except Exception:
-        _rmtree(target)
-        if old.exists():
-            old.rename(target)
-        raise
-    _rmtree(old)
+        old = Path(tmp) / "previous"
+        if target.exists():
+            target.rename(old)
+        try:
+            shutil.copytree(src, target)
+        except Exception:
+            _rmtree(target)
+            if old.exists():
+                old.rename(target)
+            raise
+        _rmtree(old)
+    finally:
+        # If putting the original back fails, keep it for recovery.
+        if not (Path(tmp) / "previous").exists():
+            _rmtree(tmp)
+
 
 
 def match_mod(item, source_files, name_map):
@@ -376,6 +399,8 @@ _RECORD_PREFIX = "rec_"
 
 
 def get_record_backup_path(target_path, record_id):
+    if not _is_safe_world_name(record_id):
+        raise ValueError(trp("不安全路径：{0}", record_id))
     return get_backup_path(target_path) / (_RECORD_PREFIX + str(record_id))
 
 
@@ -391,13 +416,18 @@ def list_record_backups(target_path):
     return 出
 
 
-def _prune_record_backups(target_path, keep=_KEEP_RECORD_BACKUPS):
+def _prune_record_backups(target_path, keep=_KEEP_RECORD_BACKUPS, protect=None):
     """只留最近 keep 份按记录分的备份（按目录修改时间）。"""
     try:
         项 = sorted(list_record_backups(target_path).values(),
                     key=lambda p: p.stat().st_mtime, reverse=True)
-        for 旧 in 项[keep:]:
-            shutil.rmtree(旧, ignore_errors=True)
+        protected = get_record_backup_path(target_path, protect) if protect else None
+        if protected in 项:
+            项.remove(protected)
+            项.insert(0, protected)
+        for 旧 in 项[max(1, keep):]:
+            if read_manifest(旧) is not None:
+                _rmtree(旧)
     except Exception:
         pass
 
@@ -439,21 +469,22 @@ def prune_legacy_backup(target_path, log_func=None):
 
 def _norm_rel(rel):
     """清单条目 → 备份用的规范相对路径（正斜杠、无前导/结尾斜杠）。不合规返回 ""。"""
-    条目 = str(rel or "").replace("\\", "/").strip().strip("/")
+    条目 = str(rel or "").replace("\\", "/").strip().rstrip("/")
     if not 条目 or not _is_safe_path(条目):
         return ""
     return 条目
 
 
 def _write_manifest(backup_root, exists_dirs, exists_files, exists_extras=None,
-                    record_id=None):
+                    record_id=None, created_parents=None):
     """记录"迁移前哪些目录/文件存在"，回滚时才知道哪些是迁移新建的、该删掉。
 
     `extras` 记的是这次迁移清单里每一条在迁移前存不存在（键=相对路径）。
     旧备份没有这个键，回滚时按"没有清单"处理（只恢复固定三目录+options.txt）。
     """
     data = {
-        "version": 3,
+        "version": 4,
+        "created_parents": sorted(created_parents or []),
         "record": str(record_id or ""),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dirs": {name: bool(exists_dirs.get(name)) for name in _BACKUP_DIRS},
@@ -478,7 +509,8 @@ def read_manifest(backup_root):
         return None
 
 
-def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
+def do_backup(target_path, log_func=None, extra_entries=None, record_id=None,
+              check_cancel=None):
     """
     备份目标实例里"迁移可能改动的部分"，若失败则抛出异常。
 
@@ -490,7 +522,10 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
     以前是先 rmtree 旧备份再建新的 —— 新备份一旦失败（空间不足/权限），
     用户连上一次的回滚点都没了。
     """
-    target_path = Path(target_path)
+    target_path = Path(target_path).resolve()
+    backup_base = get_backup_path(target_path)
+    if backup_base.is_symlink() or backup_base.is_junction():
+        raise ValueError(trp("不支持符号链接或目录联接：{0}", backup_base))
     # 有 record_id 就存到 rec_<id>/ 下（一条记录一份，可回滚到任意一次）；
     # 没有就沿用老的单一备份目录。
     backup_root = (get_record_backup_path(target_path, record_id)
@@ -501,6 +536,21 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
         else:
             log_func(trp("📦 开始备份目标实例..."), "INFO")
 
+    _check_cancel(check_cancel)
+    # Validate all requested ranges before creating staging inside the instance.
+    for rel in list(_BACKUP_DIRS) + list(_BACKUP_ROOT_FILES) + list(extra_entries or []):
+        item = _checked_path(target_path, rel)
+        if item.is_dir():
+            _validate_tree(item, check_cancel)
+
+    def copy_file(src, dst):
+        _check_cancel(check_cancel)
+        return shutil.copy2(src, dst)
+
+    for suffix in ("", ".tmp", ".old"):
+        candidate = backup_root.with_name(backup_root.name + suffix)
+        if candidate.is_symlink() or candidate.is_junction():
+            raise ValueError(trp("不支持符号链接或目录联接：{0}", candidate))
     staging = backup_root.with_name(backup_root.name + ".tmp")
     _rmtree(staging)
     staging.mkdir(parents=True)
@@ -514,7 +564,7 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
             if src.exists():
                 if log_func:
                     log_func(trp("📂 备份 {0} → {1}", folder, backup_root / folder), "INFO")
-                shutil.copytree(src, staging / folder)
+                shutil.copytree(src, staging / folder, copy_function=copy_file)
                 backed.append(folder)
             else:
                 if log_func:
@@ -539,6 +589,7 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
         # 所以也要"存在性 + 内容"一起记下来，回滚才能既还原旧内容、又删掉迁移新建的。
         extras_root = staging / _BACKUP_EXTRAS_SUBDIR
         exists_extras = {}
+        created_parents = set()
         backed_extras = []
         for raw in (extra_entries or []):
             rel = _norm_rel(raw)
@@ -546,6 +597,11 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
                 continue
             src = target_path / rel
             exists_extras[rel] = src.exists()
+            for parent in src.parents:
+                if parent == target_path:
+                    break
+                if not parent.exists():
+                    created_parents.add(parent.relative_to(target_path).as_posix())
             if not src.exists():
                 if log_func:
                     log_func(trp("ℹ️ {0} 目标里不存在，跳过备份（回滚时会删掉迁移新建的同名条目）", rel), "INFO")
@@ -554,18 +610,21 @@ def do_backup(target_path, log_func=None, extra_entries=None, record_id=None):
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if src.is_dir():
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                    shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=copy_file)
                 else:
                     _atomic_copy_file(src, dst)
                 backed_extras.append(rel)
                 if log_func:
                     log_func(trp("📂 备份清单条目 {0} → {1}", rel,
                                  backup_root / _BACKUP_EXTRAS_SUBDIR / rel), "INFO")
+            except MigrationCancelled:
+                raise
             except Exception as e:
                 # 备份不到就不能装作没事：宁可整个备份失败（调用方会拦下迁移）
                 raise RuntimeError(trp("备份「其它文件」条目 {0} 失败：{1}", rel, e))
 
-        _write_manifest(staging, exists_dirs, exists_files, exists_extras, record_id)
+        _check_cancel(check_cancel)
+        _write_manifest(staging, exists_dirs, exists_files, exists_extras, record_id, created_parents)
     except Exception:
         _rmtree(staging)                 # 失败的半成品不能留着冒充"备份"
         raise
@@ -604,13 +663,15 @@ def backup_parts_available(backup_root):
     for folder in _BACKUP_DIRS:
         try:
             目 = backup_root / folder
-            出[folder] = sum(1 for _ in 目.iterdir()) if 目.is_dir() else 0
+            count = sum(1 for _ in 目.iterdir()) if 目.is_dir() else 0
+            # An absent/empty pre-migration category still has a rollback action.
+            出[folder] = count if count else (-1 if folder in manifest.get("dirs", {}) else 0)
         except Exception:
             出[folder] = 0
     try:
         文件们 = backup_root / _BACKUP_FILES_SUBDIR
         出["files"] = sum(1 for n in _BACKUP_ROOT_FILES
-                          if (文件们 / n).is_file())
+                          if (文件们 / n).is_file() or n in manifest.get("files", {}))
     except Exception:
         出["files"] = 0
     try:
@@ -673,10 +734,13 @@ def do_restore(target_path, log_func=None, backup_dir=None, parts=None):
     for folder in _BACKUP_DIRS:
         if folder not in 选:
             continue
-        target_folder = target_path / folder
         backup_folder = backup_root / folder
         try:
+            target_folder = _checked_path(target_path, folder)
+            if target_folder.is_dir():
+                _validate_tree(target_folder)
             if backup_folder.is_dir():
+                _validate_tree(backup_folder)
                 if log_func:
                     log_func(trp("📂 恢复备份：{0} → {1}", backup_folder, target_folder), "INFO")
                 # 旧目录先改名保底，复制成功后再删（失败会自己改回来）
@@ -706,9 +770,9 @@ def do_restore(target_path, log_func=None, backup_dir=None, parts=None):
     if "files" not in 选 and log_func:
         log_func(trp("⏭️ 按你的选择跳过：根目录文件（options.txt 等）"), "INFO")
     for name in (() if "files" not in 选 else _BACKUP_ROOT_FILES):
-        target_file = target_path / name
         backup_file = files_root / name
         try:
+            target_file = _checked_path(target_path, name)
             if backup_file.is_file():
                 if log_func:
                     log_func(trp("📂 恢复文件：{0} → {1}", name, target_file), "INFO")
@@ -739,9 +803,11 @@ def do_restore(target_path, log_func=None, backup_dir=None, parts=None):
         rel = _norm_rel(rel)
         if not rel:
             continue
-        target_item = target_path / rel
         backup_item = extras_root / rel
         try:
+            target_item = _checked_path(target_path, rel)
+            if target_item.is_dir():
+                _validate_tree(target_item)
             if 原来有 and backup_item.exists():
                 if backup_item.is_dir():
                     _replace_tree_by_copy(backup_item, target_item)
@@ -770,6 +836,17 @@ def do_restore(target_path, log_func=None, backup_dir=None, parts=None):
             failed.append(f"{rel}: {e}")
             if log_func:
                 log_func(trp("❌ 恢复清单条目 {0} 失败: {1}", rel, e), "ERROR")
+
+    # Remove only empty parents known to be absent before migration.
+    if "extras" in 选 and not failed:
+        for rel in sorted((manifest or {}).get("created_parents", []),
+                          key=lambda value: len(Path(value).parts), reverse=True):
+            try:
+                parent = _checked_path(target_path, rel)
+                if parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except Exception as error:
+                failed.append(f"{rel}: {error}")
 
     if failed:
         if log_func:
@@ -805,14 +882,14 @@ def _modid_of(jar_path):
         st = jar_path.stat()
         key = str(jar_path)
         hit = _MODID_CACHE.get(key)
-        if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
             return hit[2]
         from core.scanner import get_mod_metadata
-        modid = get_mod_metadata(str(jar_path))[0]
+        modid = get_mod_metadata(jar_path)[0]
         modid = (modid or "").strip().lower()
         if not modid or modid in ("未知", "unknown", "?", "无"):
             modid = None
-        _MODID_CACHE[key] = (st.st_mtime, st.st_size, modid)
+        _MODID_CACHE[key] = (st.st_mtime_ns, st.st_size, modid)
         return modid
     except Exception:
         return None
@@ -857,511 +934,168 @@ def _record_removed(target_path, modid, moved_names, replaced_by):
         pass
 
 
-def remove_old_mod_versions(target_path, target_mods, src_jar, dst_path, index=None,
-                            log_func=None, dry_run=False):
-    """把目标 mods 里同 modid 的旧版本移进 .migrate_backup/removed_mods/。
-
-    返回被移走的文件名列表。只认 modid；移走而不是删除，回滚时 do_restore 会
-    用备份里的 mods 整目录恢复，所以这一步是可逆的。
-    """
-    if dry_run or index is None:
-        return []
-    modid = _modid_of(src_jar)
-    if not modid:
-        # 读不出 modid 就没法判断谁是谁，宁可不清理，也不凭文件名猜
-        if log_func:
-            log_func(trp("ℹ️ 无法识别 {0} 的 modid，跳过旧版本清理"
-                         "（如目标里已存在同模组的其他版本，请手动确认）",
-                         Path(src_jar).name), "INFO")
-        return []
-    try:
-        dst_resolved = Path(dst_path).resolve()
-    except Exception:
-        dst_resolved = None
-    olds = []
-    for p in index.get(modid, []):
-        try:
-            if not p.exists():
-                continue
-            if dst_resolved is not None and p.resolve() == dst_resolved:
-                continue                      # 就是它自己，不用动
-            olds.append(p)
-        except Exception:
-            continue
-    if not olds:
-        return []
+def _install_mod(target_path, src, dst, index, log_func):
+    """Stage the new JAR, then retire old versions as one reversible operation."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    modid = _modid_of(src)
+    olds = [p for p in index.get(modid, []) if p.exists() and p != dst]
+    if dst.exists():
+        olds.append(dst)
     dest_dir = get_backup_path(target_path) / "removed_mods"
-    moved = []
-    for old in olds:
+    for candidate in (dest_dir.parent, dest_dir):
+        if candidate.is_symlink() or candidate.is_junction():
+            raise ValueError(trp("不支持符号链接或目录联接：{0}", candidate))
+    # Stage beside the destination so the final replace stays on one filesystem.
+    with tempfile.TemporaryDirectory(prefix=".mctool-mod-", dir=dst.parent) as tmp:
+        staged = Path(tmp) / "new.jar"
+        ok, message = safe_copy(src, staged, False, True)
+        if not ok:
+            return False, message
+        moved = []
         try:
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            target = dest_dir / old.name
-            n = 1
-            while target.exists():
-                target = dest_dir / f"{old.stem}.{n}{old.suffix}"
-                n += 1
-            shutil.move(str(old), str(target))
-            moved.append(old.name)
-            try:
-                index[modid].remove(old)      # 从索引摘掉，别被后面的条目再匹配到
-            except ValueError:
-                pass
-            if log_func:
-                log_func(trp("🗑️ 移除目标旧版本：{0}（同 modid: {1}）"
-                             "，已移入备份 .migrate_backup/removed_mods",
-                             old.name, modid), "WARNING")
-        except Exception as e:
-            if log_func:
-                log_func(trp("⚠️ 移除旧版本 {0} 失败：{1}（该文件保持原样）", old.name, e), "WARNING")
+            if olds:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+            for old in dict.fromkeys(olds):
+                target = dest_dir / old.name
+                n = 1
+                while target.exists():
+                    target = dest_dir / f"{old.stem}.{n}{old.suffix}"
+                    n += 1
+                shutil.move(str(old), str(target))
+                moved.append((old, target))
+            os.replace(staged, dst)
+        except Exception:
+            for original, saved in reversed(moved):
+                os.replace(saved, original)
+            raise
+    if modid:
+        index[modid] = [dst]
     if moved:
-        _record_removed(target_path, modid, moved, Path(dst_path).name)
-    return moved
+        _record_removed(target_path, modid, [p.name for p, _ in moved], dst.name)
+    return True, trp("复制成功")
 
 
 # ---------- 主迁移函数 ----------
-def run_migration(
-        src_path,
-        tgt_path,
-        world_name,
-        modlist,
-        configlist,
-        dry_run,
-        overwrite,
-        progress_callback=None,
-        log_callback=None,
-        check_cancel=None,
-        add_history=True,
-        rename_marker=None,
-        extralist=None,
-        extra_overwrite=True,
-        record_id=None
-):
-    """
-    执行迁移主流程
-    rename_marker: 非空时，复制过去的模组会在文件名前加这个前缀（如 "★ "），
-                   方便用户在目标目录里一眼认出哪些是本次迁移带过去的。
-                   只改目标文件名，不改内容；加载器只认 jar 里的 modid，不受影响。
-    extralist:     「其它文件」清单，路径**相对整合包根目录**（不是相对 config），
-                   用来带走 mods/config/saves 之外的东西：shaderpacks/、resourcepacks/、
-                   options.txt、servers.dat、kubejs/ 之类。文件或文件夹都行，文件夹递归。
-    extra_overwrite: 上面这份清单遇到"目标已有同名文件"时怎么办：
-                   True=覆盖（先备份，和其它清单一致）；False=跳过，目标保持不动。
-    返回: 是否成功完成
-    """
-    src_path = Path(src_path)
-    tgt_path = Path(tgt_path)
-    marker = (rename_marker or "").strip()
-    if marker:
-        marker = marker + " " if not marker.endswith(" ") else marker
-        local_log = log_callback
-        if local_log:
-            local_log(trp("🏷️ 已启用迁移标记：复制过去的模组会加前缀「{0} 」", marker.strip()), "INFO")
+def run_migration(src_path, tgt_path, world_name, modlist, configlist, dry_run,
+                  overwrite, progress_callback=None, log_callback=None,
+                  check_cancel=None, add_history=True, rename_marker=None,
+                  extralist=None, extra_overwrite=True, record_id=None, plan=None):
+    """Execute a validated inventory; False includes partial failure/cancellation."""
+    from core.migration_plan import build_migration_plan
+    src_path, tgt_path = Path(src_path).resolve(), Path(tgt_path).resolve()
+    started = time.perf_counter()
+    logs, failures = [], []
+    stats = {key: {"success": 0, "skipped": 0, "failed": 0}
+             for key in ("mods", "saves", "config", "extra")}
+    outcome = "失败"
+    copied_bytes = file_index = 0
 
-    _开始 = time.time()
-    _日志 = []
-    汇总 = {"mods": {"success": 0, "skipped": 0, "failed": 0},
-            "config": {"success": 0, "skipped": 0, "failed": 0},
-            "extra": {"success": 0, "skipped": 0, "failed": 0}}
-    失败明细 = []
-
-    def log(msg, level="INFO"):
-        try:
-            _日志.append([str(level or "INFO"), str(msg)])
-        except Exception:
-            pass
+    def log(message, level="INFO"):
+        logs.append([level, str(message)])
         if log_callback:
-            log_callback(msg, level)
+            log_callback(message, level)
 
-    def progress(file_index, file_name, copied_bytes, step=None):
-        if progress_callback:
-            progress_callback(file_index, file_name, copied_bytes, step)
+    def failed(category, label, error):
+        stats[category]["failed"] += 1
+        failures.append((label, str(error)))
+        log(trp("❌ 复制失败 {0}: {1}", label, error), "ERROR")
 
     try:
-        copied_bytes = 0
-        file_index = 0
+        _check_cancel(check_cancel)
+        plan = plan or build_migration_plan(
+            src_path, tgt_path, world_name, modlist, configlist, extralist,
+            overwrite, extra_overwrite, rename_marker, check_cancel)
+        if plan["source"] != src_path.resolve() or plan["target"] != tgt_path.resolve():
+            raise ValueError(trp("迁移计划与当前实例路径不一致"))
+        if not plan["files"] and not plan["dirs"] and not plan["errors"]:
+            raise ValueError(trp("没有找到需要复制的文件"))
+        # Revalidate endpoints immediately before any mutation (plans may wait on confirmation).
+        for item in plan["files"] + plan["dirs"]:
+            _checked_path(tgt_path, item["dst"].relative_to(plan["target"]))
+        for category, label, error in plan["errors"]:
+            failed(category, label, error)
+        for warning in plan["warnings"]:
+            log(warning, "WARNING")
+        for resolution in plan.get("mod_resolutions", []):
+            for category in resolution.get("skipped_categories", ["mods"] * len(resolution["skipped"])):
+                stats[category]["skipped"] += 1
+            log(resolution["message"], "WARNING" if resolution["reason"] in
+                ("unknown", "equal_version") else "INFO")
 
-        # -------- 步骤1: 复制模组 --------
-        log("【步骤1】复制模组...", "INFO")
-        src_mods = src_path / "mods"
-        tgt_mods = tgt_path / "mods"
-        if not src_mods.exists():
-            log(trp("⚠️ 旧 mods 目录不存在: {0}，跳过", src_mods), "WARNING")
-        else:
-            if not dry_run:
-                tgt_mods.mkdir(parents=True, exist_ok=True)
-
-            source_files = {f.name: f for f in src_mods.glob("*.jar")}
-            name_map = {}
-            for orig in source_files:
-                clean = orig
-                if clean.startswith("[") and "]" in clean:
-                    clean = clean.split("]", 1)[1].strip()
-                name_map[clean] = orig
-                name_map[orig] = orig
-
-            success = 0
-            skipped = 0
-            removed_old = 0
-            failed = []
-            total_mods = len(modlist)
-            # 目标 mods 的 modid 索引：用来识别"同一个 mod 的旧版本"。
-            # 只有真要复制（非模拟）且目标已有 mods 时才建，建一次给全程用。
-            target_index = None
-            if not dry_run and tgt_mods.exists():
-                _t0 = time.perf_counter()
-                target_index = index_modids(tgt_mods)
-                log(trp("🔎 已索引目标 mods（{0} 个 modid，耗时 {1:.1f}s），用于识别旧版本", len(target_index), time.perf_counter() - _t0), "INFO")
-            for idx, item in enumerate(modlist):
-                if check_cancel and check_cancel():
-                    log("⚠️ 用户取消了迁移", "WARNING")
-                    return False
-
-                # 支持“完整路径”条目：直接按该文件复制；否则回退到源目录名匹配
-                direct_src = Path(item)
-                if direct_src.is_file() and direct_src.suffix.lower() == ".jar":
-                    matched = direct_src.name
-                    src_file = direct_src
-                else:
-                    matched = match_mod(item, source_files, name_map)
-                    if not matched:
-                        failed.append((item, trp("未找到匹配的文件")))
-                        log(trp("❌ 未找到匹配模组: {0}", item), "ERROR")
-                        continue
-                    src_file = source_files[matched]
-
-                dst_file = tgt_mods / matched
-                # 迁移标记：目标文件名前加前缀，方便用户在 mods 目录里辨认
-                if marker:
-                    dst_file = tgt_mods / (marker + matched)
-                if dst_file.exists() and not overwrite and not dry_run:
-                    log(trp("⏭️ 跳过已存在的模组: {0}", dst_file.name), "WARNING")
-                    skipped += 1
+        index = index_modids(tgt_path / "mods") if not dry_run else {}
+        for category in ("mods", "saves", "config", "extra"):
+            log(trp("【复制阶段】{0}", category), "INFO")
+            for item in plan["dirs"]:
+                if item["category"] != category:
                     continue
-                # 复制之前先清掉目标里同 modid 的旧版本（否则两个版本共存会崩）
-                removed_old += len(remove_old_mod_versions(
-                    tgt_path, tgt_mods, src_file, dst_file,
-                    index=target_index, log_func=log, dry_run=dry_run))
-                ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite,
-                                    is_file=True)
-                if ok:
-                    success += 1
-                    file_index += 1
-                    copied_bytes += src_file.stat().st_size
-                    if dry_run:
-                        log(trp("[模拟] 将复制: {0}", dst_file.name), "SIMULATE")
-                    else:
-                        log(trp("✅ 已复制: {0}", dst_file.name), "SUCCESS")
-                    step = trp("复制模组 ({0}/{1})", idx + 1, total_mods)
-                    progress(file_index, dst_file.name, copied_bytes, step)
-                else:
-                    failed.append((item, msg))
-                    log(trp("❌ 复制失败 {0}: {1}", matched, msg), "ERROR")
-            log(trp("模组复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success, skipped, len(failed)), "INFO")
-            汇总["mods"] = {"success": success, "skipped": skipped, "failed": len(failed)}
-            失败明细.extend(("mods/%s" % str(x[0]), str(x[1])) for x in failed[:50])
-            if removed_old:
-                log(trp("🧹 已移除 {0} 个同 modid 的旧版本（移入 .migrate_backup/removed_mods，回滚时会自动恢复）", removed_old), "SUCCESS")
-
-        # -------- 步骤2: 复制存档 --------
-        log("\n【步骤2】复制存档...", "INFO")
-        if check_cancel and check_cancel():
-            log("⚠️ 用户取消了迁移", "WARNING")
-            return False
-
-        src_world = src_path / "saves" / world_name
-        dst_world = tgt_path / "saves" / world_name
-        if not src_world.exists():
-            log(trp("⚠️ 源存档不存在: {0}，跳过", src_world), "WARNING")
-        else:
-            if not dry_run:
-                dst_world.parent.mkdir(parents=True, exist_ok=True)
-            world_files = list(src_world.rglob("*"))
-            total_world_files = sum(1 for f in world_files if f.is_file())
-            for idx, src_file in enumerate(world_files):
-                if not src_file.is_file():
-                    continue
-                rel = src_file.relative_to(src_world)
-                dst_file = dst_world / rel
-                ok, msg = safe_copy(src_file, dst_file, dry_run, overwrite=True,
-                                    is_file=True)
-                if ok:
-                    file_index += 1
-                    copied_bytes += src_file.stat().st_size
-                    step = trp("复制存档 ({0}/{1})", idx + 1, total_world_files)
-                    progress(file_index, trp("存档/{0}", rel), copied_bytes, step)
-                else:
-                    log(trp("❌ 复制存档文件 {0} 失败: {1}", rel, msg), "ERROR")
-            log(trp("✅ 存档 {0} 已{1}复制完成，共 {2} 个文件", world_name,
-                    trp('模拟') if dry_run else '', total_world_files), "SUCCESS")
-
-        # -------- 步骤3: 复制 config --------
-        log("\n【步骤3】复制 config 内容...", "INFO")
-        if check_cancel and check_cancel():
-            log("⚠️ 用户取消了迁移", "WARNING")
-            return False
-
-        src_config = src_path / "config"
-        tgt_config = tgt_path / "config"
-        if not configlist:
-            log("ℹ️ config 清单为空，跳过", "INFO")
-        elif not src_config.exists():
-            log(trp("⚠️ 源 config 目录不存在: {0}，跳过", src_config), "WARNING")
-        else:
-            if not dry_run:
-                tgt_config.mkdir(parents=True, exist_ok=True)
-
-            success_cfg = 0
-            failed_cfg = []
-            total_config_entries = len(configlist)
-            for idx, entry in enumerate(configlist):
-                if check_cancel and check_cancel():
-                    log("⚠️ 用户取消了迁移", "WARNING")
-                    return False
-
-                if not _is_safe_path(entry):
-                    log(trp("⚠️ 跳过不安全 config 路径: {0}", entry), "WARNING")
-                    continue
-
-                src_entry = src_config / entry
-                if not src_entry.exists():
-                    log(trp("❌ 源 config 条目不存在: {0}，跳过", entry), "ERROR")
-                    failed_cfg.append((entry, trp("源不存在")))
-                    continue
-
-                dst_entry = tgt_config / entry
-                if src_entry.is_file():
-                    ok, msg = safe_copy(src_entry, dst_entry, dry_run, overwrite=True,
-                                        is_file=True)
-                    if ok:
-                        success_cfg += 1
-                        file_index += 1
-                        copied_bytes += src_entry.stat().st_size
-                        if dry_run:
-                            log(trp("[模拟] 将复制 config: {0}", entry), "SIMULATE")
-                        else:
-                            log(trp("✅ 已复制 config: {0}", entry), "SUCCESS")
-                        step = trp("复制 config ({0}/{1})", idx + 1, total_config_entries)
-                        progress(file_index, f"config/{entry}", copied_bytes, step)
-                    else:
-                        failed_cfg.append((entry, msg))
-                        log(trp("❌ 复制 config 失败 {0}: {1}", entry, msg), "ERROR")
-                elif src_entry.is_dir():
-                    # 递归复制整个文件夹：目录本身也要建出来（含空文件夹），
-                    # 每个文件都打日志、更新进度，并且支持中途取消。
+                _check_cancel(check_cancel)
+                if not dry_run:
                     try:
-                        if not dry_run:
-                            dst_entry.mkdir(parents=True, exist_ok=True)
-                    except Exception as e:
-                        failed_cfg.append((entry, trp("创建目录失败: {0}", e)))
-                        log(trp("❌ 创建 config 目录 {0} 失败: {1}", entry, e), "ERROR")
-                        continue
-
-                    for src_item in sorted(src_entry.rglob("*")):
-                        if check_cancel and check_cancel():
-                            log("⚠️ 用户取消了迁移", "WARNING")
-                            return False
-
-                        rel = src_item.relative_to(src_entry)
-                        dst_item = dst_entry / rel
-                        if src_item.is_dir():
-                            # 空文件夹也要保留，否则目标端目录结构不完整
-                            if dry_run:
-                                log(trp("[模拟] 将创建目录: {0}/{1}", entry, rel), "SIMULATE")
-                            else:
-                                try:
-                                    dst_item.mkdir(parents=True, exist_ok=True)
-                                except Exception as e:
-                                    failed_cfg.append((f"{entry}/{rel}", trp("建目录失败: {0}", e)))
-                                    log(trp("❌ 创建 config 目录 {0}/{1} 失败: {2}", entry, rel, e), "ERROR")
-                            continue
-                        if not src_item.is_file():
-                            continue
-
-                        ok, msg = safe_copy(src_item, dst_item, dry_run, overwrite=True,
-                                            is_file=True)
-                        if ok:
-                            success_cfg += 1
-                            file_index += 1
-                            copied_bytes += src_item.stat().st_size
-                            if dry_run:
-                                log(trp("[模拟] 将复制 config: {0}/{1}", entry, rel), "SIMULATE")
-                            else:
-                                log(trp("✅ 已复制 config: {0}/{1}", entry, rel), "SUCCESS")
-                            step = trp("复制 config ({0}/{1})", idx + 1, total_config_entries)
-                            progress(file_index, f"config/{entry}/{rel}", copied_bytes, step)
-                        else:
-                            failed_cfg.append((f"{entry}/{rel}", msg))
-                            log(trp("❌ 复制 config 文件 {0}/{1} 失败: {2}", entry, rel, msg), "ERROR")
-                else:
-                    log(trp("⚠️ config 条目 {0} 非文件非目录，跳过", entry), "WARNING")
-
-            log(trp("config 复制完成: 成功 {0} 个, 失败 {1} 个", success_cfg, len(failed_cfg)), "INFO")
-            汇总["config"] = {"success": success_cfg, "skipped": 0, "failed": len(failed_cfg)}
-            失败明细.extend(("config/%s" % str(x[0]), str(x[1])) for x in failed_cfg[:50])
-
-        # -------- 其它文件（路径相对整合包根目录） --------
-        # 带走 mods / config / saves 之外的东西：shaderpacks/、resourcepacks/、
-        # options.txt、servers.dat、kubejs/ 这类。
-        # 同名冲突按 extra_overwrite：True=覆盖（先备份）；False=跳过，目标保持不动。
-        if not extralist:
-            log("ℹ️ 其它文件清单为空，跳过", "INFO")
-        else:
-            success_extra = skipped_extra = 0
-            failed_extra = []
-            total_extra = len(extralist)
-            for idx, raw_entry in enumerate(extralist):
-                if check_cancel and check_cancel():
-                    log("⚠️ 用户取消了迁移", "WARNING")
-                    return False
-
-                entry = str(raw_entry).strip().replace("\\", "/")
-                if not entry:
+                        _checked_path(tgt_path, item["dst"].relative_to(plan["target"]))
+                        item["dst"].mkdir(parents=True, exist_ok=True)
+                    except OSError as error:
+                        failed(category, item["label"], error)
+            for item in plan["files"]:
+                if item["category"] != category:
                     continue
-                if not _is_safe_path(entry):
-                    log(trp("⚠️ 跳过不安全路径: {0}", entry), "WARNING")
+                _check_cancel(check_cancel)
+                src, dst, label = item["src"], item["dst"], item["label"]
+                _checked_path(tgt_path, dst.relative_to(plan["target"]))
+                if dst.exists() and not item["overwrite"]:
+                    stats[category]["skipped"] += 1
+                    log(trp("⏭️ 目标已存在，按设置跳过: {0}", label), "INFO")
                     continue
-
-                src_entry = src_path / entry
-                dst_entry = tgt_path / entry
-                if not src_entry.exists():
-                    failed_extra.append((entry, trp("源不存在")))
-                    log(trp("❌ 源条目不存在: {0}，跳过", entry), "ERROR")
-                    continue
-
-                step = trp("复制其它文件 ({0}/{1})", idx + 1, total_extra)
-
-                if src_entry.is_file():
-                    if dst_entry.exists() and not extra_overwrite:
-                        skipped_extra += 1
-                        log(trp("⏭️ 目标已存在，按设置跳过: {0}", entry), "INFO")
-                        continue
-                    ok, msg = safe_copy(src_entry, dst_entry, dry_run, overwrite=True,
-                                        is_file=True)
-                    if ok:
-                        success_extra += 1
-                        file_index += 1
-                        copied_bytes += src_entry.stat().st_size
-                        if dry_run:
-                            log(trp("[模拟] 将复制其它文件: {0}", entry), "SIMULATE")
-                        else:
-                            log(trp("✅ 已复制其它文件: {0}", entry), "SUCCESS")
-                        progress(file_index, entry, copied_bytes, step)
+                try:
+                    if (dst.parent == tgt_path / "mods" and dst.suffix.lower() == ".jar"
+                            and not dry_run):
+                        ok, message = _install_mod(tgt_path, src, dst, index, log)
                     else:
-                        failed_extra.append((entry, msg))
-                        log(trp("❌ 复制其它文件失败 {0}: {1}", entry, msg), "ERROR")
+                        ok, message = safe_copy(src, dst, dry_run, item["overwrite"])
+                except Exception as error:
+                    ok, message = False, str(error)
+                if not ok:
+                    failed(category, label, message)
+                    continue
+                stats[category]["success"] += 1
+                file_index += 1
+                copied_bytes += item["size"]
+                log(trp("[模拟] 将复制: {0}", label) if dry_run
+                    else trp("✅ 已复制: {0}", label), "SIMULATE" if dry_run else "SUCCESS")
+                if progress_callback:
+                    progress_callback(file_index, label, copied_bytes,
+                                      trp("复制文件 ({0}/{1})", file_index, plan["total_files"]))
 
-                elif src_entry.is_dir():
-                    try:
-                        if not dry_run:
-                            dst_entry.mkdir(parents=True, exist_ok=True)
-                    except Exception as e:
-                        failed_extra.append((entry, trp("创建目录失败: {0}", e)))
-                        log(trp("❌ 创建目录 {0} 失败: {1}", entry, e), "ERROR")
-                        continue
-
-                    for src_item in sorted(src_entry.rglob("*")):
-                        if check_cancel and check_cancel():
-                            log("⚠️ 用户取消了迁移", "WARNING")
-                            return False
-
-                        rel = src_item.relative_to(src_entry)
-                        rel_s = "%s/%s" % (entry.rstrip("/"),
-                                           str(rel).replace(chr(92), "/"))
-                        dst_item = dst_entry / rel
-                        if src_item.is_dir():
-                            # 空文件夹也要保留，否则目标端目录结构不完整
-                            if dry_run:
-                                log(trp("[模拟] 将创建目录: {0}", rel_s), "SIMULATE")
-                            else:
-                                try:
-                                    dst_item.mkdir(parents=True, exist_ok=True)
-                                except Exception as e:
-                                    failed_extra.append((rel_s, trp("建目录失败: {0}", e)))
-                                    log(trp("❌ 创建目录 {0} 失败: {1}", rel_s, e), "ERROR")
-                            continue
-                        if not src_item.is_file():
-                            continue
-                        if dst_item.exists() and not extra_overwrite:
-                            skipped_extra += 1
-                            log(trp("⏭️ 目标已存在，按设置跳过: {0}", rel_s), "INFO")
-                            continue
-
-                        ok, msg = safe_copy(src_item, dst_item, dry_run, overwrite=True,
-                                            is_file=True)
-                        if ok:
-                            success_extra += 1
-                            file_index += 1
-                            copied_bytes += src_item.stat().st_size
-                            if dry_run:
-                                log(trp("[模拟] 将复制其它文件: {0}", rel_s), "SIMULATE")
-                            else:
-                                log(trp("✅ 已复制其它文件: {0}", rel_s), "SUCCESS")
-                            progress(file_index, rel_s, copied_bytes, step)
-                        else:
-                            failed_extra.append((rel_s, msg))
-                            log(trp("❌ 复制其它文件失败 {0}: {1}", rel_s, msg), "ERROR")
-                else:
-                    log(trp("⚠️ 条目 {0} 非文件非目录，跳过", entry), "WARNING")
-
-            log(trp("其它文件复制完成: 成功 {0} 个, 跳过 {1} 个, 失败 {2} 个", success_extra, skipped_extra, len(failed_extra)), "INFO")
-            汇总["extra"] = {"success": success_extra, "skipped": skipped_extra,
-                             "failed": len(failed_extra)}
-            失败明细.extend((trp("其它/{0}", str(x[0])), str(x[1])) for x in failed_extra[:50])
-
-        # -------- 记录历史 --------
+        _check_cancel(check_cancel)
+        outcome = "有失败" if failures else ("模拟运行" if dry_run else "成功")
         if not dry_run and add_history:
-            add_history_entry(tgt_path, src_path, modlist, configlist,
-                              extralist=extralist)
-            log(trp("📝 已记录迁移历史到 {0}", get_history_path(tgt_path)), "INFO")
-
-        # -------- 完成 --------
-        log("\n========== 迁移完成 ==========", "INFO")
-        if dry_run:
-            log("这是模拟运行，未实际修改任何文件。如需实际执行，请取消勾选【模拟运行】。", "INFO")
-        else:
-            log("实际复制完成，请检查日志中的错误信息。", "INFO")
-
-        if progress_callback:
-            progress_callback(None, None, None)
-
-        # -------- 迁移档案（真实运行和模拟运行都存） --------
+            add_history_entry(tgt_path, src_path, modlist, configlist, extralist)
+        log(trp("迁移结束：{0}", outcome), "ERROR" if failures else "INFO")
+        return not failures
+    except MigrationCancelled:
+        outcome = "已取消"
+        log(trp("⚠️ 用户取消了迁移"), "WARNING")
+        return False
+    except Exception as error:
+        failed("extra", trp("迁移任务"), error)
+        log(traceback.format_exc(), "ERROR")
+        return False
+    finally:
         if add_history:
             try:
                 from utils import history_store
-                失败总数 = sum(v["failed"] for v in 汇总.values())
-                结果 = "模拟运行" if dry_run else ("有失败" if 失败总数 else "成功")
-                档案 = {
-                    # 档案 id 由调用方提前生成（备份目录就是按它命名的），
-                    # 这样"回滚点目录"和"迁移档案"能对上
-                    "id": record_id or None,
-                    "mode": "dry" if dry_run else "real",
-                    "result": 结果,
-                    "source": str(src_path),
-                    "target": str(tgt_path),
-                    "world": world_name or "",
-                    "duration": round(time.time() - _开始, 1),
-                    "stats": 汇总,
-                    "lists": {
-                        "mods": list(modlist or [])[:history_store.LIST_MAX],
-                        "configs": list(configlist or [])[:history_store.LIST_MAX],
-                        "extras": list(extralist or [])[:history_store.LIST_MAX],
-                        "failed": 失败明细[:100],
-                    },
-                    # 纯文本（兼容旧版本读取）+ 带级别的行（历史窗口按级别上色）
-                    "log": "\n".join(行 for _, 行 in _日志),
-                    "log_lines": _日志[-2000:],
-                }
-                rid = history_store.save_record(档案)
-                if rid:
-                    log(trp("🗂️ 已保存迁移档案: {0}", rid), "INFO")
-            except Exception as e:
-                log(trp("⚠️ 保存迁移档案失败: {0}", e), "WARNING")
-
-        return True
-
-    except Exception as e:
-        log(trp("❌ 迁移过程中发生未预期错误: {0}", e), "ERROR")
-        log(traceback.format_exc(), "ERROR")
+                history_store.save_record({
+                    "id": record_id, "mode": "dry" if dry_run else "real",
+                    "result": outcome, "source": str(src_path), "target": str(tgt_path),
+                    "world": world_name, "duration": round(time.perf_counter() - started, 1),
+                    "stats": stats,
+                    "mod_resolutions": plan.get("mod_resolutions", []) if plan else [],
+                    "lists": {"mods": list(modlist or [])[:history_store.LIST_MAX],
+                              "configs": list(configlist or [])[:history_store.LIST_MAX],
+                              "extras": list(extralist or [])[:history_store.LIST_MAX],
+                              "failed": failures[:100]},
+                    "log": "\n".join(line for _, line in logs), "log_lines": logs[-2000:],
+                })
+            except Exception as error:
+                log(trp("⚠️ 保存迁移档案失败: {0}", error), "WARNING")
         if progress_callback:
             progress_callback(None, None, None)
-        return False

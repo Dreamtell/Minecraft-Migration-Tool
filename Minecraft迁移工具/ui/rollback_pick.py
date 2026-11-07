@@ -149,7 +149,9 @@ def pick_parts(parent, theme, 有无, 默认=None, 记住=False):
     for 键 in 可选:
         名, 说明 = _PART_LABELS[键]
         数 = int(有无.get(键) or 0)
-        文 = trp(名) + (trp("（{0} 项）", 数) if 数 else "")
+        文 = trp(名) + (trp("（{0} 项）", 数) if 数 > 0 else "")
+        if 数 < 0:
+            说明 = "恢复为空或删除迁移新增内容"
         变量们[键] = 做勾选行(壳, 文, trp(说明), 键 in 预选)
 
     记住变量 = 做勾选行(壳, trp("记住我的选择（以后回滚都按这个，可在设置里改）"),

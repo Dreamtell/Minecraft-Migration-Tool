@@ -45,6 +45,43 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
 # 中文原文 -> English。**只放"会进控件"的静态文案**；
 # 动态拼接的（f-string）在这里对不上，要改调用点，见模块顶部说明。
 表 = {
+    "↓ 回到底部": "↓ Jump to bottom",
+    "↓ 新日志 {0} 行": "↓ {0} new log lines",
+    "界面最多显示 {0} 行；完整日志单独保存": "Showing up to {0} lines; full log saved separately",
+    "最近 {0} 行；完整日志可打开文件查看": "Latest {0} lines; open the file for the full log",
+    "打开完整日志": "Open full log",
+    "完整日志保存失败：{0}": "Could not save the full log: {0}",
+    "📋 已清空显示，完整日志仍保留在文件中": "📋 Display cleared; the full log is still saved in the file",
+    "暂无已保存的日志。": "No saved log yet.",
+    "无法打开日志：{0}": "Could not open the log: {0}",
+    "文件内容相同，保留清单中第一份": "Identical contents; keeping the first listed file",
+    "优先保留较新版本": "Keeping the newer version",
+    "版本相同但内容不同，保留该版本在清单中的第一份": "Same version with different contents; keeping the first listed file at that version",
+    "版本无法可靠比较，保留清单中第一份": "Versions cannot be reliably compared; keeping the first listed file",
+    "自动处理重复模组 {0}：保留 {1}；跳过 {2}。原因：{3}。": "Resolved duplicate mod {0}: keeping {1}; skipping {2}. Reason: {3}.",
+    "已自动处理 {0} 个重复模组文件，本次选择 {1} 个模组；处理明细见执行日志。": "Automatically resolved {0} duplicate mod files; {1} mods selected. See the execution log for details.",
+    "清单中两个文件声明了相同的 Mod ID：{0}\n文件 1：{1}\n文件 2：{2}\n请在清单中只保留一个。": "Two listed files declare the same Mod ID: {0}\nFile 1: {1}\nFile 2: {2}\nKeep only one of these files in the list.",
+    "目标路径类型冲突：{0}": "The destination has a conflicting file or directory type: {0}",
+    "源目录和目标目录不能重叠": "Source and target directories must not overlap",
+    "源目录和目标目录必须存在": "Source and target directories must exist",
+    "存档名称必须是单个文件夹名称：{0}": "The save name must be a single folder name: {0}",
+    "不安全路径：{0}": "Unsafe path: {0}",
+    "路径超出实例目录：{0}": "Path is outside the instance: {0}",
+    "不支持符号链接或目录联接：{0}": "Symbolic links and directory junctions are not supported: {0}",
+    "多个源文件指向同一个目标：{0}": "Multiple source files map to the same destination: {0}",
+    "清单包含同一 Mod ID 的多个版本：{0}": "The list contains multiple versions of the same Mod ID: {0}",
+    "迁移计划与当前实例路径不一致": "The migration plan does not match the current instance paths",
+    "没有找到需要复制的文件": "No files were found to migrate",
+    "用户取消了迁移": "Migration cancelled",
+    "已取消": "Cancelled",
+    "恢复为空或删除迁移新增内容": "Restore empty state or remove newly migrated content",
+    "【复制阶段】{0}": "[Copy phase] {0}",
+    "复制文件 ({0}/{1})": "Copying files ({0}/{1})",
+    "迁移任务": "Migration task",
+    "迁移结束：{0}": "Migration finished: {0}",
+    "未完成，请检查日志": "Incomplete; check the log",
+    "❌ 迁移任务失败：{0}": "❌ Migration task failed: {0}",
+    "目标磁盘剩余空间 {0:.1f} MB，本次迁移约需 {1:.1f} MB（含备份余量）。": "The target disk has {0:.1f} MB free; this migration needs about {1:.1f} MB including backups.",
     # ---------- 主界面：路径区 ----------
     "旧版整合包（要迁移出去的源）": "Source instance (the old pack)",
     "新版整合包（迁移目的地）": "Target instance (the new pack)",
@@ -2687,6 +2724,19 @@ def _包Qt控件():
     except Exception:
         pass
     return True
+
+
+def set_language_qt(值):
+    """Qt 进程用的改语言：只改内存里的语言值，**不走 install()**。
+
+    `set_language()` 会顺手 uninstall()+install()+重翻全部() —— 那一套包的是 Tk 控件
+    构造器，在纯 Qt 进程（Qt 主界面）里跑就等于往 Qt 进程里塞 Tk 钩子。Qt 进程改完
+    语言后自己调 install_qt()。已建好的 Qt 界面不会当场变，重启后生效。
+    """
+    global _语言
+    值 = str(值 or "").strip().lower()
+    _语言 = 值 if 值 in (ZH, EN) else ZH
+    return _语言
 
 
 def install_qt():

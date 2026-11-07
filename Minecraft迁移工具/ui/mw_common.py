@@ -223,6 +223,13 @@ _BIG_VIEW_BACKENDS = (
     ("tk", trp("🪟 经典 Tk 窗口（无需额外依赖）")),
 )
 
+# 主界面用哪套实现（配置键 main_window_backend，重启后生效）。
+# Qt 版在 ui/qt_main/，Tk 版就是当前这个窗口；Qt 版起不来时 app.py 自动回落 Tk。
+_MAIN_BACKENDS = (
+    ("tk", trp("🪟 经典 Tk 主界面（当前）")),
+    ("qt", trp("🧪 PySide6 主界面（试验中，需已安装 PySide6）")),
+)
+
 # 「放大查看」打开时用哪个视图（表格 / 卡片）。两边都可以随时点按钮切换，
 # 这里只是定"刚打开时是哪个"。
 _BIG_VIEW_VIEWS = (
@@ -542,7 +549,7 @@ __all__ = [
     "RoundedEntry", "RoundedTabs", "RoundedTextArea", "ScanProgressWindow",
     "SegmentedControl", "SmoothScroller", "SwitchRow", "VirtualTable", "_BIG_VIEW_BACKENDS",
     "_BIG_VIEW_VIEWS", "_BUTTON_GROUPS", "_BUTTON_LABELS", "_DEFAULT_BUTTON_ORDER",
-    "_DIFF_VIEWS", "_EXTRA_PRESETS", "_GRAD_ARROW_RE", "_GRAD_ARROW_W", "_GRAD_FONT",
+    "_DIFF_VIEWS", "_EXTRA_PRESETS", "_MAIN_BACKENDS", "_GRAD_ARROW_RE", "_GRAD_ARROW_W", "_GRAD_FONT",
     "_GRAD_PAD", "_GRAD_SYM_RE", "_GRAD_SYM_W", "_GROUP_COLORS", "_GROUP_ICONS", "_ICON_BTN",
     "_ICON_SIZE", "_LOCK_MODES", "_RENAME_MARKERS", "_SCAN_DONE", "_SECTION_STYLE",
     "_UI_PUMP_MS", "_center_window", "_close_popup", "_dc_now", "_destroy_after_callback",
