@@ -1045,12 +1045,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 sel.format.setBackground(bg)
             sels.append(sel)
         box.setExtraSelections(sels)
-        # 文本一改,颜色就和内容对不上了:下次编辑时清掉
-        try:
-            box.textChanged.disconnect(self._clear_check_marks)
-        except Exception:
-            pass
-        box.textChanged.connect(self._clear_check_marks)
+        # 文本一改,颜色就和内容对不上了:下次编辑时清掉。
+        # 用标志记"连没连过":对没连过的槽 disconnect,PySide6 会打 RuntimeWarning
+        if not box.property("_check_marks_hooked"):
+            box.textChanged.connect(self._clear_check_marks)
+            box.setProperty("_check_marks_hooked", True)
 
         self.log(trp("🔎 {0}清单检查:存在 {1} · 缺失 {2} · 重复 {3}",
                      label, r["ok"], r["missing"], r["dup"]),
@@ -1065,12 +1064,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def _clear_check_marks(self):
         box = self.sender()
-        if isinstance(box, QtWidgets.QTextEdit):
+        if isinstance(box, QtWidgets.QTextEdit) and box.property("_check_marks_hooked"):
             box.setExtraSelections([])
-            try:
-                box.textChanged.disconnect(self._clear_check_marks)
-            except Exception:
-                pass
+            box.textChanged.disconnect(self._clear_check_marks)
+            box.setProperty("_check_marks_hooked", False)
 
     def _drop_mods(self, paths):
         """拖进模组清单:jar 取文件名;文件夹(比如整个 mods)展开里面的 jar。"""
@@ -1504,10 +1501,15 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self.toast(tr("✅ 迁移完成"), "ok")
             QtWidgets.QMessageBox.information(self, tr("完成"), tr("迁移已成功完成!"))
         else:
-            self.log(tr("⚠️ 迁移未完成(可能被取消)"), "WARNING")
+            # run_migration 返回 False 有两种:有条目复制失败 / 被取消。
+            # 有出错条目就说出错,别笼统写"可能被取消"(用户看着像是自己点错了)
             n_fail = len(getattr(self, "_failed_items", []) or [])
-            self.toast(trp("⚠️ 迁移未完成,{0} 个条目出错(点「📍 定位错误」查看)", n_fail)
-                       if n_fail else tr("⚠️ 迁移未完成(可能被取消)"), "warn")
+            if n_fail:
+                msg = trp("⚠️ 迁移完成但有 {0} 个条目出错(点「📍 定位错误」查看)", n_fail)
+            else:
+                msg = tr("⚠️ 迁移未完成(被取消或有失败,详见日志)")
+            self.log(msg, "WARNING")
+            self.toast(msg, "warn")
 
     def _view_history(self):
         """打开历史与回滚窗口。"""
@@ -1619,6 +1621,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self._scan_done.emit(result)
         threading.Thread(target=scan_task, daemon=True).start()
 
+    @QtCore.Slot()
+    def _on_diff_view_destroyed(self):
+        # 窗口关了(WA_DeleteOnClose)就放掉引用,下次扫描新建
+        self._diff_view = None
+
     @QtCore.Slot(str)
     def _on_scan_failed(self, msg):
         self._scanning = False
@@ -1663,8 +1670,25 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
             # 直接在进程内用 apply_callback(Qt主窗口不需要 hooks["defer"]):
             # defer 是给"Qt跑在Tk进程里"用的,这里是纯Qt进程,回调直接在主线程执行即可
-            self._diff_view = qt_diff_view.show_diff_view(
-                result, self.theme, hooks=None, apply_callback=apply_cb, parent=self)
+            # ⚠ 不能传 parent=self:QtDiffView 是普通 QWidget(没设 Qt.Window),
+            #   带了 parent 就会被画进主窗口里而不是弹出来。原设计就是无 parent 的顶层窗口。
+            # ⚠ hooks 不能给 None:图标懒加载 / 动画都走 hooks["after"],给空就静默失效。
+            #   和放大查看一样用 qt_host._make_hooks(纯 Qt 进程里 defer 直接执行)。
+            from ui.qt_host import _make_hooks
+            old = getattr(self, "_diff_view", None)
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            view = qt_diff_view.QtDiffView(
+                result, self.theme, hooks=_make_hooks(QtCore), apply_callback=apply_cb,
+                cards=(self.config.get("diff_view", "table") == "cards"),
+                source_path=self.source_path)
+            view.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+            view.destroyed.connect(self._on_diff_view_destroyed)
+            self._diff_view = view
+            view.show_centered()
         except Exception as e:
             self.log(trp("打开差异窗口失败: {0}", str(e)), "ERROR")
             QtWidgets.QMessageBox.critical(self, tr("错误"),
