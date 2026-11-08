@@ -137,6 +137,24 @@ class SettingsDialog(QtWidgets.QDialog):
         except Exception:
             self.float_size.setValue(56)
         form.addRow(tr("浮标大小"), self.float_size)
+        self.float_dock_check = QtWidgets.QCheckBox(tr("贴边时收纳浮标（只露一条边，鼠标移上去展开）"))
+        self.float_dock_check.setChecked(bool(cfg.get("net_float_dock", True)))
+        form.addRow("", self.float_dock_check)
+        self.float_fx_check = QtWidgets.QCheckBox(tr("贴边时显示边缘特效（绿色光带 + 粒子）"))
+        self.float_fx_check.setChecked(bool(cfg.get("float_edge_fx", True)))
+        form.addRow("", self.float_fx_check)
+
+        # 「开始迁移」按钮翻转手感(与 Tk 版同键 start_btn_feel)
+        self.feel_combo = QtWidgets.QComboBox()
+        for code, label in (("crisp", "干脆"), ("standard", "标准"), ("heavy", "沉")):
+            self.feel_combo.addItem(tr(label), code)
+        self._select_by_data(self.feel_combo, str(cfg.get("start_btn_feel", "standard")), 1)
+        form.addRow(tr("开始迁移按钮手感："), self.feel_combo)
+
+        # 右下角消息卡片总开关(与 Tk 版同键 toast_on;关掉后消息照样进消息中心)
+        self.toast_check = QtWidgets.QCheckBox(tr("显示消息提示（右下角弹出的小卡片）"))
+        self.toast_check.setChecked(bool(cfg.get("toast_on", True)))
+        form.addRow("", self.toast_check)
 
         # 关闭窗口时的行为(ask/tray/exit,与 Tk 版同一个配置键)
         self.close_combo = QtWidgets.QComboBox()
@@ -188,6 +206,10 @@ class SettingsDialog(QtWidgets.QDialog):
             "start_countdown": int(self.countdown_spin.value()),
             "net_float_on": self.float_check.isChecked(),
             "net_float_size": int(self.float_size.value()),
+            "net_float_dock": self.float_dock_check.isChecked(),
+            "float_edge_fx": self.float_fx_check.isChecked(),
+            "start_btn_feel": self.feel_combo.currentData(),
+            "toast_on": self.toast_check.isChecked(),
             "close_action": self.close_combo.currentData(),
             "main_window_backend": self.backend_combo.currentData(),
         }

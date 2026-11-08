@@ -35,6 +35,86 @@ class ListEdit(QtWidgets.QTextEdit):
         self._on_files = on_files
         self.setAcceptRichText(False)
         self.setAcceptDrops(True)
+        # 逐步撤销(对齐 Tk 版 mw_lists._setup_custom_undo):Qt 原生撤销会把连续输入/删除
+        # 合并成一块,删了三行只能一次全还原。这里每次内容变化记一份快照,Ctrl+Z 逐个恢复,
+        # 恢复时保住滚动位置和光标(不然撤销后视图"置顶")。上限 200 步。
+        self.setUndoRedoEnabled(False)
+        self._undo_stack = []
+        self._redo_stack = []
+        self._last = ""
+        self._restoring = False
+        self.textChanged.connect(self._snapshot)
+
+    UNDO_LIMIT = 200
+
+    def _snapshot(self):
+        if self._restoring:
+            return
+        cur = self.toPlainText()
+        if cur != self._last:
+            self._undo_stack.append(self._last)
+            if len(self._undo_stack) > self.UNDO_LIMIT:
+                self._undo_stack.pop(0)
+            self._last = cur
+            self._redo_stack.clear()
+
+    def reset_undo(self):
+        """载入配置后调:把当前内容当起点,不让"空 → 载入的清单"成为第一步撤销。"""
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._last = self.toPlainText()
+
+    def _restore(self, text):
+        bar = self.verticalScrollBar()
+        pos, caret = bar.value(), self.textCursor().position()
+        self._restoring = True
+        try:
+            self.setPlainText(text)
+        finally:
+            self._restoring = False
+        self._last = text
+        cur = self.textCursor()
+        cur.setPosition(min(caret, len(text)))
+        self.setTextCursor(cur)
+        bar.setValue(min(pos, bar.maximum()))
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self.toPlainText())
+        self._restore(self._undo_stack.pop())
+
+    def redo(self):
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self.toPlainText())
+        self._restore(self._redo_stack.pop())
+
+    def keyPressEvent(self, e):
+        if e.matches(QtGui.QKeySequence.Undo):
+            self.undo()
+            e.accept()
+            return
+        if e.matches(QtGui.QKeySequence.Redo) or (
+                e.key() == QtCore.Qt.Key_Y and e.modifiers() == QtCore.Qt.ControlModifier):
+            self.redo()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def contextMenuEvent(self, e):
+        # 右键菜单里的「撤销/重做」接到自己的栈上(原生撤销已关,否则那两项永远是灰的)
+        menu = self.createStandardContextMenu()
+        for act in menu.actions():
+            name = act.objectName()
+            if name == "edit-undo":
+                act.setEnabled(bool(self._undo_stack))
+                act.triggered.connect(self.undo)
+            elif name == "edit-redo":
+                act.setEnabled(bool(self._redo_stack))
+                act.triggered.connect(self.redo)
+        menu.exec(e.globalPos())
+        menu.deleteLater()
 
     def _paths(self, mime):
         if not mime.hasUrls():
@@ -290,6 +370,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
         dock = getattr(self, "_msg_dock", None)
         if dock is not None:
             dock.set_theme(self.theme)
+        if hasattr(self, "start_btn") and hasattr(self.start_btn, "set_dark"):
+            self.start_btn.set_dark(self.theme is DARK_THEME)
+        host = getattr(self, "_toast_host", None)
+        if host is not None:
+            host.set_theme(self.theme)
         chart = getattr(self, "_net_chart", None)
         if chart is not None:
             chart.set_theme(self.theme)
@@ -342,13 +427,25 @@ class QtMainWindow(QtWidgets.QMainWindow):
         except Exception:
             self.config["start_countdown"] = 5
 
-        # 3a) 网络浮标:开关 + 大小,立即生效
+        # 3a) 网络浮标:开关 + 大小 + 贴边收纳 + 边缘特效,立即生效
         self.config["net_float_on"] = bool(vals.get("net_float_on", False))
         try:
             self.config["net_float_size"] = max(40, min(96, int(vals.get("net_float_size", 56))))
         except Exception:
             self.config["net_float_size"] = 56
+        self.config["net_float_dock"] = bool(vals.get("net_float_dock", True))
+        self.config["float_edge_fx"] = bool(vals.get("float_edge_fx", True))
         self._sync_net_float()
+
+        # 3c) 开始按钮手感 + 右下角消息卡片(与 Tk 版同键,立即生效)
+        feel = vals.get("start_btn_feel", "standard")
+        if feel in ("crisp", "standard", "heavy"):
+            self.config["start_btn_feel"] = feel
+            if hasattr(self.start_btn, "set_feel"):
+                self.start_btn.set_feel(feel)
+        self.config["toast_on"] = bool(vals.get("toast_on", True))
+        if not self.config["toast_on"] and getattr(self, "_toast_host", None):
+            self._toast_host.clear()
 
         # 3b) 关闭行为 + 主界面实现(后者重启生效)
         self.set_close_action(vals.get("close_action", "ask"), save=False)
@@ -541,15 +638,13 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.history_btn = QtWidgets.QPushButton(tr("📜 查看历史"))
         self.history_btn.clicked.connect(self._view_history)
 
-        # 开始迁移按钮
-        self.start_btn = QtWidgets.QPushButton(tr("🚀 开始迁移"))
+        # 开始迁移按钮:3D 翻转(正面绿/模拟运行黄,迁移中翻到背面红;手感与 Tk 共用 start_btn_feel)
+        from ui.qt_main.flip_button import FlipButton
+        self.start_btn = FlipButton(tr("🚀 开始迁移"), dark=(self.theme is DARK_THEME),
+                                    feel=str(self.config.get("start_btn_feel", "standard")),
+                                    dry_run=self.dry_run)
         self.start_btn.setMinimumWidth(120)
-        self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self._start_migration)
-        # 加点视觉重量
-        f = self.start_btn.font()
-        f.setBold(True)
-        self.start_btn.setFont(f)
 
         # 两个开关固定在左边;右边这一排可在「界面按钮」里调顺序/隐藏
         action_row = QtWidgets.QHBoxLayout()
@@ -755,6 +850,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
     def _on_dry_run_toggled(self, checked):
         """模拟运行开关。"""
         self.dry_run = checked
+        btn = getattr(self, "start_btn", None)
+        if btn is not None and hasattr(btn, "set_dry_run"):
+            btn.set_dry_run(checked)        # 正面换黄 / 换回绿
         self.toast(tr("🧪 模拟运行已开启:只预览,不改动任何文件") if checked
                    else tr("⚠️ 模拟运行已关闭:下次迁移会真正复制文件"),
                    "info" if checked else "warn", key="dry_run")
@@ -789,11 +887,12 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self.env_label.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')};")
 
     # ---------------- 消息(吐司) / 消息中心 ----------------
-    def toast(self, text, level="info", ms=3000, key=None):
+    def toast(self, text, level="info", ms=None, key=None):
         """统一的操作反馈入口(对齐 Tk 版 MigrationGUI.toast 的签名)。
 
-        Qt 版不做右下角浮层卡片:文字在状态栏显示 ms 毫秒,同时记进消息中心。
-        level: ok / info / warn / error;key 相同的连续消息在消息中心里合并成一条 ×N。
+        右下角浮层卡片(ui/qt_main/toast.py,规则同 Tk 版),同时记进消息中心。
+        level: ok / info / warn / error;key 相同的消息原地更新,不新增卡片。
+        配置键 toast_on 关掉后只记进消息中心,不弹卡片。
         """
         msg = str(text or "").strip()
         if not msg:
@@ -809,7 +908,18 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 store.标记已读()
                 dock.refresh()
             self._refresh_msg_badge()
-        if bool(self.config.get("toast_on", True)):
+        if not bool(self.config.get("toast_on", True)):
+            return
+        host = getattr(self, "_toast_host", None)
+        if host is None:
+            try:
+                from ui.qt_main.toast import ToastHost
+                host = self._toast_host = ToastHost(self, self.theme)
+            except Exception:
+                host = self._toast_host = False
+        if host:
+            host.show(msg, {"warning": "warn", "err": "error"}.get(level, level), ms=ms, key=key)
+        else:
             self.statusBar().showMessage(msg, int(ms or 3000))
 
     def _refresh_msg_badge(self):
@@ -879,13 +989,18 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 rel = (int(rel[0]), int(rel[1]))
             except Exception:
                 rel = None
-            f = NetFloat(self, size=size, rel=rel)
+            f = NetFloat(self, size=size, rel=rel,
+                         dock=bool(self.config.get("net_float_dock", True)),
+                         edge_fx=bool(self.config.get("float_edge_fx", True)))
             f.clicked.connect(self._open_net_chart)
             f.moved.connect(self._on_float_moved)
             last = getattr(self, "_net_last", None)
             if last is not None:
                 f.update_state(last)
             self._net_float = f
+        elif cur is not None:
+            cur.set_dock_enabled(bool(self.config.get("net_float_dock", True)))
+            cur.set_edge_fx(bool(self.config.get("float_edge_fx", True)))
 
     @QtCore.Slot(int, int)
     def _on_float_moved(self, dx, dy):
@@ -1196,6 +1311,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         extra_list = self.config.get("extra_list", "").strip()
         if extra_list:
             self.extra_text.setPlainText(extra_list)
+        for box in (self.mod_text, self.config_text, self.extra_text):
+            box.reset_undo()            # 载入的清单是撤销的起点,不是第一步
         self._refresh_badges()
 
     def _start_migration(self):
@@ -1333,7 +1450,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.start_btn.setEnabled(False)
         self.dry_run_check.setEnabled(False)
         self.overwrite_check.setEnabled(False)
-        self.start_btn.setText(tr("⏳ 准备中..."))
+        self.start_btn.setText(tr("🚀 开始迁移"))     # 正面文字复位(倒计时改过它)
+        self.start_btn.set_progress(None)
+        self.start_btn.flip_to_back(tr("⏳ 准备中..."))
         self._clear_fail_marks()        # 新一轮迁移:清掉上一轮的出错条目
         self.log(tr("📋 正在统计要迁移的文件..."), "INFO")
         from ui.qt_main.migration import PrepareWorker
@@ -1359,7 +1478,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.start_btn.setEnabled(True)
         self.dry_run_check.setEnabled(True)
         self.overwrite_check.setEnabled(True)
-        self.start_btn.setText(tr("🚀 开始迁移"))
+        self.start_btn.flip_to_front(tr("🚀 开始迁移"))
 
     def _on_prepared(self, params, res):
         """主线程:准备完成 → 磁盘检查 → 二次确认 → 真正开跑。"""
@@ -1369,7 +1488,6 @@ class QtMainWindow(QtWidgets.QMainWindow):
             th.wait(2000)
         self._prep_thread = None
         self._prep_worker = None
-        self.start_btn.setText(tr("🚀 开始迁移"))
 
         if res.get("error"):
             self._unlock_after_prepare()
@@ -1435,11 +1553,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self._worker.progress_signal.connect(self._on_worker_progress)
         self._worker.finished_signal.connect(self._on_migration_finished)
 
-        # 迁移中:禁用界面(准备阶段已经锁过,这里再确认一次)
+        # 迁移中:禁用界面(准备阶段已经锁过,这里再确认一次);按钮停在背面红
         self._migration_running = True
         self.start_btn.setEnabled(False)
         self.dry_run_check.setEnabled(False)
         self.overwrite_check.setEnabled(False)
+        self._mig_total_files = max(1, int(total_files))
+        self.start_btn.set_progress(None if params["dry_run"] else 0.0)
+        self.start_btn.flip_to_back(tr("⏳ 模拟中...") if params["dry_run"] else tr("⏳ 迁移中..."))
 
         # 进度对话框(模拟运行不显示)。总数来自准备阶段的计划,进度条才走得准
         if not params["dry_run"]:
@@ -1466,6 +1587,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
         """收到worker的进度信号(已在主线程)。"""
         if self._progress_dialog:
             self._progress_dialog.update_progress(index, filename, size, step)
+        try:
+            self.start_btn.set_progress(index / float(getattr(self, "_mig_total_files", 1) or 1))
+        except Exception:
+            pass
 
     @QtCore.Slot(bool, str)
     def _on_migration_finished(self, success, error_message):
@@ -1483,10 +1608,12 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self._worker_thread = None
         self._worker = None
 
-        # 恢复界面
+        # 恢复界面:按钮翻回正面
         self.start_btn.setEnabled(True)
         self.dry_run_check.setEnabled(True)
         self.overwrite_check.setEnabled(True)
+        self.start_btn.set_progress(1.0)
+        self.start_btn.flip_to_front(tr("🚀 开始迁移"))
 
         # 挂在托盘里时弹系统通知(对齐 Tk 版 notify_task_done)
         if getattr(self, "_hidden_in_tray", False):
