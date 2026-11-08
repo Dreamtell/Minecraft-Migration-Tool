@@ -33,7 +33,7 @@ def _is_safe_path(rel_path):
     for part in parts:
         if (not part or part in (".", "..") or part != part.rstrip(" .")
                 or any(ord(c) < 32 or c in '<>:"|?*' for c in part)
-                or part.split(".")[0].upper() in _RESERVED_NAMES):
+                or part.split(".")[0].strip().upper() in _RESERVED_NAMES):
             return False
     first = parts[0].casefold()
     return not (first.startswith(".migrate_backup")

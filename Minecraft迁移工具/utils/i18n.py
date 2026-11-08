@@ -73,7 +73,6 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "迁移计划与当前实例路径不一致": "The migration plan does not match the current instance paths",
     "没有找到需要复制的文件": "No files were found to migrate",
     "用户取消了迁移": "Migration cancelled",
-    "已取消": "Cancelled",
     "恢复为空或删除迁移新增内容": "Restore empty state or remove newly migrated content",
     "【复制阶段】{0}": "[Copy phase] {0}",
     "复制文件 ({0}/{1})": "Copying files ({0}/{1})",

@@ -233,6 +233,32 @@ def _想用Qt主界面():
     return str(cfg.get("main_window_backend", "tk") or "tk") == "qt"
 
 
+def _重启为纯Tk进程():
+    """Qt 主界面中途失败后的回落：放掉单实例锁，用 MCTOOL_MAIN=tk 另起一个进程，本进程退出。
+
+    子进程看到 MCTOOL_MAIN=tk 一定走 Tk，不会再试 Qt，所以不会来回重启。
+    """
+    global _LOCK_HOLDER
+    _LOCK_HOLDER = None                     # 放锁：子进程才拿得到
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import subprocess
+        参数 = [a for a in sys.argv[1:] if not a.startswith("--qt-host")]
+        if getattr(sys, "frozen", False):
+            命令 = [sys.executable] + 参数
+        else:
+            命令 = [sys.executable, os.path.abspath(sys.argv[0])] + 参数
+        环境 = dict(os.environ, MCTOOL_MAIN="tk")
+        subprocess.Popen(命令, close_fds=True, env=环境)
+    except Exception as e:
+        trace_exc("app/回落Tk重启", e)
+    os._exit(1)
+
+
 def main():
     # 单实例检查
     global _LOCK_HOLDER
@@ -298,6 +324,11 @@ def main():
             raise
         except Exception as e:
             trace_exc("app/Qt主界面启动失败，回落Tk", e)
+            # PySide6 已经进了本进程（QApplication 可能都建好了）就不能在这里接着建 Tk()：
+            # 两个 GUI 库共用主线程 = HANDOFF 里那个 GIL 致命错误。
+            # 这种情况放锁、另起一个强制 Tk 的干净进程，自己退出。
+            if any(m == "PySide6" or m.startswith("PySide6.") for m in sys.modules):
+                _重启为纯Tk进程()
 
     # 创建主窗口（先隐藏，避免瞬移）；使用 TkinterDnD 以支持文件拖拽
     try:

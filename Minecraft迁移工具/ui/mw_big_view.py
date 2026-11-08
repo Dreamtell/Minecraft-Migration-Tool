@@ -244,8 +244,16 @@ class BigViewMixin:
                 self._magnify_idle(btn, idle_text)
 
     def _open_big_view_dispatch(self, source_text, title):
-        """打开 Qt 卡片放大查看，不再创建 Tk 列表窗口。"""
-        self._open_big_view_qt(source_text, title)
+        """优先开 Qt 卡片放大查看；Qt 不可用 / 子进程起不来（含纯 Tk 模式）才回落到 Tk 版，
+        免得用户点了按钮什么都不出来。"""
+        ok, why = self._qt_available()
+        if ok and self._open_big_view_qt(source_text, title):
+            return
+        if not ok:
+            self.log(trp("⚠ {0}，本次用经典窗口打开", why), level="WARNING", save=False)
+            # 用户点的是「放大查看」，实际弹出的却是另一种窗口 —— 不说明就成了怪事
+            self.toast(trp("⚠️ Qt 不可用，已用经典窗口打开"), level="warn")
+        self.open_big_view(source_text, title)
 
     def open_mod_big_view(self):
         """模组清单 → 放大查看"""

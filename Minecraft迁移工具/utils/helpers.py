@@ -317,8 +317,16 @@ class SmoothScroller:
                 return 0, False       # 同上：零头攒到下一帧
             # 不要在每个像素帧调用 bbox("all")。VirtualTable 会复用槽位，
             # 但 Canvas 仍需遍历当前所有图元才能算 bbox；列表越复杂，这个检查
-            # 越容易和滚动重绘争用主线程。直接让 yview_scroll 判断边界即可：
-            # 到顶/到底时 canvasy 不变，下面的 moved 会准确返回 False。
+            # 越容易和滚动重绘争用主线程。到顶/到底由下面的 moved 判断。
+            # 但内容装得下时 yview_scroll 照样会把画布挪走（实测 canvasy -3 → -8），
+            # 再被各处回顶逻辑摁回来 = 抽搐（设置页短页上用户实测过）。
+            # yview() 不遍历图元，内容装得下时恒为 (0.0, 1.0)，用它挡掉。
+            try:
+                上, 下 = widget.yview()
+                if 上 <= 0.0 and 下 >= 1.0:
+                    return 0, True
+            except Exception:
+                pass
             before = widget.canvasy(0)
             try:
                 widget.yview_scroll(n, "units")

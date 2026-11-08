@@ -693,8 +693,14 @@ class MigrationGUI(
             pass
 
     def load_config(self):
-        from utils.config import load_raw_config
-        return load_raw_config()
+        # 必须和 save_config 读写同一个 CONFIG_FILE（本模块的全局名）：
+        # 探针按 docstring 只改 MW.CONFIG_FILE，读写两头不一致就会读到用户的真实配置。
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     def save_config(self):
         # ⚠ 这里**故意没有** CurseForge API Key：key 存在 ~/.minecraft_migrate_secret.json

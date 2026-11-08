@@ -1078,10 +1078,11 @@ class MigrationMixin:
             self.after_id = self.root.after(100, self._poll_progress)
 
     def _日志尾巴起步(self):
-        """迁移活儿干完了，但日志还在往外滚：条从 85% 推到 100%，和日志一个节奏。
+        """迁移活儿干完了：把条从 85% 推到 100%。
 
-        用剩余日志像素（`_log_remain_px`）当尺子 —— 它减到 0 的那一刻，正好是
-        用户看到日志停在最底下的那一刻，条也刚好满。
+        用剩余日志像素（`_log_remain_px`）当尺子。新日志视图直接把最新一批贴底渲染，
+        `_log_remain_px` 恒为 0，所以现在第一步就到 100%；保留这套步进是为了
+        日志视图以后又有滚动追赶时不用改这里。
         """
         if getattr(self, "_log_tail_job", None) is not None:
             return
@@ -1890,6 +1891,8 @@ class MigrationMixin:
         params["record_id"] = history_store.new_id()
         self._mig_record_id = params["record_id"]
         self._mig_total_size = float(total_size)
+        # 静默模式没有进度窗口来宣布结束：收尾时即使窗口不在托盘也要发系统通知
+        self._silent_notify_on_finish = bool(params["silent"])
         self.progress_queue = queue.Queue()
         self.progress_window = None
         if not params["dry_run"] and not params["silent"]:
@@ -1898,13 +1901,15 @@ class MigrationMixin:
                 cancel_event=params["cancel_event"])
         self._poll_progress()
         backup_fn = _打桩优先("do_backup", do_backup)
+        prune_fn = _打桩优先("prune_legacy_backup", prune_legacy_backup)
         threading.Thread(target=self._run_migration_thread,
                          args=(params["src_path"], params["tgt_path"], params["world"],
                                params["modlist"], params["configlist"], params["dry_run"],
                                params["overwrite"], params["extralist"],
                                params["extra_overwrite"], params["record_id"]),
                          kwargs={"plan": plan, "cancel_event": params["cancel_event"],
-                                 "marker": params["marker"], "backup_fn": backup_fn},
+                                 "marker": params["marker"], "backup_fn": backup_fn,
+                                 "prune_fn": prune_fn},
                          daemon=True).start()
 
     def _calculate_migration_stats(self, src_path, tgt_path, world, modlist,
@@ -1946,7 +1951,7 @@ class MigrationMixin:
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist,
                               dry_run, overwrite, extralist=None, extra_overwrite=True,
                               record_id=None, plan=None, cancel_event=None,
-                              marker=None, backup_fn=do_backup):
+                              marker=None, backup_fn=do_backup, prune_fn=None):
         event = cancel_event or threading.Event()
         success, error_message = False, None
         progress_queue = self.progress_queue
@@ -1961,7 +1966,15 @@ class MigrationMixin:
                           record_id=record_id, check_cancel=event.is_set)
                 if event.is_set():
                     raise MigrationCancelled()
-                prune_legacy_backup(tgt_path, log_func=self.log)
+                prune = prune_fn or prune_legacy_backup
+                # 新备份已经落盘，旧版那一份单一备份就没用了。清不掉不影响迁移，
+                # 单独兜住：别让它把整次迁移判成失败
+                try:
+                    清掉 = prune(tgt_path, log_func=self.log)
+                    if 清掉:
+                        self.log(trp("🧹 已清理旧版留下的单一备份（{0} 项）", 清掉), level="INFO")
+                except Exception as e:
+                    trace_exc("mw_migration/清理旧备份", e)
             success = run_migration(
                 src_path, tgt_path, world, modlist, configlist, dry_run, overwrite,
                 progress_callback=progress, log_callback=self.log,
@@ -1999,5 +2012,10 @@ class MigrationMixin:
             self._flip_start_btn(结束后=lambda: self._flip_progress(None))
             self._refresh_busy_state()
         self.when_log_bottom(finish)
+        if getattr(self, "_silent_notify_on_finish", False):
+            self._silent_notify_on_finish = False
+            self._notify_task_done("迁移", trp("后台静默执行已结束，点托盘图标查看日志"),
+                                   force=True)
+            return
         self._notify_task_done("迁移", trp("迁移结束：{0}",
                               trp("成功") if success else trp("未完成，请检查日志")))

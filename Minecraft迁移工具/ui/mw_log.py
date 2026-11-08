@@ -16,7 +16,7 @@ from pathlib import Path
 from tkinter import messagebox
 from utils import i18n, secrets
 from utils.textsafe import 可见 as _可见文本
-from utils.helpers import SmoothScroller, tree_row_px
+from utils.helpers import SmoothScroller, tree_row_px, trace_exc
 from utils.session_log import SessionLog
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
 from utils.i18n import trp
@@ -534,8 +534,16 @@ class LogMixin:
 
     def when_log_bottom(self, cb, timeout=3.0):
         # A reader looking at older output must not delay migration completion.
+        # timeout 只为兼容旧调用方保留：新日志视图直接贴底渲染，不需要等滚动。
         self._冲写日志()
-        self.root.after_idle(cb)
+
+        def _run():
+            # after_idle 里抛的异常 Tk 只会打到 stderr，收尾回调出错要进轨迹日志
+            try:
+                cb()
+            except Exception as e:
+                trace_exc("mw_log/when_log_bottom回调", e)
+        self.root.after_idle(_run)
 
     def _log_remain_px(self):
         # Live following renders the latest batch directly at the bottom.

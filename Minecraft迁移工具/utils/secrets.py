@@ -28,7 +28,7 @@
 第 2 条靠下面的 `redact()` / `scrub_obj()` 加上几个钩子实现，每个钩子都对应一个
 真实的泄露途径：
 
-  · `ui/mw_log.py` 的 `log()`        主界面日志 / 锁屏日志 / ~/.minecraft_migrate_last_log.txt
+  · `ui/mw_log.py` 的 `log()`        主界面日志 / 会话日志 ~/migration_logs/*.txt
   · `helpers.trace_line` / `trace_exc`  点击轨迹 ~/.minecraft_migrate_clicks.log
   · Qt 子进程                        请求 JSON 是**落在临时目录里的明文**，所以那里必须
                                      没有 key；子进程要用 key 就自己 import 本模块读文件

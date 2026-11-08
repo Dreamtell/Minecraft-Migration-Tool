@@ -588,7 +588,7 @@ class SettingsMixin:
         tk.Label(box_view, text="差异扫描：固定使用 Qt 卡片视图", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
         tk.Label(box_view,
-                 text="两个列表窗口不再创建 Tk 版本，也不提供表格 / 卡片切换。",
+                 text="两个列表窗口优先使用 Qt 卡片视图，不提供表格 / 卡片切换；PySide6 不可用时才退回经典窗口。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(2, 0))

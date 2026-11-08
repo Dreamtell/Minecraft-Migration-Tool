@@ -30,8 +30,6 @@ Tk 的 after() 在**真 mainloop**（阻塞在 GetMessage 里）下被 Windows �
 """
 
 import ctypes
-import math
-import os
 import time
 from ctypes import wintypes
 
