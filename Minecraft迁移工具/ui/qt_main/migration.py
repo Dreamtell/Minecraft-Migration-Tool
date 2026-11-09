@@ -244,6 +244,20 @@ class ProgressDialog(QtWidgets.QDialog):
         self.file_label.setText(filename)
         self.stats_label.setText(trp("{0} / {1} 个文件", index, self.total_files))
 
+    FINISH_HOLD_MS = 150
+
+    def finish(self, on_done=None):
+        """成功收尾:把条推到 100%、文件数写满,停一小会儿让这一帧真画出来再回调。
+
+        最后几次进度信号和 finished 信号挨得很近,直接关窗用户只看到条走到 2/3 就没了。
+        """
+        self.bar.setValue(100)
+        self.stats_label.setText(trp("{0} / {1} 个文件", self.total_files, self.total_files))
+        self.cancel_btn.setEnabled(False)
+        self.repaint()
+        if on_done is not None:
+            QtCore.QTimer.singleShot(self.FINISH_HOLD_MS, on_done)
+
     def closeEvent(self, event):
         # 关闭进度窗 = 取消(和Tk版一致,点X要先确认由调用方处理)
         if self._cancel_cb:

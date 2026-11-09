@@ -443,6 +443,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self.config["start_btn_feel"] = feel
             if hasattr(self.start_btn, "set_feel"):
                 self.start_btn.set_feel(feel)
+        self.config["rename_migrated_mods"] = bool(vals.get("rename_migrated_mods", False))
+        self.config["rename_marker"] = str(vals.get("rename_marker", "★") or "★")
+        self.config["silent_background"] = bool(vals.get("silent_background", False))
         self.config["toast_on"] = bool(vals.get("toast_on", True))
         if not self.config["toast_on"] and getattr(self, "_toast_host", None):
             self._toast_host.clear()
@@ -1390,6 +1393,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
             "dry_run": self.dry_run,
             "overwrite": self.overwrite_mods,
             "extra_overwrite": self.extra_conflict != "skip",
+            # 与 Tk 版同键:Tk 里开了「复制过去的模组加标记前缀」,Qt 里迁移也要照做
+            "marker": (str(self.config.get("rename_marker", "★") or "★")
+                       if bool(self.config.get("rename_migrated_mods", False)) else None),
+            "silent": bool(self.config.get("silent_background", False)),
             "record_id": history_store.new_id(),
             "cancel_event": cancel_event,
         }
@@ -1562,8 +1569,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.start_btn.set_progress(None if params["dry_run"] else 0.0)
         self.start_btn.flip_to_back(tr("⏳ 模拟中...") if params["dry_run"] else tr("⏳ 迁移中..."))
 
-        # 进度对话框(模拟运行不显示)。总数来自准备阶段的计划,进度条才走得准
-        if not params["dry_run"]:
+        # 进度对话框(模拟运行、后台静默执行都不显示)。总数来自准备阶段的计划,进度条才走得准
+        self._silent_run = bool(params.get("silent"))
+        if not params["dry_run"] and not self._silent_run:
             self._progress_dialog = ProgressDialog(self, max(1, int(total_files)),
                                                    max(1, int(total_size)), self.theme)
             self._progress_dialog.set_cancel_callback(lambda: cancel_event.set())
@@ -1599,9 +1607,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if self._progress_dialog:
             # 先摘掉取消回调:close() 会触发 closeEvent,否则又 set 一次 cancel_event
             # (迁移已结束,无害,但保持干净)
-            self._progress_dialog.set_cancel_callback(None)
-            self._progress_dialog.close()
-            self._progress_dialog = None
+            dlg, self._progress_dialog = self._progress_dialog, None
+            dlg.set_cancel_callback(None)
+            if success:
+                # 收尾那一跳(最后一批文件 → 100%)和关窗挨得太近,用户看到的是条走到
+                # 2/3 就消失了。先把条推满,停 150ms 让这一帧真画出来,再关。
+                dlg.finish(on_done=dlg.close)
+            else:
+                dlg.close()
         if self._worker_thread:
             self._worker_thread.quit()
             self._worker_thread.wait(1000)
@@ -1615,18 +1628,28 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.start_btn.set_progress(1.0)
         self.start_btn.flip_to_front(tr("🚀 开始迁移"))
 
-        # 挂在托盘里时弹系统通知(对齐 Tk 版 notify_task_done)
-        if getattr(self, "_hidden_in_tray", False):
+        # 系统通知:挂在托盘里时发(对齐 Tk 版 notify_task_done);
+        # 后台静默执行没有进度窗和结果框,不管窗口在不在托盘都要发,否则用户收不到任何反馈
+        silent, self._silent_run = bool(getattr(self, "_silent_run", False)), False
+        if silent:
+            self._notify(tr("✅ 迁移完成") if success else tr("⚠️ 迁移结束"),
+                         tr("后台静默执行已结束，点托盘图标查看日志"))
+        elif getattr(self, "_hidden_in_tray", False):
             self._notify(tr("✅ 迁移完成") if success else tr("⚠️ 迁移结束"),
                          tr("点托盘图标打开主界面查看"))
 
-        # 结果
+        # 结果(静默模式只写日志 + 吐司,不弹模态框)
         if error_message:
-            QtWidgets.QMessageBox.critical(self, tr("迁移错误"), error_message)
+            if silent:
+                self.log(trp("❌ 迁移任务失败:{0}", error_message), "ERROR")
+                self.toast(trp("❌ 迁移任务失败:{0}", error_message), "error")
+            else:
+                QtWidgets.QMessageBox.critical(self, tr("迁移错误"), error_message)
         elif success:
             self.log(tr("✅ 迁移完成"), "OK")
             self.toast(tr("✅ 迁移完成"), "ok")
-            QtWidgets.QMessageBox.information(self, tr("完成"), tr("迁移已成功完成!"))
+            if not silent:
+                QtWidgets.QMessageBox.information(self, tr("完成"), tr("迁移已成功完成!"))
         else:
             # run_migration 返回 False 有两种:有条目复制失败 / 被取消。
             # 有出错条目就说出错,别笼统写"可能被取消"(用户看着像是自己点错了)
@@ -2020,6 +2043,32 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+        self._force_foreground()
+
+    def _force_foreground(self):
+        """Win32 级置顶(同 utils.helpers.force_foreground,但那个模块顶层 import tkinter,
+        纯 Qt 进程里不能碰,所以在这里重写一份)。
+
+        Windows 的前台锁会让「不是前台进程」的 SetForegroundWindow 被忽略,
+        Qt 的 raise_()+activateWindow() 在二次启动叫回主窗口时就是任务栏闪一下、窗口还压在后面。
+        做法:最小化先还原 → SetForegroundWindow → 临时 HWND_TOPMOST 再摘掉(能绕开前台锁)。
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            SW_RESTORE, SW_SHOW = 9, 5
+            HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+            SWP_NOSIZE, SWP_NOMOVE, SWP_SHOWWINDOW = 0x0001, 0x0002, 0x0040
+            u32.ShowWindow(hwnd, SW_RESTORE if u32.IsIconic(hwnd) else SW_SHOW)
+            u32.SetForegroundWindow(hwnd)
+            u32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW)
+            u32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
+        except Exception:
+            pass
 
     def hide_to_tray(self):
         self._hidden_in_tray = True

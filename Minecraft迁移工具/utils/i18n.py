@@ -2261,6 +2261,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较":
         "⚠️ {0} list entries are not in the source mods folder; marked as missing and skipped",
     # ---- Qt 主界面（ui/qt_main/）与本轮新增的 Tk 侧文案 ----
+    "标记符号": "Marker symbol",
     "☀️ 浅色": "☀️ Light",
     "🌙 深色": "🌙 Dark",
     "主题已切换为: {0}": "Theme switched to: {0}",

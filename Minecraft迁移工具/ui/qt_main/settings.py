@@ -121,6 +121,24 @@ class SettingsDialog(QtWidgets.QDialog):
             self.countdown_spin.setValue(5)
         form.addRow(tr("开始前倒计时"), self.countdown_spin)
 
+        # 迁移行为(与 Tk 版同键,两边切换时设置互通)
+        self.rename_check = QtWidgets.QCheckBox(
+            tr("复制过去的模组加标记前缀（方便在目标 mods 里一眼认出）"))
+        self.rename_check.setChecked(bool(cfg.get("rename_migrated_mods", False)))
+        form.addRow("", self.rename_check)
+        self.marker_combo = QtWidgets.QComboBox()
+        self.marker_combo.setEditable(False)
+        for m in ("★", "☆", "▶", "◆", "●", "✦", "✚", "【新】", "NEW_"):
+            self.marker_combo.addItem(m, m)
+        self._select_by_data(self.marker_combo, str(cfg.get("rename_marker", "★") or "★"), 0)
+        self.marker_combo.setEnabled(self.rename_check.isChecked())
+        self.rename_check.toggled.connect(self.marker_combo.setEnabled)
+        form.addRow(tr("标记符号"), self.marker_combo)
+        self.silent_check = QtWidgets.QCheckBox(
+            tr("后台静默执行任务（不弹进度/结果窗口，完成后系统通知）"))
+        self.silent_check.setChecked(bool(cfg.get("silent_background", False)))
+        form.addRow("", self.silent_check)
+
         self.splash_check = QtWidgets.QCheckBox(tr("启动时显示动画"))
         self.splash_check.setChecked(bool(cfg.get("splash", True)))
         form.addRow("", self.splash_check)
@@ -204,6 +222,9 @@ class SettingsDialog(QtWidgets.QDialog):
             "splash": self.splash_check.isChecked(),
             "confirm_migrate": self.confirm_check.isChecked(),
             "start_countdown": int(self.countdown_spin.value()),
+            "rename_migrated_mods": self.rename_check.isChecked(),
+            "rename_marker": self.marker_combo.currentData(),
+            "silent_background": self.silent_check.isChecked(),
             "net_float_on": self.float_check.isChecked(),
             "net_float_size": int(self.float_size.value()),
             "net_float_dock": self.float_dock_check.isChecked(),

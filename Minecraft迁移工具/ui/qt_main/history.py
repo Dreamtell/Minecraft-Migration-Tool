@@ -64,7 +64,8 @@ class RollbackWorker(QtCore.QObject):
 class PartPickerDialog(QtWidgets.QDialog):
     """回滚前问还原哪些类别。available = {键: 数量};0 表示这份备份里没有,置灰。"""
 
-    def __init__(self, parent, available):
+    def __init__(self, parent, available, default=None, remember=False):
+        """default:默认勾哪些(上次「记住」的选择,与 Tk 版同键 rollback_parts);None = 有的全勾。"""
         super().__init__(parent)
         self.setWindowTitle(tr("选择回滚内容"))
         self.setMinimumWidth(360)
@@ -80,9 +81,14 @@ class PartPickerDialog(QtWidgets.QDialog):
                 cb.setEnabled(False)       # 这份备份里没有 → 不能选
                 cb.setChecked(False)
             else:
-                cb.setChecked(True)        # 默认全还原(有的都勾上)
+                cb.setChecked(default is None or key in default)
             self._checks[key] = cb
             root.addWidget(cb)
+
+        self.remember_check = QtWidgets.QCheckBox(
+            tr("记住我的选择（以后回滚都按这个，可在设置里改）"))
+        self.remember_check.setChecked(bool(remember))
+        root.addWidget(self.remember_check)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -318,7 +324,11 @@ class HistoryDialog(QtWidgets.QDialog):
             available = backup_parts_available(backup_dir)
         except Exception:
             available = {}
-        picker = PartPickerDialog(self, available)
+        cfg = self.window.config
+        saved = cfg.get("rollback_parts")
+        default = set(saved) if isinstance(saved, list) and saved else None
+        picker = PartPickerDialog(self, available, default,
+                                  bool(cfg.get("rollback_parts_remember", False)))
         if picker.exec() != QtWidgets.QDialog.Accepted:
             return
         parts = picker.selected_parts()
@@ -326,6 +336,14 @@ class HistoryDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(
                 self, tr("回滚"), tr("没有选择任何内容,已取消。"))
             return
+        if picker.remember_check.isChecked():
+            # 同 Tk 版:勾了「记住」就把这次的选择写成默认(设置页也读这个键)
+            cfg["rollback_parts"] = sorted(parts)
+            cfg["rollback_parts_remember"] = True
+            try:
+                self.window.save_config()
+            except Exception:
+                pass
 
         if QtWidgets.QMessageBox.question(
                 self, tr("确认回滚"),
