@@ -13,6 +13,13 @@ os.environ["MCTOOL_CONFIG"] = str(Path(_temp.name) / "config.json")
 os.environ["MCTOOL_LANG"] = "zh"
 Path(os.environ["MCTOOL_CONFIG"]).write_text('{"language":"zh"}', encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Minecraft迁移工具"))
+
+from _testcfg import use_config as _use_config   # noqa: E402
+_CFG_PATH = os.environ["MCTOOL_CONFIG"]
+
+
+def setUpModule():                     # 全量跑时各模块各用各的临时配置
+    _use_config(_CFG_PATH)
 import tkinter as tk
 from tkinter.scrolledtext import ScrolledText
 from ui.live_log import LiveLogView

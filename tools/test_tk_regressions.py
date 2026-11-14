@@ -16,6 +16,13 @@ Path(os.environ["MCTOOL_CONFIG"]).write_text('{"language":"zh"}', encoding="utf-
 SOURCE = Path(__file__).resolve().parents[1] / "Minecraft迁移工具"
 sys.path.insert(0, str(SOURCE))
 
+from _testcfg import use_config as _use_config   # noqa: E402
+_CFG_PATH = os.environ["MCTOOL_CONFIG"]
+
+
+def setUpModule():                     # 全量跑时各模块各用各的临时配置
+    _use_config(_CFG_PATH)
+
 import tkinter as tk  # noqa: E402
 from core import migrator as m  # noqa: E402
 from utils.helpers import SmoothScroller  # noqa: E402

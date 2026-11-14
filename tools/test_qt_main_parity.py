@@ -16,6 +16,13 @@ os.environ["MCTOOL_CONFIG"] = str(CFG)
 os.environ["MCTOOL_LANG"] = "zh"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Minecraft迁移工具"))
 
+from _testcfg import use_config as _use_config   # noqa: E402
+_CFG_PATH = os.environ["MCTOOL_CONFIG"]
+
+
+def setUpModule():                     # 全量跑时各模块各用各的临时配置
+    _use_config(_CFG_PATH)
+
 from PySide6 import QtCore, QtWidgets  # noqa: E402
 from utils import config as _cfg  # noqa: E402
 

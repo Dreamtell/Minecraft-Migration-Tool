@@ -1862,6 +1862,22 @@ def make_theme_icon(kind, size=20, color="#ffffff"):
     return img
 
 
+def _font_alive(f):
+    """Font 对象是不是还绑在一个活着的 Tk 解释器上。
+
+    tkinter.font.Font 在创建时就绑定到当时的 default root；那个 root 一旦
+    destroy（测试里每个用例各建各的、或者窗口重建），缓存的 Font 再 measure
+    就会抛 `TclError: can't invoke "font" command: application has been destroyed`。
+    """
+    if f is None:
+        return False
+    try:
+        f.measure("")
+        return True
+    except Exception:
+        return False
+
+
 def _btn_text_width(text, font=None):
     """量一段文字用渐变按钮字体画出来有多宽（Font 对象缓存，别每次 new）。
 
@@ -1869,7 +1885,8 @@ def _btn_text_width(text, font=None):
     """
     global _BTN_FONT_CACHE
     f = _BTN_FONT_CACHE
-    if f is None:
+    if not _font_alive(f):
+        f = None
         try:
             f = tkfont.Font(font=font) if font else tkfont.Font(family="微软雅黑", size=10,
                                                                 weight="bold")
@@ -1924,7 +1941,7 @@ def _btn_font_obj(font):
     """按 font 元组缓存 Font 对象（tkinter 里 new Font 很慢）。"""
     key = tuple(font) if isinstance(font, (tuple, list)) else str(font)
     f = _BTN_FONT_OBJ.get(key)
-    if f is None:
+    if not _font_alive(f):
         f = _BTN_FONT_OBJ[key] = tkfont.Font(font=font)
     return f
 
