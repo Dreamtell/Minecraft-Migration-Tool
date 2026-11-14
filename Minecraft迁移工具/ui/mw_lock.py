@@ -138,7 +138,7 @@ class LockMixin:
             getattr(self, "rollback_btn", None),
             # 「查看历史」原来漏在名单外：迁移/倒计时期间它一直亮着（用户要求全部禁用）
             getattr(self, "history_btn", None), self.scan_btn,
-            self.btn_changelog, self.mod_magnify_btn, self.add_mods_btn,
+            self.mod_magnify_btn, self.add_mods_btn,
             self.clear_mods_btn, self.check_mods_btn, self.config_magnify_btn,
             self.add_config_dir_btn, self.add_config_file_btn, self.clear_config_btn,
             self.config_check_btn,

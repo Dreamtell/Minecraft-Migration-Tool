@@ -1185,7 +1185,7 @@ class MigrationMixin:
                          len(缺)), level="WARNING")
 
         self._scanning = True
-        self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 扫描中…")
+        self.scan_btn.set_label("⏳ 扫描中…")
         self._refresh_busy_state()
         self.log("🔍 开始扫描模组差异，请稍候...", level="INFO")
         self.root.update_idletasks()
@@ -1312,10 +1312,9 @@ class MigrationMixin:
                 current, filename = 最新
                 total = getattr(self, '_scan_total', 0)
                 if total > 0:
-                    self.scan_btn.itemconfig(self.scan_btn.text_id,
-                                             text=trp("⏳ 解析中 ({0}/{1})", current, total))
+                    self.scan_btn.set_label(trp("⏳ 解析中 ({0}/{1})", current, total))
                 else:
-                    self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 解析中...")
+                    self.scan_btn.set_label("⏳ 解析中...")
                 if hasattr(self, 'scan_progress_window'):
                     self.scan_progress_window.update_progress(current, filename)
             except Exception:
@@ -1324,7 +1323,7 @@ class MigrationMixin:
         self.root.after(16, self._poll_scan_progress)
 
     def _finish_scan(self, data, error_msg):
-        self.scan_btn.itemconfig(self.scan_btn.text_id, text="🔍 扫描模组差异")
+        self.scan_btn.set_label("🔍 扫描模组差异")
         self._scanning = False
         self._refresh_busy_state()
 

@@ -196,6 +196,9 @@ def search_modrinth(query, limit=8, mc_version="", loader=""):
             "download_url": "",
             # 来源：界面上要标出来，用户才能分清这条来自 Modrinth 还是 CurseForge
             "source": "modrinth",
+            # 卡片视图要画项目图标：Modrinth 的搜索命中里直接带 icon_url，
+            # 不额外花请求。取不到就是空串，界面退回字母兜底。
+            "icon_url": hit.get("icon_url") or "",
         })
 
     return results
@@ -604,6 +607,9 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
                 "latest_version": "",
                 "download_url": "",
                 "source": "curseforge",
+                # logo.thumbnailUrl 是 64px 小图，够卡片用；取不到再试 logo.url
+                "icon_url": ((m.get("logo") or {}).get("thumbnailUrl")
+                             or (m.get("logo") or {}).get("url") or ""),
             })
         return 结果
 
@@ -621,6 +627,65 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
         except Exception:
             pass
     return 结果
+
+
+_ICON_DIR = None
+
+
+def icon_cache_dir():
+    """图标缓存目录（跟配置放一起，换机器/清缓存就是删这个目录）。"""
+    global _ICON_DIR
+    if _ICON_DIR is None:
+        try:
+            from utils.config import CONFIG_FILE
+            根 = CONFIG_FILE.parent
+        except Exception:
+            根 = None
+        if 根 is None:
+            import tempfile
+            根 = Path(tempfile.gettempdir())
+        _ICON_DIR = Path(根) / ".minecraft_migrate_icons"
+        try:
+            _ICON_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    return _ICON_DIR
+
+
+def fetch_icon(url, timeout=8):
+    """把图标下载到本地缓存，返回文件路径；失败/没地址返回 ""。
+
+    缓存按 URL 的 sha1 命名：同一个项目第二次搜索是 0 请求（纯读文件）。
+    下载走临时文件再 rename，中途断网不会留下半张坏图。
+    """
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    import hashlib
+    名 = hashlib.sha1(u.encode("utf-8")).hexdigest()[:20] + ".img"
+    目标 = Path(icon_cache_dir()) / 名
+    if 目标.is_file() and 目标.stat().st_size > 0:
+        return str(目标)
+    临时 = 目标.with_suffix(".part")
+    try:
+        请求 = urllib.request.Request(u, headers={
+            "User-Agent": "Mozilla/5.0 (Minecraft-Modpack-Migration-Tool)",
+            "Accept": "image/*,*/*;q=0.8",
+        })
+        with urllib.request.urlopen(请求, timeout=timeout) as 响应:
+            数据 = 响应.read(3 * 1024 * 1024 + 1)      # 3MB 上限：图标不可能这么大
+        if not 数据 or len(数据) > 3 * 1024 * 1024:
+            return ""
+        临时.write_bytes(数据)
+        临时.replace(目标)
+        return str(目标)
+    except Exception:
+        try:
+            if 临时.exists():
+                临时.unlink()
+        except Exception:
+            pass
+        return ""
 
 
 def fetch_project_latest_curseforge(project_id, timeout=12, mc_version="", loader="",

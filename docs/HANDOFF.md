@@ -94,7 +94,8 @@
 - 点下去翻红、跑完翻回；入口 `mw_migration.py:1174 _flip_start_btn` 用 getattr 兜底，
   按钮降级回老工厂时不报错
 - 手感三档（设置 → 🎨 外观与启动）：干脆 240ms / 标准 320ms / 沉 460ms，`over` 分别
-  1.30 / 0.90 / 0.55（配置键 `start_btn_feel`）；实测 246.5 / 328 / 473ms
+  1.30 / 0.90 / 0.55（配置键 `start_btn_feel`）；实测 246.5 / 328 / 473ms。
+  **现在手感由「特效强度」派生**（见第一节末尾），设置里不再单独给下拉
 - hover 不再是 `hover_pair` 提亮，而是原型的 `lerp(edge, edge_hot, hv)` 换面 + 扫光；
   淡入 90ms / 淡出 150ms，按 4 档量化（0/⅓/⅔/1）
 - 常驻动画由 `after(33ms)` 驱动（≤30fps），`_tick_wanted` 判定：只有 hover 未到位、
@@ -115,19 +116,41 @@
   圆角 8；无副标题；保留 emoji
 ### 其它
 
+- **贴着窗口边的自绘特效要让出圆角**：Win11 的窗口圆角在 DWM 那层是 8 物理像素，我们自己画的发光带/描边是方的，正好铺到边上就会在圆角处戳出去一截（桌面上看是一小段亮边"飞出"窗口轮廓）。做法：沿边方向两头各缩 `圆角半径`，并做同样的淡出收口——`ui/net_float.py` 的 `_EdgeGlow._place()` / `_fade_ends()`、`ui/qt_main/net_float.py` 的 `_corner_r()` 与 `paintEvent` 里的两段渐变都是这个思路。
+- **窗口尺寸一律走 `utils/dpi.window_geometry()`**：它按 Windows 的**工作区**（扣掉任务栏）夹一遍，
+  不再用 `winfo_screenheight()`（含任务栏）。主窗启动后再挂一个 `ensure_on_screen()`
+  （`after(150)`）兜底，防止布局撑高或用户把窗口拖到任务栏下面。窗口底边压住任务栏时，
+  窗口自己那圈亮边就会"盖在任务栏上"（用户截图报过）。
+
+
 - 整合包更新警告条（复制 AI 提示词 / ⚠ 按钮关闭）
 - 快捷链接加 MC百科、PCL
 - 空清单时「扫描差异 / 放大查看」置灰（`btn.state("normal"/"disabled")`）
 - 点空白只失焦，不再关「主界面编辑」开关
 - 删除整机流量统计（psutil），打包脚本去掉 `--hidden-import psutil`
 - CPU：迷你图 20fps→4fps，空闲 7.8%→4.3%
+- 联网搜索卡片图标：Modrinth 用命中里的 `icon_url`、CurseForge 用 `logo.thumbnailUrl`，
+  结果落地后每条各起一个 `QThreadPool` 任务下载（一屏最多 24 个），按 URL 的 sha1
+  缓存在 `~/.minecraft_migrate_icons/`（和配置同目录，删掉即清缓存），第二次搜索 0 请求。
+  失败/没地址就退回卡片上那个字母方块；图标带批次号 `_search_gen`，换关键词后旧批次
+  回来也不会贴到新结果上
+- 执行日志右侧总览条（`ui/log_overview.py`）：把整份日志压成 12px 竖条，ERROR/WARNING/
+  SUCCESS/SIMULATE 各留一个色点（位置=相对行号），中间实色框是当前可见段，点/拖即跳。
+  INFO 不画（占绝大多数，画满就是一条灰带，反而看不出异常）。250ms 轮询一次，签名
+  （末行号 + yview + 尺寸）不变就不重画；主题切换调 `set_theme()`
 
 ---
 
 ## 三、新增配置键
 
 `history_limit` · `pack_warning` · `float_edge_fx` · `start_btn_feel` ·
-`net_float_on` / `_x` / `_y` / `_size` / `_shadow` / `_dock`
+`net_float_on` / `_x` / `_y` / `_size` / `_shadow` / `_dock` · `fx_level`
+
+`fx_level`（off / light / standard / full）= 设置里的「特效强度」，一口管四件事：
+启动动画、浮标贴边粒子、开始按钮手感、消息卡片（吐司）动画。派生值仍然写回
+`splash` / `float_edge_fx` / `start_btn_feel` 三个老键，所以**老配置不动、老代码不用改**；
+`utils/fx.py` 是唯一真理表（`PRESETS`），Qt 与 Tk 共用。注意读配置要走
+`fx.from_config(cfg)`（没有 `fx_level` 时原样返回），否则手改过的档位不会生效
 
 ---
 

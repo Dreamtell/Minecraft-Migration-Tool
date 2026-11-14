@@ -12,11 +12,14 @@ _QT_DIR = Path(__file__).resolve().parent.parent.parent / "_qt"
 if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
     sys.path.insert(0, str(_QT_DIR))
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 from utils import i18n  # noqa: E402
+from ui.qt_win import fit_window
 from utils.i18n import tr  # noqa: E402
 from utils import history_store  # noqa: E402
+from utils import fx  # noqa: E402
+from ui.qt_main.star_slider import StarSliderCard  # noqa: E402
 
 
 def ask_close_action(parent):
@@ -57,8 +60,10 @@ class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent, config):
         super().__init__(parent)
         self.setWindowTitle(tr("设置"))
-        self.setMinimumWidth(380)
+        # 表单在滚动区里（见文件末尾），所以最小高度可以放低到 560 而不会切内容
+        fit_window(self, 480, 560, 520, 860)
         cfg = dict(config or {})
+        self._cfg = cfg                      # 试听结束后据此还原音效开关
 
         form = QtWidgets.QFormLayout()
         form.setContentsMargins(16, 16, 16, 8)
@@ -71,6 +76,20 @@ class SettingsDialog(QtWidgets.QDialog):
         theme_val = str(cfg.get("theme", "light") or "light")
         self._select_by_data(self.theme_combo, theme_val, 0)
         form.addRow(tr("主题"), self.theme_combo)
+
+        # 特效强度：一个 4 档的星空滑块，统管启动动画 / 浮标粒子 / 翻转手感 / 消息卡片动画。
+        # 档位值落成 0、1/3、2/3、1（左=关闭，右=全开），和 Tk 版的四段选择一一对应。
+        self._fx_level = fx.normalize(cfg.get("fx_level"))
+        self.fx_card = StarSliderCard(
+            tr("特效强度"), tr(fx.LABELS[self._fx_level]), self,
+            dark=(theme_val == "dark"), value=self._level_to_value(self._fx_level),
+            stops=len(fx.LEVELS))
+        self.fx_card.slider().valueChanged.connect(self._on_fx_value)
+        form.addRow(self.fx_card)
+        fx_note = QtWidgets.QLabel(tr("※ 关掉后没有启动动画、边缘粒子和消息卡片动画，按钮翻得最干脆"))
+        fx_note.setWordWrap(True)
+        fx_note.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow("", fx_note)
 
         # 语言(重启生效)
         self.lang_combo = QtWidgets.QComboBox()
@@ -139,9 +158,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self.silent_check.setChecked(bool(cfg.get("silent_background", False)))
         form.addRow("", self.silent_check)
 
-        self.splash_check = QtWidgets.QCheckBox(tr("启动时显示动画"))
-        self.splash_check.setChecked(bool(cfg.get("splash", True)))
-        form.addRow("", self.splash_check)
 
         # 网络浮标(与 Tk 版同键:net_float_on / net_float_size)
         self.float_check = QtWidgets.QCheckBox(tr("显示网络延迟浮标"))
@@ -158,21 +174,37 @@ class SettingsDialog(QtWidgets.QDialog):
         self.float_dock_check = QtWidgets.QCheckBox(tr("贴边时收纳浮标（只露一条边，鼠标移上去展开）"))
         self.float_dock_check.setChecked(bool(cfg.get("net_float_dock", True)))
         form.addRow("", self.float_dock_check)
-        self.float_fx_check = QtWidgets.QCheckBox(tr("贴边时显示边缘特效（绿色光带 + 粒子）"))
-        self.float_fx_check.setChecked(bool(cfg.get("float_edge_fx", True)))
-        form.addRow("", self.float_fx_check)
+        # 浮标阴影(与 Tk 版同键 net_float_shadow)
+        self.float_shadow_check = QtWidgets.QCheckBox(tr("浮标带阴影"))
+        self.float_shadow_check.setChecked(bool(cfg.get("net_float_shadow", True)))
+        form.addRow("", self.float_shadow_check)
 
-        # 「开始迁移」按钮翻转手感(与 Tk 版同键 start_btn_feel)
-        self.feel_combo = QtWidgets.QComboBox()
-        for code, label in (("crisp", "干脆"), ("standard", "标准"), ("heavy", "沉")):
-            self.feel_combo.addItem(tr(label), code)
-        self._select_by_data(self.feel_combo, str(cfg.get("start_btn_feel", "standard")), 1)
-        form.addRow(tr("开始迁移按钮手感："), self.feel_combo)
 
         # 右下角消息卡片总开关(与 Tk 版同键 toast_on;关掉后消息照样进消息中心)
         self.toast_check = QtWidgets.QCheckBox(tr("显示消息提示（右下角弹出的小卡片）"))
         self.toast_check.setChecked(bool(cfg.get("toast_on", True)))
         form.addRow("", self.toast_check)
+        # 点消息中心以外的地方就收起它(与 Tk 版同键 msg_click_outside_close,默认关)
+        self.msg_outside_check = QtWidgets.QCheckBox(tr("点消息中心以外就收回"))
+        self.msg_outside_check.setChecked(bool(cfg.get("msg_click_outside_close", False)))
+        form.addRow("", self.msg_outside_check)
+        # 主界面编辑:点空白处是否让清单失焦(与 Tk 版同键 blank_exit_edit,默认开)
+        self.blank_exit_check = QtWidgets.QCheckBox(tr("点空白处取消清单文本框焦点"))
+        self.blank_exit_check.setToolTip(tr("关闭后只能用编辑开关自己关"))
+        self.blank_exit_check.setChecked(bool(cfg.get("blank_exit_edit", True)))
+        form.addRow("", self.blank_exit_check)
+        # 按钮音效(与 Tk 版同键 sfx_on;音源路径 sfx_hover / sfx_press 沿用配置,默认用随包的合成音)
+        sfx_row = QtWidgets.QHBoxLayout()
+        self.sfx_check = QtWidgets.QCheckBox(tr("🔊 按钮音效（悬停 / 按下）"))
+        self.sfx_check.setChecked(bool(cfg.get("sfx_on", False)))
+        sfx_row.addWidget(self.sfx_check)
+        self.sfx_test_btn = QtWidgets.QPushButton(tr("▶ 试听"))
+        self.sfx_test_btn.clicked.connect(self._test_sfx)
+        sfx_row.addWidget(self.sfx_test_btn)
+        sfx_row.addStretch()
+        form.addRow("", sfx_row)
+        self._sfx_hover = str(cfg.get("sfx_hover") or "")
+        self._sfx_press = str(cfg.get("sfx_press") or "")
 
         # 关闭窗口时的行为(ask/tray/exit,与 Tk 版同一个配置键)
         self.close_combo = QtWidgets.QComboBox()
@@ -200,9 +232,43 @@ class SettingsDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
+        # 设置项多，屏幕矮（或缩放 150%）时一屏放不下：表单放进滚动区，
+        # 按钮固定在底部 —— 这样窗口哪怕压到最小尺寸也不会把下面几项切掉。
+        holder = QtWidgets.QWidget()
+        holder.setLayout(form)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(holder)
+
         root = QtWidgets.QVBoxLayout(self)
-        root.addLayout(form)
-        root.addWidget(buttons)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(scroll, 1)
+        bar = QtWidgets.QWidget()
+        bar_lay = QtWidgets.QHBoxLayout(bar)
+        bar_lay.setContentsMargins(16, 8, 16, 12)
+        bar_lay.addStretch(1)
+        bar_lay.addWidget(buttons)
+        root.addWidget(bar)
+
+    @staticmethod
+    def _level_to_value(level):
+        """档位 → 滑块位置（0 / 1⁄3 / 2⁄3 / 1）。"""
+        try:
+            return fx.LEVELS.index(fx.normalize(level)) / 3.0
+        except ValueError:
+            return 2.0 / 3.0
+
+    def _fx_value(self):
+        """滑块位置 → 档位（就近取档）。"""
+        v = float(self.fx_card.value())
+        idx = int(round(max(0.0, min(1.0, v)) * 3))
+        return fx.LEVELS[max(0, min(3, idx))]
+
+    def _on_fx_value(self, _v):
+        self.fx_card.set_sub(tr(fx.LABELS[self._fx_value()]))
 
     @staticmethod
     def _select_by_data(combo, data, fallback_index):
@@ -210,16 +276,37 @@ class SettingsDialog(QtWidgets.QDialog):
         idx = combo.findData(data)
         combo.setCurrentIndex(idx if idx >= 0 else fallback_index)
 
+    def _test_sfx(self):
+        """先按当前路径播一下,让用户当场判断音量与音色(不改开关本身,取消设置窗就还原)。"""
+        from utils import sfx
+        sfx.设置(enabled=True, hover=self._sfx_hover, press=self._sfx_press)
+        sfx.预热()
+        if not sfx.可用():
+            QtWidgets.QMessageBox.warning(self, tr("提示"), tr("⚠ 音效文件不存在"))
+            sfx.设置(enabled=self._sfx_was_on())
+            return
+        sfx.play("hover")
+        QtCore.QTimer.singleShot(320, lambda: sfx.play("press"))
+        QtCore.QTimer.singleShot(900, lambda: sfx.设置(enabled=self._sfx_was_on()))
+
+    def _sfx_was_on(self):
+        return bool(self._cfg.get("sfx_on", False))
+
     def values(self):
         """返回用户选择(普通 dict,键名与 config 对齐)。"""
+        level = self._fx_value()
+        d = fx.derived(level)
         return {
             "theme": self.theme_combo.currentData(),
+            "fx_level": level,
+            "splash": d["splash"],
+            "float_edge_fx": d["float_edge_fx"],
+            "start_btn_feel": d["start_btn_feel"],
             "language": self.lang_combo.currentData(),
             "extra_conflict": self.conflict_combo.currentData(),
             "history_limit": int(self.history_spin.value()),
             "dry_run": self.dry_run_check.isChecked(),
             "overwrite": self.overwrite_check.isChecked(),
-            "splash": self.splash_check.isChecked(),
             "confirm_migrate": self.confirm_check.isChecked(),
             "start_countdown": int(self.countdown_spin.value()),
             "rename_migrated_mods": self.rename_check.isChecked(),
@@ -228,8 +315,10 @@ class SettingsDialog(QtWidgets.QDialog):
             "net_float_on": self.float_check.isChecked(),
             "net_float_size": int(self.float_size.value()),
             "net_float_dock": self.float_dock_check.isChecked(),
-            "float_edge_fx": self.float_fx_check.isChecked(),
-            "start_btn_feel": self.feel_combo.currentData(),
+            "net_float_shadow": self.float_shadow_check.isChecked(),
+            "msg_click_outside_close": self.msg_outside_check.isChecked(),
+            "blank_exit_edit": self.blank_exit_check.isChecked(),
+            "sfx_on": self.sfx_check.isChecked(),
             "toast_on": self.toast_check.isChecked(),
             "close_action": self.close_combo.currentData(),
             "main_window_backend": self.backend_combo.currentData(),

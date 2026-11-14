@@ -21,6 +21,7 @@ from ui.mw_common import (
 )
 from utils import i18n
 from utils import secrets
+from utils import fx
 from utils.dpi import px
 from ui.slider_row import SliderRow
 
@@ -275,16 +276,17 @@ class SettingsMixin:
              (("light", "浅色"), ("dark", "深色")),
              lambda v: self.choose_theme(v), 名="theme")
 
-        # 「开始迁移」按钮的翻转手感（参数在 ui/flip_button.py 的 PRESETS）。
-        # 换完立刻生效（不用重启），并且当场写进配置。
-        self.settings_feel_var = tk.StringVar(value=self.start_btn_feel.get())
-        row_feel = tk.Frame(box1, bg=self.theme["bg"])
-        row_feel.pack(fill="x", pady=(10, 0))
-        tk.Label(row_feel, text="开始迁移按钮手感：", bg=self.theme["bg"],
+        # 特效强度：4 档统管启动动画 / 浮标粒子 / 翻转手感 / 消息卡片动画。
+        # 选完立刻落地（写进 splash / float_edge_fx / start_btn_feel 三个旧键），
+        # 这样 Tk 版和 Qt 版不用各写一套判断。
+        self.settings_fx_var = tk.StringVar(value=fx.current())
+        row_fx = tk.Frame(box1, bg=self.theme["bg"])
+        row_fx.pack(fill="x", pady=(10, 0))
+        tk.Label(row_fx, text="特效强度：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
-        分段(row_feel, self.settings_feel_var,
-             (("crisp", "干脆"), ("standard", "标准"), ("heavy", "沉")),
-             lambda v: self._set_start_btn_feel(v), 名="btnfeel")
+        分段(row_fx, self.settings_fx_var,
+             tuple((lv, fx.LABELS[lv]) for lv in fx.LEVELS),
+             lambda v: self._set_fx_level(v), 名="fxlevel")
 
         # 点「开始迁移」后的倒计时秒数（1~10）。用滑杆：1~10 只有十档，拖到哪就是哪，
         # 比「＋/－」少点很多下；倒计时期间再点一下按钮就是取消（见 mw_migration）。
@@ -326,10 +328,6 @@ class SettingsMixin:
                                font=("微软雅黑", 9, "bold"),
                                sfx=False, sfx_hover=False).pack(side="left", padx=(12, 0))
 
-        self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
-        开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
-             self._toggle_splash, 名="splash").pack(fill="x", pady=(6, 0))
-
         # 桌面浮标的大小：只给三档。太小数字放不下，太大挡住桌面；
         # 40~96 px 的硬限制在 _set_float_size 里还会再夹一次（防手改配置）。
         self.settings_float_size_var = tk.StringVar(
@@ -352,12 +350,6 @@ class SettingsMixin:
         开关(box1, "贴边时收纳浮标（只露一条边，鼠标移上去展开）",
              self.settings_float_dock_var, self._toggle_float_dock,
              名="floatdock").pack(fill="x", pady=(6, 0))
-
-        self.settings_float_edgefx_var = tk.BooleanVar(
-            value=bool(getattr(self, "float_edge_fx", True)))
-        开关(box1, trp("贴边时显示边缘特效（绿色光带 + 粒子）"),
-             self.settings_float_edgefx_var, self._toggle_float_edgefx,
-             名="floatedgefx").pack(fill="x", pady=(6, 0))
 
         # 配置文件是这个程序唯一的"数据文件"（语言 / 主题 / 各种偏好都在里面），
         # 给个一键用系统默认程序打开；改完要重启才生效，所以顺手写在旁边。
@@ -1036,14 +1028,6 @@ class SettingsMixin:
         except Exception as e:
             trace_exc("settings/试听音效", e)
 
-    def _toggle_splash(self):
-        """启动动画开关：app.py 在创建闪屏前会直接读配置文件。"""
-        self.splash_enabled = bool(self.settings_splash_var.get())
-        self.save_config()
-        self.toast(trp("🎬 启动动画已{0}（下次启动程序生效）",
-                       i18n.tr('启用' if self.splash_enabled else '关闭')),
-                   level="ok", key="splash")
-
     def _refresh_net_float(self):
         """浮标参数变了：就地重建一个（位置保持不变）。"""
         try:
@@ -1071,23 +1055,6 @@ class SettingsMixin:
         self._refresh_net_float()
         self.toast(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
                    level="ok", key="float_dock")
-
-    def _toggle_float_edgefx(self):
-        """开关：贴边时的边缘特效（光带 + 粒子），立即生效。"""
-        try:
-            开 = bool(self.settings_float_edgefx_var.get())
-        except Exception:
-            开 = True
-        try:
-            self.set_float_edge_fx(开)
-        except Exception:
-            self.float_edge_fx = 开
-            try:
-                self.save_config()
-            except Exception:
-                pass
-        self.toast(trp("✨ 贴边特效已{0}", i18n.tr("开启" if 开 else "关闭")),
-                   level="ok", key="float_edgefx")
 
     def _toggle_toast(self):
         """开关：右下角的吐司消息是否显示（立即生效，顺便落盘）。"""
@@ -1573,6 +1540,36 @@ class SettingsMixin:
         self.toast(trp("点外部收回消息中心已{0}",
                        i18n.tr("开启" if self.msg_click_outside_close.get() else "关闭")),
                    level="ok", key="msg_outside")
+
+    def _set_fx_level(self, 级别):
+        """特效强度：4 档统管启动动画 / 浮标粒子 / 翻转手感 / 消息卡片动画。
+
+        落地方式和别的设置一样——先改内存状态、立刻存盘，能当场生效的就当场生效：
+        启动动画要下次启动才看得到（app.py 直接读配置），粒子/按钮手感/卡片动画都是即时的。
+        """
+        级别 = fx.set_level(级别)
+        try:
+            self.settings_fx_var.set(级别)
+        except Exception:
+            pass
+        派生 = fx.derived(级别)
+        self.fx_level = 级别
+        self.splash_enabled = bool(派生["splash"])
+        try:
+            self.set_float_edge_fx(bool(派生["float_edge_fx"]))
+        except Exception:
+            self.float_edge_fx = bool(派生["float_edge_fx"])
+        self.start_btn_feel.set(派生["start_btn_feel"])
+        btn = getattr(self, "start_btn", None)
+        换 = getattr(btn, "set_feel", None)
+        if 换 is not None:
+            try:
+                换(派生["start_btn_feel"])
+            except Exception:
+                pass
+        self.save_config()
+        self.toast(trp("✨ 特效强度已设为「{0}」", i18n.tr(fx.LABELS[级别])),
+                   level="ok", key="fxlevel")
 
     def _set_start_btn_feel(self, 值):
         """「开始迁移」按钮的翻转手感：立即生效 + 立刻存盘（下次启动还是它）。"""

@@ -434,8 +434,9 @@ class LogMixin:
             if view is not None and not view._closed:
                 view.refresh()
         error = self._session_log.error
-        status = (trp("完整日志保存失败：{0}", error) if error else
-                  trp("界面最多显示 {0} 行；完整日志单独保存", self._session_log.limit))
+        # 正常时留空：「界面最多显示 N 行」是实现细节，用户用不着；这一行的位置只留给
+        # 真出错的情况（完整日志写盘失败）。右边的「打开完整日志」按钮仍在。
+        status = trp("完整日志保存失败：{0}", error) if error else ""
         label = getattr(self, "_log_status_label", None)
         if label is not None and label.cget("text") != status:
             label.configure(text=status)

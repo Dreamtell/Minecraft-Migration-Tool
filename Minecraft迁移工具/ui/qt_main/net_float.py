@@ -24,6 +24,8 @@ if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
 
 from PySide6 import QtWidgets, QtCore, QtGui  # noqa: E402
 
+from utils import fx  # noqa: E402
+from ui.qt_win import fit_window
 from utils.i18n import tr, trp  # noqa: E402
 
 # 状态 → (底色, 环色, 悬停环色);取自 Tk 版 ui/net_float.py 的 _GOOD_* / _BAD_*
@@ -58,7 +60,7 @@ class NetFloat(QtWidgets.QWidget):
     clicked = QtCore.Signal()
     moved = QtCore.Signal(int, int)
 
-    def __init__(self, host, size=56, rel=None, dock=True, edge_fx=True):
+    def __init__(self, host, size=56, rel=None, dock=True, edge_fx=True, shadow=True):
         super().__init__(host, QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint
                          | QtCore.Qt.NoDropShadowWindowHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
@@ -74,6 +76,7 @@ class NetFloat(QtWidgets.QWidget):
         self._rel = None
         self.dock_enabled = bool(dock)
         self.edge_fx = bool(edge_fx)
+        self.shadow = bool(shadow)
         self._docked = None      # 吸附在哪条边(left/right/top/bottom),None = 没贴边
         self._peek = False       # 贴边时是否展开成完整的圆
         self._out_polls = 0
@@ -141,17 +144,34 @@ class NetFloat(QtWidgets.QWidget):
         self.move(r.topLeft())
     # ---------- 贴边收纳 ----------
     def _detect_edge(self, rel=None):
-        """离哪条边 8px 以内。同 Tk 版:左右优先于上下;只有相对两边都近(窗口太窄)才不吸。"""
+        """离哪条边够近（**带迟滞**，别在阈值上闪）。
+
+        同 Tk 版：还没提示时要进 `_SNAP` 才算；已经亮着时要退到 `_SNAP + 18` 才灭；
+        当前那条边还够近就不换（除非别的边近 10px 以上），避免角落里左右互抢。
+        """
         g = self._host.geometry()
         F = self._full()
         x, y = self._clamp(*(rel or self._rel or self._default_rel()))
-        左, 右 = x <= _SNAP, (g.width() - F - x) <= _SNAP
-        上, 下 = y <= _SNAP, (g.height() - F - y) <= _SNAP
-        if 左 != 右:
-            return "left" if 左 else "right"
-        if 上 != 下:
-            return "top" if 上 else "bottom"
-        return None
+        近 = _SNAP + (18 if self._hint else 0)
+        候选 = []
+        if x <= 近:
+            候选.append(("left", x))
+        if (g.width() - F - x) <= 近:
+            候选.append(("right", g.width() - F - x))
+        if y <= 近:
+            候选.append(("top", y))
+        if (g.height() - F - y) <= 近:
+            候选.append(("bottom", g.height() - F - y))
+        if not 候选:
+            return None
+        if len(候选) == 1:
+            return 候选[0][0]
+        for edge, d in 候选:
+            if edge == self._hint:
+                其他 = [dd for e2, dd in 候选 if e2 != edge]
+                if 其他 and d - min(其他) <= 10:
+                    return edge
+        return min(候选, key=lambda kv: kv[1])[0]
 
     def _restore_dock(self):
         """启动时:存的位置本来就贴着边,就直接收成小标签。"""
@@ -167,6 +187,10 @@ class NetFloat(QtWidgets.QWidget):
         elif self.dock_enabled and not self._docked:
             self._restore_dock()
         self._place()
+        self.update()
+
+    def set_shadow(self, on):
+        self.shadow = bool(on)
         self.update()
 
     def set_edge_fx(self, on):
@@ -225,6 +249,33 @@ class NetFloat(QtWidgets.QWidget):
         if not busy:
             self._anim.stop()
 
+    def _fade_glow(self, target):
+        """光带淡入淡出：直接改窗口不透明度，160ms 走完，避免"啪"地出现/消失。"""
+        g = self._glow
+        if g is None:
+            return
+        try:
+            今 = float(g.windowOpacity())
+        except Exception:
+            return
+        if abs(今 - target) < 0.01:
+            return
+        步 = 0.16 if target > 今 else -0.16
+        新 = max(0.0, min(1.0, 今 + 步))
+        try:
+            g.setWindowOpacity(新)
+        except Exception:
+            return
+        if target > 0 and 新 < 1.0:
+            QtCore.QTimer.singleShot(16, lambda: self._fade_glow(target))
+        elif target <= 0 and 新 > 0.0:
+            QtCore.QTimer.singleShot(16, lambda: self._fade_glow(target))
+        elif target <= 0:
+            try:
+                g.hide()
+            except Exception:
+                pass
+
     def _show_glow(self, edge):
         if not self.edge_fx or edge is None:
             if self._glow is not None:
@@ -232,8 +283,13 @@ class NetFloat(QtWidgets.QWidget):
             return
         if self._glow is None:
             self._glow = _EdgeGlow(self._host)
+            try:
+                self._glow.setWindowOpacity(0.0)
+            except Exception:
+                pass
         c = self.frameGeometry().center()
         self._glow.show_on(edge, c)
+        self._fade_glow(1.0)
         self.raise_()                    # 光带在主窗口之上、浮标之下
 
     def eventFilter(self, obj, ev):
@@ -324,10 +380,11 @@ class NetFloat(QtWidgets.QWidget):
     def _paint_circle(self, p):
         tile, ring, ring_hover = _COLORS.get(self._state, _COLORS["unknown"])
         r = self._circle_rect()
-        # 阴影:往下偏 2px 的半透明黑圆
+        # 阴影:往下偏 2px 的半透明黑圆(设置里可关,同 Tk 版 net_float_shadow)
         p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor(0, 0, 0, 70))
-        p.drawEllipse(r.translated(0, 2))
+        if self.shadow:
+            p.setBrush(QtGui.QColor(0, 0, 0, 70))
+            p.drawEllipse(r.translated(0, 2))
         # 底 + 环
         p.setBrush(QtGui.QColor(*tile))
         pen = QtGui.QPen(QtGui.QColor(*(ring_hover if self._hover else ring)))
@@ -462,19 +519,39 @@ class _EdgeGlow(QtWidgets.QWidget):
         self._seed = (self._seed * 1103515245 + 12345) & 0x7FFFFFFF
         return self._seed / float(0x7FFFFFFF)
 
+    def _corner_r(self):
+        """Win11 系统圆角在**逻辑像素**下的半径（DWM 用的是 8 物理像素）。
+
+        光带两头要让出这么多，否则它的方角会戳到窗口圆角外面（桌面上看是
+        一小截亮边飞出窗口轮廓）。取不到 DPI 时按 8 算。
+        """
+        try:
+            dpr = float(self.devicePixelRatioF() or 1.0)
+            return max(4, int(round(8.0 / max(1.0, dpr))))
+        except Exception:
+            return 8
+
     def show_on(self, edge, center):
         g = self._host.geometry()
         t = self.THICK
+        r = self._corner_r()
         if edge in ("left", "right"):
             x = g.x() if edge == "left" else g.right() - t + 1
-            rect = QtCore.QRect(x, g.y(), t, g.height())
+            rect = QtCore.QRect(x, g.y() + r, t, max(2, g.height() - 2 * r))
             self._focus = (center.y() - g.y()) / float(max(1, g.height()))
         else:
             y = g.y() if edge == "top" else g.bottom() - t + 1
-            rect = QtCore.QRect(g.x(), y, g.width(), t)
+            rect = QtCore.QRect(g.x() + r, y, max(2, g.width() - 2 * r), t)
             self._focus = (center.x() - g.x()) / float(max(1, g.width()))
+        # 特效强度：粒子数量按档位缩放，关闭档干脆不显示光带
+        scale = fx.particle_scale()
+        if scale <= 0.0:
+            self.hide()
+            self._edge = None
+            return
         if edge != self._edge or not self._parts:
-            n = max(18, min(64, int(max(g.width(), g.height()) / 26)))
+            n = max(4, int(round(max(18, min(64, int(max(g.width(), g.height()) / 26)))
+                                 * scale)))
             self._parts = [[self._rand(), self._rand(), self._rand() * self.LIFE,
                             1.2 + 1.4 * self._rand()] for _ in range(n)]
         self._edge = edge
@@ -531,6 +608,24 @@ class _EdgeGlow(QtWidgets.QWidget):
         sg.setColorAt(1.0, QtGui.QColor(0, 0, 0, 120))
         p.setCompositionMode(QtGui.QPainter.CompositionMode_DestinationOut)
         p.fillRect(self.rect(), QtGui.QBrush(sg))
+        # 两头跟着窗口圆角淡出：沿边方向前/后 R 像素渐隐
+        rr = min(self._corner_r(), max(4, length // 3))
+        if vertical:
+            g1 = QtGui.QLinearGradient(0, 0, 0, rr)
+            g2 = QtGui.QLinearGradient(0, H, 0, H - rr)
+        else:
+            g1 = QtGui.QLinearGradient(0, 0, rr, 0)
+            g2 = QtGui.QLinearGradient(W, 0, W - rr, 0)
+        g1.setColorAt(0.0, QtGui.QColor(0, 0, 0, 255))
+        g1.setColorAt(1.0, QtGui.QColor(0, 0, 0, 0))
+        g2.setColorAt(0.0, QtGui.QColor(0, 0, 0, 255))
+        g2.setColorAt(1.0, QtGui.QColor(0, 0, 0, 0))
+        if vertical:
+            p.fillRect(QtCore.QRect(0, 0, W, rr), QtGui.QBrush(g1))
+            p.fillRect(QtCore.QRect(0, H - rr, W, rr), QtGui.QBrush(g2))
+        else:
+            p.fillRect(QtCore.QRect(0, 0, rr, H), QtGui.QBrush(g1))
+            p.fillRect(QtCore.QRect(W - rr, 0, rr, H), QtGui.QBrush(g2))
         p.setCompositionMode(QtGui.QPainter.CompositionMode_SourceOver)
         # 颗粒:从边上生成,往内侧飘、逐渐淡出
         p.setPen(QtCore.Qt.NoPen)
@@ -623,7 +718,7 @@ class NetChartDialog(QtWidgets.QDialog):
     def __init__(self, parent, theme):
         super().__init__(parent)
         self.setWindowTitle(tr("网络延迟"))
-        self.resize(640, 320)
+        fit_window(self, 560, 280, 660, 360)
         v = QtWidgets.QVBoxLayout(self)
         self.chart = _Chart(theme, parent=self)
         v.addWidget(self.chart, 1)

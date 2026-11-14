@@ -17,6 +17,8 @@ import sys
 import time
 from pathlib import Path
 
+from utils import fx
+
 _QT_DIR = Path(__file__).resolve().parent.parent.parent / "_qt"
 if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
     sys.path.insert(0, str(_QT_DIR))
@@ -93,7 +95,11 @@ def run(icon_path=None):
             pass
     i18n.install_qt()
 
-    cfg = load_raw_config()
+    cfg = fx.from_config(load_raw_config())
+    try:                                  # 特效强度：闪屏/吐司/浮标都读这份缓存
+        fx.bootstrap(cfg)
+    except Exception:
+        pass
 
     # 闪屏(独立进程,失败就不显示,别挡启动)
     splash = None

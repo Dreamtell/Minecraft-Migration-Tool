@@ -343,6 +343,7 @@ class MainWindowSmokeTests(unittest.TestCase):
         finally:
             w._migration_running = False
             w.hide()
+            w._close_session_log()      # 同真实退出路径:关掉会话日志文件
             w.deleteLater()
             pump(30)
 

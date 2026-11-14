@@ -22,13 +22,16 @@ from utils.message_store import 外观, 级别名  # noqa: E402
 class MessageDock(QtWidgets.QDockWidget):
     """消息中心面板。refresh() 从 store 重画列表;显示出来时把未读清零。"""
 
-    def __init__(self, parent, store, theme):
+    def __init__(self, parent, store, theme, close_on_outside_click=False):
         super().__init__(tr("🔔 消息中心"), parent)
         self.store = store
         self.theme = theme
+        self._outside = False
+        self._bell = None
         self.setObjectName("message_dock")       # saveState 需要 objectName
         self.setAllowedAreas(QtCore.Qt.RightDockWidgetArea | QtCore.Qt.LeftDockWidgetArea)
         self.setMinimumWidth(320)
+        self.setMinimumHeight(300)
 
         body = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(body)
@@ -50,6 +53,51 @@ class MessageDock(QtWidgets.QDockWidget):
 
         self.visibilityChanged.connect(self._on_visible)
         self.refresh()
+        self.set_close_on_outside_click(close_on_outside_click)
+
+    # ---- 点消息中心以外就收起(配置键 msg_click_outside_close,默认关;同 Tk 版) ----
+    def set_close_on_outside_click(self, on):
+        """开着才在整个应用上挂点击监听;关掉就摘掉,不白占事件循环。"""
+        on = bool(on)
+        if on == self._outside:
+            return
+        self._outside = on
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        if on:
+            app.installEventFilter(self)
+        else:
+            app.removeEventFilter(self)
+
+    def set_bell(self, widget):
+        """铃铛按钮自己负责开关面板,不能被「点外面」当成外部点击(否则点铃铛 = 先关再开)。"""
+        self._bell = widget
+
+    def _inside_dock_or_bell(self, obj):
+        w = obj if isinstance(obj, QtWidgets.QWidget) else None
+        while w is not None:
+            if w is self or w is self._bell:
+                return True
+            w = w.parentWidget()
+        return False
+
+    def eventFilter(self, obj, ev):
+        if (self._outside and self.isVisible() and not self.isFloating()
+                and ev.type() == QtCore.QEvent.MouseButtonPress
+                and isinstance(obj, QtWidgets.QWidget)
+                and obj is not self.parentWidget()
+                and obj.window() is self.parentWidget()
+                and not self._inside_dock_or_bell(obj)):
+            # 只在点中主窗口里的控件时收起;弹出的对话框 / 菜单是别的顶层窗口,不算。
+            # ⚠ 鼠标按下会沿父控件链往上冒:点面板里的控件时,事件随后还会被送给主窗口本身
+            # (它不在面板里),必须把「主窗口自己」排除掉,否则点面板也被当成点外面
+            self.hide()
+        return False
+
+    def closeEvent(self, ev):
+        self.set_close_on_outside_click(False)
+        super().closeEvent(ev)
 
     def set_theme(self, theme):
         self.theme = theme

@@ -41,7 +41,8 @@ from core.scanner import (get_full_mod_metadata, get_mod_icon,   # noqa: E402
                           guess_tags, split_cn_name,
                           compare_versions, detect_instance_env)
 from core.migrator import _is_safe_path                          # noqa: E402
-from core.mod_search import (fetch_project_latest,                       # noqa: E402
+from core.mod_search import (fetch_icon,                                 # noqa: E402
+                             fetch_project_latest,
                              fetch_project_latest_curseforge,
                              format_downloads,
                              normalize_online_version, search_modrinth,
@@ -58,11 +59,11 @@ from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
 # 界面语言：Qt 侧没法包 Tk 那套，靠"包住会显示文字的 Qt API" + 这里显式的 tr()。
 # 中文（默认）时 tr() 原样返回，行为不变；英文时由 ui/qt_host.py 里的 install_qt() 激活。
 from utils.i18n import tr, trf                                      # noqa: E402
+from ui.qt_win import fit_window                          # noqa: E402
 # 滚轮缓动的帧节奏：跟随显示器刷新率（本机 4ms），动画期间把系统定时器精度提到 1ms。
 # 只 import 模块、不 from ... import frame_ms：测试里要 monkeypatch 它做 12ms/4ms 对照。
 from utils import anim                                              # noqa: E402
 # 页签：设置窗口那套圆角药丸的 Qt 版（两边长得一样，才是同一套控件）
-from ui.qt_tabs import PillTabs                                      # noqa: E402
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
 CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
@@ -101,6 +102,9 @@ TAG_COLORS = {
     "更新": ("#e65100", "#ffffff"),
     "降级": ("#c62828", "#ffffff"),
     "目标独有": ("#546e7a", "#ffffff"),
+    # 联网搜索的"平台来源"：和表格「来源」列同色，卡片上也要一眼能认
+    "Modrinth": ("#1bd96a", "#08301a"),
+    "CurseForge": ("#f16436", "#ffffff"),
 }
 _TAG_FALLBACK = [("#7c6cf0", "#ffffff"), ("#0ea5a4", "#ffffff"), ("#c2410c", "#ffffff"),
                  ("#4d7c0f", "#ffffff"), ("#a21caf", "#ffffff"), ("#0369a1", "#ffffff")]
@@ -665,65 +669,128 @@ def _style_view_palette(view, th: dict):
     pal.setColor(QtGui.QPalette.HighlightedText,
                  QtGui.QColor(th.get("card_sel_fg", "#0d3d63")))
     view.setPalette(pal)
+    # 视口（QAbstractScrollArea 的 viewport）**有自己的一份调色板**，只改 view 不动它，
+    # 换主题后表格主体会保持旧底色（深色窗口里一大块白，实测踩过）。必须一起设。
+    vp = view.viewport()
+    if vp is not None:
+        vp.setPalette(pal)
+        vp.update()
 
 
-def _边的颜色(th):
-    """描边色：主题里没有 border 键，从底色往字色混 20% 推一个（深浅都合适）。"""
-    bg = QtGui.QColor(th.get("bg") or "#2e2e2e")
-    fg = QtGui.QColor(th.get("fg") or "#ffffff")
-    if not bg.isValid():
-        bg = QtGui.QColor("#2e2e2e")
-    if not fg.isValid():
-        fg = QtGui.QColor("#ffffff")
-    c = QtGui.QColor(int(bg.red() + (fg.red() - bg.red()) * 0.20),
-                     int(bg.green() + (fg.green() - bg.green()) * 0.20),
-                     int(bg.blue() + (fg.blue() - bg.blue()) * 0.20))
-    return c.name()
-
-
-def _输入底色(th):
-    """输入框/下拉框的底色：主题里有 entry_bg 就用它（浅色是 #ffffff，深色 #3e3e3e）。"""
-    return th.get("entry_bg") or th.get("card_bg") or "#2a2a2a"
-
-
-def _entry_qss(th):
-    """搜索框：圆角、留内边距、无 3D 边框（Qt 默认那种立体边太旧）。"""
-    return (
-        "QLineEdit {"
-        "  background: %s; color: %s;"
-        "  border: 1px solid %s; border-radius: 8px;"
-        "  padding-left: 12px; padding-right: 10px;"
-        "  selection-background-color: %s;"
-        "}"
-        "QLineEdit:focus { border: 1px solid %s; }"
-    ) % (_输入底色(th),
-         th.get("fg", "#eaeaea"),
-         _边的颜色(th),
-         th.get("card_sel_bg", "#d4e6f8"),
-         th.get("card_sel_bar") or th.get("accent_bg", "#2f7fd1"))
-
-
-def _combo_qss(th):
-    """下拉框：和搜索框同一套圆角 / 边框，别一个圆的一个方的一个立体的。"""
-    return (
-        "QComboBox {"
-        "  background: %s; color: %s;"
-        "  border: 1px solid %s; border-radius: 8px;"
-        "  padding: 2px 10px;"
-        "}"
-        "QComboBox:hover { border: 1px solid %s; }"
-        "QComboBox QAbstractItemView {"
-        "  background: %s; color: %s; outline: 0;"
-        "  selection-background-color: %s;"
-        "}"
-    ) % (_输入底色(th),
-         th.get("fg", "#eaeaea"),
-         _边的颜色(th),
-         th.get("card_sel_bar") or th.get("accent_bg", "#2f7fd1"),
-         _输入底色(th), th.get("fg", "#eaeaea"),
-         th.get("card_sel_bg", "#d4e6f8"))
-
-
+def _边的颜色(th):
+
+    """描边色：主题里没有 border 键，从底色往字色混 20% 推一个（深浅都合适）。"""
+
+    bg = QtGui.QColor(th.get("bg") or "#2e2e2e")
+
+    fg = QtGui.QColor(th.get("fg") or "#ffffff")
+
+    if not bg.isValid():
+
+        bg = QtGui.QColor("#2e2e2e")
+
+    if not fg.isValid():
+
+        fg = QtGui.QColor("#ffffff")
+
+    c = QtGui.QColor(int(bg.red() + (fg.red() - bg.red()) * 0.20),
+
+                     int(bg.green() + (fg.green() - bg.green()) * 0.20),
+
+                     int(bg.blue() + (fg.blue() - bg.blue()) * 0.20))
+
+    return c.name()
+
+
+
+
+
+def _输入底色(th):
+
+    """输入框/下拉框的底色：主题里有 entry_bg 就用它（浅色是 #ffffff，深色 #3e3e3e）。"""
+
+    return th.get("entry_bg") or th.get("card_bg") or "#2a2a2a"
+
+
+
+
+
+def _entry_qss(th):
+
+    """搜索框：圆角、留内边距、无 3D 边框（Qt 默认那种立体边太旧）。"""
+
+    return (
+
+        "QLineEdit {"
+
+        "  background: %s; color: %s;"
+
+        "  border: 1px solid %s; border-radius: 8px;"
+
+        "  padding-left: 12px; padding-right: 10px;"
+
+        "  selection-background-color: %s;"
+
+        "}"
+
+        "QLineEdit:focus { border: 1px solid %s; }"
+
+    ) % (_输入底色(th),
+
+         th.get("fg", "#eaeaea"),
+
+         _边的颜色(th),
+
+         th.get("card_sel_bg", "#d4e6f8"),
+
+         th.get("card_sel_bar") or th.get("accent_bg", "#2f7fd1"))
+
+
+
+
+
+def _combo_qss(th):
+
+    """下拉框：和搜索框同一套圆角 / 边框，别一个圆的一个方的一个立体的。"""
+
+    return (
+
+        "QComboBox {"
+
+        "  background: %s; color: %s;"
+
+        "  border: 1px solid %s; border-radius: 8px;"
+
+        "  padding: 2px 10px;"
+
+        "}"
+
+        "QComboBox:hover { border: 1px solid %s; }"
+
+        "QComboBox QAbstractItemView {"
+
+        "  background: %s; color: %s; outline: 0;"
+
+        "  selection-background-color: %s;"
+
+        "}"
+
+    ) % (_输入底色(th),
+
+         th.get("fg", "#eaeaea"),
+
+         _边的颜色(th),
+
+         th.get("card_sel_bar") or th.get("accent_bg", "#2f7fd1"),
+
+         _输入底色(th), th.get("fg", "#eaeaea"),
+
+         th.get("card_sel_bg", "#d4e6f8"))
+
+
+
+
+
 def _header_qss(th: dict) -> str:
     return ("QHeaderView::section{background:%s;color:%s;border:none;"
             "border-right:1px solid %s;padding:4px 6px;}"
@@ -1976,7 +2043,9 @@ class DetailDialog(QtWidgets.QDialog):
         self.theme = theme
         self.env = dict(env or {})
         self.setWindowTitle(tr("模组详情"))
-        self.setMinimumSize(620, 460)
+        # 尺寸统一走 ui/qt_win.fit_window：最小 720x520（再小联网搜索页会被挤成一条缝），
+        # 打开时 940x700 —— 之前按屏幕 72% 算出来 1120x820，用户嫌太大
+        fit_window(self, 720, 520, 940, 700)
         self.setStyleSheet("QDialog{background:%s;} QLabel{color:%s;}"
                            % (theme.get("bg"), theme.get("fg")))
         外层 = QtWidgets.QVBoxLayout(self)
@@ -2006,6 +2075,7 @@ class DetailDialog(QtWidgets.QDialog):
         box.addWidget(t)
         sub = QtWidgets.QLabel(it.name)
         sub.setStyleSheet("color:%s" % theme.get("muted_fg"))
+        self._sub_lbl = sub
         box.addWidget(sub)
         head.addLayout(box, 1)
         lay.addLayout(head)
@@ -2033,6 +2103,7 @@ class DetailDialog(QtWidgets.QDialog):
                            "border-radius:8px;padding:6px;}"
                            % (theme.get("entry_bg"), theme.get("fg"),
                               theme.get("muted_fg")))
+        self._desc = desc
         lay.addWidget(desc, 1)
         btns = QtWidgets.QHBoxLayout()
         btns.addStretch(1)
@@ -2059,6 +2130,39 @@ class DetailDialog(QtWidgets.QDialog):
             self._search_panel = panel
         except Exception as e:
             trace_exc(tr("DetailDialog/联网搜索标签"), e)
+
+    def set_theme(self, theme: dict):
+        """换主题：本窗和里面的「联网搜索」页一起重刷（主界面切主题时由大视图推过来）。"""
+        th = dict(theme or {})
+        self.theme = th
+        try:
+            self.setStyleSheet("QDialog{background:%s;} QLabel{color:%s;}"
+                               % (th.get("bg"), th.get("fg")))
+        except Exception:
+            pass
+        try:
+            self._sub_lbl.setStyleSheet("color:%s" % th.get("muted_fg"))
+        except Exception:
+            pass
+        try:
+            self._desc.setStyleSheet(
+                "QTextEdit{background:%s;color:%s;border:1px solid %s;"
+                "border-radius:8px;padding:6px;}"
+                % (th.get("entry_bg"), th.get("fg"), th.get("muted_fg")))
+        except Exception:
+            pass
+        try:
+            self._search_panel.set_theme(th)
+        except Exception:
+            pass
+        try:
+            style_window_hwnd(int(self.winId()), _is_dark(th))
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def showEvent(self, ev):
         """详情窗也上原生深色标题栏（和 Tk 版详情窗一致）。"""
@@ -2114,6 +2218,34 @@ def guess_query(it: Entry) -> str:
     base = re.sub(r"[-_ .]+(?:mc|fabric|forge|neoforge|quilt|beta|alpha|release)$",
                   "", base, flags=re.I)
     return base or stem
+
+
+class _IconSignals(QtCore.QObject):
+    done = QtCore.Signal(int, int, str)            # 批次号, 行号, 本地图标路径（失败是空串）
+
+
+class _IconTask(QtCore.QRunnable):
+    """后台把一条搜索结果的图标抓回来（下载+磁盘缓存都在 core.mod_search.fetch_icon）。
+
+    图标是"锦上添花"：失败、超时、没图标地址都只是不画，界面照旧用字母兜底，
+    所以这里不抛错、不上报，只把结果发回主线程。
+    """
+
+    def __init__(self, row: int, url: str, signals: "_IconSignals", gen: int = 0):
+        super().__init__()
+        self.row, self.url, self.signals = row, url, signals
+        self.gen = gen
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            路径 = fetch_icon(self.url)
+        except Exception:
+            路径 = ""
+        try:
+            self.signals.done.emit(self.gen, self.row, 路径)
+        except Exception:
+            pass
 
 
 class _SearchSignals(QtCore.QObject):
@@ -2386,10 +2518,14 @@ class SearchCardItem:
         # Modrinth 的 categories 里混着加载器和分类：加载器单独拿出来（Fabric/NeoForge…），
         # 其余走中文分类映射。卡片上"这个项目支持哪些加载器"是最该一眼看到的信息。
         slugs = list(r.get("categories") or [])
-        标签 = ([self.status] if self.status else [])
+        # 平台来源排第一：卡片上原本只有加载器/分类 chip，看不出这条是
+        # Modrinth 还是 CurseForge（表格有「来源」列，卡片没有）
+        源 = "CurseForge" if str(r.get("source") or "").lower() == "curseforge" else "Modrinth"
+        标签 = [源]
+        标签 += ([self.status] if self.status else [])
         标签 += [_loader_label(s) for s in slugs if str(s).lower() in _LOADER_LABELS]
         标签 += categories_cn(slugs)
-        self.tags = list(dict.fromkeys(t for t in 标签 if t))[:5]
+        self.tags = list(dict.fromkeys(t for t in 标签 if t))[:6]
         self.theme = theme
         return self
 
@@ -2472,6 +2608,9 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self._signals.error.connect(self._on_error)
         self._signals.info.connect(lambda m: self.status.setText(m))
         self._signals.version.connect(self._on_version)
+        # 图标任务是"每条结果各抓一次"，用单独的信号对象，别和搜索/版本混在一起
+        self._icon_signals = _IconSignals(self)
+        self._icon_signals.done.connect(self._on_icon)
         self._build(title, query, local_version)
 
     # ---------------- UI ----------------
@@ -2487,6 +2626,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         f.setBold(True)
         head.setFont(f)
         head.setStyleSheet("color:%s; background:transparent;" % th.get("fg"))
+        self.head = head
         lay.addWidget(head)
         # 副标题：原来那行「联网搜索（Modrinth + CurseForge）· 模组名」又长又挤，
         # 12 号字里塞了三件事；拆成"标题说干什么、副标题说搜的是谁"。
@@ -2531,16 +2671,8 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self._spin_timer.setInterval(100)
         self._spin_timer.timeout.connect(self._转一圈)
 
-        # 表格 / 卡片：页签样式和设置窗口同一套（圆角药丸 + 选中块滑过去）
-        self.tabs = PillTabs(th, self)
-        self.tabs.add(tr("📋 表格"))
-        self.tabs.add(tr("🗂 卡片"))
-        _tab_row = QtWidgets.QHBoxLayout()
-        _tab_row.setContentsMargins(0, 2, 0, 0)
-        _tab_row.addWidget(self.tabs)
-        _tab_row.addStretch(1)
-        lay.addLayout(_tab_row)
-
+        # 联网搜索只保留卡片视图（表格那套已经删掉）：以前这里有一对
+        # 「表格 / 卡片」药丸，用户觉得表格那列数据没卡片直观，只留卡片。
         self.model = SearchModel(th, local_version, self)
         self.table = SmoothTable()
         self.table.setModel(self.model)
@@ -2606,8 +2738,9 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self._sel_row = -1                  # 卡片视图里选中的那一行（表格用 Qt 自己的选中）
 
         self.stack = QtWidgets.QStackedWidget()
-        self.stack.addWidget(self.table)
+        self.stack.addWidget(self.table)       # 模型/排序还用得到它，只是不再显示
         self.stack.addWidget(self.cards)
+        self.stack.setCurrentIndex(1)          # 只显示卡片
         lay.addWidget(self.stack, 1)
 
         # 结果区**正中间**的"搜索中"大字：搜索时显示、结果回来就隐藏。
@@ -2647,7 +2780,6 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
         self.btn.clicked.connect(self.search)
         self.entry.returnPressed.connect(self.search)
-        self.tabs.changed.connect(self._on_tab)
         self.btn_page.clicked.connect(self._open_project_page)
         self.btn_dl.clicked.connect(self._open_download_page)
         self.btn_copy.clicked.connect(self._copy_download)
@@ -2672,6 +2804,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         行.setSpacing(6)
         提示 = QtWidgets.QLabel(tr("只看："))
         提示.setStyleSheet("color:%s;" % th.get("muted_fg"))
+        self.lbl_prefix = 提示
         行.addWidget(提示)
 
         self.cb_mc = QtWidgets.QComboBox()
@@ -2738,6 +2871,79 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         self.cb_loader.currentIndexChanged.connect(self._on_filter_changed)
         try:
             self.cb_mc.lineEdit().editingFinished.connect(self._on_filter_changed)
+        except Exception:
+            pass
+
+    def set_theme(self, theme: dict):
+        """换主题：把这一页里**手工上色**的控件重刷一遍。
+
+        Qt 的 setStyleSheet 是把颜色写死在控件上的，主题一换不会自己重算。
+        主界面切主题时如果这一页还开着（详情窗的非模态页），不重刷就会留下
+        "深色窗口里一块浅色表头"这种花脸。这里按建窗顺序再走一遍，幂等。
+        """
+        th = dict(theme or {})
+        self.theme = th
+        try:
+            self.setStyleSheet("QDialog{background:%s;}" % th.get("bg"))
+        except Exception:
+            pass
+        for w, key in ((getattr(self, "head", None), "fg"),
+                       (getattr(self, "sub", None), "muted_fg"),
+                       (getattr(self, "status", None), "muted_fg"),
+                       (getattr(self, "lbl_prefix", None), "muted_fg"),
+                       (getattr(self, "lbl_filter", None), "muted_fg")):
+            if w is not None:
+                try:
+                    w.setStyleSheet("color:%s;background:transparent;" % th.get(key))
+                except Exception:
+                    pass
+        try:
+            self.entry.setStyleSheet(_entry_qss(th))
+        except Exception:
+            pass
+        for cb in (getattr(self, "cb_mc", None), getattr(self, "cb_loader", None)):
+            if cb is not None:
+                try:
+                    cb.setStyleSheet(_combo_qss(th))
+                except Exception:
+                    pass
+        try:                                   # 结果区：模型
+            self.model.theme = th
+            self.model.layoutChanged.emit()
+        except Exception:
+            pass
+        try:                                   # 结果区：卡片
+            self.card_store.theme = th
+            self.card_delegate.theme = th
+            self.card_delegate._pix.clear()
+            self.card_delegate._fb = None
+            self.cards.viewport().update()
+            self.card_model.layoutChanged.emit()
+        except Exception:
+            pass
+        try:                                   # 结果区：表格本体 + 表头 + 选中色
+            _style_view_palette(self.table, th)
+            hh = self.table.horizontalHeader()
+            hh.setStyleSheet(_header_qss(th))
+            pal = self.table.palette()
+            for _grp in (QtGui.QPalette.Active, QtGui.QPalette.Inactive):
+                pal.setColor(_grp, QtGui.QPalette.Highlight,
+                             QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))
+                pal.setColor(_grp, QtGui.QPalette.HighlightedText,
+                             QtGui.QColor("#ffffff"))
+            self.table.setPalette(pal)
+        except Exception:
+            pass
+        for _b in (getattr(self, "btn_page", None), getattr(self, "btn_dl", None),
+                   getattr(self, "btn_copy", None)):
+            if _b is not None:                 # AnimButton 自绘，主题在实例上
+                try:
+                    _b.theme = th
+                    _b.update()
+                except Exception:
+                    pass
+        try:
+            self.update()
         except Exception:
             pass
 
@@ -2828,34 +3034,55 @@ class OnlineSearchDialog(QtWidgets.QDialog):
         布局.addLayout(底)
         dlg.exec()
 
-    def _on_tab(self, idx):
-        """页签切换：表格 ↔ 卡片。页签自己会滑动并高亮，这里只管换页。"""
-        idx = int(idx)
-        # 程序里别处也可能直接调这个函数换页（测试、快捷键），
-        # 这时把页签的高亮跟上，免得"页面换了、页签还停在原来那个"。
-        # set_current 会再发一次 changed，所以先比对再调，不会递归。
-        if self.tabs.current() != idx:
-            self.tabs.set_current(idx, animate=False)
-        to_cards = idx == 1
-        self.stack.setCurrentIndex(1 if to_cards else 0)
-        if to_cards:
-            # 把表格当前的选中行带过去（卡片没有 Qt 选中态，用 sel_t 自己画）
-            idx = self.table.currentIndex()
-            self._select_card(idx.row() if idx.isValid() else -1)
-        elif self._sel_row >= 0:
-            self.table.selectRow(self._sel_row)
-        self._update_row_buttons()
+    def _select_card(self, row, animate=False):
+        """卡片视图里"选中哪一行" —— 底部那几个按钮作用在它上面。
 
-    def _select_card(self, row):
-        """卡片视图里"选中哪一行" —— 底部那几个按钮作用在它上面。"""
-        if row == self._sel_row:
+        `animate`：点卡片时用 160ms 缓动把 sel_t 推过去（选中蓝底 + 左侧竖条一起长出来），
+        不像以前那样瞬间跳变；切页签/程序里换行时直接到位，免得一开页就看见动画。
+        """
+        if row == self._sel_row and not animate:
             return
         old, self._sel_row = self._sel_row, row
         for r in (old, row):
             if 0 <= r < len(self.card_store.items):
-                self.card_store.items[r].sel_t = 1.0 if r == row else 0.0
+                it = self.card_store.items[r]
+                target = 1.0 if r == row else 0.0
+                if animate:
+                    self._animate_card_sel(it, target)
+                else:
+                    it.sel_t = target
         if hasattr(self, "cards"):
             self.cards.viewport().update()
+
+    def _animate_card_sel(self, it, target):
+        """单张卡片的选中进度动画（QVariantAnimation，只重画这一张）。"""
+        anims = self.__dict__.setdefault("_card_sel_anims", {})
+        key = id(it)
+        old = anims.pop(key, None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        a = QtCore.QVariantAnimation(self)
+        a.setDuration(160)
+        a.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        a.setStartValue(float(it.sel_t or 0.0))
+        a.setEndValue(float(target))
+
+        def _frame(v, item=it):
+            item.sel_t = float(v)
+            try:
+                row = self.card_store.items.index(item)
+                idx = self.card_model.index(row, 0)
+                self.card_model.dataChanged.emit(idx, idx)
+            except Exception:
+                pass
+
+        a.valueChanged.connect(_frame)
+        a.finished.connect(lambda k=key: anims.pop(k, None))
+        anims[key] = a
+        a.start()
 
     def _on_row_clicked(self, index):
         """表格里点一下选中、再点同一下取消。"""
@@ -2875,7 +3102,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             return
         # 再点一次已经选中的卡片 = 取消选中（和表格那边一致）
         row = index.row()
-        self._select_card(-1 if row == self._sel_row else row)
+        self._select_card(-1 if row == self._sel_row else row, animate=True)
         self._update_row_buttons()
 
     def _set_hover(self, row):
@@ -3058,6 +3285,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             return
         备注 = self._widen_note
         self._widen_note = ""
+        self._search_gen = getattr(self, "_search_gen", 0) + 1   # 图标批次号
         self.model.set_results(results, modid, name)
         self.card_store.rebuild()          # 卡片视图看的是同一批 rows
         self._sel_row = -1
@@ -3086,6 +3314,31 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                 pool.start(_VersionTask(i, r["project_id"], self._signals, mc, loader,
                                     r.get("source"), r.get("slug", ""),
                                     r.get("project_url", "")))
+            # 图标另开一路：搜索结果自带 icon_url，下回来就缓存在本地，第二次 0 请求
+            if r.get("icon_url") and i < 24:      # 一屏最多 24 个，别把线程池占满
+                pool.start(_IconTask(i, r["icon_url"], self._icon_signals,
+                                     getattr(self, "_search_gen", 0)))
+
+    def _on_icon(self, gen: int, row: int, path: str):
+        """某条结果的图标到了：挂到卡片条目上，只重画那一张。
+
+        带批次号：图标是慢网络，回来时用户可能已经换了关键词 —— 旧批次的图标
+        绝不能贴到新结果上（行号会撞）。
+        """
+        if gen != getattr(self, "_search_gen", 0) or not path:
+            return
+        try:
+            it = self.card_store.at(row)
+        except Exception:
+            it = None
+        if it is None:
+            return
+        it.icon_path = path
+        try:
+            idx = self.card_model.index(row, 0)
+            self.card_model.dataChanged.emit(idx, idx)
+        except Exception:
+            pass
 
     def _on_error(self, msg):
         self._searching = False
@@ -3142,11 +3395,12 @@ class OnlineSearchDialog(QtWidgets.QDialog):
 
     # ---------------- 动作 ----------------
     def _card_mode(self) -> bool:
-        """现在显示的是卡片视图吗。"""
-        try:
-            return self.stack.currentIndex() == 1
-        except Exception:
-            return False
+        """现在是卡片视图吗——联网搜索已经删掉表格页，恒为 True。
+
+        保留这个函数是因为底部的「打开项目页 / 下载页」按 `_current()` 取行，
+        那条路径还走它（以后真把表格删干净了，这里一起删）。
+        """
+        return True
 
     def _current(self) -> dict:
         """当前选中的那一行（表格看 Qt 选中，卡片看 _sel_row）—— 底部按钮作用在它上面。
@@ -3223,8 +3477,7 @@ class QtBigView(QtWidgets.QWidget):
         self.env = detect_instance_env(source_path) if source_path else \
             {"mc": "", "loader": "", "src": ""}
         self.setWindowTitle(tr("放大查看 - %s") % title)
-        self.setMinimumSize(880, 560)
-        self.resize(1060, 680)
+        fit_window(self, 860, 540, 1000, 660)
         # 放大查看统一使用卡片视图。保留 cards 参数以兼容旧调用方，实际不再允许切回表格。
         self._start_cards = True
         # 原生窗口框（不是无边框 + 半透明）：
@@ -3513,6 +3766,15 @@ class QtBigView(QtWidgets.QWidget):
             w.update()
         self.table_model.layoutChanged.emit()
         self.card_model.layoutChanged.emit()
+        # 已打开的子窗（详情 / 联网搜索）是**独立顶层窗**，不跟着上面这套刷新，
+        # 得把新主题显式推过去 —— 否则会出现"大视图浅色、详情窗还是深色"的花脸。
+        for _w in list(getattr(self, "_dialogs", []) or []):
+            _fn = getattr(_w, "set_theme", None)
+            if callable(_fn):
+                try:
+                    _fn(self.theme)
+                except Exception:
+                    pass
 
     # ---------------- 交互：表格 / 卡片 ----------------
     def eventFilter(self, obj, ev):

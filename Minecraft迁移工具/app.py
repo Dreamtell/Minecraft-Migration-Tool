@@ -49,6 +49,8 @@ from winotify import Notification, audio
 # 界面语言：**必须在任何窗口建起来之前**装上（见 utils/i18n.py 顶部说明）。
 # 中文（默认）时 install() 直接返回、什么都不做，行为与以前逐字节一致。
 from utils import i18n
+# 特效强度（utils/fx.py）：闪屏常量和吐司/浮标都按它缩放。纯标准库，导入无副作用
+from utils import fx
 # 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
 from utils.i18n import trp
 # ⚠ `i18n.install()` 与界面模块的 import 都在 main() 里、按"先装语言再导入界面"的顺序做：
@@ -382,7 +384,12 @@ def main():
     # 等主界面开始构建时闪屏正好已经画出来了。放在预热之后的话，用户会先愣一下
     # 才看到卡片。
     qt_splash = None
-    _raw_cfg = load_raw_config()
+    _raw_cfg = fx.from_config(load_raw_config())
+    # 特效强度（utils/fx.py）：闪屏/吐司/浮标/按钮手感都读这一份缓存，得先填好
+    try:
+        fx.bootstrap(_raw_cfg)
+    except Exception:
+        pass
     splash_on = bool(_raw_cfg.get("splash", True))
     # 设置里关掉 PySide6（纯 Tk 模式）时，连闪屏都别去碰 Qt：
     # `from ui import splash_qt` 会顺带把 PySide6 载进主进程，那就不是"纯 Tk"了

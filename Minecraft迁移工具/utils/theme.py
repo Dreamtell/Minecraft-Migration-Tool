@@ -27,6 +27,10 @@ LIGHT_THEME = {
     "ttk_fg": "#000000",
     "ttk_select_bg": "#d0d0d0",
     "ttk_select_fg": "#000000",
+    # 输入框/文本框里"选中文字"的底色：ttk_select_bg 是给 Treeview 那种整行选中用的，
+    # 这里要的是浅底上的明显高亮（深色主题同理，不能用贴着自己的灰）
+    "text_sel_bg": "#bcdcff",
+    "text_sel_fg": "#0b2b45",
     "ttk_field_bg": "#ffffff",
     "ttk_progress_bg": "#4fc3f7",
     "ttk_trough_bg": "#e0e0e0",
@@ -54,9 +58,14 @@ LIGHT_THEME = {
     "hover_checked_bg": "#cde8cd", "hover_checked_fg": "#000000",
     "hover_missing_bg": "#ffd9d9", "hover_missing_fg": "#8b0000",
     "hover_new_bg": "#fff2c4", "hover_new_fg": "#000000",
-    # 日志分类色（执行日志/日志放大查看，跟随主题）
-    "log_info_fg": "#808080", "log_warning_fg": "#e65100",
-    "log_error_fg": "#c62828", "log_success_fg": "#2e7d32",
+    # 日志分类色（执行日志/日志放大查看，跟随主题）。
+    # 重新按 WCAG AA（正文 4.5:1）核对过，原值里 INFO/WARNING/ERROR 在白底上只有
+    # 3.79~3.95，勉强达到大字号的 3:1、够不上正文 4.5:1；ERROR 还要在 danger_bg
+    # 的浅红底（#ffc7c7）上过关，原值只有 3.81。下面的值色相不变，只压暗，
+    # 对比度：INFO 5.10 / WARNING 4.88 / ERROR 对白 6.90、对 danger_bg 4.68。
+    # SUCCESS / SIMULATE 原来已经 >5，没动。
+    "log_info_fg": "#6e6e6e", "log_warning_fg": "#c74600",
+    "log_error_fg": "#ad2323", "log_success_fg": "#2e7d32",
     "log_simulate_fg": "#1565c0",
     # "数据"文本配色：界面上一眼分得清"哪个是数据、哪个是说明"
     #   data_fg     路径、文件名、存档名这类主体数据
@@ -93,6 +102,8 @@ DARK_THEME = {
     "ttk_fg": "#ffffff",
     "ttk_select_bg": "#3a3a3a",
     "ttk_select_fg": "#ffffff",
+    "text_sel_bg": "#2f5f96",
+    "text_sel_fg": "#ffffff",
     "ttk_field_bg": "#3e3e3e",
     "ttk_progress_bg": "#4fc3f7",
     "ttk_trough_bg": "#3a3a3a",
@@ -119,8 +130,10 @@ DARK_THEME = {
     "hover_missing_bg": "#5a3a3a", "hover_missing_fg": "#ffb3b3",
     "hover_new_bg": "#5a4a3a", "hover_new_fg": "#ffffff",
     # 日志分类色（执行日志/日志放大查看，跟随主题，深色用更亮的前景色）
+    # 同上核对：深色主题大多本来就够（INFO/WARNING/SUCCESS/SIMULATE 对深底 >6），
+    # 只有 ERROR 在 danger_bg（深红 #5a2d2d）上差一点（原 4.09，不到 4.5），调亮一档。
     "log_info_fg": "#9e9e9e", "log_warning_fg": "#ffb74d",
-    "log_error_fg": "#ff6b6b", "log_success_fg": "#7ee787",
+    "log_error_fg": "#ff8a8a", "log_success_fg": "#7ee787",
     "log_simulate_fg": "#64b5f6",
     # "数据"文本配色（深色主题用亮一档的同类色）
     "data_fg": "#79b8ff", "data_num_fg": "#d2a8ff", "data_id_fg": "#7ee787",
@@ -191,10 +204,18 @@ def apply_theme_to_widget_tree(widget, theme):
                 widget.configure(bg=theme["entry_bg"], fg=theme["entry_fg"],
                                  insertbackground=theme["fg"])
         elif isinstance(widget, scrolledtext.ScrolledText):
-            widget.configure(bg=theme["text_bg"], fg=theme["text_fg"])
+            widget.configure(bg=theme["text_bg"], fg=theme["text_fg"],
+                             insertbackground=theme["text_fg"],
+                             selectbackground=theme.get("text_sel_bg", theme["ttk_select_bg"]),
+                             selectforeground=theme.get("text_sel_fg", theme["ttk_select_fg"]),
+                             inactiveselectbackground=theme.get("text_sel_bg", theme["ttk_select_bg"]))
             widget.vbar.configure(bg=theme["button_bg"], troughcolor=theme["bg"])
         elif isinstance(widget, tk.Text):
-            widget.configure(bg=theme["text_bg"], fg=theme["text_fg"])
+            widget.configure(bg=theme["text_bg"], fg=theme["text_fg"],
+                             insertbackground=theme["text_fg"],
+                             selectbackground=theme.get("text_sel_bg", theme["ttk_select_bg"]),
+                             selectforeground=theme.get("text_sel_fg", theme["ttk_select_fg"]),
+                             inactiveselectbackground=theme.get("text_sel_bg", theme["ttk_select_bg"]))
         elif isinstance(widget, tk.Canvas):
             # 渐变按钮是 Canvas：它四角是透明的，得跟着"父容器的真实底色"走，
             # 不能一律用 theme["bg"]（按钮可能坐在 LabelFrame 这类容器上）

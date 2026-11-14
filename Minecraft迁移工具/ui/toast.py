@@ -28,6 +28,8 @@ import time
 import tkinter as tk
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+from utils import fx
+
 from utils import anim
 from utils.dpi import px
 
@@ -432,7 +434,7 @@ class ToastHost:
                             pass
                 旧.淡 = 0.0                   # 原地淡入，不重播右侧滑入
                 self._layout(重排已有=False)
-                旧.fade_to(1.0, _Toast._IN_MS)
+                旧.fade_to(1.0, _Toast.in_ms())
                 self._dirty = True
                 self._ensure_tick()
                 return 旧
@@ -470,8 +472,8 @@ class ToastHost:
             # 入场 = 从右侧滑入 + 同时淡入。滑入方向和回收方向一致（都往右），
             # 一进一出像抽屉，不会出现"从上面插进来"的穿插。
             item.dx = float(_u(self._PADR))
-            item._dx入 = [item.dx, 0.0, time.perf_counter(), float(_Toast._IN_MS)]
-            item.fade_to(1.0, _Toast._IN_MS)
+            item._dx入 = [item.dx, 0.0, time.perf_counter(), float(_Toast.in_ms())]
+            item.fade_to(1.0, _Toast.in_ms())
         self._dirty = True
         self._ensure_tick()
         return item
@@ -515,7 +517,7 @@ class ToastHost:
             差 = (老 - it._y) + Δ窗口
             if abs(差) >= 0.5:
                 it.dy += 差
-                it.animate(0.0, _Toast._MOVE_MS)
+                it.animate(0.0, _Toast.move_ms())
         self._总高 = 总高
         self._上次总高 = 总高
         self._dirty = True
@@ -946,6 +948,19 @@ class _Toast:
 
     _IN_MS = 150
     _OUT_MS = 130
+
+    # 特效强度：关闭档把时长压到 1ms（等于不动画），其它档按倍率缩放
+    @staticmethod
+    def in_ms():
+        return max(1, fx.ms(_Toast._IN_MS))
+
+    @staticmethod
+    def out_ms():
+        return max(1, fx.ms(_Toast._OUT_MS))
+
+    @staticmethod
+    def move_ms():
+        return max(1, fx.ms(_Toast._MOVE_MS))
     # 让位动画：原来 110ms + ease-out cubic，头两帧就走完 37% 的距离，之后慢慢爬 ——
     # 眼睛读成"猛一下再磨蹭"。改成 160ms + smoothstep，每帧位移约为原来的一半。
     _MOVE_MS = 160
@@ -1197,7 +1212,7 @@ class _Toast:
         # 出场：**向右滑出**（用户指定的回收方式）。向右是空的方向 —— 那边只有
         # 主窗口边缘，不会撞到其它卡片；配合末尾的淡出，滑出窗口留白后自毁。
         self._dx动画 = [float(self.dx), float(_u(self.host._PADR)),
-                        time.perf_counter(), float(self._OUT_MS), self.kill]
+                        time.perf_counter(), float(self.out_ms()), self.kill]
 
     def kill(self):
         if self.gone:

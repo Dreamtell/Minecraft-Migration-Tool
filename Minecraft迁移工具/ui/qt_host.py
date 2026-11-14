@@ -353,7 +353,15 @@ def run_host(argv):
                     elif 动作 == "theme":
                         # 主界面切了浅色/深色：这里把整套配色重新铺一遍，并回报结果
                         try:
-                            view.set_theme(dict(命令.get("theme") or {}))
+                            _th = dict(命令.get("theme") or {})
+                            # 全局调色板也要重铺：QTabWidget/滚动条/右键菜单这些
+                            # 不走窗口自己的 QSS，只跟着 app palette 走
+                            try:
+                                from ui.qt_big_view import ensure_app
+                                ensure_app(_th)
+                            except Exception:
+                                pass
+                            view.set_theme(_th)
                             写结果({"action": "theme_ok", "kind": kind,
                                     "bg": (命令.get("theme") or {}).get("bg")})
                         except Exception as e:

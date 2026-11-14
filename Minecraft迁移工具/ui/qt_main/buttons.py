@@ -19,6 +19,7 @@ if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
 
 from PySide6 import QtWidgets, QtCore  # noqa: E402
 
+from ui.qt_win import fit_window
 from utils.i18n import tr  # noqa: E402
 
 # Qt 主界面里实际有的按钮。组名/key 与 Tk 版一致;顺序 = Qt 版默认顺序
@@ -35,7 +36,7 @@ DEFAULT_ORDER = {
     "extra":  ["add_extra_options", "add_extra_dir", "add_extra_file", "clear_extra",
                "check_extra"],
     "action": ["history", "start"],
-    "log":    ["fail_locate", "log_clear"],
+    "log":    ["log_big", "log_open", "fail_locate", "log_clear"],
 }
 LABELS = {
     "add_mods": tr("➕ 添加模组"),
@@ -56,6 +57,8 @@ LABELS = {
     "check_extra": tr("🔎 检查其它文件是否存在"),
     "history": tr("📜 查看历史"),
     "start": tr("🚀 开始迁移"),
+    "log_big": tr("📂 放大查看（日志）"),
+    "log_open": tr("📂 打开日志文件夹"),
     "fail_locate": tr("📍 定位错误"),
     "log_clear": tr("🧹 清空日志"),
 }
@@ -101,7 +104,7 @@ class ButtonPrefsDialog(QtWidgets.QDialog):
     def __init__(self, parent, hidden, order):
         super().__init__(parent)
         self.setWindowTitle(tr("界面按钮"))
-        self.resize(460, 520)
+        fit_window(self, 400, 440, 460, 520)
         self._hidden = set(hidden or [])
         self._order = dict(order or {})
 

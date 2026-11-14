@@ -117,24 +117,29 @@ FACE_DISABLED = {"face_top": "#262626", "face_bot": "#111111",
 
 # 浅色主题：上面那四套是照原型（深色界面）调的，face_top #1b2a20 这种近乎黑，
 # 放到浅色窗口里就是一块黑方块（用户报「浅色主题下这个好黑」）。
-# 这里另出一套：色相不变，面换成同族的浅色（top 比 bot 亮的关系照抄），
-# 字和竖条换成深色，edge_hot/accent 加深以保证在浅底上看得清。
-FACE_IDLE_L = {"face_top": "#e9f6ee", "face_bot": "#cde7d8",
-               "face_top_hover": "#f3fbf6", "face_bot_hover": "#d8eee1",
-               "edge": "#9dbfab", "edge_hot": "#1f9d55", "accent": "#1f9d55",
-               "title": "#0d2a19"}
-FACE_SEARCH_L = {"face_top": "#fbebeb", "face_bot": "#f5d3d3",
-                 "face_top_hover": "#fdf5f5", "face_bot_hover": "#f8dede",
-                 "edge": "#d9a3a3", "edge_hot": "#cc2b2b", "accent": "#c62828",
-                 "title": "#4a0f0e"}
-FACE_DRY_L = {"face_top": "#fbf4e2", "face_bot": "#f2e4c3",
-              "face_top_hover": "#fdfaf0", "face_bot_hover": "#f7ecd2",
-              "edge": "#d3c39a", "edge_hot": "#b8791a", "accent": "#b8791a",
-              "title": "#3b2b09"}
+# 这里另出一套：结构照抄原型（竖直渐变、左竖条、细描边、悬停变亮），但面要是**实心的中明度色**：
+# 第一版用的是 #e9f6ee 这种近白的淡绿，放在实心灰的「查看历史」旁边反而更轻，主次倒过来了
+# （用户要求「加深浅色面」）。现在绿面 / 红背配白字（对比度约 4~5.6），琥珀面配深字（琥珀底上白字看不清）；
+# 左竖条用同族的浅亮色，悬停时描边提到更亮的同族色。
+FACE_IDLE_L = {"face_top": "#2fb36a", "face_bot": "#1f8f52",
+               "face_top_hover": "#3cc678", "face_bot_hover": "#27a05d",
+               "edge": "#1a7a45", "edge_hot": "#8ff0b8", "accent": "#c6f7da",
+               "title": "#ffffff"}
+FACE_SEARCH_L = {"face_top": "#e5534b", "face_bot": "#c4302b",
+                 "face_top_hover": "#f0645b", "face_bot_hover": "#d33a34",
+                 "edge": "#a82722", "edge_hot": "#ffb3ae", "accent": "#ffd6d3",
+                 "title": "#ffffff"}
+FACE_DRY_L = {"face_top": "#f6c046", "face_bot": "#e3a21f",
+              "face_top_hover": "#fbcd5c", "face_bot_hover": "#eeb02e",
+              "edge": "#c08413", "edge_hot": "#fff1c2", "accent": "#7a4f05",
+              "title": "#3b2600"}
 FACE_DISABLED_L = {"face_top": "#f2f2f2", "face_bot": "#e4e4e4",
                    "face_top_hover": "#f2f2f2", "face_bot_hover": "#e4e4e4",
                    "edge": "#cfcfcf", "edge_hot": "#cfcfcf", "accent": "#bdbdbd",
                    "title": "#8a8a8a"}
+
+# 浅色主题下面的不透明度（1.0 = 实心）。0.86：能看出底色透上来，白字对比度仍够读。
+_LIGHT_FACE_OPACITY = 0.86
 
 _SCHEMES = {
     "dark": {"idle": FACE_IDLE, "search": FACE_SEARCH, "dry": FACE_DRY,
@@ -600,6 +605,11 @@ class FlipButton(tk.Canvas):
             [inset, inset, W - 1 - inset, H - 1 - inset],
             radius=max(1, int(round(r - inset))),
             outline=_rgb(_mix(pal["edge"], pal["edge_hot"], hv)), width=bw)
+        if self._scheme == "light" and pid != "off":
+            # 浅色主题的实心面带一点透明：整张面（渐变 + 竖条 + 描边）的 alpha 乘一个系数，
+            # 贴到窗口底色上时就会透出一点底色。文字是另一层，不受影响。
+            # 禁用态本来就是浅灰，不再处理。
+            mask = mask.point([int(v * _LIGHT_FACE_OPACITY) for v in range(256)])
         img.putalpha(mask)
         out = img.resize((w, h), _Image.LANCZOS)
         _face_cache[key] = out

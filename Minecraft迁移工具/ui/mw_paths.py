@@ -9,7 +9,7 @@ from core.scanner import detect_instance_env
 from pathlib import Path
 from utils.file_io import check_writable
 from tkinter import filedialog
-from ui.mw_common import _grad_width
+from ui.mw_common import _grad_width, _BTN_NEUTRAL, _FS_BODY
 from utils.helpers import RoundedEntry, create_gradient_button
 from utils.i18n import tr, trp
 
@@ -243,20 +243,20 @@ class PathsMixin:
         self.source_entry.pack(side="left", padx=5)
         btn_source_browse = create_gradient_button(
             frame_source, "📂 浏览...", self.select_source,
-            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=_BTN_NEUTRAL, height=30, font=("微软雅黑", 9, "bold"))
         btn_source_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_source"] = btn_source_browse
         self._stage()
         btn_copy = create_gradient_button(
             frame_source, "← 填充路径", self.copy_target_to_source,
-            colors=("#fb8c00", "#ffb74d"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=_BTN_NEUTRAL, height=30, font=("微软雅黑", 9, "bold"))
         btn_copy.pack(side="left", padx=5)
         self._btn_widgets["copy_target"] = btn_copy
         self.create_tooltip(btn_copy, "将右侧“新版”的路径复制到左侧“旧版”栏，用于快速测试或反向操作")
         # 只显示一个状态图标，细节问悬停（validate_path 每次校验都会刷新 _tip_text）
         self.source_status = tk.Label(frame_source, text="", width=16,
                                       anchor="w", fg=self.theme["muted_fg"],
-                                      font=("微软雅黑", 11))
+                                      font=("微软雅黑", _FS_BODY))
         self.source_status._keep_fg = True      # 颜色由状态决定，别被主题统一刷掉
         self.source_status.pack(side="right", padx=10)
         # 两个路径框都用**同一个固定字符宽**（chars=52，接近本行能容纳的上限）并且不伸缩。
@@ -282,12 +282,12 @@ class PathsMixin:
         self.target_entry.pack(side="left", padx=5)
         btn_target_browse = create_gradient_button(
             frame_target, "📂 浏览...", self.select_target,
-            colors=("#607d8b", "#90a4ae"), height=30, font=("微软雅黑", 9, "bold"))
+            colors=_BTN_NEUTRAL, height=30, font=("微软雅黑", 9, "bold"))
         btn_target_browse.pack(side="left", padx=5)
         self._btn_widgets["browse_target"] = btn_target_browse
         self.target_status = tk.Label(frame_target, text="", width=16,
                                       anchor="w", fg=self.theme["muted_fg"],
-                                      font=("微软雅黑", 11))
+                                      font=("微软雅黑", _FS_BODY))
         self.target_status._keep_fg = True      # 同上
         self.target_status.pack(side="right", padx=10)
         # ⚠ 这里**不要**再 pack 一次 target_entry：那会把它挪到"占位"控件之后，
@@ -309,8 +309,11 @@ class PathsMixin:
                           btn_target_browse.winfo_reqwidth())
                 标签 = max(self.source_status.winfo_reqwidth(),
                           self.target_status.winfo_reqwidth())
-                源占用 = 浏览 + btn_copy.winfo_reqwidth() + 标签 + 60
-                目标占用 = 浏览 + 标签 + 60
+                # 余量要给够：源目录行比目标行多一个「填充路径」按钮，余量只留 60 时实测少 4px，
+                # pack 就把右边的状态标签挤窄了 4px，「（未选择）」的起点于是和下一行错开。
+                # 这里多留一点，让两个状态标签始终拿到完整宽度、左右对齐。
+                源占用 = 浏览 + btn_copy.winfo_reqwidth() + 标签 + 76
+                目标占用 = 浏览 + 标签 + 76
                 宽 = max(220, frame_source.winfo_width() - max(源占用, 目标占用))
                 for 框 in (self.source_entry, self.target_entry):
                     if abs(框.winfo_width() - 宽) > 2:

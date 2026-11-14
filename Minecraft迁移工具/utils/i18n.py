@@ -117,6 +117,12 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "如有任何收费行为，请立即举报。作者不会以任何形式向你收费。":
         "If anyone charges you for it, report it immediately — the author never asks you to pay.",
     "从变更日志导入（含 Updated）": "Import from changelog (Updated)",
+    "每行一个 .jar 文件名（可从更新日志导入，点「添加模组」，或直接拖进来）":
+        "One .jar per line (import from a changelog, pick with 'Add mods', or drag jars / a whole mods folder in)",
+    "每行一个相对路径，格式: config/<路径>（可从整合包复制，或点「添加配置」）":
+        "One relative path per line (config/<path>): copy from a pack, or pick with 'Add configs'",
+    "每行一个相对路径，如 options.txt（可从整合包复制，或点「添加文件」）":
+        "One relative path per line, e.g. options.txt (copy from a pack, or pick with 'Add files')",
     "放大查看": "Big view",
     "添加模组": "Add mods",
     "扫描模组差异": "Scan mod diff",
@@ -205,6 +211,15 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "干脆": "Crisp",
     "标准": "Standard",
     "沉": "Heavy",
+    # 特效强度（4 档，统管启动动画/浮标粒子/翻转手感/消息卡片动画）
+    "特效强度": "Effect intensity",
+    "特效强度：": "Effect intensity:",
+    "轻": "Light",
+    "全开": "Full",
+    "※ 关掉后没有启动动画、边缘粒子和消息卡片动画，按钮翻得最干脆":
+        "Off disables the splash animation, edge particles and toast animation; "
+        "the start button then flips with the snappiest feel.",
+    "✨ 特效强度已设为「{0}」": "✨ Effect intensity set to {0}",
     "浅色": "Light",
     "深色": "Dark",
     "语言在下次启动程序时生效。": "Takes effect the next time you start the app.",
@@ -2261,6 +2276,10 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较":
         "⚠️ {0} list entries are not in the source mods folder; marked as missing and skipped",
     # ---- Qt 主界面（ui/qt_main/）与本轮新增的 Tk 侧文案 ----
+    "把目标路径复制到源路径": "Copy the target path into the source path",
+    "共 {0} 行": "{0} lines",
+    "无法启动回滚：{0}": "Could not start the rollback: {0}",
+    "将把目标实例还原到最近一次迁移之前（还原：{0}）。\n\n备份目录：{1}\n\n确定回滚吗？": "The target instance will be restored to its state before the latest migration (restoring: {0}).\n\nBackup folder: {1}\n\nRoll back now?",
     "标记符号": "Marker symbol",
     "☀️ 浅色": "☀️ Light",
     "🌙 深色": "🌙 Dark",

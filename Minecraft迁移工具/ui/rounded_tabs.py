@@ -308,6 +308,9 @@ class RoundedTabs(tk.Frame):
             t["page"].configure(bg=self.theme["bg"])
         self._photos.clear()
         self._tail_photos.clear()
+        # 长按填充用的那对图（常态 + 提亮）是按**当时主题**算的颜色，
+        # 不清的话切主题后按住药丸，填充出来的还是旧主题的红/蓝。
+        self._tail_fill.clear()
         cur = self._cur
         self._cur = -1
         self._layout_bar()
@@ -318,6 +321,12 @@ class RoundedTabs(tk.Frame):
                                    image=self._photo(t["w"], "sel"))
             self.bar.coords(self._sel_item, t["x"], PILL_Y)
         self._refresh_pills()
+        # 尾按钮（⚠ 更新提醒 / 🔁 应用上次记录）的底色和字色也要按新主题重刷：
+        # 它们不走 _layout_bar 的常态分支，只靠这里主动刷一次
+        try:
+            self._refresh_tail()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ 绘制
     def _layout_bar(self):

@@ -18,6 +18,8 @@ import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from utils import fx
+
 LEVELS = {
     "info": "#4c9aff",
     "ok": "#4caf50",
@@ -277,29 +279,44 @@ class ToastHost(QtCore.QObject):
         if sticky is None:
             sticky = (level == "error")
         # 同一 key = 同一条消息的状态变化：原地换文案、重置倒计时，不新增卡片
+        snap = fx.anim_scale() <= 0.0      # 特效强度=关闭：不播动画，直接出现
         if key is not None:
             for it in self._items:
                 if not it.leaving and it.key == key:
                     it.set_content(text, level, ms, sticky)
                     it.target_opacity = 1.0
-                    self._layout(snap=False)
-                    self._ensure_tick()
+                    if snap:
+                        it.opacity = 1.0
+                    self._layout(snap=snap)
+                    if not snap:
+                        self._ensure_tick()
                     return it
         card = _Card(self, self._parent, text, level, ms, sticky, key)
         self._items.append(card)
         live = [c for c in self._items if not c.leaving]
         while len(live) > self.max_items:
             self.dismiss(live.pop(0))
-        self._layout(snap=False, new=card)
+        self._layout(snap=snap, new=card)
         card.show()
         card.raise_()
-        self._ensure_tick()
+        if snap:
+            card.opacity = 1.0
+            card.move(int(round(card.x_f)), int(round(card.y_f)))
+            card.update()
+        else:
+            self._ensure_tick()
         return card
 
     def dismiss(self, card):
         if card in self._items and not card.leaving:
             card.leaving = True
             card.target_opacity = 0.0
+            if fx.anim_scale() <= 0.0:      # 特效强度=关闭：直接消失，不做淡出
+                self._items.remove(card)
+                card.hide()
+                card.deleteLater()
+                self._layout(snap=True)
+                return
             self._layout(snap=False)
             self._ensure_tick()
 
@@ -363,7 +380,7 @@ class ToastHost(QtCore.QObject):
         dt = (now - (self._t_last or now)) * 1000.0
         self._t_last = now
         k = _ease(0, dt)
-        fade_step = dt / float(_FADE_MS)
+        fade_step = dt / float(max(1, fx.ms(_FADE_MS)))
         busy = False
         relayout = False
         for c in list(self._items):

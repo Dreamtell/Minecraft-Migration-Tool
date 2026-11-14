@@ -9,6 +9,7 @@ import weakref
 
 from utils import i18n          # 界面语言（默认中文时 tr() 原样返回，行为不变）
 from utils import anim          # 帧节奏（跟随显示器刷新率）—— 只用来问"多久排下一帧"
+from utils.anim import FrameLoop as _FrameLoop   # create_gradient_button 里 `anim` 是局部字典，要用别名
 
 # 活着的平滑滚动器（弱引用，不阻止回收）。用来统一管理/诊断，
 # 也可以将来做"一键关掉平滑滚动"的开关。
@@ -236,9 +237,21 @@ class SmoothScroller:
             level = 3
         return cls.set_speed(level)
 
-    def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=0.30,
+    # 手感默认值：ease（收尾阻尼）与 accel（起步加速）。
+    # 旧值 0.30 / 0.45：一格滚轮 79ms、峰值 950px/s，起步一下冲出去、最后 25% 距离只用 25ms
+    # 就停住 —— 用户反馈「滑动距离/停止不自然」（纯数值仿真 _dctest/sim_scroll.py 复刻 _step）。
+    # 现值 0.22 / 0.30：一格 ~112ms、峰值 ~700px/s、最后 25% 约 33ms，起步和收尾都更软。
+    # 这两个值只是**默认**；message_center 显式传 ease=0.28、设置页传 0.22，不受影响。
+    DEFAULT_EASE = 0.22
+    DEFAULT_ACCEL = 0.30
+
+    def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=None,
                  bind_widgets=None, on_user_scroll=None, on_settle=None,
-                 accel=0.45, max_step_ratio=0.6):
+                 accel=None, max_step_ratio=0.6):
+        if ease is None:
+            ease = self.DEFAULT_EASE
+        if accel is None:
+            accel = self.DEFAULT_ACCEL
         self.widget = widget
         # frame_ms 不再决定"多久排一帧"（那交给 anim.delay：240Hz 屏上是 4ms），
         # 它只是**手感标定的基准帧**：ease / accel / 单帧限幅 / 最小步长都按这个基准
@@ -1604,8 +1617,10 @@ class RoundedTextArea(tk.Frame):
         text_kw.setdefault("bg", theme.get("text_bg", "#ffffff"))
         text_kw.setdefault("fg", theme.get("text_fg", "#000000"))
         text_kw.setdefault("insertbackground", theme.get("fg", "#000000"))
-        text_kw.setdefault("selectbackground", theme.get("ttk_select_bg", "#d0d0d0"))
-        text_kw.setdefault("selectforeground", theme.get("ttk_select_fg", "#000000"))
+        text_kw.setdefault("selectbackground",
+                           theme.get("text_sel_bg", theme.get("ttk_select_bg", "#d0d0d0")))
+        text_kw.setdefault("selectforeground",
+                           theme.get("text_sel_fg", theme.get("ttk_select_fg", "#000000")))
         text_kw.setdefault("relief", "flat")
         text_kw.setdefault("bd", 0)
         text_kw.setdefault("highlightthickness", 0)
@@ -1867,6 +1882,52 @@ def _btn_text_width(text, font=None):
 _BTN_FONT_CACHE = None      # 量按钮文字用的 Font（tkinter 里 new Font 很慢，缓存）
 _BTN_TEXT_PAD = 18          # 按钮左右内边距（和 _grad_width 里那句对齐）
 
+# ---- 按钮开头的 emoji/符号：单独成项，才能和汉字在纵向对齐 ----
+_SYM_W = 17         # 回退字形在 Windows 下几乎等宽（见 ui/mw_common._GRAD_SYM_W）
+_SYM_GAP = 6        # 图标和文字之间的空隙
+# 图标上提的像素。回退字形的视觉中心比汉字低多少，随符号和字号而变（主界面实测）：
+#   9 号粗体：🔍/🗑/🔎 约 3.5，📂 约 4.5，其余 emoji 约 3；➕ 本身就居中（约 0.5）
+#   11 号及以上（如「查看历史」）：基本居中，不用提
+_SYM_DY_DEFAULT = 3
+_SYM_DY_BY_SYM = {"➕": 0}
+_SYM_DY_MAX_SIZE = 10       # 字号 > 这个值就不提
+
+
+def _sym_dy(sym, font):
+    """这个符号在这个字体下要上提几像素。"""
+    try:
+        size = abs(int(font[1])) if isinstance(font, (tuple, list)) and len(font) > 1 else 9
+    except Exception:
+        size = 9
+    if size > _SYM_DY_MAX_SIZE:
+        return 0
+    return _SYM_DY_BY_SYM.get(sym, _SYM_DY_DEFAULT)
+_LEAD_SYM_RE = None
+
+
+def _split_lead_symbol(text):
+    """"🔍 扫描差异" -> ("🔍", "扫描差异")；开头不是 emoji/符号就返回 (None, text)。"""
+    global _LEAD_SYM_RE
+    if _LEAD_SYM_RE is None:
+        import re
+        _LEAD_SYM_RE = re.compile(
+            r"^([←-⇿⌀-⏿■-➿⬀-⯿"
+            r"🀀-🫿])\s+(\S.*)$", re.S)
+    m = _LEAD_SYM_RE.match(str(text or ""))
+    return (m.group(1), m.group(2)) if m else (None, text)
+
+
+_BTN_FONT_OBJ = {}
+
+
+def _btn_font_obj(font):
+    """按 font 元组缓存 Font 对象（tkinter 里 new Font 很慢）。"""
+    key = tuple(font) if isinstance(font, (tuple, list)) else str(font)
+    f = _BTN_FONT_OBJ.get(key)
+    if f is None:
+        f = _BTN_FONT_OBJ[key] = tkfont.Font(font=font)
+    return f
+
 
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            width=None, height=32, font=("微软雅黑", 10, "bold"),
@@ -1874,7 +1935,9 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     # 文案在**函数本体**里过 tr()，不能靠在别处包一层：调用方早把原函数 import 走了。
     # 中文（默认）时 tr() 原样返回，行为不变。见 utils/i18n.py。
     原文 = text                      # 留一份中文：切语言时用它重翻
-    text = i18n.tr(text)
+    # 去掉变体选择符 U+FE0F：Tk 把它画成一块 17px 的空白，「🗑️ 清空清单」的图标和文字
+    # 之间就比别的按钮宽 20px 左右（实测 30px 对 9px）。没有它 emoji 照样是彩色图标。
+    text = i18n.tr(text).replace("️", "")
     # 宽度：**不传就按实际译文量**（默认行为，按钮紧贴文字，左右各半个内边距）；
     # 传了就取"传的值"与"文字需要"的较大者，免得英文比中文长时把字挤出去。
     # ⚠ 这里的默认值原来是 180 —— 于是所有"不传 width"的按钮都变成 180px 宽，
@@ -1939,9 +2002,25 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             canvas.icon_id = canvas.create_image(width // 2, height // 2,
                                                  image=canvas._icon_photo, tags="icon")
         else:
-            canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
-                                                fill=state.get("fg") or "white",
-                                                font=font, tags="text")
+            fill = state.get("fg") or "white"
+            lead, rest = _split_lead_symbol(state["text"])
+            canvas.sym_id = None
+            if lead and rest:
+                # 开头的 emoji/符号单独成一项：Tk 用回退字体画它，字形的基线比汉字低 3~4px，
+                # 和文字挤在一个 create_text 里就没法单独上移（实测图标比文字低 3.5~4.5px）。
+                # 拆开后图标按 _sym_dy() 上提，两项各自 anchor="w"，合起来仍整体居中。
+                f = _btn_font_obj(font)
+                w_sym = max(_SYM_W, f.measure(lead))
+                w_rest = f.measure(rest)
+                x0 = (width - (w_sym + _SYM_GAP + w_rest)) / 2.0
+                canvas._sym_dy = _sym_dy(lead, font)
+                canvas.sym_id = canvas.create_text(x0, height // 2 - canvas._sym_dy, text=lead,
+                                                   fill=fill, font=font, anchor="w", tags="text")
+                canvas.text_id = canvas.create_text(x0 + w_sym + _SYM_GAP, height // 2, text=rest,
+                                                    fill=fill, font=font, anchor="w", tags="text")
+            else:
+                canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
+                                                    fill=fill, font=font, tags="text")
         # 内容永远盖在动画帧（阴影/面/扫光）上面
         try:
             canvas.tag_raise("text")
@@ -2096,7 +2175,13 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         canvas.coords(items["face"], PADX, PADY + lift)
         tid = getattr(canvas, "text_id", None)
         if tid is not None:
-            canvas.coords(tid, width // 2, height // 2 + lift)
+            if getattr(canvas, "sym_id", None):
+                # 拆成了「图标 + 文字」两项：横坐标保持 draw_content 排好的，只改纵坐标
+                for _i, _dy in ((canvas.sym_id, -getattr(canvas, "_sym_dy", 0)), (tid, 0)):
+                    _x = canvas.coords(_i)[0]
+                    canvas.coords(_i, _x, height // 2 + lift + _dy)
+            else:
+                canvas.coords(tid, width // 2, height // 2 + lift)
         if getattr(canvas, "icon_id", None):
             canvas.coords(canvas.icon_id, width // 2, height // 2 + lift)
 
@@ -2110,7 +2195,26 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         t["done"] = False
         if name == "sweep":
             anim["sweep_on"] = True      # 必须在这里置位：_tick 里"扫光结束"会把它清掉
-        _tick()
+        _tick()                          # 立刻出第一帧（不等下一个定时器）
+        _ensure_loop()
+
+    def _ensure_loop():
+        """还有没跑完的补间就确保 FrameLoop 在跑；一条循环管全部补间，不会叠出多条自链。
+
+        用 FrameLoop 而不是 after(15)：Windows 上 after 被 15.6ms 粒度卡在约 64fps，
+        240Hz 屏上悬停动画只有 66 次/秒（实测）；FrameLoop 跟随刷新率排帧，并在动画
+        期间 hold() 定时器精度，结束时自动 release()。
+        """
+        if any(not t["done"] for t in tw.values()):
+            loop = anim.get("loop")
+            if loop is None:
+                loop = anim["loop"] = _FrameLoop(canvas, _loop_step)
+            if not loop.running():
+                loop.start()
+
+    def _loop_step():
+        """FrameLoop 每帧回调：推进补间并重画；全部补间做完返回 False 让循环停下。"""
+        return _tick()
 
     def _tick():
         now = time.perf_counter()
@@ -2128,13 +2232,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         if tw["sweep"]["done"]:
             anim["sweep_on"] = False
         _render()
-        if busy:
-            try:
-                anim["job"] = canvas.after(15, _tick)
-            except Exception:
-                anim["job"] = None
-        else:
-            anim["job"] = None
+        return busy
 
     # ---- 没有 Pillow 时的退路：整块换图（旧行为） ----
     tween = {"seq": [], "i": 0, "job": None}
@@ -2241,7 +2339,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         """动态改按钮文字（替代 tk.Button 的 config(text=...)）。"""
         nonlocal width, face_size
         # 动态改文字也要过 tr()：按钮文字经常带状态（「正在扫描…」之类）
-        new_text = i18n.tr(new_text)
+        new_text = i18n.tr(new_text).replace("️", "")     # 同上：去掉 U+FE0F
         state["text"] = new_text
         state["icon"] = None      # 回到文字模式
         # 宽度跟着文字重算：切语言后英文比中文长（或短），不重算就会出现
@@ -2257,6 +2355,19 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             pass
         draw_content()
     canvas.set_text = set_text
+
+    def set_label(new_text):
+        """只换按钮上的字（不重算宽度、不碰动画）。给"忙碌态"这类临时文案用，
+        如 scan_btn 的「⏳ 扫描中…」「⏳ 解析中 (3/9)」。
+
+        以前外部直接 `itemconfig(btn.text_id, text=...)`：图标拆成独立画布项之后，
+        那样只改得到文字项，旧图标会留在原地，按钮上就有两个图标。统一走这里。
+        """
+        new_text = i18n.tr(new_text).replace("️", "")
+        state["text"] = new_text
+        if state.get("icon") is None:
+            draw_content()
+    canvas.set_label = set_label
 
     def get_text():
         """读当前按钮文字（`set_text` 的读回，方便状态切换后确认画的是什么）。"""

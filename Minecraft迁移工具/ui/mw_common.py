@@ -111,7 +111,7 @@ _BUTTON_GROUPS = (
 _DEFAULT_BUTTON_ORDER = {
     "path":        ["browse_source", "copy_target"],
     "path_target": ["browse_target"],
-    "mods":        ["changelog", "mod_magnify", "add_mods", "scan_diff",
+    "mods":        ["mod_magnify", "add_mods", "scan_diff",
                     "clear_mods", "check_mods"],
     "config":      ["cfg_magnify", "add_cfg_dir", "add_cfg_file", "clear_cfg",
                     "check_cfg"],
@@ -136,7 +136,6 @@ _BUTTON_LABELS = {
     "browse_source": "📂 浏览…（来源路径）",
     "copy_target": "← 填充路径",
     "browse_target": "📂 浏览…（目标路径）",
-    "changelog": "📥 从变更日志导入",
     "mod_magnify": "📂 放大查看（模组清单）",
     "add_mods": "➕ 添加模组",
     "scan_diff": "🔍 扫描模组差异",
@@ -243,6 +242,22 @@ _DIFF_VIEWS = (
     ("cards", trp("🗂 卡片视图（带图标的大卡片，看得清描述）")),
 )
 
+# 主界面按钮只用三类颜色（「开始迁移」那颗翻转按钮是第四类：主操作，自带配色）。
+# 以前每颗按钮各挑一种（青 / 靛 / 绿 / 橙 / 紫 / 红），一排五六种颜色，颜色不再表示含义。
+#   _BTN_NEUTRAL  查看、浏览、检查、打开文件夹这类不改数据的操作
+#   _BTN_ADD      往清单里加东西 / 导入 / 扫描（清单的正向操作）
+#   _BTN_DANGER   清空（只给会丢数据的操作）
+# 2026-11 调整：原来的中性灰 #607d8b→#90a4ae 在深色主题里跟"禁用态"几乎同色，
+# 用户会以为按钮点不动。第二版改成青/绿/红之后还是偏暗，用户说"有点忧郁"，
+# 于是再提一档对比度（Material 600→400 的渐变）：蓝 / 绿 / 红都取饱和度高、
+# 明度够的那一头。三类的含义不变：
+#   中性 = 青（查看/检查/打开这类不改数据的操作）
+#   正向 = 绿（添加/导入/扫描）
+#   危险 = 红（清空）
+_BTN_NEUTRAL = ("#1e88e5", "#42a5f5")     # 亮蓝：查看 / 检查 / 打开
+_BTN_ADD = ("#43a047", "#66bb6a")         # 亮绿：添加 / 导入 / 扫描
+_BTN_DANGER = ("#e53935", "#ff5252")      # 亮红：清空
+
 # 按钮列表里每一排的主色 + 图标，用来给分组行上色
 _GROUP_COLORS = {
     "path":        "#42a5f5",
@@ -293,6 +308,7 @@ def _grad_width(text):
     global _GRAD_FONT
     if _GRAD_FONT is None:
         _GRAD_FONT = tkfont.Font(family="微软雅黑", size=9, weight="bold")
+    text = text.replace("️", "")      # 按钮绘制时也会去掉它（见 helpers.create_gradient_button）
     syms = _GRAD_SYM_RE.findall(text)
     plain = _GRAD_SYM_RE.sub("", text)
     extra = sum(_GRAD_ARROW_W if _GRAD_ARROW_RE.match(c) else _GRAD_SYM_W
@@ -548,7 +564,7 @@ __all__ = [
     "LINK_MINECRAFT", "LiquidProgress", "OptionCards", "Path", "ProgressWindow",
     "RoundedEntry", "RoundedTabs", "RoundedTextArea", "ScanProgressWindow",
     "SegmentedControl", "SmoothScroller", "SwitchRow", "VirtualTable", "_BIG_VIEW_BACKENDS",
-    "_BIG_VIEW_VIEWS", "_BUTTON_GROUPS", "_BUTTON_LABELS", "_DEFAULT_BUTTON_ORDER",
+    "_BIG_VIEW_VIEWS", "_FS_BODY", "_FS_HINT", "_BTN_ADD", "_BTN_DANGER", "_BTN_NEUTRAL", "_BUTTON_GROUPS", "_BUTTON_LABELS", "_DEFAULT_BUTTON_ORDER",
     "_DIFF_VIEWS", "_EXTRA_PRESETS", "_MAIN_BACKENDS", "_GRAD_ARROW_RE", "_GRAD_ARROW_W", "_GRAD_FONT",
     "_GRAD_PAD", "_GRAD_SYM_RE", "_GRAD_SYM_W", "_GROUP_COLORS", "_GROUP_ICONS", "_ICON_BTN",
     "_ICON_SIZE", "_LOCK_MODES", "_RENAME_MARKERS", "_SCAN_DONE", "_SECTION_STYLE",
@@ -565,3 +581,61 @@ __all__ = [
     "text_delta", "threading", "time", "tk", "tkfont", "trace_exc", "tree_row_px", "ttk",
     "update_mod_detail_theme",
 ]
+
+# ======================================================================
+# 字号
+# ======================================================================
+# 主界面字号统一：说明/提示统一 9 号，正文/路径状态统一 10 号，
+# 按钮的 9 号粗体和「开始迁移」的 14 号不变。
+_FS_HINT = 9       # 说明、提示、底栏、状态标签
+_FS_BODY = 10      # 正文、路径状态
+
+# ======================================================================
+# 清单空状态的占位提示（三个文本框共用）
+# ======================================================================
+_HINT_MOD = "每行一个 .jar 文件名（点「添加模组」或直接拖进来）"
+_HINT_CONFIG = "每行一个相对路径，格式: config/<路径>（可从整合包复制，或点「添加配置」）"
+_HINT_EXTRA = "每行一个相对路径，如 options.txt（可从整合包复制，或点「添加文件」）"
+
+def setup_empty_hint_for_text(text_widget, box_frame, theme, hint_key):
+    """给清单文本框加占位提示：空时叠加一行浅灰字，有内容时隐藏。
+
+    - text_widget: 那个 Tk Text 控件（box_frame.text）
+    - box_frame  : RoundedTextArea 的 Frame（要往里 place 一个 Label）
+    - theme      : 主题字典
+    - hint_key   : "_HINT_MOD" | "_HINT_CONFIG" | "_HINT_EXTRA"
+
+    返回那个 Label，供主题切换时重调 configure。
+    """
+    import tkinter as tk
+    from utils import i18n
+    hints = {"_HINT_MOD": _HINT_MOD, "_HINT_CONFIG": _HINT_CONFIG, "_HINT_EXTRA": _HINT_EXTRA}
+    hint_text = hints.get(hint_key, "")
+    muted = theme.get("muted_fg", "#aaa")
+    lbl = tk.Label(box_frame, text=i18n.tr(hint_text),
+                   fg=muted, bg=theme.get("text_bg", "#fff"),
+                   font=("微软雅黑", _FS_HINT), anchor="nw", justify="left")
+    lbl.place(x=18, y=12)  # 和 Text 内容第一行对齐（pad=9 + 几像素行间距）
+    # 提示 Label 叠在文本框上，用户点上去时要让事件穿透到 Text，不然没法聚焦
+    lbl.bind("<Button-1>", lambda e: text_widget.focus_set())
+
+    def _check():
+        # 判据是「有没有被 place」，不能用 winfo_ismapped()：清单有三个页签，不在当前页的
+        # 那两个 Text 此刻没有显示（ismapped 恒为 0），按它判断会漏掉"有内容该藏"的情况，
+        # 等用户切到那一页，提示就叠在真实内容上面了。
+        try:
+            empty = not text_widget.get("1.0", "end-1c").strip()
+            placed = bool(lbl.place_info())
+            if empty and not placed:
+                lbl.place(x=18, y=12)
+            elif not empty and placed:
+                lbl.place_forget()
+        except Exception:
+            pass
+
+    text_widget.bind("<<Modified>>", lambda e: _check(), add="+")
+    text_widget.bind("<FocusIn>", lambda e: _check(), add="+")
+    text_widget.bind("<FocusOut>", lambda e: _check(), add="+")
+    # 初始化时 Text 可能是 disabled，得等配置加载后再检查一次（主窗口会调）
+    lbl._manual_check = _check
+    return lbl

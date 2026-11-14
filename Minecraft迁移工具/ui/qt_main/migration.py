@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from PySide6 import QtWidgets, QtCore, QtGui
+from ui.qt_win import fit_window
 from utils.i18n import tr, trp
 
 
@@ -192,7 +193,7 @@ class ProgressDialog(QtWidgets.QDialog):
         self.total_size = max(1, total_size)
         self._cancel_cb = None
         self.setWindowTitle(tr("迁移进度"))
-        self.setMinimumWidth(480)
+        fit_window(self, 480, 200, 560, 260)
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)

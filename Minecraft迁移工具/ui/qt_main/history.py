@@ -19,6 +19,7 @@ if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
 
 from PySide6 import QtWidgets, QtCore  # noqa: E402
 
+from ui.qt_win import fit_window
 from utils.i18n import tr, trp  # noqa: E402
 from utils import history_store  # noqa: E402
 
@@ -68,7 +69,7 @@ class PartPickerDialog(QtWidgets.QDialog):
         """default:默认勾哪些(上次「记住」的选择,与 Tk 版同键 rollback_parts);None = 有的全勾。"""
         super().__init__(parent)
         self.setWindowTitle(tr("选择回滚内容"))
-        self.setMinimumWidth(360)
+        fit_window(self, 420, 240, 440, 320)
         self._checks = {}
 
         root = QtWidgets.QVBoxLayout(self)
@@ -112,6 +113,39 @@ class PartPickerDialog(QtWidgets.QDialog):
                 if cb.isChecked() and cb.isEnabled()}
 
 
+def pick_rollback_parts(parent, window, backup_dir):
+    """问用户这次还原哪些类别;返回类别集合,取消或什么都没选返回 None。
+
+    按配置里记住的 rollback_parts 预勾,勾了「记住我的选择」就写回(Tk 设置页读同一个键)。
+    单独成函数是为了不用起窗口就能测。
+    """
+    try:
+        from core.migrator import backup_parts_available
+        available = backup_parts_available(backup_dir)
+    except Exception:
+        available = {}
+    cfg = window.config
+    saved = cfg.get("rollback_parts")
+    default = set(saved) if isinstance(saved, list) and saved else None
+    picker = PartPickerDialog(parent, available, default,
+                              bool(cfg.get("rollback_parts_remember", False)))
+    if picker.exec() != QtWidgets.QDialog.Accepted:
+        return None
+    parts = picker.selected_parts()
+    if not parts:
+        QtWidgets.QMessageBox.information(
+            parent, tr("回滚"), tr("没有选择任何内容,已取消。"))
+        return None
+    if picker.remember_check.isChecked():
+        cfg["rollback_parts"] = sorted(parts)
+        cfg["rollback_parts_remember"] = True
+        try:
+            window.save_config()
+        except Exception:
+            pass
+    return parts
+
+
 class HistoryDialog(QtWidgets.QDialog):
     """历史记录窗口:左列表 + 右详情 + 底部回滚/删除/清空。
 
@@ -128,7 +162,7 @@ class HistoryDialog(QtWidgets.QDialog):
         window._rollback_busy = lambda: self._rb_thread is not None
         self.finished.connect(lambda *_: setattr(window, "_rollback_busy", None))
         self.setWindowTitle(tr("迁移历史"))
-        self.resize(820, 540)
+        fit_window(self, 700, 440, 820, 540)
 
         root = QtWidgets.QVBoxLayout(self)
         split = QtWidgets.QHBoxLayout()
@@ -318,32 +352,10 @@ class HistoryDialog(QtWidgets.QDialog):
                 self, tr("回滚失败"), tr("这条迁移记录没有可用的备份,回滚不了。"))
             return
 
-        # 这份备份里实际有哪些类别 → 让用户勾
-        try:
-            from core.migrator import backup_parts_available
-            available = backup_parts_available(backup_dir)
-        except Exception:
-            available = {}
-        cfg = self.window.config
-        saved = cfg.get("rollback_parts")
-        default = set(saved) if isinstance(saved, list) and saved else None
-        picker = PartPickerDialog(self, available, default,
-                                  bool(cfg.get("rollback_parts_remember", False)))
-        if picker.exec() != QtWidgets.QDialog.Accepted:
-            return
-        parts = picker.selected_parts()
+        # 这份备份里实际有哪些类别 → 让用户勾(按记住的 rollback_parts 预勾)
+        parts = pick_rollback_parts(self, self.window, backup_dir)
         if not parts:
-            QtWidgets.QMessageBox.information(
-                self, tr("回滚"), tr("没有选择任何内容,已取消。"))
             return
-        if picker.remember_check.isChecked():
-            # 同 Tk 版:勾了「记住」就把这次的选择写成默认(设置页也读这个键)
-            cfg["rollback_parts"] = sorted(parts)
-            cfg["rollback_parts_remember"] = True
-            try:
-                self.window.save_config()
-            except Exception:
-                pass
 
         if QtWidgets.QMessageBox.question(
                 self, tr("确认回滚"),
@@ -367,6 +379,16 @@ class HistoryDialog(QtWidgets.QDialog):
         self._set_buttons_for(self._current())  # busy → 全灰
         self.rollback_btn.setText(tr("回滚中..."))
         self._rb_thread.start()
+        self._refresh_main_busy()
+
+    def _refresh_main_busy(self):
+        """回滚开始 / 结束时让主窗口按最新忙态重新锁定 / 解锁(主窗口的 busy_task_name 会问回滚)。"""
+        fn = getattr(self.window, "_refresh_busy_state", None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
 
     @QtCore.Slot(bool, str)
     def _on_rollback_done(self, success, record_id):
@@ -377,6 +399,7 @@ class HistoryDialog(QtWidgets.QDialog):
         self._rb_thread = None
         self._rb_worker = None
         self.rollback_btn.setText(tr("⏪ 回滚到这一次之前"))
+        self._refresh_main_busy()
 
         if success:
             try:

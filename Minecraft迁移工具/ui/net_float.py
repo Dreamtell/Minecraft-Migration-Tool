@@ -118,12 +118,15 @@ class _EdgeGlow:
         self._rnd = random.Random()
         self._parts = []        # [x, y, vx, vy, life, size]
         self._size = (px(self.W), px(self.H))
+        self._alpha = 0.0       # 当前不透明度：出现/消失都走 0↔1，避免"啪"地闪出来
+        self._target = 0.0
 
     # ---------- 显示 / 隐藏 ----------
     def show(self, edge, geom, center_y):
         if edge not in ("left", "right", "top", "bottom"):
             self.hide()
             return
+        self._target = 1.0
         self._edge = edge
         self._geom = dict(geom)
         self._cy = center_y
@@ -146,7 +149,15 @@ class _EdgeGlow:
             self._tick()
 
     def hide(self):
+        """请求隐藏：先淡出，淡完再 withdraw（立刻 withdraw 会"啪"地消失，像闪了一下）。"""
+        self._target = 0.0
+        if self._alpha > 0.02 and self._job is not None:
+            return
+        self._真正隐藏()
+
+    def _真正隐藏(self):
         self._edge = None
+        self._alpha = 0.0
         if getattr(self, "_fine", False):
             try:
                 ctypes.windll.winmm.timeEndPeriod(1)
@@ -164,18 +175,32 @@ class _EdgeGlow:
         except Exception:
             pass
 
+    def _corner_r(self):
+        """Win11 窗口圆角半径（设计像素 8，跟着 UI_SCALE 走）。
+
+        发光带两头各要让出这么多：带子是方的，正好贴到窗口角上时，
+        它的方角会戳到圆角外面 —— 在桌面上看就是一截亮边"飞出"窗口轮廓。
+        """
+        try:
+            return max(4, int(px(8)))
+        except Exception:
+            return 8
+
     def _place(self):
-        """把带子铺满窗口的**整条边**，并且严格裁在窗口客户区内（不溢出）。"""
+        """把带子铺在窗口的边上（严格裁在客户区内），两头让出圆角半径。"""
         g = self._geom
         厚 = px(self.W)
         gw, gh = max(2, int(g.get("w") or 0)), max(2, int(g.get("h") or 0))
+        R = self._corner_r()
         if self._edge in ("left", "right"):
-            w, h = 厚, gh
+            w = 厚
+            h = max(2, gh - 2 * R)
             x = g["x"] if self._edge == "left" else g["x"] + gw - w
-            y = g["y"]
+            y = g["y"] + R
         else:
-            w, h = gw, 厚
-            x = g["x"]
+            w = max(2, gw - 2 * R)
+            h = 厚
+            x = g["x"] + R
             y = g["y"] if self._edge == "top" else g["y"] + gh - h
         self._size = (w, h)
         self._pos = (int(x), int(y))
@@ -203,6 +228,15 @@ class _EdgeGlow:
         上次 = getattr(self, "_last_t", None) or 现在
         self._last_t = 现在
         dt = min(0.08, max(0.001, 现在 - 上次))     # 卡一下也不会瞬移
+        # 淡入淡出：160ms 走完 0→1，消失时淡完就收窗
+        步 = dt / 0.16
+        if self._alpha < self._target:
+            self._alpha = min(self._target, self._alpha + 步)
+        elif self._alpha > self._target:
+            self._alpha = max(self._target, self._alpha - 步)
+            if self._alpha <= 0.02 and self._target <= 0.0:
+                self._真正隐藏()
+                return
         self._step(dt)
         self._draw()
         try:
@@ -250,9 +284,18 @@ class _EdgeGlow:
                 else:
                     y = (H - 1 - j) if self._edge == "bottom" else j
                     d0.line([(0, y), (W - 1, y)], fill=色 + (a,))
+            self._fade_ends(底)
             self._base_img, self._base_key = 底, key
 
         img = self._base_img.copy()
+        if self._alpha < 0.995:      # 淡入淡出：整张图乘一个系数再上传
+            try:
+                import numpy as np
+                arr = np.asarray(img, dtype=np.float32)
+                arr[:, :, 3] *= max(0.0, self._alpha)
+                img = Image.fromarray(arr.astype('uint8'), 'RGBA')
+            except Exception:
+                pass
         d = ImageDraw.Draw(img)
 
         def 像素(v, u):
@@ -270,9 +313,43 @@ class _EdgeGlow:
             if a <= 0:
                 continue
             x, y = 像素(v, u)
+            a = int(a * max(0.0, self._alpha))
+            if a <= 0:
+                continue
+            # 两端的粒子跟着淡出，和带子的圆角收口一致
+            长 = H if 水平 else W
+            n = max(1, self._corner_r())
+            边 = min(u * 长, (1.0 - u) * 长) / n
+            if 边 < 1.0:
+                a = int(a * (max(0.0, 边) ** 1.6))
+                if a <= 0:
+                    continue
             r = 半径 * (0.6 + 0.4 * t)
             d.ellipse([x - r, y - r, x + r, y + r], fill=色 + (a,))
         self._upload(img)
+
+    def _fade_ends(self, img):
+        """沿边方向两头淡出，接上窗口的圆角弧线（不然是两刀生硬的直切）。"""
+        try:
+            import numpy as np
+            from PIL import Image as _Image
+            水平 = self._edge in ("left", "right")
+            长 = img.height if 水平 else img.width
+            n = min(self._corner_r(), max(4, 长 // 3))
+            arr = np.asarray(img.getchannel("A"), dtype=np.float32)
+            h, w = arr.shape
+            ramp = np.ones((h, w), dtype=np.float32)
+            for i in range(n):
+                t = ((i + 1) / float(n)) ** 1.6
+                if 水平:
+                    ramp[i, :] = np.minimum(ramp[i, :], t)
+                    ramp[h - 1 - i, :] = np.minimum(ramp[h - 1 - i, :], t)
+                else:
+                    ramp[:, i] = np.minimum(ramp[:, i], t)
+                    ramp[:, w - 1 - i] = np.minimum(ramp[:, w - 1 - i], t)
+            img.putalpha(_Image.fromarray((arr * ramp).astype(np.uint8)))
+        except Exception:
+            pass
 
     def _real_hwnd(self):
         """真正的顶层窗口句柄（一路往上找没有 parent 的那个）。"""
@@ -692,23 +769,45 @@ class NetFloat:
 
     # ---------------- 贴边 ----------------
     def _detect_edge(self):
+        """离哪条边够近（**带迟滞**）。
+
+        以前只有一个阈值：光标在 8px 边界上来回抖 1px，提示就"亮→灭→亮"，
+        光带跟着一闪一闪。现在分两档：
+          · 还没提示时，要进 `SNAP` 以内才亮（门槛高一点，别一靠近就闪）；
+          · 已经亮着时，要退到 `SNAP + 18` 以外才灭（手在边界上抖不会灭）。
+        另外"当前已经亮着的那条边"优先：除非另一条边明显更近（差 10px 以上），
+        否则不换边 —— 角落附近左右两条边会互相抢，抢起来也是闪的来源。
+        """
         w, h = self._parent_size()
         cw, ch = self._cur_size()
         x, y = self._rel
         近 = px(self.SNAP)
+        if self._hint:
+            近 = 近 + px(18)
         左 = x <= 近
         右 = (w - cw - x) <= 近
         上 = y <= 近
         下 = (h - ch - y) <= 近
-        if 左 and not 右:
-            return "left"
-        if 右 and not 左:
-            return "right"
-        if 上 and not 下:
-            return "top"
-        if 下 and not 上:
-            return "bottom"
-        return None
+        候选 = []
+        if 左:
+            候选.append(("left", x))
+        if 右:
+            候选.append(("right", w - cw - x))
+        if 上:
+            候选.append(("top", y))
+        if 下:
+            候选.append(("bottom", h - ch - y))
+        if not 候选:
+            return None
+        if len(候选) == 1:
+            return 候选[0][0]
+        # 粘性：当前这条边还够近的话，只有别的边比它近 10px 以上才换
+        for edge, d in 候选:
+            if edge == self._hint:
+                其他 = [dd for e2, dd in 候选 if e2 != edge]
+                if 其他 and d - min(其他) <= px(10):
+                    return edge
+        return min(候选, key=lambda kv: kv[1])[0]
 
     def _snap(self, edge, apply=True):
         """吸附到某条边。

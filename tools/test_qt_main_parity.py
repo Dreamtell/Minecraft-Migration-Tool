@@ -76,6 +76,7 @@ class MainWindowTests(unittest.TestCase):
     def tearDown(self):
         self.w._migration_running = False
         self.w.hide()
+        self.w._close_session_log()      # 同真实退出路径:关掉会话日志文件
         self.w.deleteLater()
         pump(30)
 
@@ -179,6 +180,70 @@ class MainWindowTests(unittest.TestCase):
             self.w.show_from_tray()
         ff.assert_called_once()
         self.w._force_foreground()                               # 真跑一遍:不能抛
+
+    # ---------- 补齐的四个按钮 ----------
+    def test_three_buttons_exist_and_rollback_lives_only_in_history(self):
+        from ui.qt_main.buttons import DEFAULT_ORDER, LABELS
+        self.assertIn("copy_target", self.w._path_btns)
+        for key in ("log_big", "log_open"):
+            self.assertIn(key, self.w._btn_widgets)
+            self.assertIn(key, LABELS)
+            self.assertTrue(any(key in v for v in DEFAULT_ORDER.values()))
+        # Tk 的 cafd9e8 把回滚并进了历史窗口:主界面不该再有这颗按钮
+        self.assertFalse(hasattr(self.w, "rollback_btn"))
+        self.assertNotIn("rollback", self.w._btn_widgets)
+        self.assertNotIn("rollback", LABELS)
+        self.assertEqual(DEFAULT_ORDER["action"], ["history", "start"])
+
+    def test_copy_target_to_source(self):
+        self.w.target_edit.setText(r"C:\pack\new")
+        self.w._path_btns["copy_target"].click()
+        self.assertEqual(self.w.source_edit.text(), r"C:\pack\new")
+        self.w.target_edit.setText("")
+        self.w.source_edit.setText("keep")
+        self.w._path_btns["copy_target"].click()
+        self.assertEqual(self.w.source_edit.text(), "keep")    # 目标为空:不动源路径
+
+    def test_open_log_folder_opens_session_dir(self):
+        self.w.log("一行日志", "INFO")
+        with mock.patch("os.startfile", create=True) as sf:
+            self.w._btn_widgets["log_open"].click()
+        sf.assert_called_once_with(str(self.w._session_log.directory))
+
+    def test_log_writes_session_file_and_redacts(self):
+        from utils import secrets
+        with mock.patch.object(secrets, "redact", side_effect=lambda s: s.replace("SECRET", "***")):
+            self.w.log("token=SECRET", "WARNING")
+        self.w._session_log.flush()
+        text = self.w._session_log.path.read_text(encoding="utf-8")
+        self.assertIn("token=***", text)
+        self.assertNotIn("SECRET", text)
+        self.assertNotIn("SECRET", self.w.log_text.toPlainText())
+
+    def test_big_log_view_copies_and_follows(self):
+        self.w._clear_log()
+        self.w.log("第一行", "INFO")
+        self.w.log("出错了", "ERROR")
+        self.w._btn_widgets["log_big"].click()
+        pump(30)
+        win = self.w._log_big_view
+        self.assertTrue(win.isVisible())
+        self.assertIn("出错了", self.w._log_big_text.toPlainText())
+        self.assertIn("2", self.w._log_big_count.text())
+        self.w.log("新来的", "INFO")                               # 开着时实时追加
+        self.assertIn("新来的", self.w._log_big_text.toPlainText())
+        self.assertIn("3", self.w._log_big_count.text())
+        self.w._btn_widgets["log_big"].click()                    # 再点复用同一个窗口
+        self.assertIs(self.w._log_big_view, win)
+        win.close()
+
+    def test_quit_paths_close_session_log(self):
+        self.w.log("落盘一行", "INFO")
+        self.assertIsNotNone(self.w._session_log._file)
+        with mock.patch.object(QtWidgets.QApplication, "quit"):
+            self.w.request_quit()
+        self.assertIsNone(self.w._session_log._file)
+        self.w._quitting = False
 
 
 if __name__ == "__main__":

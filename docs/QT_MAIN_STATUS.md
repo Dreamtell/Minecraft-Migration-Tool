@@ -228,9 +228,79 @@ Qt主窗口本身就是纯Qt进程(没有Tk),qt_diff_view/qt_big_view 直接在�
 24. 清单里连删三行 → Ctrl+Z 一行一行还原
 25. 设置里切到 English 重启 → Qt 主界面、设置窗、历史窗都是英文
 
+### 第七批之前补的:和 Tk 版共用的设置 + 四个按钮 + 忙态锁定 + 更新提醒
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 迁移标记 / 后台静默 / 回滚范围记忆 | `window._start_migration`、`migration.py`、`history.pick_rollback_parts` | 与 Tk 同键(`rename_migrated_mods` `rename_marker` `silent_background` `rollback_parts` `rollback_parts_remember`);之前 Qt 版不读,Tk 里设的到 Qt 会被悄悄忽略 |
+| 四个按钮 | `window.py` | 「← 填充路径」「📂 放大查看(日志)」「📂 打开日志文件夹」+ 日志写会话文件并脱敏;**主界面没有「回滚」按钮**——Tk 的 cafd9e8 把回滚并进了历史窗口,Qt 保持一致 |
+| 忙态锁定 | `window._refresh_busy_state` | 迁移 / 准备 / 扫描 / 倒计时 / 历史窗里的回滚期间:操作按钮置灰、路径框 / 存档名 / 三个清单只读;倒计时里「开始迁移」仍可点(= 取消) |
+| 整合包更新提醒 | `ui/qt_main/pack_warning.py` | 红条 + 复制 AI 提示词 + 收起成页签行右端的「⚠ 更新提醒」药丸;`pack_warning_collapsed` 与 Tk 共用,默认收起 |
+| 浮标阴影 / 点消息中心外面收回 | `net_float.py`、`messages.py`、设置窗 | `net_float_shadow` / `msg_click_outside_close`,默认值与 Tk 一致 |
+
+**不做(而不是漏了)**:迁移锁屏遮罩——Tk 的 c915ef8 已整体删除(用户:「锁屏这个选择不要了」),`lock_mode` / `lock_wait_key` 只是死配置键。
+
+**本次补的**:主界面编辑开关(`edit_enabled` / `blank_exit_edit`)、按钮音效(`sfx_on` / `sfx_hover` / `sfx_press`)。
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 主界面编辑 | `window._on_edit_switch`、`_lock_edit`/`_unlock_edit`、`eventFilter` | 三个清单默认只读;开关打开才能直接改;放大查看 / 模组差异打开期间强制关闭并锁住(两个都关了才还回用户原来的选择);点窗口空白处只让清单失焦,不碰开关本身(`blank_exit_edit` 控制这条) |
+| 按钮音效 | `window._init_sfx`、`_play_press_if_button`、`settings.py` 的试听 | 直接复用 `utils/sfx.py`(纯 ctypes + 线程,不碰 tkinter);应用级事件过滤器拦所有按钮点击播 `press`,勾选框 / 单选不响(同 Tk) |
+
+**不做(范围之外)**:滚动速度(`scroll_speed`)——要改的是 `ui/qt_big_view.py` 的 `_SmoothWheel`,那是 Tk 主进程也在用的大视图组件,不属于 Qt 主界面;双击间隔(`double_click_*`)——Tk 侧自己也早已停用判定、只为兼容旧配置保留两个键,Qt 主界面原样保存即可,不用再实现。
+
+检查时补看:
+26. 迁移 / 倒计时 / 扫描期间,三个清单、路径框、各按钮都点不动;结束后恢复;倒计时里再点「开始迁移」能取消
+27. 页签行右端有「⚠ 更新提醒」药丸(默认收起);点开看说明,「展开成横幅」后红条出现在页签上方;重启后形态保持
+28. 「复制 AI 提示词」后粘贴,里面是当前的源 / 目标路径
+29. 设置里开「点消息中心以外就收回」:点主窗口别处时消息中心收起,点铃铛 / 面板自己不收
+30. 「主界面编辑」默认关:三个清单打不进字;开关打开后能改;打开放大查看或模组差异时开关自动变灰并说明原因,关掉那个窗口后自动还原
+31. 开着编辑时点清单以外的空白处,只清掉选区和焦点,开关不会被带着关掉
+32. 设置里开「按钮音效」,点各处按钮有声音;「试听」按钮能单独听一遍悬停/按下
+
+### 第七批(提案,等主界面重构完成后再决策)—— Tk 设置窗改由 Qt 渲染
+
+**背景**:Tk 设置窗(`ui/mw_settings.py`,约 1600 行)是手搓的一堆控件,和 Qt 设置窗
+(`ui/qt_main/settings.py`)两套实现要做同样的键、同样的校验、同样的英文文案,加一个
+设置项要改两处。想让它也走 Qt。
+
+**为什么可行**(机制现成):
+- `SettingsDialog.values()` 返回的 dict 键名**与 `main_window.save_config()` 完全一致**
+  (theme / fx_level / splash / float_edge_fx / start_btn_feel / language /
+  extra_conflict / history_limit / dry_run / overwrite / confirm_migrate /
+  start_countdown / net_float_on / net_float_size / net_float_dock / toast_on /
+  close_action / main_window_backend),主窗拿到就能直接落盘。
+- `ui/qt_host.py` 已有子进程协议(请求 JSON + 结果 JSONL + command 通道,现支持
+  raise / theme),加一个 `kind: "settings"` 分支即可。
+
+**要做的四步**:
+1. 补齐选项:Qt 设置窗目前只覆盖 Tk 设置窗的一部分,缺音效开关与音量、CurseForge Key、
+   放大查看默认 backend/视图、差异视图默认、其它文件预设、重命名标记、清空规则等。
+2. 一次性模态:主窗 `grab_set()` + `after(60)` 轮询结果文件,收到
+   `{"action":"apply","values":{...}}` 再统一 `_apply_values()` + `save_config()`;
+   `qt_host` 现在的 bigview/diff 都是常驻非模态,要新加"用完即销毁"的用法。
+3. 立即生效的时序:主题 / 浮标开关 / 按钮手感现在点了立刻变,走子进程后是确定之后才变,
+   要把 `_apply_values()` 从 `open_settings()` 里拆出来复用。
+4. 启动类选项(语言 / 主界面后端 / 闪屏)照旧提示"下次启动生效"。
+
+**两个坑**:
+- 冷启动 300~800 ms,点"设置"会愣一下(可先弹占位卡;不值得为它常驻预热进程)。
+- 设置窗开着时主窗可能改了配置(迁移中写 history),整包覆盖会冲掉 —— 返回前重读配置合并。
+
+**决策点(先做这个再动手)**:
+- 若重构完 `main_window_backend` 默认成 qt,Tk 设置窗迟早退场 → **不做这个重构**,
+  把力气花在补全 Qt 设置窗上。
+- 若 Tk 要长期留作兜底 → 按上面四步做,估 1.5~2 天,顺序是先补选项、再接 `qt_host`。
+
+**验收**:Tk 主窗点"设置"→ Qt 窗口弹出并置顶;改档位/主题/浮标 → 确定后主窗立刻生效;
+取消 → 一个键都不写;关掉设置窗 → 子进程退出(任务管理器里没有残留 python)。
+
 ## 和Tk版的配置兼容性
 
 两版读写同一个配置文件(`~/.minecraft_migrate_config.json`),可无缝切换:
+- 「特效强度」`fx_level`(off/light/standard/full)一口管启动动画、浮标粒子、按钮手感、
+  消息卡片动画;派生值仍写回 `splash` / `float_edge_fx` / `start_btn_feel` 三个老键,
+  老配置不受影响。读配置统一走 `utils/fx.py` 的 `from_config()`(没有 `fx_level` 时原样返回)
 - Qt版启动时读 `mod_list`/`source`/`target`等,载入到控件
 - Qt版关闭时把控件内容写回配置
 - Tk版照常读写,互不干扰
@@ -238,4 +308,7 @@ Qt主窗口本身就是纯Qt进程(没有Tk),qt_diff_view/qt_big_view 直接在�
 ## 下一步
 
 Task #3 ~ #7 逐个完成后,Qt骨架就能跑通「选路径→扫描差异→迁移」主流程。
-设置窗/按钮自定义/消息中心/网络浮标等在第二阶段补齐。
+设置窗/按钮自定义/消息中心/网络浮标等在第二阶段补齐(均已补齐,见第六批)。
+
+**第七批是提案,不是排期**:等主界面重构完成、确认 `main_window_backend` 的默认值之后,
+再按那节开头的「决策点」决定做不做(默认倾向不做——Qt 若成默认,Tk 设置窗自然退场)。

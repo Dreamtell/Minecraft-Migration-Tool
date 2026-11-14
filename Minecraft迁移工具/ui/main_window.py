@@ -13,7 +13,8 @@ from ui.mw_common import *          # noqa: F401,F403 —— 见上面 docstring
 import json
 import os
 from utils import i18n
-from utils.dpi import window_geometry
+from utils import fx
+from utils.dpi import ensure_on_screen, window_geometry
 from ui.mw_log import LogMixin
 from ui.mw_theme import ThemeMixin
 from ui.mw_buttons import ButtonsMixin
@@ -62,8 +63,13 @@ class MigrationGUI(
         # 尺寸/位置统一走 utils.dpi：DPI 感知之后写死 1000x1080 会被缩放后的字撑爆，
         # 而 1080 * 1.5 又比屏幕高，需要一起适配（见 utils/dpi.py）。
         self.root.geometry(window_geometry(self.root, 1000, 1080))
+        # 建完界面再来一次兜底：布局里的 minsize / 内容撑开可能把窗口顶到任务栏上，
+        # 那样窗口自己那圈亮边就"盖住任务栏"了（用户截图报过）。等首帧布局稳了再量。
+        self.root.after(150, lambda: ensure_on_screen(self.root))
 
-        self.config = self.load_config()
+        # 读了配置先按「特效强度」派生一遍 splash / float_edge_fx / start_btn_feel：
+        # 老配置里没有 fx_level 时 fx.from_config() 原样返回，行为跟以前完全一致。
+        self.config = fx.from_config(self.load_config())
         # 上次停在三份清单的哪一页（0 模组 / 1 config / 2 其它）。
         # **必须在这儿读**：界面建完之后、正式配置段之前，别处可能已经调过
         # save_config()，那时这个键还不存在，会把用户上次的位置写成 0。
@@ -74,7 +80,10 @@ class MigrationGUI(
         # 整合包更新提醒只能收起、不能关：只记形态（False = 整条横幅，True = 仅 ⚠ 图标）。
         # **同样必须在这儿读** —— 提醒条是建界面时按这个值摆位的（mw_pages 里
         # 建条时读一次、随后又调一次 _pack_warning_layout），读晚了就永远是展开态。
-        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", False))
+        # 默认收起（原来是展开）：这条横幅约 90px 高，三行字，每次启动都占着清单区上方。
+        # 收起后入口是标签行右端的「⚠ 更新提醒」药丸，点开仍是完整说明；
+        # 用户展开过就会记住（pack_warning_collapsed 写进配置）。已有配置的用户不受影响。
+        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", True))
         # 回滚默认还原哪些（设置页可改；「记住我的选择」勾上时由回滚对话框写这里）
         try:
             from core.migrator import _RESTORE_PARTS as _RP
@@ -110,6 +119,10 @@ class MigrationGUI(
             value=str(self.config.get("start_btn_feel", "standard") or "standard"))
         if self.start_btn_feel.get() not in ("crisp", "standard", "heavy"):
             self.start_btn_feel.set("standard")
+        # 特效强度：off / light / standard / full，统管启动动画、浮标粒子、
+        # 翻转手感、消息卡片动画（见 utils/fx.py）。派生值已经写进上面几个旧键，
+        # 这里只记档位本身，设置窗要拿它回显。
+        self.fx_level = fx.normalize(self.config.get("fx_level"))
         # 正式迁移前再确认一次（默认开；设置里可以关）
         self.confirm_migrate = tk.BooleanVar(value=self.config.get("confirm_migrate", True))
         # 关闭窗口时的行为：ask（每次问）/ tray（收进托盘）/ exit（直接退出）
@@ -249,12 +262,18 @@ class MigrationGUI(
         self._setup_custom_undo(self.config_text, "config")
         self._setup_custom_undo(self.extra_text, "extra")
         self._refresh_list_badges()
-        self.log("=" * 60, level="INFO", save=False)
-        self.log(i18n.tr("【免费声明】本工具完全免费，严禁用于商业用途或转卖。"),
-                 level="WARNING", save=False)
-        self.log(i18n.tr("如有任何收费行为，请立即举报。作者不会以任何形式向你收费。"),
-                 level="WARNING", save=False)
-        self.log("=" * 60, level="INFO", save=False)
+        # 三个清单的占位提示：内容加载完了，现在检查一次显示/隐藏（建控件时
+        # Text 还是 disabled，_check 会误判成"空"；现在内容 insert 进去了、
+        # edit_mode 也 set 好了，这次判断才准）
+        for _lbl_name in ("_mod_hint_label", "_config_hint_label", "_extra_hint_label"):
+            _lbl = getattr(self, _lbl_name, None)
+            if _lbl is not None and hasattr(_lbl, "_manual_check"):
+                try:
+                    _lbl._manual_check()
+                except Exception:
+                    pass
+        # 免费声明只留窗口顶部红条和底栏两处（ui/mw_pages.py）。以前启动时还往执行日志里
+        # 写 4 行（两条分隔线 + 两句声明）：同样的话第三遍，还占掉日志的前 4 行。
 
         self.progress_queue = None
         self.progress_window = None
@@ -347,24 +366,14 @@ class MigrationGUI(
                 pass
 
     def _报告拖放状态(self):
-        """启动时把拖放到底有没有生效打进日志（出问题时截图就能定位）。"""
+        """启动时检查拖放有没有生效：**只有不可用时才写日志**。
+
+        以前正常时也写一行「🧩 拖放已就绪（tkinterdnd2 0.6.2）…」：库名和版本号是给开发者看的，
+        用户看不懂也用不上，还占掉日志第一行。现在正常就安静；出问题时仍然打一行警告
+        （打包后这一条最容易坏，必须能看见）。要查版本，打开 debug 日志或直接 pip show。
+        """
         try:
-            if getattr(self, "_dnd_ok", False):
-                版本 = ""
-                for 取 in (
-                    lambda: __import__("importlib.metadata", fromlist=["version"]).version("tkinterdnd2"),
-                    lambda: getattr(__import__("tkinterdnd2"), "__version__", ""),
-                ):
-                    try:
-                        版本 = str(取() or "").strip()
-                    except Exception:
-                        版本 = ""
-                    if 版本:
-                        break
-                版本 = (" " + 版本) if 版本 else "" 
-                self.log(i18n.trp("🧩 拖放已就绪（tkinterdnd2{0}）：可以把 jar / mods 文件夹直接拖进清单",
-                             版本), level="OK")
-            else:
+            if not getattr(self, "_dnd_ok", False):
                 self.log(i18n.tr("⚠ 拖放不可用：缺少 tkinterdnd2 或 tkdnd 未加载（请用「添加模组」按钮）"),
                          level="WARNING")
         except Exception:
@@ -713,6 +722,10 @@ class MigrationGUI(
             "dry_run": self.dry_run.get(),
             "overwrite": self.overwrite_mods.get(),
             "start_btn_feel": self.start_btn_feel.get(),
+            # 特效强度档位（4 档，统管启动动画/浮标粒子/翻转手感/消息卡片动画）。
+            # 派生出去的 splash / float_edge_fx / start_btn_feel 三个键也照旧写，
+            # 老版本或别的分支读它们时行为不变
+            "fx_level": str(getattr(self, "fx_level", fx.DEFAULT)),
             "confirm_migrate": self.confirm_migrate.get(),
             "theme": self.current_theme,
             # 界面语言（下次启动生效）。i18n 是"文案入口查表"，打包层不持有语言状态，
