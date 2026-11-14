@@ -2535,6 +2535,20 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "正在搜索…": "Searching…",
     "以管理员身份重启被取消，继续用普通权限运行。": "Restart as administrator was cancelled; continuing with normal rights.",
     "(无异常对象)": "(no exception object)",
+    # ---- 第十批:路径有效性 / 文件夹多选 / 模组添加反馈 ----
+    "🧹 顺手整理了 {0} 行重复/带路径的旧条目":
+        "🧹 Tidied {0} duplicate or full-path lines left from older versions",
+    "ℹ️ 所选内容均已在清单中，未重复添加":
+        "ℹ️ Everything you picked is already in the list; nothing added",
+    "路径不存在": "Path does not exist",
+    "不是目录": "Not a folder",
+    "无读写权限，请以管理员身份运行": "No read/write access; run as administrator",
+    "缺少 mods 目录（不是有效的整合包）": "No mods folder (not a valid pack)",
+    "缺少 config 目录（不是有效的整合包）": "No config folder (not a valid pack)",
+    "mods 目录为空（没有模组文件）": "The mods folder is empty (no mod files)",
+    "缺少 version.json 或 options.txt，无法识别为有效实例":
+        "No version.json or options.txt; cannot be recognized as a valid instance",
+    "已勾选 {0} 个文件夹": "{0} folders ticked",
 }
 
 

@@ -317,6 +317,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if self.source_path:
             self._detect_env()
         self._update_world_status()
+        # 同理:路径状态图标、config 里文件夹条目补末尾 /(内容载入后的安全时机)
+        self._validate_paths()
+        self._mark_config_folders()
 
     def _apply_theme(self):
         """应用主题色到窗口调色板。"""
@@ -442,7 +445,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
                     _fn(self.theme)
                 except Exception:
                     pass
-        for fn in (self._detect_env, self._update_world_status, self._refresh_msg_badge):
+        for fn in (self._detect_env, self._update_world_status, self._refresh_msg_badge,
+                   self._repaint_path_status):
             try:
                 fn()
             except Exception:
@@ -639,6 +643,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         copy_btn.setToolTip(tr("把目标路径复制到源路径"))
         copy_btn.clicked.connect(self._copy_target_to_source)
         src_row.addWidget(copy_btn)
+        self.source_status = self._make_path_status()
+        src_row.addWidget(self.source_status)
         self._path_btns = {"browse_source": self.src_browse_btn, "copy_target": copy_btn}
         paths_layout.addRow(tr("源实例:"), src_row)
 
@@ -650,6 +656,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.tgt_browse_btn = QtWidgets.QPushButton(tr("浏览"))
         self.tgt_browse_btn.clicked.connect(self._browse_target)
         tgt_row.addWidget(self.tgt_browse_btn)
+        self.target_status = self._make_path_status()
+        tgt_row.addWidget(self.target_status)
         paths_layout.addRow(tr("目标实例:"), tgt_row)
 
         # 存档名 + 实时"存在/不存在"状态
@@ -1031,15 +1039,61 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if path:
             self.target_edit.setText(path)
 
+    # 状态标签的语义色:颜色由「状态」决定,主题一换就按记住的状态立刻换成新主题的色
+    _PATH_STATUS_FG = {"ok": "ok_fg", "fail": "fail_fg", "warn": "warn_fg", "muted": "muted_fg"}
+
+    def _make_path_status(self):
+        """路径行右侧的状态图标(✅ / ⚠️ / ❌),详细结论放悬停说明里。"""
+        lab = QtWidgets.QLabel("")
+        lab.setMinimumWidth(28)
+        lab.setAlignment(QtCore.Qt.AlignCenter)
+        lab.setProperty("_semantic", "muted")
+        return lab
+
+    def _set_path_status(self, label, kind, text, tip):
+        label.setProperty("_semantic", kind)
+        label.setText(text)
+        label.setToolTip(tip)
+        self._paint_path_status(label)
+
+    def _paint_path_status(self, label):
+        key = self._PATH_STATUS_FG.get(label.property("_semantic"), "muted_fg")
+        label.setStyleSheet(f"color: {self.theme.get(key, '#888')};")
+
+    def _repaint_path_status(self):
+        """切主题:只按记住的状态换色,不重新扫实例目录(那要几百毫秒)。"""
+        for name in ("source_status", "target_status"):
+            lab = getattr(self, name, None)
+            if lab is not None:
+                self._paint_path_status(lab)
+
+    def _validate_paths(self):
+        """校验源/目标路径是不是有效的整合包实例,结果挂到两个状态图标上。
+
+        要扫实例目录(模组多的实例要几百毫秒),所以只在路径真的变了时才调,
+        切主题只重新上色、不重新校验。
+        """
+        from core.instance_check import status_for
+        for label, text, which in ((self.source_status, self.source_path, tr("源")),
+                                   (self.target_status, self.target_path, tr("目标"))):
+            try:
+                kind, shown, tip = status_for(text, which)
+            except Exception as e:                      # 校验本身出错不能拖垮输入框
+                kind, shown, tip = "fail", "❌", str(e)
+            self._set_path_status(label, kind, shown, tip)
+
     def _on_source_changed(self, text):
         """源路径变化:更新变量并检测环境+存档状态。"""
         self.source_path = text.strip()
+        self._validate_paths()
         self._detect_env()
         self._update_world_status()
+        self._mark_config_folders()
 
     def _on_target_changed(self, text):
         """目标路径变化:更新变量。"""
         self.target_path = text.strip()
+        self._validate_paths()
 
     def _on_world_changed(self, text):
         """存档名变化:更新变量并刷新存档状态。"""
@@ -1606,6 +1660,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
     def _check_list(self, kind):
         """检查清单条目在源实例里是否存在:逐行上色(存在=绿,缺失=红,重复=黄)。"""
         from core.list_check import check
+        if kind == "config":
+            self._mark_config_folders()         # 先把文件夹条目补上 /,高亮和重复判定才一致
         box = {"mods": self.mod_text, "config": self.config_text,
                "extra": self.extra_text}[kind]
         label = {"mods": tr("模组"), "config": tr("config"), "extra": tr("其它文件")}[kind]
@@ -1666,37 +1722,71 @@ class QtMainWindow(QtWidgets.QMainWindow):
             box.textChanged.disconnect(self._clear_check_marks)
             box.setProperty("_check_marks_hooked", False)
 
+    def _expand_dropped_jars(self, paths):
+        """把拖进来的东西摊平成 jar 列表。返回 (jar 路径列表, 文件夹数, 被忽略的文件数)。
+
+        拖一整个文件夹(最常见:直接把 mods 目录拖过来)只摊平它里面那一层的 *.jar。
+        """
+        jars, dirs, ignored = [], 0, 0
+        for raw in paths:
+            p = Path(raw)
+            try:
+                if p.is_dir():
+                    dirs += 1
+                    jars.extend(sorted(q for q in p.glob("*.jar") if q.is_file()))
+                elif p.suffix.lower() == ".jar":
+                    jars.append(p)
+                else:
+                    ignored += 1
+            except OSError:
+                ignored += 1
+        return jars, dirs, ignored
+
+    def _append_mods(self, paths):
+        """把若干 .jar 追加进模组清单(按文件名不分大小写去重),并顺手把旧的
+        「整条路径」行收成文件名。返回实际新增了几个。走 _replace_text,Ctrl+Z 能撤回。"""
+        from core.list_ops import merge_mods
+        text, added, tidied = merge_mods(self.mod_text.toPlainText(), paths)
+        if text != self.mod_text.toPlainText():
+            self._replace_text(self.mod_text, text)
+        if tidied:
+            self.toast(trp("🧹 顺手整理了 {0} 行重复/带路径的旧条目", tidied), "ok")
+        if added:
+            self.log(trp("{0}:已添加 {1} 条", tr("模组清单"), len(added)), "INFO")
+            self.toast(trp("✅ 已添加 {0} 个模组", len(added)), "ok")
+        return len(added)
+
     def _drop_mods(self, paths):
-        """拖进模组清单:jar 取文件名;文件夹(比如整个 mods)展开里面的 jar。"""
-        names = []
-        for p in paths:
-            pp = Path(p)
-            if pp.is_dir():
-                names += sorted(x.name for x in pp.glob("*.jar"))
-            elif pp.suffix.lower() == ".jar":
-                names.append(pp.name)
-        if not names:
-            self.log(tr("⚠️ 拖入的内容里没有 .jar 文件"), "WARNING")
+        """拖进模组清单:jar 取文件名;文件夹(比如整个 mods)展开里面的 jar。
+        一个都没加成时要说明为什么,不能悄悄没反应。"""
+        jars, dirs, ignored = self._expand_dropped_jars(paths)
+        added = self._append_mods(jars)
+        if added:
+            if dirs:
+                self.toast(trp("📂 从文件夹里加了 {0} 个模组", added), "ok")
             return
-        self._append_lines(self.mod_text, names, tr("模组清单"))
+        if not jars and ignored:
+            self.toast(trp("⚠️ 只认 .jar 文件（收到 {0} 个其它文件）", ignored), "warn")
+        elif jars:
+            self.toast(trp("⚠️ 这几个模组已经在清单里了（{0} 个）", len(jars)), "warn")
+        elif dirs:
+            self.toast(trp("⚠️ 文件夹里没找到 .jar（{0} 个文件夹）", dirs), "warn")
+        else:
+            self.log(tr("⚠️ 拖入的内容里没有 .jar 文件"), "WARNING")
 
     def _add_mods(self):
-        """添加模组:打开文件对话框选jar。"""
+        """添加模组:打开文件对话框选 jar,默认定位到源实例的 mods 目录。"""
+        start = self.source_path
+        if start:
+            mods_dir = Path(start) / "mods"
+            start = str(mods_dir if mods_dir.is_dir() else start)
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, tr("选择模组文件"), self.source_path,
-            tr("Jar文件 (*.jar)")
-        )
+            self, tr("选择模组文件"), start, tr("Jar文件 (*.jar)"))
         if not files:
             return
-        # 只取文件名(不带路径)
-        names = [Path(f).name for f in files]
-        existing = self.mod_text.toPlainText().strip()
-        if existing:
-            combined = existing + "\n" + "\n".join(names)
-        else:
-            combined = "\n".join(names)
-        self._replace_text(self.mod_text, combined)
-        self.log(trp("已添加 {0} 个模组", len(names)), "INFO")
+        added = self._append_mods(files)
+        if not added:
+            self.toast(tr("所选模组已在清单中，未新增。"), "warn")
 
     # ---------------- config / 其它文件清单的添加(路径转成相对路径) ----------------
     def _rel_under(self, base, path):
@@ -1731,7 +1821,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
         return len(new)
 
     def _add_paths_to(self, which, paths):
-        """which: "config" / "extra"。paths 是绝对路径;转相对路径后加进清单。"""
+        """which: "config" / "extra"。paths 是绝对路径;转相对路径后加进清单。
+
+        文件夹条目末尾带 `/` 与文件区分;去重按去掉末尾 `/`、不分大小写比,所以 `jei` 和 `jei/` 算同一条。
+        返回实际加了几条。
+        """
         if not self.source_path:
             QtWidgets.QMessageBox.warning(self, tr("提示"), tr("请先选择源实例目录"))
             return 0
@@ -1741,17 +1835,62 @@ class QtMainWindow(QtWidgets.QMainWindow):
         ok, bad = [], []
         for p in paths:
             rel = self._rel_under(base, p)
+            if rel and (base / rel).is_dir():
+                rel += "/"
             (ok if rel else bad).append(rel or str(p))
         if bad:
             self.log(trp("⚠️ 有 {0} 项不在 {1} 下,已跳过:{2}", len(bad), str(base),
                          "、".join(Path(b).name for b in bad[:5])), "WARNING")
-        return self._append_lines(text_edit, ok, label)
+        from core.list_ops import entry_key
+        have = {entry_key(x) for x in self._list_lines(text_edit)}
+        fresh = []
+        for x in ok:
+            if entry_key(x) not in have:
+                have.add(entry_key(x))
+                fresh.append(x)
+        added = self._append_lines(text_edit, fresh, label)
+        if not added and ok and not bad:
+            self.toast(tr("ℹ️ 所选内容均已在清单中，未重复添加"), "info")
+        return added
+
+    def _mark_config_folders(self):
+        """config 清单里指向文件夹的条目补上末尾 `/`(便于和文件区分,也让存在性高亮/重复判定一致)。
+
+        只在内容载入、源路径变化、检查之前这些安全时机调,不逐键改写,免得和用户输入、撤销打架。
+        放大查看 / 模组差异开着时清单是镜像,不动它。
+        """
+        if getattr(self, "_edit_locks", None):
+            return
+        if not self.source_path:
+            return
+        from core.list_ops import mark_config_folders
+        cur = self.config_text.toPlainText()
+        new, changed = mark_config_folders(Path(self.source_path) / "config", cur)
+        if changed and new != cur:
+            self._replace_text(self.config_text, new)
+
+    def _pick_folders_into(self, which):
+        """「📁 添加文件夹」:树形多选,一次勾多个。"""
+        if not self.source_path:
+            self.toast(tr("⚠️ 请先选择源整合包实例根目录"), "warn")
+            return
+        base = Path(self.source_path) / "config" if which == "config" else Path(self.source_path)
+        if not base.is_dir():
+            msg = (trp("❌ 源 config 目录不存在：{0}", base) if which == "config"
+                   else trp("❌ 源整合包目录不存在：{0}", base))
+            self.log(msg, "ERROR")
+            self.toast(msg, "warn")
+            return
+        from ui.qt_main.folder_picker import pick_folders
+        title = (tr("选择 config 下的文件夹（可多选）") if which == "config"
+                 else tr("请选择要一起带走的文件夹（相对整合包根目录，可多选）"))
+        rels = pick_folders(self, base, title)
+        if not rels:
+            return
+        self._add_paths_to(which, [str(base / r) for r in rels])
 
     def _add_config_dir(self):
-        start = str(Path(self.source_path) / "config") if self.source_path else ""
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, tr("选择 config 下的文件夹"), start)
-        if d:
-            self._add_paths_to("config", [d])
+        self._pick_folders_into("config")
 
     def _add_config_files(self):
         start = str(Path(self.source_path) / "config") if self.source_path else ""
@@ -1760,10 +1899,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self._add_paths_to("config", files)
 
     def _add_extra_dir(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, tr("选择要带走的文件夹"),
-                                                       self.source_path)
-        if d:
-            self._add_paths_to("extra", [d])
+        self._pick_folders_into("extra")
 
     def _add_extra_files(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, tr("选择要带走的文件"),
@@ -2484,6 +2620,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if not src_p.is_dir() or not tgt_p.is_dir():
             QtWidgets.QMessageBox.critical(self, tr("错误"),
                                            tr("源或目标路径不存在"))
+            return
+        try:
+            same = src_p.resolve() == tgt_p.resolve()
+        except OSError:
+            same = False
+        if same:                                   # 同一个目录比不出差异,别白扫一遍
+            QtWidgets.QMessageBox.information(self, tr("提示"),
+                                              tr("源目录和目标目录相同，无需比较。"))
             return
 
         if self._scanning:
