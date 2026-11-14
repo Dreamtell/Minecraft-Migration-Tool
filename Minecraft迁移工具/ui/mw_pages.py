@@ -1008,8 +1008,11 @@ class PagesMixin:
         self.log_text_box.pack(side="left", fill="both", expand=True)
         try:
             from ui.log_overview import LogOverview
+            # height=1：Canvas 默认请求高度是 7cm（约 265px），会把并排的日志框
+            # 撑到这个高度、清单被挤没；实际高度由 fill="y" 跟日志框一样高
             self.log_overview = LogOverview(self.log_row, self.log_text_box.text,
-                                            self.theme, width=max(12, px(14)))
+                                            self.theme, width=max(12, px(14)),
+                                            height=1)
             self.log_overview.pack(side="right", fill="y", padx=(4, 0))
         except Exception:
             self.log_overview = None
