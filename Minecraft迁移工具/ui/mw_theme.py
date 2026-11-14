@@ -399,6 +399,19 @@ class ThemeMixin:
                 if bt is not None and bt.winfo_exists():
                     bt.configure(bg=self.theme["log_bg"], fg=self.theme["log_fg"])
                     self._configure_log_colors(bt)
+                for _n in ("_log_big_body", "_log_big_minimap"):      # 并排的容器 + 右侧缩略图
+                    _w = getattr(self, _n, None)
+                    if _w is not None and _w.winfo_exists():
+                        try:
+                            if _n == "_log_big_minimap":
+                                _w.set_theme(self.theme)
+                            else:
+                                _w.configure(bg=self.theme["bg"])
+                                for _c in _w.winfo_children():
+                                    if isinstance(_c, tk.Frame) and _c is not getattr(self, "_log_big_box", None):
+                                        _c.configure(bg=self.theme["bg"])
+                        except Exception:
+                            pass
         except Exception:
             pass
 

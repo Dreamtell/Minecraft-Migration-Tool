@@ -86,18 +86,37 @@ class BigViewMixin:
                                [("lv_refresh", btn_refresh), ("lv_close", btn_close)],
                                side="right", padx=4)
 
-        self._log_big_box = RoundedTextArea(win, self.theme, wrap=tk.WORD,
+        # 日志文本框 + 右侧缩略图（VS Code minimap）并排：缩略图先 pack 到右边，
+        # 文本框再占剩下的地方（顺序反了，窄窗口下缩略图会被挤没）
+        body = tk.Frame(win, bg=self.theme["bg"])
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+        self._log_big_body = body
+        minimap_slot = tk.Frame(body, bg=self.theme["bg"])
+        minimap_slot.pack(side="right", fill="y", padx=(6, 0))
+        self._log_big_box = RoundedTextArea(body, self.theme, wrap=tk.WORD,
                                             font=log_font(), spacing1=1, spacing3=1,
                                            state="disabled",
                                            bg=self.theme["log_bg"],
                                            fg=self.theme["log_fg"])
         big = self._log_big_box.text
-        self._log_big_box.pack(fill="both", expand=True, padx=8, pady=8)
+        self._log_big_box.pack(side="left", fill="both", expand=True)
         self._log_big_text = big
         self._bind_log_locate(big)               # 放大的日志窗也能双击定位
         from ui.live_log import LiveLogView, create_log_button
         view = LiveLogView(big, self._log_big_box, self._session_log, self.theme)
         self._log_big_live_view = view
+        try:
+            from ui.log_minimap import LogMinimap
+            from utils.dpi import px as _px
+            mm = LogMinimap(minimap_slot, big, self.theme, width=_px(120),
+                            on_before=view.scroller.stop,
+                            on_wheel=view._wheel_event)
+            mm.pack(fill="both", expand=True)
+            self._log_big_minimap = mm
+        except Exception:
+            # 缩略图只是锦上添花：建不出来（缺 Pillow 之类）就让出那一列，日志照常用
+            self._log_big_minimap = None
+            minimap_slot.pack_forget()
 
         # 使用与主日志一致的语义色（随主题）
         self._configure_log_colors(big)
