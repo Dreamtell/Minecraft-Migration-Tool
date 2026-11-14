@@ -4,6 +4,7 @@ from tkinter import ttk
 
 from utils.helpers import SmoothScroller, create_gradient_button
 from utils.i18n import trp
+from ui.log_kinds import LINE_KINDS, classify
 
 
 def create_log_button(parent, text, command, *, primary=False, backdrop=None):
@@ -188,9 +189,17 @@ class LiveLogView:
             if rebuild:
                 self.text.delete("1.0", "end")
             # One Tcl insertion per batch, preserving semantic colors.
+            # INFO 行再按内容叠一个子类标签（阶段/统计/提示/操作），级别标签原样保留，
+            # 所以红底、定位错误、总览条这些只认级别的逻辑都不受影响。子类标签的定义在
+            # 标签表里排在 INFO 之后，Tk 里后定义的标签优先，所以前景色会盖过 INFO 的灰。
             args = []
             for _, level, line in rows:
-                args.extend((line, (level,)))
+                tags = (level,)
+                if level == "INFO":
+                    kind = classify(line)
+                    if kind is not None:
+                        tags = (level, LINE_KINDS[kind][0])
+                args.extend((line, tags))
             if args:
                 self.text.insert("end", *args)
             count = int(self.text.index("end-1c").split(".")[0]) - 1

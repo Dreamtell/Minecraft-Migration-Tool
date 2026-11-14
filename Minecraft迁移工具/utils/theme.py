@@ -67,6 +67,12 @@ LIGHT_THEME = {
     "log_info_fg": "#6e6e6e", "log_warning_fg": "#c74600",
     "log_error_fg": "#ad2323", "log_success_fg": "#2e7d32",
     "log_simulate_fg": "#1565c0",
+    # INFO 行的子类色（ui/log_kinds.py）：阶段(青) / 统计(紫) / 提示(沙) / 操作反馈(粉)。
+    # 对白底的对比度：阶段 5.3 / 统计 9.4 / 提示 6.3 / 操作 7.0，都过 WCAG AA；
+    # 和灰、和其它级别色的感知色差（CIE ΔE）都 ≥ 30：之前提示用青灰 #546e7a，
+    # 离 INFO 灰只有 ΔE≈11，肉眼就是灰的，等于没上色。
+    "log_phase_fg": "#00796b", "log_stat_fg": "#6a1b9a",
+    "log_note_fg": "#7a5c00", "log_action_fg": "#ad1457",
     # "数据"文本配色：界面上一眼分得清"哪个是数据、哪个是说明"
     #   data_fg     路径、文件名、存档名这类主体数据
     #   data_num_fg 数量、条数、大小这类数字
@@ -135,6 +141,10 @@ DARK_THEME = {
     "log_info_fg": "#9e9e9e", "log_warning_fg": "#ffb74d",
     "log_error_fg": "#ff8a8a", "log_success_fg": "#7ee787",
     "log_simulate_fg": "#64b5f6",
+    # INFO 行的子类色（同上，深色用亮一档）。对 #1e1e1e 的对比度：
+    # 阶段 9.0 / 统计 8.6 / 提示 9.7 / 操作 8.4；和灰、其它级别色的 ΔE ≥ 30
+    "log_phase_fg": "#5ad1c6", "log_stat_fg": "#d2a8ff",
+    "log_note_fg": "#d8c48a", "log_action_fg": "#f0a1c8",
     # "数据"文本配色（深色主题用亮一档的同类色）
     "data_fg": "#79b8ff", "data_num_fg": "#d2a8ff", "data_id_fg": "#7ee787",
     # 清单页签条数（深色主题本身底就暗，选中时的亮绿不用再拔那么高）
