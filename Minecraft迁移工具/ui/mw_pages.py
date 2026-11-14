@@ -1022,10 +1022,11 @@ class PagesMixin:
         def _resize_log_area(event=None):
             if event is not None and event.widget is not self.root:
                 return
-            # Transfer part of the list's surplus height to the log, retaining
-            # the compact layout on smaller screens. Sizes use the same DPI
-            # scale as the main window's 1080px design height.
-            extra = max(0, self.root.winfo_height() - px(720))
+            # 窗口比设计高度（1080，按 DPI 缩放）更高时，才把多出来的一部分高度
+            # 分给日志；设计高度以内日志保持 150，高度全给清单。
+            # 这里的基准曾经写成 px(720)：窗口一到 1080，日志就先吃掉 160 多 px，
+            # 清单框被挤到只剩 3 行（量过：1000x1080 时清单 55px、日志 312px）。
+            extra = max(0, self.root.winfo_height() - px(1080))
             height = 150 + min(px(180), int(extra * 0.45))
             if int(self.log_text_box.cget("height")) != height:
                 self.log_text_box.configure(height=height)
