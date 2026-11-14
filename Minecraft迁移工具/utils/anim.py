@@ -30,6 +30,7 @@ Tk 的 after() 在**真 mainloop**（阻塞在 GetMessage 里）下被 Windows �
 """
 
 import ctypes
+import time
 from ctypes import wintypes
 
 FPS_CAP = 240          # 再高的屏也不追：单帧成本摆在那儿，追上去只会烧 CPU
@@ -265,7 +266,14 @@ class FrameLoop:
         self.slow = slow
         self._job = None
         self._held = False
+        self._active = False
+        self._generation = 0
         self.帧数 = 0
+        self._destroy_binding = None
+
+    def _destroyed(self, event):
+        if event.widget is self.widget:
+            self.stop()
 
     # ---- 内部 ----
     def _持(self):
@@ -285,33 +293,50 @@ class FrameLoop:
             self._job = self.widget.after(max(1, int(ms)), self._走)
         except Exception:
             self._job = None
-            self._还()
+            self.stop()
 
     def _走(self):
         self._job = None
+        if not self._active:
+            return
+        generation = self._generation
+        started = time.perf_counter()
         try:
             继续 = self.step()
         except Exception:
             继续 = False
         self.帧数 += 1
-        if 继续 is False:
-            self._还()
+        # A step may stop/restart its own loop. Never revive a stopped loop or
+        # schedule a second chain over the replacement started by the callback.
+        if not self._active or generation != self._generation:
             return
-        self._排()
+        if 继续 is False:
+            self.stop()
+            return
+        elapsed = (time.perf_counter() - started) * 1000.0
+        self._排(max(1, round(delay(self.widget, slow=self.slow) - elapsed)))
 
     # ---- 对外 ----
     def running(self):
-        return self._job is not None
+        return self._active
 
     def start(self):
-        if self._job is not None:
+        if self._active:
             return self
+        self._active = True
+        self._generation += 1
         self.帧数 = 0
+        try:
+            self._destroy_binding = self.widget.bind("<Destroy>", self._destroyed, add="+")
+        except Exception:
+            pass
         self._持()
         self._排(1)
         return self
 
     def stop(self):
+        self._active = False
+        self._generation += 1
         job, self._job = self._job, None
         if job is not None:
             try:
@@ -319,4 +344,10 @@ class FrameLoop:
             except Exception:
                 pass
         self._还()
+        if self._destroy_binding is not None:
+            try:
+                self.widget.unbind("<Destroy>", self._destroy_binding)
+            except Exception:
+                pass
+            self._destroy_binding = None
         return self

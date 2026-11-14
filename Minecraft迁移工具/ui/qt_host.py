@@ -45,6 +45,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from utils.jsonl_channel import JsonlReader
 
 # 联网流量计数：Qt 窗口跑在这个子进程里，网络请求都发生在这里。
 # netmeter 是「一被 import 就开始上报」的（模块底部自动起线程），所以这里显式 import
@@ -192,7 +193,8 @@ def run_host(argv):
                              主题,
                              online_tags=bool(请求.get("online_tags", False)),
                              hooks=主机,
-                             cards=bool(请求.get("cards", False)))
+                             # 列表窗口统一为卡片视图；请求字段保留用于旧协议兼容。
+                             cards=True)
         else:
             from ui.qt_diff_view import QtDiffView
 
@@ -201,7 +203,8 @@ def run_host(argv):
 
             view = QtDiffView(请求.get("data") or [], 主题,
                               hooks=hooks, apply_callback=应用,
-                              cards=bool(请求.get("cards", False)),
+                              # 差异窗口统一为卡片视图；请求字段保留用于旧协议兼容。
+                              cards=True,
                               source_path=str(请求.get("source_path") or ""))
         view.show_centered()
     except Exception as e:
@@ -300,14 +303,12 @@ def run_host(argv):
                      else len(请求.get("entries") or []))})
 
     # 主进程想"叫回"窗口 / 换主题时往命令文件里写一行；这里轮询执行
+    command_reader = JsonlReader(命令路径)
+
     def 巡命令():
         try:
             if 命令路径.exists():
-                for line in 命令路径.read_text(encoding="utf-8").splitlines():
-                    try:
-                        命令 = json.loads(line)
-                    except Exception:
-                        continue
+                for 命令 in command_reader.read():
                     if view is None:
                         continue
                     动作 = 命令.get("cmd")
@@ -352,16 +353,20 @@ def run_host(argv):
                     elif 动作 == "theme":
                         # 主界面切了浅色/深色：这里把整套配色重新铺一遍，并回报结果
                         try:
-                            view.set_theme(dict(命令.get("theme") or {}))
+                            _th = dict(命令.get("theme") or {})
+                            # 全局调色板也要重铺：QTabWidget/滚动条/右键菜单这些
+                            # 不走窗口自己的 QSS，只跟着 app palette 走
+                            try:
+                                from ui.qt_big_view import ensure_app
+                                ensure_app(_th)
+                            except Exception:
+                                pass
+                            view.set_theme(_th)
                             写结果({"action": "theme_ok", "kind": kind,
                                     "bg": (命令.get("theme") or {}).get("bg")})
                         except Exception as e:
                             写结果({"action": "theme_fail", "kind": kind,
                                     "error": repr(e)})
-                try:
-                    命令路径.unlink()
-                except Exception:
-                    pass
         except Exception:
             pass
         QtCore.QTimer.singleShot(300, 巡命令)

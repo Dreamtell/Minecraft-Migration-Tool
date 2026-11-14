@@ -49,6 +49,8 @@ from winotify import Notification, audio
 # 界面语言：**必须在任何窗口建起来之前**装上（见 utils/i18n.py 顶部说明）。
 # 中文（默认）时 install() 直接返回、什么都不做，行为与以前逐字节一致。
 from utils import i18n
+# 特效强度（utils/fx.py）：闪屏常量和吐司/浮标都按它缩放。纯标准库，导入无副作用
+from utils import fx
 # 文案模板：trp 按位置填值（中文模式下与原拼接结果逐字一致）
 from utils.i18n import trp
 # ⚠ `i18n.install()` 与界面模块的 import 都在 main() 里、按"先装语言再导入界面"的顺序做：
@@ -216,6 +218,49 @@ except Exception:
     pass
 
 
+def _想用Qt主界面():
+    """配置要求用 Qt 主界面，且没有被「纯 Tk 模式」总开关关掉。
+
+    环境变量 MCTOOL_MAIN=tk / qt 可以临时覆盖配置（排查问题、验证脚本用）。
+    """
+    强制 = (os.environ.get("MCTOOL_MAIN") or "").strip().lower()
+    if 强制 in ("tk", "qt"):
+        return 强制 == "qt"
+    try:
+        cfg = load_raw_config()
+    except Exception:
+        return False
+    if not bool(cfg.get("qt_enabled", True)):
+        return False
+    return str(cfg.get("main_window_backend", "tk") or "tk") == "qt"
+
+
+def _重启为纯Tk进程():
+    """Qt 主界面中途失败后的回落：放掉单实例锁，用 MCTOOL_MAIN=tk 另起一个进程，本进程退出。
+
+    子进程看到 MCTOOL_MAIN=tk 一定走 Tk，不会再试 Qt，所以不会来回重启。
+    """
+    global _LOCK_HOLDER
+    _LOCK_HOLDER = None                     # 放锁：子进程才拿得到
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import subprocess
+        参数 = [a for a in sys.argv[1:] if not a.startswith("--qt-host")]
+        if getattr(sys, "frozen", False):
+            命令 = [sys.executable] + 参数
+        else:
+            命令 = [sys.executable, os.path.abspath(sys.argv[0])] + 参数
+        环境 = dict(os.environ, MCTOOL_MAIN="tk")
+        subprocess.Popen(命令, close_fds=True, env=环境)
+    except Exception as e:
+        trace_exc("app/回落Tk重启", e)
+    os._exit(1)
+
+
 def main():
     # 单实例检查
     global _LOCK_HOLDER
@@ -246,6 +291,17 @@ def main():
             ctypes.windll.user32.AllowSetForegroundWindow(-1)     # ASFW_ANY
         except Exception:
             pass
+        # 已经在跑的可能是 Qt 主界面：先走命名管道叫它（失败不要紧，下面还有 Tk 那条路）
+        if _想用Qt主界面():
+            try:
+                # tray.py 自己会把 _qt 加进 sys.path 再 import PySide6
+                from ui.qt_main.tray import request_show_existing as _qt_show
+                if _qt_show():
+                    sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception:
+                pass
         from ui import tray as _tray_mod
         if not _tray_mod.request_show_existing():
             try:
@@ -256,6 +312,25 @@ def main():
             except Exception:
                 pass
         sys.exit(0)
+
+    # ---- Qt 主界面分支（配置 main_window_backend == "qt"）----
+    # 必须在建 Tk() 之前分流：一旦建了 Tk 根窗口，这个进程就不能再跑 Qt 主循环
+    # （两个 GUI 库共享主线程 = HANDOFF 里那个 GIL 致命错误）。
+    # Qt 起不来（没装 PySide6 / 导入失败 / 建窗口炸了）就回落到下面的 Tk 版。
+    if _想用Qt主界面():
+        try:
+            from ui.qt_main.app_qt import run as _run_qt, qt_available as _qt_ok
+            if _qt_ok():
+                sys.exit(_run_qt(icon_path=get_icon_path()))
+        except SystemExit:
+            raise
+        except Exception as e:
+            trace_exc("app/Qt主界面启动失败，回落Tk", e)
+            # PySide6 已经进了本进程（QApplication 可能都建好了）就不能在这里接着建 Tk()：
+            # 两个 GUI 库共用主线程 = HANDOFF 里那个 GIL 致命错误。
+            # 这种情况放锁、另起一个强制 Tk 的干净进程，自己退出。
+            if any(m == "PySide6" or m.startswith("PySide6.") for m in sys.modules):
+                _重启为纯Tk进程()
 
     # 创建主窗口（先隐藏，避免瞬移）；使用 TkinterDnD 以支持文件拖拽
     try:
@@ -309,7 +384,12 @@ def main():
     # 等主界面开始构建时闪屏正好已经画出来了。放在预热之后的话，用户会先愣一下
     # 才看到卡片。
     qt_splash = None
-    _raw_cfg = load_raw_config()
+    _raw_cfg = fx.from_config(load_raw_config())
+    # 特效强度（utils/fx.py）：闪屏/吐司/浮标/按钮手感都读这一份缓存，得先填好
+    try:
+        fx.bootstrap(_raw_cfg)
+    except Exception:
+        pass
     splash_on = bool(_raw_cfg.get("splash", True))
     # 设置里关掉 PySide6（纯 Tk 模式）时，连闪屏都别去碰 Qt：
     # `from ui import splash_qt` 会顺带把 PySide6 载进主进程，那就不是"纯 Tk"了

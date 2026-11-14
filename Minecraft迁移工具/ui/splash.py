@@ -78,6 +78,27 @@ _PARTICLES = 22     # 环绕立方体飘散的粒子数（同色系）
 _TITLE_Y = 264      # 标题 / 副标题在卡片坐标系里的位置
 _SUB_Y = 294
 
+# ---- 特效强度（utils/fx.py 的 4 档）----
+# 闪屏和别的特效吃同一个档位：关闭档几乎瞬开瞬关且没有粒子，全开档更慢更亮。
+# 在 import 期就把时长/粒子数定下来（Tk 版和 Qt 子进程都从这里导入，只算一次）。
+try:
+    from utils import fx as _fx
+    from utils.config import load_raw_config as _load_raw
+
+    _fx.bootstrap(_load_raw())
+    _K = float(_fx.anim_scale())
+    _P = float(_fx.particle_scale())
+    if _K <= 0.0:
+        _POP_SEC = 0.06
+        _OUT_SEC = 0.05
+        _PARTICLES = 0
+    else:
+        _POP_SEC = _POP_SEC * _K
+        _OUT_SEC = _OUT_SEC * _K
+        _PARTICLES = int(round(_PARTICLES * _P))
+except Exception:
+    pass
+
 # 中文字体：优先微软雅黑，实在没有再退到黑体/宋体
 _PIL_FONT_FILES = (r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\msyh.ttc",
                    r"C:\Windows\Fonts\simhei.ttf", r"C:\Windows\Fonts\simsun.ttc")

@@ -28,7 +28,6 @@ PILL_Y = 5          # 药丸上边距
 RADIUS = 12         # 圆角半径
 SLIDE_MS = 170      # 选中块滑动时长
 PAGE_MS = 150       # 页面滑入时长
-FRAME_MS = 12       # 动画帧间隔（和主界面泵同量级）
 
 # 标签末尾挂的"条数"（🧩 模组清单 376）：数字单独用一种颜色画，
 # 一眼能看出这是数据而不是标签名字的一部分
@@ -54,6 +53,7 @@ class RoundedTabs(tk.Frame):
         self._tail_fill = {}       # (宽, 档) -> PhotoImage：长按进度"填满"用
         self._anim = None
         self._page_anim = None
+        self.bind("<Destroy>", self._destroy_animations, add="+")
         self._sel_item = None
         self._use_images = self._make_photo(20, "normal") is not None
         # 锁定：迁移/扫描进行中不让切页。切到一个**没建过**的页会当场构建整个列表
@@ -266,6 +266,8 @@ class RoundedTabs(tk.Frame):
         if not (0 <= index < len(self._tabs)) or index == self._cur:
             return
         old = self._cur
+        self._cancel()
+        self._cancel_page()
         self._cur = index
         for i, t in enumerate(self._tabs):
             if i == index:
@@ -296,16 +298,6 @@ class RoundedTabs(tk.Frame):
                 from utils.helpers import trace_exc
                 trace_exc()
 
-        # 页、选中块都摆好了再通知。回调里如果又去 select() 也不会打架
-        # （select 开头有 index == self._cur 的早退）。
-        cb = getattr(self, "on_change", None)
-        if cb is not None:
-            try:
-                cb(index)
-            except Exception:
-                from utils.helpers import trace_exc
-                trace_exc()
-
     def set_theme(self, theme):
         """换主题：重出图、重画（设置窗一般整窗重建，这个留给以后复用）。"""
         self.theme = dict(theme)
@@ -316,6 +308,9 @@ class RoundedTabs(tk.Frame):
             t["page"].configure(bg=self.theme["bg"])
         self._photos.clear()
         self._tail_photos.clear()
+        # 长按填充用的那对图（常态 + 提亮）是按**当时主题**算的颜色，
+        # 不清的话切主题后按住药丸，填充出来的还是旧主题的红/蓝。
+        self._tail_fill.clear()
         cur = self._cur
         self._cur = -1
         self._layout_bar()
@@ -326,6 +321,12 @@ class RoundedTabs(tk.Frame):
                                    image=self._photo(t["w"], "sel"))
             self.bar.coords(self._sel_item, t["x"], PILL_Y)
         self._refresh_pills()
+        # 尾按钮（⚠ 更新提醒 / 🔁 应用上次记录）的底色和字色也要按新主题重刷：
+        # 它们不走 _layout_bar 的常态分支，只靠这里主动刷一次
+        try:
+            self._refresh_tail()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ 绘制
     def _layout_bar(self):
@@ -479,12 +480,15 @@ class RoundedTabs(tk.Frame):
         return hit
 
     # ------------------------------------------------------------------ 动画
+    def _destroy_animations(self, event):
+        if event.widget is self:
+            # Each FrameLoop receives Destroy itself. Removing its Tcl binding
+            # here would invalidate the rest of this in-flight event script.
+            self._取消长按()
+
     def _cancel(self):
         if self._anim is not None:
-            try:
-                self.after_cancel(self._anim)
-            except Exception:
-                pass
+            self._anim.stop()
         self._anim = None
 
     def _slide_sel(self, x0, x1):
@@ -496,9 +500,9 @@ class RoundedTabs(tk.Frame):
             k = min(1.0, (time.perf_counter() - t0) * 1000.0 / step_ms)
             e = 1 - (1 - k) ** 3                      # OutCubic：快起慢收
             self.bar.coords(self._sel_item, int(round(x0 + (x1 - x0) * e)), PILL_Y)
-            self._anim = self.after(FRAME_MS, step) if k < 1.0 else None
+            return k < 1.0
 
-        step()
+        self._anim = anim.FrameLoop(self, step).start()
 
     def _slide_page(self, page):
         self._cancel_page()
@@ -508,24 +512,20 @@ class RoundedTabs(tk.Frame):
             # 中途又切页了：旧页的动画必须停，否则 place_configure 会把已经
             # 收起来的旧页重新摆出来（两个页叠在一起）
             if self._cur < 0 or self._tabs[self._cur]["page"] is not page:
-                self._page_anim = None
-                return
+                return False
             k = min(1.0, (time.perf_counter() - t0) * 1000.0 / PAGE_MS)
             e = 1 - (1 - k) ** 3
             try:
                 page.place_configure(y=int(round((1 - e) * 10)))
             except Exception:
-                return                                # 窗口关了就停
-            self._page_anim = self.after(FRAME_MS, step) if k < 1.0 else None
+                return False                          # 窗口关了就停
+            return k < 1.0
 
-        step()
+        self._page_anim = anim.FrameLoop(self, step).start()
 
     def _cancel_page(self):
         if self._page_anim is not None:
-            try:
-                self.after_cancel(self._page_anim)
-            except Exception:
-                pass
+            self._page_anim.stop()
             self._page_anim = None
 
     # ------------------------------------------------------------------ 事件
@@ -630,10 +630,8 @@ class RoundedTabs(tk.Frame):
                                            image=self._tail_photo(t["w"], "normal", t["kind"]))
         except Exception:
             pass
-        try:
-            anim.release()          # 与 _开长按 里的 anim.hold() 配平
-        except Exception:
-            pass
+        if 状态.get("i", -1) >= 0:
+            anim.release()          # 只归还本次长按持有的精度，不动其它动画
         self._长按 = {"i": -1, "t0": 0.0, "job": None, "弧": None, "完成": False}
 
     def _on_release(self, event):

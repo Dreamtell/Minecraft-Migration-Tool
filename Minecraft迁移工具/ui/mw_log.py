@@ -16,7 +16,8 @@ from pathlib import Path
 from tkinter import messagebox
 from utils import i18n, secrets
 from utils.textsafe import 可见 as _可见文本
-from utils.helpers import SmoothScroller, tree_row_px
+from utils.helpers import SmoothScroller, tree_row_px, trace_exc
+from utils.session_log import SessionLog
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
 from utils.i18n import trp
 
@@ -395,331 +396,120 @@ class LogMixin:
                         indent_from=26, indent_to=0,
                         on_done=lambda: setattr(self, "_log_fading", False))
 
-    def _排修剪(self):
-        """合并「行数上限修剪」，150ms 最多一次。
+    def _init_execution_log(self):
+        # Created before widgets: startup logs and workers use the same store.
+        self._session_log = SessionLog(limit=5000)
+        self._log_lock = threading.RLock()
+        self._last_log_key = None
+        self._log_update_job = None
+        self._log_views_closed = False
 
-        为什么单独排：修剪要临时把 Text 开成可写再 delete，逐条做的话每条 1~2ms，
-        洪峰时就是几秒的白屏；而它跟"跟随到底"是两件事，不能混在一起 ——
-        跟走 _see_log_end 自己的 80ms 节流（那里会掐掉平滑滚动动画链，见它的
-        docstring），混在一起就会每 33ms 掐一次，平滑滚动直接没了。
-        """
-        if getattr(self, "_修剪已排", False):
+    def _start_log_updates(self):
+        self.log_text.bind("<Destroy>", self._close_execution_log, add="+")
+        self._tick_log_views()
+
+    def _close_execution_log(self, event):
+        if event.widget is not self.log_text:
             return
-        self._修剪已排 = True
+        self._log_views_closed = True
+        if self._log_update_job is not None:
+            self.root.after_cancel(self._log_update_job)
+            self._log_update_job = None
+        self._session_log.close()
 
-        def 修剪():
-            self._修剪已排 = False
-            for 控件, 上限 in ((self.log_text, 2000),
-                               (getattr(self, "_lock_log_text", None), 400)):
-                if 控件 is None:
-                    continue
-                try:
-                    总行 = int(控件.index("end-1c").split(".")[0])
-                    if 总行 <= 上限:
-                        continue
-                    # ⚠ 只读（disabled）的 Text 会**静默忽略** delete —— 不报错、
-                    # 也不删（踩过：行数一直停在 900 行，看着像"上限没生效"）。
-                    控件.configure(state="normal")
-                    控件.delete("1.0", "%d.0" % (总行 - 上限))
-                    控件.configure(state="disabled")
-                except Exception:
-                    pass
-
-        try:
-            self.root.after(150, 修剪)
-        except Exception:
-            self._修剪已排 = False
-
-    def _排冲写(self):
-        """排一次「把待写队列冲进 Text」，50ms 内最多一次。"""
-        if getattr(self, "_待写已排", False):
+    def _tick_log_views(self):
+        self._log_update_job = None
+        if self._log_views_closed:
             return
-        self._待写已排 = True
         try:
-            # 16ms 冲一次（约一帧）：以前 50ms 一次，正常速率下每次要挤进 6~8 行，
-            # 文字是成块蹦出来的 —— 动画在滑、字在跳，看着就是"自滚动卡顿"。
-            self.root.after(16, self._冲写日志)
-        except Exception:
-            self._待写已排 = False
+            self._冲写日志()
+        finally:
+            if not self._log_views_closed:
+                self._log_update_job = self.root.after(33, self._tick_log_views)
 
     def _冲写日志(self):
-        """把攒下来的日志一次性写进两个 Text。
-
-        每条日志都做一次 configure/insert/index/see 的话，迁移收尾那种"一口气
-        几十上百行"的场景就是几十上百次 Tk 往返（外加每行一个淡入动画链），
-        主线程会被按住几百毫秒 —— 用户看到的就是"爆炸性卡顿"。
-        现在改成：进的只是队列，50ms 合并写一次，写入期间置 _批处理中，
-        逐行只剩 insert，收尾统一修剪/跟随/重绘各一次。
-        """
-        self._待写已排 = False
-        待 = getattr(self, "_待写", None)
-        if not 待:
-            return
-        # 每次最多写 24 条：16ms 一冲，正常速率（几十~几百条/秒）每次只写 1~5 行，
-        # 字才是"流"出来的；洪峰时也够快（24 条/16ms ≈ 1500 条/秒）。
-        取 = 待[:24]
-        剩 = 待[24:]
-        self._待写 = 剩
-        if 剩:
-            # 还有没冲完的，下一帧继续（_排冲写 会重新排上）
-            try:
-                self._待写已排 = False
-                self.root.after(1, self._冲写日志)
-            except Exception:
-                pass
-        待 = 取
-        外批 = getattr(self, "_批处理中", False)
-        if not 外批:
-            self._日志批次开始()
-        try:
-            for 执行 in 待:
-                执行()
-        finally:
-            if not 外批:
-                self._日志批次结束()
-        # 一行一行来的场合（正常使用）保留淡入；批量/洪峰时不做，省下动画链
-        if not 外批 and len(待) == 1:
-            try:
-                现在 = time.monotonic()
-                if 现在 - getattr(self, "_last_fade_t", 0.0) >= 0.025:
-                    self._last_fade_t = 现在
-                    self._fade_log_line(self.log_text.index("end-2l"),
-                                        self.log_text.index("end-1c"),
-                                        getattr(self, "_最近行等级", "INFO"))
-            except Exception:
-                pass
+        # Bounded refresh; workers only append to the store, never call Tk.
+        for view in (getattr(self, "_log_view", None),
+                     getattr(self, "_log_big_live_view", None)):
+            if view is not None and not view._closed:
+                view.refresh()
+        error = self._session_log.error
+        # 正常时留空：「界面最多显示 N 行」是实现细节，用户用不着；这一行的位置只留给
+        # 真出错的情况（完整日志写盘失败）。右边的「打开完整日志」按钮仍在。
+        status = trp("完整日志保存失败：{0}", error) if error else ""
+        label = getattr(self, "_log_status_label", None)
+        if label is not None and label.cget("text") != status:
+            label.configure(text=status)
 
     def _日志批次开始(self):
-        """批量写日志之前调用：把两个 Text 一次开到 normal。
-
-        泵（ui/mw_migration.py::_ui_pump）每轮会连续写几十条日志，逐条
-        `configure(state="normal"/"disabled")` 的代价比写字本身还高；整批只做
-        一次，逐行的活儿只剩 insert。
-        """
         self._批处理中 = True
-        for 控件 in (self.log_text, getattr(self, "_lock_log_text", None)):
-            if 控件 is None:
-                continue
-            try:
-                控件.configure(state="normal")
-            except Exception:
-                pass
 
     def _日志批次结束(self):
-        """批量写完之后调用：统一修剪行数、统一 see(END)、恢复只读、刷一次界面。"""
         self._批处理中 = False
-        for 控件, 上限 in ((self.log_text, 2000),
-                           (getattr(self, "_lock_log_text", None), 400)):
-            if 控件 is None:
-                continue
-            try:
-                总行 = int(控件.index("end-1c").split(".")[0])
-                if 总行 > 上限:
-                    控件.delete("1.0", "%d.0" % (总行 - 上限))
-                if 控件 is self.log_text:
-                    if getattr(self, "_log_follow", True):
-                        self._see_log_end()
-                else:
-                    控件.see(tk.END)
-                控件.configure(state="disabled")
-            except Exception:
-                pass
-        try:
-            self.log_text.event_generate("<<LogChanged>>")
-        except Exception:
-            pass
-        # 每批都强制刷（泵 50ms 一轮 = 20 次/秒全量重绘）在锁屏那种"整窗遮罩 + 两个
-        # 日志框"的界面上很贵，用户感觉就是一直在抖。缩到 120ms 一次；剩下的重绘
-        # 交给 Tk 自己的 idle 时机（不强制反而更省）。
-        现在刷 = time.monotonic()
-        if 现在刷 - getattr(self, "_批次刷图t", 0.0) >= 0.12:
-            self._批次刷图t = 现在刷
-            try:
-                self.root.update_idletasks()
-            except Exception:
-                pass
 
     def log(self, message, level="INFO", save=True):
-        # 所有日志的唯一入口：先脱敏再往下走。日志会同时进主界面、锁屏日志和第二视图，
-        # 最后按批写进 ~/.minecraft_migrate_last_log.txt ——（用户报障时会把那个文件发过来）
-        # 所以 API Key 之类的敏感串必须在这一行就抹掉，不能指望调用方自觉。
-        # 见 utils/secrets.py：没配 key 时这一步只多一次 in 判断，可以忽略。
-        message = secrets.redact(message)
-        # 控制字符（路径里混进 0x0B 之类）在 Text 里会画成方块，统一还原成可见写法
-        message = _可见文本(message)
-        # 界面语言：日志正文也翻。静态串在这里一次命中（core/ 里的模块也是回调到这儿，
-        # 所以它们发的日志一样被覆盖）；f-string 拼的串走 trp 模板，见 utils/i18n.py。
-        message = i18n.tr(message)
-
-        def _log():
-            self._最近行等级 = level
-            # 批处理（后台线程灌日志）里由 _日志批次开始/结束 统一做 configure、
-            # 修剪、see 和重绘，这里逐行只负责 insert。
-            批 = getattr(self, "_批处理中", False)
-            if not 批:
-                self.log_text.configure(state="normal")
-            start = self.log_text.index("end-1c")
-            self.log_text.insert(tk.END, message + "\n", level)
-            end = self.log_text.index("end-1c")
-            # 行数上限：迁移几百个模组会灌进上千行，无上限地涨下去，重绘和内存都越来越贵。
-            # 留最近 2000 行足够回看，老日志仍在文件里（save）。
-            # 行数上限挪到 _排修剪 合并做（逐行 delete 在长 Text 上很贵）
-            # 用户手动往上翻的时候别把他拽回底部（滚回底部会自动恢复跟随）
-            # ⚠ 而且**节流**：迁移时一秒几百条，每条都 see 会不断触发滚动（配合平滑滚动
-            #   就是一条永不结束的动画链）。80ms 一次足够跟手，肉眼看不出来。
-            if not 批:
-                self.log_text.configure(state="disabled")
-                # 跟随走原来的 80ms 节流（它会先收掉平滑滚动再 see，见 _see_log_end）
-                if getattr(self, "_log_follow", True):
-                    self._see_log_end()
-                self._排修剪()
-            # 锁屏里那份日志是"第二个视图"：主日志照常记，这里同步追加一份
-            lock_log = getattr(self, "_lock_log_text", None)
-            if lock_log is not None:
-                try:
-                    if not 批:
-                        lock_log.configure(state="normal")
-                    lock_log.insert(tk.END, message + "\n", level)
-                    # 行数上限：迁移时几百条日志刷进来，Text 越大重绘越贵（实测
-                    # 1200 行时每条日志要 5.6ms），把锁屏那份掐在 400 行，成本就恒定
-                    if not 批:
-                        # 修剪交给 _排修剪 合并做；跟随在下面按需调 _see_log_end
-                        lock_log.configure(state="disabled")
-                except Exception:
-                    self._lock_log_text = None
-            # ⚠ 每行一个"淡入"after 链。迁移时一秒几百条日志 → 几百个并发动画 →
-            #   重绘风暴、主线程被打满（实测 5.6ms/条，600 条就是 3.4 秒），
-            #   用户这时候点鼠标就是"未响应"。所以刷屏时直接跳过动画：
-            #   距上一次淡入不到 25ms 就省掉（上限约 40 个/秒，肉眼仍然连贯）。
-            try:
-                现在 = time.monotonic()
-                if (not 批) and 现在 - getattr(self, "_last_fade_t", 0.0) >= 0.025:
-                    self._last_fade_t = 现在
-                    self._fade_log_line(start, end, level)
-            except Exception:
-                pass
-            # 出错的行顺手去清单里把对应条目标红（并存进"失败列表"给定位按钮用）。
-            # 刻意不在这里再 log 一句 —— log 会被这个方法递归调回来。
-            if level == "ERROR":
-                try:
-                    self._mark_failed_from_log(message)
-                except Exception:
-                    pass
-            # ⚠ 这里**不能每条都 update_idletasks()**：它会立刻把所有挂起的重绘跑一遍，
-            # 而迁移时一秒几百条日志 → 主线程被反复按着重绘，单次能卡 1 秒以上
-            # （看门狗日志抓到的就是这里：mw_log.py:467 → update_idletasks）。
-            # 节流到 100ms 一次，肉眼仍然"实时"。
-            # 每条都刷：节流会把几百个挂起的重绘攒成一大批，一次跑完更卡（试过，更糟）。
-            # 现在改成"整批刷"：_ui_pump 批量执行后台排进来的日志时置 _批处理中，
-            # 这一批跑完由泵统一 update_idletasks() 一次（不然几千条日志就是几千次重绘）。
-            # 逐行**不**强刷 update_idletasks：它会立刻把所有挂起的重绘跑一遍，
-            # 迁移时一秒几百条就是几百次全量重绘（看门狗抓到过 21 秒未响应）。
-            # 正常的空闲重绘由 Tk 自己排；批量路径在批尾统一刷一次。
-            # 通知监听方（如"日志放大查看"窗口）即时同步，避免轮询/手动刷新。
-            # 批处理里逐行发没有意义（监听方每行都要重画一次），整批结束统一发一次。
-            if not 批:
-                try:
-                    self.log_text.event_generate("<<LogChanged>>")
-                except Exception:
-                    pass
-
-        # 抑制连续完全相同的记录（避免"请勿频繁操作"等警告/重复信息刷屏）
+        # Redaction applies before either the live tail or the full file.
+        message = i18n.tr(_可见文本(secrets.redact(message)))
         key = (level, message)
-        if key == getattr(self, '_last_log_key', None):
-            return
-        self._last_log_key = key
+        persist = save and self._persistable(level, message)
+        with self._log_lock:
+            if not persist and key == self._last_log_key:
+                return
+            self._last_log_key = key
+            self._session_log.append(message, level, save=persist)
+        if level == "ERROR":
+            if threading.current_thread() is threading.main_thread():
+                self._mark_log_failure(message)
+            elif hasattr(self, "_ui_calls"):
+                self._ui_post(self._mark_log_failure, message)
 
-        if save and self._persistable(level, message):
-            if not hasattr(self, '_saved_logs'):
-                self._saved_logs = []
-            self._saved_logs.append(message + "\n")
-            if len(self._saved_logs) >= self._log_cache_limit:
-                try:
-                    self._flush_logs_to_file()
-                except Exception:
-                    pass
-
-        # 主线程和 worker 走同一条路：先攒进待写队列，50ms 合并写一次。
-        # 别再一行一个 after(0, _log) —— 迁移收尾一口气几十上百行时，
-        # 那就是几十上百个回调 + 几十上百个淡入动画链，主线程直接被按住。
-        if not hasattr(self, "_待写"):
-            self._待写 = []
-        self._待写.append(_log)
-        if threading.current_thread() is threading.main_thread():
-            self._排冲写()
-        else:
-            # 子线程不能碰 Tk：让主线程去排那一次 flush
-            self._ui_post(self._排冲写)
+    def _mark_log_failure(self, message):
+        try:
+            self._mark_failed_from_log(message)
+        except (AttributeError, tk.TclError):
+            # Startup or window teardown can precede the list widgets.
+            pass
 
     def _flush_logs_to_file(self, include_header=False):
-        """把缓存的日志写入本地文件；文件过大时先轮转（改名），避免无限增长。"""
-        log_file = Path.home() / ".minecraft_migrate_last_log.txt"
-        # 超过上限则把旧日志改名，重新开始记录
-        if log_file.exists() and log_file.stat().st_size > self._log_file_max_bytes:
-            bak = log_file.with_suffix(".old.txt")
-            if bak.exists():
-                bak.unlink()
-            log_file.rename(bak)
-        mode = 'a' if log_file.exists() else 'w'
-        with open(log_file, mode, encoding='utf-8') as f:
-            if include_header:
-                if mode == 'a':
-                    f.write("\n" + "=" * 50 + "\n")
-                    f.write(trp("--- 新日志记录 ({0}) ---",
-                                time.strftime('%Y-%m-%d %H:%M:%S')) + "\n")
-                f.write("".join(self._saved_logs))
-            else:
-                f.write("".join(self._saved_logs))
-        self._saved_logs = []
+        # Kept for callers; each line is already flushed to the session file.
+        self._session_log.flush()
 
     def clear_log(self):
-        # 清空后内容不满一屏，顺手把"跟到底"恢复成跟随
-        try:
-            self._log_follow = True
-        except Exception:
-            pass
-        if not hasattr(self, '_saved_logs') or not self._saved_logs:
-            self.log_text.configure(state="normal")
-            self.log_text.delete("1.0", tk.END)
-            self.log_text.configure(state="disabled")
-            self.log("📋 日志已清空（无有效操作记录，不保存文件）", level="INFO", save=False)
-            self.mod_text.edit_reset()
-            self.mod_text.edit_modified(False)
-            return
+        with self._log_lock:
+            self._session_log.clear()
+            self._last_log_key = None
+        self._冲写日志()
+        self.log(trp("📋 已清空显示，完整日志仍保留在文件中"), save=False)
 
+    def open_full_log(self):
         try:
-            self._flush_logs_to_file(include_header=True)
-            self.log_text.configure(state="normal")
-            self.log_text.delete("1.0", tk.END)
-            self.log_text.configure(state="disabled")
-            self.mod_text.edit_reset()
-            self.mod_text.edit_modified(False)
-            self.log(trp("📋 日志已清空，有效操作记录已追加至 {0}", Path.home() / '.minecraft_migrate_last_log.txt'),
-                     level="INFO", save=False)
-        except Exception as e:
-            self.log(trp("❌ 日志保存失败：{0}", e), level="ERROR", save=False)
+            self._session_log.flush()
+            path = self._session_log.path
+            if path is None or not path.is_file():
+                messagebox.showinfo(trp("提示"), trp("暂无已保存的日志。"), parent=self.root)
+                return
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as error:
+            messagebox.showerror(trp("错误"), trp("无法打开日志：{0}", error), parent=self.root)
 
     def open_log_folder(self):
-        log_file = Path.home() / ".minecraft_migrate_last_log.txt"
-        folder = log_file.parent
-        if not folder.exists():
-            messagebox.showwarning("提示", "日志文件夹不存在，请先执行操作产生日志。")
-            return
-
         try:
-            if sys.platform == 'win32':
-                if log_file.exists():
-                    subprocess.Popen(['explorer', '/select,', str(log_file)])
-                else:
-                    os.startfile(str(folder))
-            elif sys.platform == 'darwin':
-                subprocess.Popen(['open', str(folder)])
+            self._session_log.flush()
+            folder = self._session_log.directory
+            folder.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(str(folder))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
             else:
-                subprocess.Popen(['xdg-open', str(folder)])
-            self.log(trp("📂 已打开日志文件夹：{0}", folder), level="INFO")
-        except Exception as e:
-            self.log(trp("❌ 打开文件夹失败：{0}", e), level="ERROR")
-            messagebox.showerror("错误", trp("无法打开文件夹：{0}", e))
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception as error:
+            messagebox.showerror(trp("错误"), trp("无法打开文件夹：{0}", error), parent=self.root)
 
     # ---------- 日志区平滑滚动联动 ----------
     def _smooth(self, widget, rows=False, bind_widgets=None, on_render=None, **kw):
@@ -741,175 +531,21 @@ class LogMixin:
             return None
 
     def _at_log_bottom(self):
-        try:
-            return self.log_text.yview()[1] >= 0.999
-        except Exception:
-            return True
-
-    def _on_log_user_scroll(self, going_up):
-        if going_up:
-            self._log_follow = False
-        elif self._at_log_bottom():
-            self._log_follow = True
-
-    def _on_log_scroll_settle(self):
-        if self._at_log_bottom():
-            self._log_follow = True
-
-    # ---------- 「跟到底」与平滑滚动的协同 ----------
-    _SEE_THROTTLE_S = 0.08
-
-    def _see_log_end(self):
-        """跟随模式下来了一条新日志：把视图拽到最新一行 —— 但节流到 80ms 一次。
-
-        为什么必须节流：迁移时一秒几百条，每条都 see 就是把视图反复重置；而日志区装着
-        平滑滚动，动画链的目标是**按像素**算的，视图被硬拽之后那条链还在往旧目标走 ——
-        表现就是"滚起来怪怪的，像被拽一下又自己往前拱"。80ms 一次足够跟手。
-
-        为什么用 perf_counter：本机 time.monotonic() 是 GetTickCount64，粒度 15.6ms，
-        80ms 的窗口会被量化掉（见 utils/anim.py 文件头）。
-        """
-        now = time.perf_counter()
-        if now - getattr(self, "_log_see_t", 0.0) >= self._SEE_THROTTLE_S:
-            self._see_log_end_now()
-            return
-        if getattr(self, "_log_see_job", None) is not None:
-            return                    # 收尾那一枪已经排上了，别重复排
-        try:
-            self._log_see_job = self.root.after(
-                int(self._SEE_THROTTLE_S * 1000), self._see_log_end_now)
-        except Exception:
-            self._log_see_job = None
-
-    def _see_log_end_now(self):
-        """真正拽到底：**先把平滑滚动收掉**再 see。
-
-        只 see 不收链的话，那条链会在视图被拽到底之后继续按剩余像素往底部顶 —— 顶到
-        "滚不动"才退出，多出一次看得见的推挤；顺带它的定时器精度也要等到那时才还。
-        """
-        # 可能是"排上的那一枪"回调进来的，也可能是节流窗口已过时直接调的。
-        # 后一种情况下队列里还压着一个 after：不撤掉它就会在 80ms 后**再 see 一次**，
-        # 实测 2.46 秒里因此多执行了一倍（48 次 vs 上限 31 次）。先撤，再清标记。
-        job = getattr(self, "_log_see_job", None)
-        if job is not None:
-            try:
-                self.root.after_cancel(job)
-            except Exception:
-                pass
-        self._log_see_job = None
-        self._log_see_t = time.perf_counter()
-        if getattr(self, "_log_follow", True):
-            self._排跟随()
-            return
-        sc = getattr(self, "_log_scroller", None)
-        if sc is not None:
-            try:
-                sc.stop()
-            except Exception:
-                pass
-        try:
-            self.log_text.see(tk.END)
-        except Exception:
-            pass
-
-    # 跟随到底的帧循环：每帧最多走 _FOLLOW_MAX_PX 像素。
-    # 为什么不用 SmoothScroller：它是按"一格滚轮"标定速度的（限幅 = px_per_notch*0.6），
-    # 跟随场景下剩余量一大就会一帧跨几百像素 —— 看着就是"一顿一顿"。这里只按像素
-    # 匀速推，任何情况下单帧位移都不超过 24px。
-    _FOLLOW_MAX_PX = 24.0
+        return self._log_view.at_bottom()
 
     def when_log_bottom(self, cb, timeout=3.0):
-        """日志真的滚到底（用户看见最后一行）之后回调。
+        # A reader looking at older output must not delay migration completion.
+        # timeout 只为兼容旧调用方保留：新日志视图直接贴底渲染，不需要等滚动。
+        self._冲写日志()
 
-        迁移的「结束」标志靠它：日志还在滚就把按钮翻回正面，用户会觉得
-        「我还没看完就结束了」。用户滚动上去看历史时不会立刻回调，
-        超时兜底 timeout 秒后照样回调一次，避免永远不给结束。
-        """
-        t0 = time.perf_counter()
-
-        def 检查():
-            try:
-                到底 = self._log_remain_px() <= 0.5
-            except Exception:
-                到底 = True
-            if 到底 or (time.perf_counter() - t0) > timeout:
-                try:
-                    cb()
-                except Exception as e:
-                    trace_exc("mw_log/when_log_bottom", e)
-                return
-            try:
-                self.root.after(50, 检查)
-            except Exception:
-                pass
-
-        try:
-            self.root.after(50, 检查)
-        except Exception:
+        def _run():
+            # after_idle 里抛的异常 Tk 只会打到 stderr，收尾回调出错要进轨迹日志
             try:
                 cb()
-            except Exception:
-                pass
-
-    def _放跟随精度(self):
-        """跟随循环结束：把定时器精度还回去（hold/release 必须配平）。"""
-        if getattr(self, "_follow_hr", False):
-            try:
-                anim.release()
-            except Exception:
-                pass
-            self._follow_hr = False
-
-    def _排跟随(self):
-        if getattr(self, "_follow_job", None) is not None:
-            return
-        if not getattr(self, "_follow_hr", False):
-            try:
-                anim.hold()          # 不 hold 的话 7ms 的目标会被 15.6ms 粒度卡成 64fps
-                self._follow_hr = True
-            except Exception:
-                pass
-        try:
-            # 间隔必须有下限：anim.frame_ms 在失焦/最小化时会给出很小甚至 0，
-            # after(0) 会让这个循环在同一帧里连跑几十次，每帧 24px 就累成几千像素的大跳。
-            间隔 = max(4, int(anim.frame_ms(self.log_text) or 16))
-            self._follow_job = self.root.after(间隔, self._跟随一步)
-        except Exception:
-            self._follow_job = None
-
-    def _跟随一步(self):
-        self._follow_job = None
-        if not getattr(self, "_log_follow", True):
-            self._放跟随精度()
-            return
-        剩 = self._log_remain_px()
-        if 剩 <= 0.5:
-            self._放跟随精度()
-            return
-        视口 = max(1, int(self.log_text.winfo_height()))
-        # 追的时候按比例加速，但**不做「直接跳到底」**：跳会让收尾那一批看着像闪现
-        # （用户原话），所以最多每帧走 0.35 屏，追得上、又看得见在滚。
-        步 = int(min(max(self._FOLLOW_MAX_PX, 剩 * 0.5), 视口 * 0.5, 剩))
-        if 步 < 1:
-            步 = 1
-        try:
-            self.log_text.yview_scroll(步, "pixels")
-        except Exception:
-            return
-        if 剩 - 步 > 0.5:
-            self._排跟随()
-        else:
-            self._放跟随精度()
+            except Exception as e:
+                trace_exc("mw_log/when_log_bottom回调", e)
+        self.root.after_idle(_run)
 
     def _log_remain_px(self):
-        """从当前视口底边到文末还有多少像素（拿不到就返回 0）。"""
-        try:
-            文 = self.log_text
-            r = 文.count("1.0", "end", "ypixels")
-            总 = float(r[0]) if r else 0.0
-            if 总 <= 0:
-                return 0.0
-            已滚 = float(文.yview()[0]) * 总
-            return max(0.0, 总 - 已滚 - float(文.winfo_height()))
-        except Exception:
-            return 0.0
+        # Live following renders the latest batch directly at the bottom.
+        return 0.0

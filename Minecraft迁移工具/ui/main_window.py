@@ -13,7 +13,8 @@ from ui.mw_common import *          # noqa: F401,F403 —— 见上面 docstring
 import json
 import os
 from utils import i18n
-from utils.dpi import window_geometry
+from utils import fx
+from utils.dpi import ensure_on_screen, window_geometry
 from ui.mw_log import LogMixin
 from ui.mw_theme import ThemeMixin
 from ui.mw_buttons import ButtonsMixin
@@ -62,8 +63,13 @@ class MigrationGUI(
         # 尺寸/位置统一走 utils.dpi：DPI 感知之后写死 1000x1080 会被缩放后的字撑爆，
         # 而 1080 * 1.5 又比屏幕高，需要一起适配（见 utils/dpi.py）。
         self.root.geometry(window_geometry(self.root, 1000, 1080))
+        # 建完界面再来一次兜底：布局里的 minsize / 内容撑开可能把窗口顶到任务栏上，
+        # 那样窗口自己那圈亮边就"盖住任务栏"了（用户截图报过）。等首帧布局稳了再量。
+        self.root.after(150, lambda: ensure_on_screen(self.root))
 
-        self.config = self.load_config()
+        # 读了配置先按「特效强度」派生一遍 splash / float_edge_fx / start_btn_feel：
+        # 老配置里没有 fx_level 时 fx.from_config() 原样返回，行为跟以前完全一致。
+        self.config = fx.from_config(self.load_config())
         # 上次停在三份清单的哪一页（0 模组 / 1 config / 2 其它）。
         # **必须在这儿读**：界面建完之后、正式配置段之前，别处可能已经调过
         # save_config()，那时这个键还不存在，会把用户上次的位置写成 0。
@@ -74,7 +80,10 @@ class MigrationGUI(
         # 整合包更新提醒只能收起、不能关：只记形态（False = 整条横幅，True = 仅 ⚠ 图标）。
         # **同样必须在这儿读** —— 提醒条是建界面时按这个值摆位的（mw_pages 里
         # 建条时读一次、随后又调一次 _pack_warning_layout），读晚了就永远是展开态。
-        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", False))
+        # 默认收起（原来是展开）：这条横幅约 90px 高，三行字，每次启动都占着清单区上方。
+        # 收起后入口是标签行右端的「⚠ 更新提醒」药丸，点开仍是完整说明；
+        # 用户展开过就会记住（pack_warning_collapsed 写进配置）。已有配置的用户不受影响。
+        self.pack_warning_collapsed = bool(self.config.get("pack_warning_collapsed", True))
         # 回滚默认还原哪些（设置页可改；「记住我的选择」勾上时由回滚对话框写这里）
         try:
             from core.migrator import _RESTORE_PARTS as _RP
@@ -110,6 +119,10 @@ class MigrationGUI(
             value=str(self.config.get("start_btn_feel", "standard") or "standard"))
         if self.start_btn_feel.get() not in ("crisp", "standard", "heavy"):
             self.start_btn_feel.set("standard")
+        # 特效强度：off / light / standard / full，统管启动动画、浮标粒子、
+        # 翻转手感、消息卡片动画（见 utils/fx.py）。派生值已经写进上面几个旧键，
+        # 这里只记档位本身，设置窗要拿它回显。
+        self.fx_level = fx.normalize(self.config.get("fx_level"))
         # 正式迁移前再确认一次（默认开；设置里可以关）
         self.confirm_migrate = tk.BooleanVar(value=self.config.get("confirm_migrate", True))
         # 关闭窗口时的行为：ask（每次问）/ tray（收进托盘）/ exit（直接退出）
@@ -156,24 +169,19 @@ class MigrationGUI(
         # 注：以前这里有个 `extra_defaults`（"默认携带的目录"勾选）—— 那套在迁移那一刻
         # 自动往清单里并东西，用户要求"一切都要自己选"，已经删掉、统一到「其它文件」清单。
         # 老配置里勾过的条目由 _并入旧的默认携带目录() 一次性并进清单，不会悄悄丢掉。
-        # 放大查看窗口用哪个实现：qt=PySide6 试点（缺库时自动回落）/ tk=经典 Tk
-        self.big_view_backend = str(self.config.get("big_view_backend", "qt") or "qt")
-        if self.big_view_backend not in ("qt", "tk"):
-            self.big_view_backend = "qt"
-        # 差异窗口用哪个实现（同样的 qt / tk 二选一；出问题时可以切回 Tk 版）
-        self.diff_backend = str(self.config.get("diff_backend", "qt") or "qt")
-        if self.diff_backend not in ("qt", "tk"):
-            self.diff_backend = "qt"
+        # 列表窗口统一使用独立 Qt 卡片视图；旧配置键仍保留，便于平滑升级，
+        # 但不再允许它们把放大查看或差异结果切回 Tk / 表格。
+        self.big_view_backend = "qt"
+        self.diff_backend = "qt"
+        # 主界面实现（app.py 启动时读；这里只负责保存时不丢）
+        self.main_window_backend = str(self.config.get("main_window_backend", "tk") or "tk")
+        if self.main_window_backend not in ("qt", "tk"):
+            self.main_window_backend = "tk"
         # 总开关：关掉后主进程完全不加载/不使用 Qt（排查"Tk 与 Qt 同进程"用）
         self.qt_enabled = bool(self.config.get("qt_enabled", True))
-        # 放大查看窗口打开时用哪个视图：table=表格 / cards=卡片（设置里能选）
-        self.big_view_view = str(self.config.get("big_view_view", "table") or "table")
-        if self.big_view_view not in ("table", "cards"):
-            self.big_view_view = "table"
-        # 模组差异窗口打开时用哪个视图（同样是 table / cards，设置里能选）
-        self.diff_view = str(self.config.get("diff_view", "table") or "table")
-        if self.diff_view not in ("table", "cards"):
-            self.diff_view = "table"
+        # 两个列表窗口统一为卡片视图；旧配置键仍读取为兼容字段，但实际固定为 cards。
+        self.big_view_view = "cards"
+        self.diff_view = "cards"
         # 双击已经全部交给 Tk / Qt 原生事件（间隔 = 系统设置里的鼠标双击速度），
         # 程序里不再有判定阈值。double_click_sec / double_click_auto 这两个键只是
         # "双击间隙测试"留下的历史记录，读进来是为了保存设置时原样写回去、不丢数据。
@@ -195,6 +203,7 @@ class MigrationGUI(
         self._failed_items = []
         self._fail_cursor = 0
 
+        self._init_execution_log()
         self._stage("正在构建界面…")
         self.create_widgets()
 
@@ -253,12 +262,18 @@ class MigrationGUI(
         self._setup_custom_undo(self.config_text, "config")
         self._setup_custom_undo(self.extra_text, "extra")
         self._refresh_list_badges()
-        self.log("=" * 60, level="INFO", save=False)
-        self.log(i18n.tr("【免费声明】本工具完全免费，严禁用于商业用途或转卖。"),
-                 level="WARNING", save=False)
-        self.log(i18n.tr("如有任何收费行为，请立即举报。作者不会以任何形式向你收费。"),
-                 level="WARNING", save=False)
-        self.log("=" * 60, level="INFO", save=False)
+        # 三个清单的占位提示：内容加载完了，现在检查一次显示/隐藏（建控件时
+        # Text 还是 disabled，_check 会误判成"空"；现在内容 insert 进去了、
+        # edit_mode 也 set 好了，这次判断才准）
+        for _lbl_name in ("_mod_hint_label", "_config_hint_label", "_extra_hint_label"):
+            _lbl = getattr(self, _lbl_name, None)
+            if _lbl is not None and hasattr(_lbl, "_manual_check"):
+                try:
+                    _lbl._manual_check()
+                except Exception:
+                    pass
+        # 免费声明只留窗口顶部红条和底栏两处（ui/mw_pages.py）。以前启动时还往执行日志里
+        # 写 4 行（两条分隔线 + 两句声明）：同样的话第三遍，还占掉日志的前 4 行。
 
         self.progress_queue = None
         self.progress_window = None
@@ -289,10 +304,6 @@ class MigrationGUI(
         self.on_path_change()
         self._stage()
         self._update_text_states()
-        self._log_cache_limit = 500
-        self._saved_logs = []
-        self._log_file_max_bytes = 2 * 1024 * 1024  # 日志文件超过 2MB 时轮转，避免无限增长
-        self._last_log_key = None
         # 桌面浮标（网络延迟小窗）：状态与位置都记在配置里，下次启动回到原处
         self._net_float = None
         try:                      # 启动时按当前上限裁剪一次档案
@@ -355,24 +366,14 @@ class MigrationGUI(
                 pass
 
     def _报告拖放状态(self):
-        """启动时把拖放到底有没有生效打进日志（出问题时截图就能定位）。"""
+        """启动时检查拖放有没有生效：**只有不可用时才写日志**。
+
+        以前正常时也写一行「🧩 拖放已就绪（tkinterdnd2 0.6.2）…」：库名和版本号是给开发者看的，
+        用户看不懂也用不上，还占掉日志第一行。现在正常就安静；出问题时仍然打一行警告
+        （打包后这一条最容易坏，必须能看见）。要查版本，打开 debug 日志或直接 pip show。
+        """
         try:
-            if getattr(self, "_dnd_ok", False):
-                版本 = ""
-                for 取 in (
-                    lambda: __import__("importlib.metadata", fromlist=["version"]).version("tkinterdnd2"),
-                    lambda: getattr(__import__("tkinterdnd2"), "__version__", ""),
-                ):
-                    try:
-                        版本 = str(取() or "").strip()
-                    except Exception:
-                        版本 = ""
-                    if 版本:
-                        break
-                版本 = (" " + 版本) if 版本 else "" 
-                self.log(i18n.trp("🧩 拖放已就绪（tkinterdnd2{0}）：可以把 jar / mods 文件夹直接拖进清单",
-                             版本), level="OK")
-            else:
+            if not getattr(self, "_dnd_ok", False):
                 self.log(i18n.tr("⚠ 拖放不可用：缺少 tkinterdnd2 或 tkdnd 未加载（请用「添加模组」按钮）"),
                          level="WARNING")
         except Exception:
@@ -701,13 +702,14 @@ class MigrationGUI(
             pass
 
     def load_config(self):
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except:
-                pass
-        return {}
+        # 必须和 save_config 读写同一个 CONFIG_FILE（本模块的全局名）：
+        # 探针按 docstring 只改 MW.CONFIG_FILE，读写两头不一致就会读到用户的真实配置。
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     def save_config(self):
         # ⚠ 这里**故意没有** CurseForge API Key：key 存在 ~/.minecraft_migrate_secret.json
@@ -720,6 +722,10 @@ class MigrationGUI(
             "dry_run": self.dry_run.get(),
             "overwrite": self.overwrite_mods.get(),
             "start_btn_feel": self.start_btn_feel.get(),
+            # 特效强度档位（4 档，统管启动动画/浮标粒子/翻转手感/消息卡片动画）。
+            # 派生出去的 splash / float_edge_fx / start_btn_feel 三个键也照旧写，
+            # 老版本或别的分支读它们时行为不变
+            "fx_level": str(getattr(self, "fx_level", fx.DEFAULT)),
             "confirm_migrate": self.confirm_migrate.get(),
             "theme": self.current_theme,
             # 界面语言（下次启动生效）。i18n 是"文案入口查表"，打包层不持有语言状态，
@@ -753,6 +759,7 @@ class MigrationGUI(
             "rollback_parts_remember": bool(getattr(self, "rollback_parts_remember", False)),
             "big_view_backend": str(getattr(self, "big_view_backend", "qt")),
             "diff_backend": str(getattr(self, "diff_backend", "qt")),
+            "main_window_backend": str(getattr(self, "main_window_backend", "tk")),
             "qt_enabled": bool(getattr(self, "qt_enabled", True)),
             "big_view_view": str(getattr(self, "big_view_view", "table")),
             "diff_view": str(getattr(self, "diff_view", "table")),
@@ -781,16 +788,8 @@ class MigrationGUI(
         try:
             # 原子写：直接 "w" 打开会先截断原文件，写到一半崩溃/断电就只剩半个 JSON，
             # 而 load_config 对坏文件是静默回退默认值 —— 用户的清单/路径/设置全没。
-            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".mctmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=4)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, CONFIG_FILE)
+            from utils.file_io import atomic_json
+            atomic_json(CONFIG_FILE, config, indent=4)
         except Exception:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
+            pass
         self._check_overflow()

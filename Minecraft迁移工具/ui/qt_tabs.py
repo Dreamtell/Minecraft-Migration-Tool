@@ -118,19 +118,30 @@ class PillTabs(QtWidgets.QWidget):
 
     # ---------------- 内部 ----------------
     def _同步底色(self):
-        """底色取**自己的调色板**（Qt 那个 Window 角色），不是 theme["bg"]。
+        """底色优先跟 theme["bg"]，theme 空着才退回调色板。
 
-        两个原因：①真实窗口底色由 ui/qt_big_view.ensure_app() 里那份 Fusion
-        palette 决定，theme 字典里那套键是给 Tk 渐变按钮用的，值不一定一样
-        （button_bg 在深色主题下是浅灰，照着它画就是白底白字）；②调用方可能
-        根本传了个空 theme（离屏探针就踩过），这时跟着调色板走才不会一条突兀
-        的深色带子挂在浅色对话框里。
+        以前取的是 `self.palette().window()`（全局 Fusion 调色板）：那份调色板
+        是**进程启动时**按当时主题定的，主题一换（对话框传的是新 theme，调色板
+        还是旧的）就会在浅色对话框里画出一条深灰/黑的底 —— 模组详情 → 联网搜索
+        那个「表格 / 卡片」条就踩过这个（深色底 + 浅色药丸，像块黑板）。
+        theme 里的 `bg` 是**当前**主题值，和对话框 QDialog{background} 同一个来源，
+        跟着它走不会跟周围差色；`button_bg` 仍然不用（深色主题下它是浅灰）。
         """
-        色 = self.palette().window().color()
+        色 = QtGui.QColor()
+        候选 = (self.theme.get("bg"), self.theme.get("label_bg"))
+        for _v in 候选:
+            if not isinstance(_v, str) or not _v.strip():
+                continue
+            _c = QtGui.QColor(_v)
+            if _c.isValid():
+                色 = _c
+                break
+        if not 色.isValid():
+            色 = self.palette().window().color()
         if 色.isValid():
             self._bg = 色.name()
         else:
-            self._bg = self.theme.get("bg", "#1e1e1e")
+            self._bg = "#1e1e1e"
         _c = QtGui.QColor(self._bg)
         self._深 = True
         if _c.isValid():
@@ -190,32 +201,60 @@ class PillTabs(QtWidgets.QWidget):
                 self.set_current(i, animate=True)
         super().mouseReleaseEvent(e)
 
-    def paintEvent(self, _e):
-        p = QtGui.QPainter(self)
-        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        # 自己铺底色：QWidget 默认会用调色板的浅色窗口色填一块，深色对话框里
-        # 就是一条突兀的白带。这里按主题背景铺，和对话框融为一体。
-        p.fillRect(self.rect(), QtGui.QColor(self._bg))
-        p.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
-        p.setFont(self._font)
-        # 顺序很重要：先把**所有药丸**铺完，最后才写字。
-        # 边画边写字的话，滑动中的选中块会从上面盖住隔壁那个页签的字
-        # （实拍过：滑到一半时"表格"两个字被蓝块吃掉，只剩"卡片"）。
-        p.setPen(QtCore.Qt.NoPen)
-        for i in range(len(self._labels)):
-            if i == self._cur:
-                continue          # 选中块单独画
-            r = QtCore.QRectF(self._xs[i], PILL_Y, self._ws[i], PILL_H)
-            p.setBrush(self._hover_bg if i == self._hover
-                       else QtGui.QColor(self._normal))
-            p.drawRoundedRect(r, RADIUS, RADIUS)
-        if self._cur >= 0 and self._sel_w > 0:
-            p.setBrush(QtGui.QColor(self._sel))
-            p.drawRoundedRect(QtCore.QRectF(self._sel_x, PILL_Y, self._sel_w, PILL_H),
-                              RADIUS, RADIUS)
-        # 字全部压在药丸上面
-        for i, t in enumerate(self._labels):
-            r = QtCore.QRectF(self._xs[i], PILL_Y, self._ws[i], PILL_H)
-            p.setPen(QtGui.QColor(self._sel_fg if i == self._cur else self._fg))
-            p.drawText(r, QtCore.Qt.AlignCenter, t)
+    def paintEvent(self, _e):
+
+        p = QtGui.QPainter(self)
+
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+        # 自己铺底色：QWidget 默认会用调色板的浅色窗口色填一块，深色对话框里
+
+        # 就是一条突兀的白带。这里按主题背景铺，和对话框融为一体。
+
+        p.fillRect(self.rect(), QtGui.QColor(self._bg))
+
+        p.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+
+        p.setFont(self._font)
+
+        # 顺序很重要：先把**所有药丸**铺完，最后才写字。
+
+        # 边画边写字的话，滑动中的选中块会从上面盖住隔壁那个页签的字
+
+        # （实拍过：滑到一半时"表格"两个字被蓝块吃掉，只剩"卡片"）。
+
+        p.setPen(QtCore.Qt.NoPen)
+
+        for i in range(len(self._labels)):
+
+            if i == self._cur:
+
+                continue          # 选中块单独画
+
+            r = QtCore.QRectF(self._xs[i], PILL_Y, self._ws[i], PILL_H)
+
+            p.setBrush(self._hover_bg if i == self._hover
+
+                       else QtGui.QColor(self._normal))
+
+            p.drawRoundedRect(r, RADIUS, RADIUS)
+
+        if self._cur >= 0 and self._sel_w > 0:
+
+            p.setBrush(QtGui.QColor(self._sel))
+
+            p.drawRoundedRect(QtCore.QRectF(self._sel_x, PILL_Y, self._sel_w, PILL_H),
+
+                              RADIUS, RADIUS)
+
+        # 字全部压在药丸上面
+
+        for i, t in enumerate(self._labels):
+
+            r = QtCore.QRectF(self._xs[i], PILL_Y, self._ws[i], PILL_H)
+
+            p.setPen(QtGui.QColor(self._sel_fg if i == self._cur else self._fg))
+
+            p.drawText(r, QtCore.Qt.AlignCenter, t)
+
         p.end()

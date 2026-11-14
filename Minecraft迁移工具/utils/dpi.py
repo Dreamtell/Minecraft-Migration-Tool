@@ -92,15 +92,87 @@ def px(value):
         return int(value)
 
 
+def work_area():
+    """屏幕**可用工作区** (x, y, w, h)：Windows 上已扣掉任务栏；拿不到就退回整屏。
+
+    为什么需要它：`winfo_screenheight()` 是**含任务栏**的整屏高度，直接按它居中
+    会把窗口底边压到任务栏上 —— 主窗口带一圈外发光边框，压上去就是「发亮的框
+    盖住任务栏」。UI_SCALE 又不能小于 1（会连带缩小字体），所以在这里夹一道。
+    """
+    try:
+        from ctypes import wintypes
+        class _RECT(ctypes.Structure):
+            _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                        ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+        r = _RECT()
+        # SPI_GETWORKAREA = 0x0030
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+            w, h = r.right - r.left, r.bottom - r.top
+            if w > 0 and h > 0:
+                return r.left, r.top, w, h
+    except Exception:
+        pass
+    return None
+
+
+def ensure_on_screen(win):
+    """把窗口拉回工作区内：超出就缩、跑偏就挪。
+
+    兜底用：启动后布局可能把窗口撑高（minsize/内容撑开），或者用户把窗口拖到
+    任务栏下面 —— 这两种都会让窗口底边压住任务栏，带外发光的窗口框就"盖在
+    任务栏上"。
+
+    ⚠ 坐标要用 `winfo_rootx/rooty`（真实屏幕坐标，含标题栏），不能用 geometry
+    里那个：geometry 说的是**客户区**左上角，标题栏那 30 多像素不写在里面。
+    """
+    wa = work_area()
+    if wa is None:
+        return
+    ax, ay, aw, ah = wa
+    for _ in range(2):                      # 缩过一次再量一遍，装饰带来的误差就收敛了
+        try:
+            win.update_idletasks()
+            w, h = win.winfo_width(), win.winfo_height()
+            x, y = win.winfo_rootx(), win.winfo_rooty()
+        except Exception:
+            return
+        right, bottom = x + w, y + h
+        over_r = max(0, right - (ax + aw - 8))
+        over_b = max(0, bottom - (ay + ah - 8))
+        if not (over_r or over_b):
+            return
+        w = max(320, w - over_r)
+        h = max(240, h - over_b)
+        # 位置也用屏幕坐标反推：先夹宽高，再把左上角挪进工作区
+        nx = max(ax, min(x, ax + aw - w - 8))
+        ny = max(ay, min(y, ay + ah - h - 8))
+        try:
+            win.geometry("%dx%d+%d+%d" % (w, h, nx - x + win.winfo_x(),
+                                          ny - y + win.winfo_y()))
+        except Exception:
+            return
+
+
 def window_geometry(win, width, height):
     """设计稿尺寸（1000x1080 那种）→ 当前缩放下的居中 geometry 字符串。
 
     **等比缩放**：宽高同乘 UI_SCALE，不做单轴截断 —— 单独压高度会让内容变形
     （就是「所有东西都被压得很扁」）。屏幕放不下由 _detect_scale 提前把
-    UI_SCALE 降下来解决。
+    UI_SCALE 降下来解决；但 UI_SCALE 的下限是 1.0，1080 高的设计稿在 1080p
+    屏幕上仍然差一个任务栏的高度，所以这里再按**工作区**夹一次。
     """
     w = px(width)
     h = px(height)
+    wa = work_area()
+    if wa is not None:
+        ax, ay, aw, ah = wa
+        # 留 8px 边距：贴边会盖住任务栏的圆角/阴影，也容易被系统判定成"最大化"
+        # 48 = 标题栏 + 一点阴影：Tk 的 geometry 高度是客户区，窗口外框还会往外长
+        w = max(320, min(w, aw - 8))
+        h = max(240, min(h, ah - 48))
+        x = ax + max(0, (aw - w) // 2)
+        y = ay + max(0, (ah - h) // 2)
+        return "%dx%d+%d+%d" % (w, h, x, y)
     try:
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
     except Exception:

@@ -9,11 +9,12 @@ import os
 import sys
 import tkinter as tk
 from pathlib import Path
-from ui.diff_window import show_diff_window
+from utils.jsonl_channel import JsonlReader
 from utils import i18n
 from utils import secrets
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
 from utils.i18n import trp
+from utils.helpers import trace_exc
 
 
 class QtMixin:
@@ -184,7 +185,8 @@ class QtMixin:
         """
         ok, why = self._qt_available()
         if not ok:
-            self.log("ℹ " + why, level="INFO", save=False)
+            self.log(trp("⚠ 无法打开 Qt 卡片窗口：{0}", why), level="WARNING", save=False)
+            self.toast(trp("⚠ 无法打开 Qt 卡片窗口：{0}", why), level="warn")
             return False
         is_mod = "模组" in title or source_text is getattr(self, "mod_text", None)
         entries = [ln.strip() for ln in source_text.get("1.0", tk.END).splitlines()
@@ -196,7 +198,8 @@ class QtMixin:
         载荷 = {"entries": entries, "is_mod": is_mod, "source_path": sp,
                 "title": title,
                 "online_tags": bool(getattr(self, "online_tags", False)),
-                "cards": (getattr(self, "big_view_view", "table") == "cards"),
+                # 放大查看统一使用 Qt 卡片视图；保留协议字段只是兼容旧宿主。
+                "cards": True,
                 "failed": [list(x) for x in getattr(self, "_failed_items", [])]}
         if not self._start_qt_host("bigview", 载荷, source_text=source_text):
             return False
@@ -217,21 +220,16 @@ class QtMixin:
         之前是在主进程里用"Tk 的 after 驱动 processEvents"，用户机器上反复触发致命的
         `PyEval_RestoreThread ... the GIL is released`（崩点全在 Qt 窗口的操作路径上：
         打开窗口、切卡片、开详情），几轮加固都没根治 —— 根子是"两个 GUI 库共享主线程"。
-        子进程建不起来时才回退到进程内 Tk 版（`show_diff_window`），功能不能少。
+        子进程建不起来（或 Qt 不可用 / 纯 Tk 模式）时回退到进程内 Tk 版，功能不能少。
         """
         self.diff_qt = None
         self.diff_window = None
         _qt_ok = self._qt_available()[0]
-        _想卡片 = (getattr(self, "diff_view", "table") == "cards")
-        if getattr(self, "diff_backend", "qt") != "qt" or not _qt_ok:
-            # 设置里选了经典 Tk 版，或总开关关了 PySide6，或 PySide6 不可用
-            self.diff_window = show_diff_window(self.root, data, self.theme,
-                                                self.current_theme, apply_callback,
-                                                cards=_想卡片, env=self._instance_env())
-            self._lock_tk_mirror("diff", self.diff_window)
-            return self.diff_window
+        if not _qt_ok:
+            # 总开关关了 PySide6，或 PySide6 不可用
+            return self._open_diff_window_tk(data, apply_callback)
         if self._start_qt_host("diff",
-                               {"data": data, "cards": _想卡片,
+                               {"data": data, "cards": True,
                                 "source_path": self.source_path.get().strip()},
                                apply_callback):
             try:
@@ -245,9 +243,14 @@ class QtMixin:
             return None
         self.log(trp("⚠ Qt 子进程起不来，改用进程内 Tk 差异窗口"), level="WARNING", save=False)
         self.toast(trp("⚠ Qt 子进程起不来，已改用进程内 Tk 差异窗口"), level="warn")
+        return self._open_diff_window_tk(data, apply_callback)
+
+    def _open_diff_window_tk(self, data, apply_callback):
+        """进程内 Tk 差异窗口（只在 Qt 用不了时走这里），同样用卡片视图。"""
+        from ui.diff_window import show_diff_window
         self.diff_window = show_diff_window(self.root, data, self.theme,
                                             self.current_theme, apply_callback,
-                                            cards=_想卡片, env=self._instance_env())
+                                            cards=True, env=self._instance_env())
         self._lock_tk_mirror("diff", self.diff_window)
         return self.diff_window
 
@@ -381,20 +384,14 @@ class QtMixin:
         for kind, 信息 in list(主机们.items()):
             proc = 信息.get("proc")
             res = 信息.get("res")
-            if res is not None and res.exists():
-                行们 = []
-                try:
-                    行们 = res.read_text(encoding="utf-8").splitlines()
-                    res.unlink()
-                except Exception:
-                    行们 = []
-                for line in 行们:
-                    try:
-                        消息 = json.loads(line)
-                    except Exception:
-                        continue
+            exited = proc is not None and proc.poll() is not None
+            if res is not None:
+                reader = 信息.get("reader")
+                if reader is None:
+                    reader = 信息["reader"] = JsonlReader(res)
+                for 消息 in reader.read(limit=None if exited else 256):
                     self._handle_qt_host(kind, 信息, 消息)
-            if proc is not None and proc.poll() is not None:
+            if exited:
                 code = proc.returncode
                 主机们.pop(kind, None)
                 self._unlock_edit(kind)        # 窗口没了 → 主界面编辑解锁

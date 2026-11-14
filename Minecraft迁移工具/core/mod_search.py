@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 from pathlib import Path
+from utils.file_io import atomic_json
 
 # 界面语言：下载量单位（万/亿 ↔ k/M）走 trp 模板
 from utils import i18n
@@ -195,6 +196,9 @@ def search_modrinth(query, limit=8, mc_version="", loader=""):
             "download_url": "",
             # 来源：界面上要标出来，用户才能分清这条来自 Modrinth 还是 CurseForge
             "source": "modrinth",
+            # 卡片视图要画项目图标：Modrinth 的搜索命中里直接带 icon_url，
+            # 不额外花请求。取不到就是空串，界面退回字母兜底。
+            "icon_url": hit.get("icon_url") or "",
         })
 
     return results
@@ -340,10 +344,12 @@ _TAG_CACHE_LOCK = threading.Lock()
 TAG_CACHE_FILE = Path.home() / ".minecraft_migrate_tags.json"
 
 # 熔断：断网时别让几百个模组各等一次超时（6 个扫描线程会被一起拖住）。
-# 连续失败 3 次后就当"没网"，本次运行不再尝试；成功一次即清零。
+# 连续失败 3 次后暂停 30 秒，再允许恢复探测；成功一次即清零。
 _NET_FAILS = [0]
 _NET_DEAD = [False]
 _NET_FAIL_LIMIT = 3
+_NET_RETRY_AT = [0.0]
+_NET_COOLDOWN = 30.0
 
 
 def _tag_cache():
@@ -363,10 +369,7 @@ def _tag_cache():
 def _save_tag_cache():
     try:
         cache = _tag_cache()
-        tmp = str(TAG_CACHE_FILE) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False)
-        os.replace(tmp, TAG_CACHE_FILE)
+        atomic_json(TAG_CACHE_FILE, cache, indent=None)
     except Exception:
         pass
 
@@ -379,7 +382,10 @@ def fetch_categories(modid="", name="", timeout=10):
     分类贴到本地模组上。断网、超时、查不到都返回 None，调用方继续用"关键词推测"。
     """
     if _NET_DEAD[0]:
-        return None
+        if time.monotonic() < _NET_RETRY_AT[0]:
+            return None
+        _NET_DEAD[0] = False
+        _NET_FAILS[0] = 0
     for query in (modid, name):
         q = str(query or "").strip()
         if not q:
@@ -392,6 +398,7 @@ def fetch_categories(modid="", name="", timeout=10):
             _NET_FAILS[0] += 1
             if _NET_FAILS[0] >= _NET_FAIL_LIMIT:
                 _NET_DEAD[0] = True
+                _NET_RETRY_AT[0] = time.monotonic() + _NET_COOLDOWN
             return None
         hits = data.get("hits") or []
         if not hits:
@@ -418,20 +425,22 @@ def fetch_categories(modid="", name="", timeout=10):
 def fetch_categories_cached(key, modid="", name="", timeout=10):
     """带磁盘缓存的分类查询；key 用 Mod ID（没有就用文件名的去扩展名形式）。
 
-    缓存里存空列表表示"查过了但没有"，下次不再联网重查。
+    只保存成功的非空分类；超时和无结果允许下次重试。
     """
     key = str(key or "").strip().lower()
     if not key:
         return None
     with _TAG_CACHE_LOCK:
         cache = _tag_cache()
-        if key in cache:
-            hit = cache[key]
-            return list(hit) if hit else None
+        hit = cache.get(key)
+        if isinstance(hit, list) and hit and all(isinstance(v, str) for v in hit):
+            return list(hit)
+        cache.pop(key, None)  # Recover legacy negative entries, including offline failures.
     cats = fetch_categories(modid=modid, name=name, timeout=timeout)
-    with _TAG_CACHE_LOCK:
-        _tag_cache()[key] = list(cats or [])
-        _save_tag_cache()
+    if cats:
+        with _TAG_CACHE_LOCK:
+            _tag_cache()[key] = list(cats)
+            _save_tag_cache()
     return cats
 
 
@@ -598,6 +607,9 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
                 "latest_version": "",
                 "download_url": "",
                 "source": "curseforge",
+                # logo.thumbnailUrl 是 64px 小图，够卡片用；取不到再试 logo.url
+                "icon_url": ((m.get("logo") or {}).get("thumbnailUrl")
+                             or (m.get("logo") or {}).get("url") or ""),
             })
         return 结果
 
@@ -615,6 +627,65 @@ def search_curseforge(query, limit=8, mc_version="", loader="", timeout=15):
         except Exception:
             pass
     return 结果
+
+
+_ICON_DIR = None
+
+
+def icon_cache_dir():
+    """图标缓存目录（跟配置放一起，换机器/清缓存就是删这个目录）。"""
+    global _ICON_DIR
+    if _ICON_DIR is None:
+        try:
+            from utils.config import CONFIG_FILE
+            根 = CONFIG_FILE.parent
+        except Exception:
+            根 = None
+        if 根 is None:
+            import tempfile
+            根 = Path(tempfile.gettempdir())
+        _ICON_DIR = Path(根) / ".minecraft_migrate_icons"
+        try:
+            _ICON_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    return _ICON_DIR
+
+
+def fetch_icon(url, timeout=8):
+    """把图标下载到本地缓存，返回文件路径；失败/没地址返回 ""。
+
+    缓存按 URL 的 sha1 命名：同一个项目第二次搜索是 0 请求（纯读文件）。
+    下载走临时文件再 rename，中途断网不会留下半张坏图。
+    """
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    import hashlib
+    名 = hashlib.sha1(u.encode("utf-8")).hexdigest()[:20] + ".img"
+    目标 = Path(icon_cache_dir()) / 名
+    if 目标.is_file() and 目标.stat().st_size > 0:
+        return str(目标)
+    临时 = 目标.with_suffix(".part")
+    try:
+        请求 = urllib.request.Request(u, headers={
+            "User-Agent": "Mozilla/5.0 (Minecraft-Modpack-Migration-Tool)",
+            "Accept": "image/*,*/*;q=0.8",
+        })
+        with urllib.request.urlopen(请求, timeout=timeout) as 响应:
+            数据 = 响应.read(3 * 1024 * 1024 + 1)      # 3MB 上限：图标不可能这么大
+        if not 数据 or len(数据) > 3 * 1024 * 1024:
+            return ""
+        临时.write_bytes(数据)
+        临时.replace(目标)
+        return str(目标)
+    except Exception:
+        try:
+            if 临时.exists():
+                临时.unlink()
+        except Exception:
+            pass
+        return ""
 
 
 def fetch_project_latest_curseforge(project_id, timeout=12, mc_version="", loader="",

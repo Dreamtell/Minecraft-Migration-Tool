@@ -9,6 +9,7 @@ import weakref
 
 from utils import i18n          # 界面语言（默认中文时 tr() 原样返回，行为不变）
 from utils import anim          # 帧节奏（跟随显示器刷新率）—— 只用来问"多久排下一帧"
+from utils.anim import FrameLoop as _FrameLoop   # create_gradient_button 里 `anim` 是局部字典，要用别名
 
 # 活着的平滑滚动器（弱引用，不阻止回收）。用来统一管理/诊断，
 # 也可以将来做"一键关掉平滑滚动"的开关。
@@ -236,9 +237,21 @@ class SmoothScroller:
             level = 3
         return cls.set_speed(level)
 
-    def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=0.30,
+    # 手感默认值：ease（收尾阻尼）与 accel（起步加速）。
+    # 旧值 0.30 / 0.45：一格滚轮 79ms、峰值 950px/s，起步一下冲出去、最后 25% 距离只用 25ms
+    # 就停住 —— 用户反馈「滑动距离/停止不自然」（纯数值仿真 _dctest/sim_scroll.py 复刻 _step）。
+    # 现值 0.22 / 0.30：一格 ~112ms、峰值 ~700px/s、最后 25% 约 33ms，起步和收尾都更软。
+    # 这两个值只是**默认**；message_center 显式传 ease=0.28、设置页传 0.22，不受影响。
+    DEFAULT_EASE = 0.22
+    DEFAULT_ACCEL = 0.30
+
+    def __init__(self, widget, mover, px_per_notch=48, frame_ms=12, ease=None,
                  bind_widgets=None, on_user_scroll=None, on_settle=None,
-                 accel=0.45, max_step_ratio=0.6):
+                 accel=None, max_step_ratio=0.6):
+        if ease is None:
+            ease = self.DEFAULT_EASE
+        if accel is None:
+            accel = self.DEFAULT_ACCEL
         self.widget = widget
         # frame_ms 不再决定"多久排一帧"（那交给 anim.delay：240Hz 屏上是 4ms），
         # 它只是**手感标定的基准帧**：ease / accel / 单帧限幅 / 最小步长都按这个基准
@@ -315,11 +328,15 @@ class SmoothScroller:
             n = acc.take(px)
             if n == 0:
                 return 0, False       # 同上：零头攒到下一帧
-            # 内容装得下就直接报「走不动」：否则画布会先挪一像素、再被各处的
-            # 回顶逻辑摁回来，来回就是抽搐（设置页短页上用户实测过）
+            # 不要在每个像素帧调用 bbox("all")。VirtualTable 会复用槽位，
+            # 但 Canvas 仍需遍历当前所有图元才能算 bbox；列表越复杂，这个检查
+            # 越容易和滚动重绘争用主线程。到顶/到底由下面的 moved 判断。
+            # 但内容装得下时 yview_scroll 照样会把画布挪走（实测 canvasy -3 → -8），
+            # 再被各处回顶逻辑摁回来 = 抽搐（设置页短页上用户实测过）。
+            # yview() 不遍历图元，内容装得下时恒为 (0.0, 1.0)，用它挡掉。
             try:
-                框 = widget.bbox("all")
-                if 框 and 框[3] - 框[1] <= widget.winfo_height() + 1:
+                上, 下 = widget.yview()
+                if 上 <= 0.0 and 下 >= 1.0:
                     return 0, True
             except Exception:
                 pass
@@ -403,9 +420,19 @@ class SmoothScroller:
     def scroll_px(self, px):
         """按像素滚动（键盘/程序触发），走的是和滚轮同一套动画，手感一致。"""
         try:
-            self._left += float(px)
+            px = float(px)
         except Exception:
             return
+        self._queue_pixels(px)
+
+    def _queue_pixels(self, px):
+        if not math.isfinite(px) or px == 0:
+            return
+        if px * self._left < 0:
+            # Reversing the wheel must respond immediately, rather than spend
+            # the first frame moving away and triggering the runaway guard.
+            self._vel = 0.0
+        self._left += px
         if self._job is None:
             self._kick()
 
@@ -424,14 +451,15 @@ class SmoothScroller:
     def _on_wheel(self, event):
         delta = getattr(event, "delta", 0) or 0
         # 触控板在 Windows 上会发小于 120 的细粒度 delta，按比例算，别一刀切
-        self._left += (-delta / 120.0) * self.px_per_notch
+        pixels = (-delta / 120.0) * self.px_per_notch
+        if not pixels:
+            return "break"
+        self._queue_pixels(pixels)
         if self._on_user_scroll is not None:
             try:
                 self._on_user_scroll(self._left < 0)   # True = 用户往上滚
             except Exception:
                 pass
-        if self._job is None:
-            self._kick()
         return "break"
 
     def _settle(self):
@@ -552,7 +580,11 @@ class SmoothScroller:
         # 速度模型：目标速度 = 剩余量 × ease（越接近目标越慢），先限幅再让实际速度
         # 向它渐近 —— 于是起步是"缓→快→缓"，而不是第一帧就窜掉三成。
         v_target = self._left * ease
-        cap = (abs(self.px_per_notch) * self.max_step_ratio or 1.0) * ratio
+        # 多格滚轮合并到一帧时，提高追赶上限，避免松手后还在慢慢消化积压。
+        # 最多提到两倍；单格及其收尾仍沿用原来的限幅与速度档位。
+        notches_left = abs(self._left) / max(1.0, abs(self.px_per_notch))
+        burst = min(2.0, math.sqrt(max(1.0, notches_left)))
+        cap = (abs(self.px_per_notch) * self.max_step_ratio or 1.0) * ratio * burst
         if v_target > cap:
             v_target = cap
         elif v_target < -cap:
@@ -562,8 +594,9 @@ class SmoothScroller:
         # 每帧至少走 1 像素，否则会卡在最后一点点。这个 1 也要跟着 dt 缩放，
         # 否则 240fps 下尾巴一帧就走掉 1 像素 = 4 倍速地窜到终点。
         min_step = 1.0 * ratio
-        if abs(move) < min_step:
-            move = min_step if move > 0 else -min_step
+        if move * self._left <= 0 or abs(move) < min_step:
+            move = math.copysign(min_step, self._left)
+        move = math.copysign(min(abs(move), abs(self._left)), self._left)
         before_left = self._left
         try:
             consumed, blocked = self._mover(move)
@@ -755,11 +788,28 @@ def trace_line(msg):
         pass
 
 
-def trace_exc(where, exc):
-    """把回调里吞掉的异常写进日志（PySide6 只把它打到 stderr，界面看着就是"没反应"）。"""
+def trace_exc(where="", exc=None):
+    """把回调里吞掉的异常写进日志（PySide6 只把它打到 stderr，界面看着就是"没反应"）。
+
+    三种调法都接得住（仓库里三种都有）：
+      · trace_exc("位置", e)           —— 标准用法
+      · trace_exc()                     —— 在 except 块里裸调：取当前正在处理的异常
+        （以前签名是必填两参，这样调会在 except 里再抛 TypeError，把本该吞掉的异常
+        变成崩溃）
+      · trace_exc("位置", "说明文字")   —— 第二参不是异常：当说明拼进位置，异常仍取当前的
+        （以前会因为字符串没有 __traceback__ 被静默吞掉，什么都没记）
+    """
     try:
+        import sys as _sys
         import traceback
-        trace_line(i18n.trp("!! {0} 抛异常: {1}", where, "".join(
+        if not isinstance(exc, BaseException):
+            if exc is not None:
+                where = ("%s/%s" % (where, exc)) if where else str(exc)
+            exc = _sys.exc_info()[1]
+        if exc is None:
+            trace_line(i18n.trp("!! {0} 抛异常: {1}", where or "?", "(无异常对象)"))
+            return
+        trace_line(i18n.trp("!! {0} 抛异常: {1}", where or "?", "".join(
             traceback.format_exception(type(exc), exc, exc.__traceback__))[-600:]))
     except Exception:
         pass
@@ -1567,8 +1617,10 @@ class RoundedTextArea(tk.Frame):
         text_kw.setdefault("bg", theme.get("text_bg", "#ffffff"))
         text_kw.setdefault("fg", theme.get("text_fg", "#000000"))
         text_kw.setdefault("insertbackground", theme.get("fg", "#000000"))
-        text_kw.setdefault("selectbackground", theme.get("ttk_select_bg", "#d0d0d0"))
-        text_kw.setdefault("selectforeground", theme.get("ttk_select_fg", "#000000"))
+        text_kw.setdefault("selectbackground",
+                           theme.get("text_sel_bg", theme.get("ttk_select_bg", "#d0d0d0")))
+        text_kw.setdefault("selectforeground",
+                           theme.get("text_sel_fg", theme.get("ttk_select_fg", "#000000")))
         text_kw.setdefault("relief", "flat")
         text_kw.setdefault("bd", 0)
         text_kw.setdefault("highlightthickness", 0)
@@ -1810,6 +1862,22 @@ def make_theme_icon(kind, size=20, color="#ffffff"):
     return img
 
 
+def _font_alive(f):
+    """Font 对象是不是还绑在一个活着的 Tk 解释器上。
+
+    tkinter.font.Font 在创建时就绑定到当时的 default root；那个 root 一旦
+    destroy（测试里每个用例各建各的、或者窗口重建），缓存的 Font 再 measure
+    就会抛 `TclError: can't invoke "font" command: application has been destroyed`。
+    """
+    if f is None:
+        return False
+    try:
+        f.measure("")
+        return True
+    except Exception:
+        return False
+
+
 def _btn_text_width(text, font=None):
     """量一段文字用渐变按钮字体画出来有多宽（Font 对象缓存，别每次 new）。
 
@@ -1817,7 +1885,8 @@ def _btn_text_width(text, font=None):
     """
     global _BTN_FONT_CACHE
     f = _BTN_FONT_CACHE
-    if f is None:
+    if not _font_alive(f):
+        f = None
         try:
             f = tkfont.Font(font=font) if font else tkfont.Font(family="微软雅黑", size=10,
                                                                 weight="bold")
@@ -1830,6 +1899,52 @@ def _btn_text_width(text, font=None):
 _BTN_FONT_CACHE = None      # 量按钮文字用的 Font（tkinter 里 new Font 很慢，缓存）
 _BTN_TEXT_PAD = 18          # 按钮左右内边距（和 _grad_width 里那句对齐）
 
+# ---- 按钮开头的 emoji/符号：单独成项，才能和汉字在纵向对齐 ----
+_SYM_W = 17         # 回退字形在 Windows 下几乎等宽（见 ui/mw_common._GRAD_SYM_W）
+_SYM_GAP = 6        # 图标和文字之间的空隙
+# 图标上提的像素。回退字形的视觉中心比汉字低多少，随符号和字号而变（主界面实测）：
+#   9 号粗体：🔍/🗑/🔎 约 3.5，📂 约 4.5，其余 emoji 约 3；➕ 本身就居中（约 0.5）
+#   11 号及以上（如「查看历史」）：基本居中，不用提
+_SYM_DY_DEFAULT = 3
+_SYM_DY_BY_SYM = {"➕": 0}
+_SYM_DY_MAX_SIZE = 10       # 字号 > 这个值就不提
+
+
+def _sym_dy(sym, font):
+    """这个符号在这个字体下要上提几像素。"""
+    try:
+        size = abs(int(font[1])) if isinstance(font, (tuple, list)) and len(font) > 1 else 9
+    except Exception:
+        size = 9
+    if size > _SYM_DY_MAX_SIZE:
+        return 0
+    return _SYM_DY_BY_SYM.get(sym, _SYM_DY_DEFAULT)
+_LEAD_SYM_RE = None
+
+
+def _split_lead_symbol(text):
+    """"🔍 扫描差异" -> ("🔍", "扫描差异")；开头不是 emoji/符号就返回 (None, text)。"""
+    global _LEAD_SYM_RE
+    if _LEAD_SYM_RE is None:
+        import re
+        _LEAD_SYM_RE = re.compile(
+            r"^([←-⇿⌀-⏿■-➿⬀-⯿"
+            r"🀀-🫿])\s+(\S.*)$", re.S)
+    m = _LEAD_SYM_RE.match(str(text or ""))
+    return (m.group(1), m.group(2)) if m else (None, text)
+
+
+_BTN_FONT_OBJ = {}
+
+
+def _btn_font_obj(font):
+    """按 font 元组缓存 Font 对象（tkinter 里 new Font 很慢）。"""
+    key = tuple(font) if isinstance(font, (tuple, list)) else str(font)
+    f = _BTN_FONT_OBJ.get(key)
+    if not _font_alive(f):
+        f = _BTN_FONT_OBJ[key] = tkfont.Font(font=font)
+    return f
+
 
 def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                            width=None, height=32, font=("微软雅黑", 10, "bold"),
@@ -1837,7 +1952,9 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     # 文案在**函数本体**里过 tr()，不能靠在别处包一层：调用方早把原函数 import 走了。
     # 中文（默认）时 tr() 原样返回，行为不变。见 utils/i18n.py。
     原文 = text                      # 留一份中文：切语言时用它重翻
-    text = i18n.tr(text)
+    # 去掉变体选择符 U+FE0F：Tk 把它画成一块 17px 的空白，「🗑️ 清空清单」的图标和文字
+    # 之间就比别的按钮宽 20px 左右（实测 30px 对 9px）。没有它 emoji 照样是彩色图标。
+    text = i18n.tr(text).replace("️", "")
     # 宽度：**不传就按实际译文量**（默认行为，按钮紧贴文字，左右各半个内边距）；
     # 传了就取"传的值"与"文字需要"的较大者，免得英文比中文长时把字挤出去。
     # ⚠ 这里的默认值原来是 180 —— 于是所有"不传 width"的按钮都变成 180px 宽，
@@ -1902,9 +2019,25 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             canvas.icon_id = canvas.create_image(width // 2, height // 2,
                                                  image=canvas._icon_photo, tags="icon")
         else:
-            canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
-                                                fill=state.get("fg") or "white",
-                                                font=font, tags="text")
+            fill = state.get("fg") or "white"
+            lead, rest = _split_lead_symbol(state["text"])
+            canvas.sym_id = None
+            if lead and rest:
+                # 开头的 emoji/符号单独成一项：Tk 用回退字体画它，字形的基线比汉字低 3~4px，
+                # 和文字挤在一个 create_text 里就没法单独上移（实测图标比文字低 3.5~4.5px）。
+                # 拆开后图标按 _sym_dy() 上提，两项各自 anchor="w"，合起来仍整体居中。
+                f = _btn_font_obj(font)
+                w_sym = max(_SYM_W, f.measure(lead))
+                w_rest = f.measure(rest)
+                x0 = (width - (w_sym + _SYM_GAP + w_rest)) / 2.0
+                canvas._sym_dy = _sym_dy(lead, font)
+                canvas.sym_id = canvas.create_text(x0, height // 2 - canvas._sym_dy, text=lead,
+                                                   fill=fill, font=font, anchor="w", tags="text")
+                canvas.text_id = canvas.create_text(x0 + w_sym + _SYM_GAP, height // 2, text=rest,
+                                                    fill=fill, font=font, anchor="w", tags="text")
+            else:
+                canvas.text_id = canvas.create_text(width//2, height//2, text=state["text"],
+                                                    fill=fill, font=font, tags="text")
         # 内容永远盖在动画帧（阴影/面/扫光）上面
         try:
             canvas.tag_raise("text")
@@ -2059,7 +2192,13 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         canvas.coords(items["face"], PADX, PADY + lift)
         tid = getattr(canvas, "text_id", None)
         if tid is not None:
-            canvas.coords(tid, width // 2, height // 2 + lift)
+            if getattr(canvas, "sym_id", None):
+                # 拆成了「图标 + 文字」两项：横坐标保持 draw_content 排好的，只改纵坐标
+                for _i, _dy in ((canvas.sym_id, -getattr(canvas, "_sym_dy", 0)), (tid, 0)):
+                    _x = canvas.coords(_i)[0]
+                    canvas.coords(_i, _x, height // 2 + lift + _dy)
+            else:
+                canvas.coords(tid, width // 2, height // 2 + lift)
         if getattr(canvas, "icon_id", None):
             canvas.coords(canvas.icon_id, width // 2, height // 2 + lift)
 
@@ -2073,7 +2212,26 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         t["done"] = False
         if name == "sweep":
             anim["sweep_on"] = True      # 必须在这里置位：_tick 里"扫光结束"会把它清掉
-        _tick()
+        _tick()                          # 立刻出第一帧（不等下一个定时器）
+        _ensure_loop()
+
+    def _ensure_loop():
+        """还有没跑完的补间就确保 FrameLoop 在跑；一条循环管全部补间，不会叠出多条自链。
+
+        用 FrameLoop 而不是 after(15)：Windows 上 after 被 15.6ms 粒度卡在约 64fps，
+        240Hz 屏上悬停动画只有 66 次/秒（实测）；FrameLoop 跟随刷新率排帧，并在动画
+        期间 hold() 定时器精度，结束时自动 release()。
+        """
+        if any(not t["done"] for t in tw.values()):
+            loop = anim.get("loop")
+            if loop is None:
+                loop = anim["loop"] = _FrameLoop(canvas, _loop_step)
+            if not loop.running():
+                loop.start()
+
+    def _loop_step():
+        """FrameLoop 每帧回调：推进补间并重画；全部补间做完返回 False 让循环停下。"""
+        return _tick()
 
     def _tick():
         now = time.perf_counter()
@@ -2091,13 +2249,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         if tw["sweep"]["done"]:
             anim["sweep_on"] = False
         _render()
-        if busy:
-            try:
-                anim["job"] = canvas.after(15, _tick)
-            except Exception:
-                anim["job"] = None
-        else:
-            anim["job"] = None
+        return busy
 
     # ---- 没有 Pillow 时的退路：整块换图（旧行为） ----
     tween = {"seq": [], "i": 0, "job": None}
@@ -2202,9 +2354,9 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
 
     def set_text(new_text):
         """动态改按钮文字（替代 tk.Button 的 config(text=...)）。"""
-        nonlocal width
+        nonlocal width, face_size
         # 动态改文字也要过 tr()：按钮文字经常带状态（「正在扫描…」之类）
-        new_text = i18n.tr(new_text)
+        new_text = i18n.tr(new_text).replace("️", "")     # 同上：去掉 U+FE0F
         state["text"] = new_text
         state["icon"] = None      # 回到文字模式
         # 宽度跟着文字重算：切语言后英文比中文长（或短），不重算就会出现
@@ -2214,10 +2366,25 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             if int(需要) != int(width):
                 width = int(需要)
                 canvas.configure(width=width)
+                face_size = (max(1, width - int(PADX * 2)), max(1, height - int(PADY * 2)))
+                _drop_frames()  # Dynamic counters must resize the rounded face too.
         except Exception:
             pass
         draw_content()
     canvas.set_text = set_text
+
+    def set_label(new_text):
+        """只换按钮上的字（不重算宽度、不碰动画）。给"忙碌态"这类临时文案用，
+        如 scan_btn 的「⏳ 扫描中…」「⏳ 解析中 (3/9)」。
+
+        以前外部直接 `itemconfig(btn.text_id, text=...)`：图标拆成独立画布项之后，
+        那样只改得到文字项，旧图标会留在原地，按钮上就有两个图标。统一走这里。
+        """
+        new_text = i18n.tr(new_text).replace("️", "")
+        state["text"] = new_text
+        if state.get("icon") is None:
+            draw_content()
+    canvas.set_label = set_label
 
     def get_text():
         """读当前按钮文字（`set_text` 的读回，方便状态切换后确认画的是什么）。"""
@@ -2718,7 +2885,8 @@ def set_window_icon(window, icon_path=None):
     # .ico 读不了时退一步：用 PNG 走 iconphoto（任务栏/标题栏都能吃到）
     try:
         from PIL import Image, ImageTk
-        图 = get_icon_image() if "get_icon_image" in globals() else None
+        # 有 globals() 守卫:这个函数不存在时走下面的 PNG 回退,不会 NameError
+        图 = get_icon_image() if "get_icon_image" in globals() else None  # noqa: F821
         if 图 is None:
             png = str(get_icon_path() or "").replace(".ico", ".png")
             from pathlib import Path as _P
@@ -2822,7 +2990,7 @@ class LiquidProgress(tk.Canvas):
     还要按比例裁长度。内容不满一屏时整条填满、并且不再流动。
     """
 
-    _TICK_MS = 12          # 兜底：拿不到屏幕刷新率时按 ~80fps 走（见 _tick_ms）
+    _BASE_SECONDS = 0.012   # Motion reference; refresh rate only controls sampling
 
     def __init__(self, parent, theme, height=6, **kw):
         try:
@@ -2836,7 +3004,8 @@ class LiquidProgress(tk.Canvas):
         self._fraction = 0.0        # 目标值（由调用方 set_fraction 决定）
         self._shown = 0.0           # 当前显示值：每帧朝目标缓动，条才不会一格一格跳
         self._flow = 0.0
-        self._job = None
+        self._loop = anim.FrameLoop(self, self._tick)
+        self._last_tick = 0.0
         self._photo = None
         self._track = None          # 底图（轨道）
         self._fill = None           # 填充段（渐变 + 圆角），按宽度缓存
@@ -2848,6 +3017,8 @@ class LiquidProgress(tk.Canvas):
         self._photo = _PILImageTk.PhotoImage(_PILImage.new("RGBA", (1, 1), (0, 0, 0, 0)))
         self._img = self.create_image(0, 0, anchor="nw", image=self._photo)
         self.bind("<Configure>", lambda _e: self._rebuild())
+        self.bind("<Map>", lambda _e: self._ensure_tick(), add="+")
+        self.bind("<Unmap>", lambda _e: self.stop(), add="+")
 
     # ---------------------------------------------------------------- 对外
     def set_fraction(self, 比例):
@@ -2860,10 +3031,7 @@ class LiquidProgress(tk.Canvas):
         # 当场画就是"一顿一跳"。留给 _tick 每帧朝目标缓动。
         if 比例 < self._shown:
             self._shown = 比例            # 往回退（重置/取消）时立刻跟上
-        if abs(比例 - self._shown) > 0.0005 or 比例 < 0.999:
-            self._ensure_tick()
-        else:
-            self._ensure_tick()
+        self._ensure_tick()
 
     def set_theme(self, theme):
         self.theme = dict(theme)
@@ -2877,12 +3045,8 @@ class LiquidProgress(tk.Canvas):
         self._render()
 
     def stop(self):
-        if self._job is not None:
-            try:
-                self.after_cancel(self._job)
-            except Exception:
-                pass
-        self._job = None
+        self._loop.stop()
+        self._last_tick = 0.0
 
     # ---------------------------------------------------------------- 内部
     def _rgb(self, key, fallback):
@@ -2927,12 +3091,12 @@ class LiquidProgress(tk.Canvas):
         右色 = _shade(基色, 16)
         c0 = tuple(int(左色[i:i + 2], 16) for i in (1, 3, 5))
         c1 = tuple(int(右色[i:i + 2], 16) for i in (1, 3, 5))
-        渐变 = _PILImage.new("RGB", (宽, 1))
-        px = 渐变.load()
-        for x in range(宽):             # 先做 1px 的横向渐变再拉高，比逐像素铺满快得多
-            t = x / max(1, 宽 - 1)
-            px[x, 0] = tuple(int(a + (b - a) * t) for a, b in zip(c0, c1))
-        self._fill = 渐变.resize((宽, 高)).convert("RGBA")
+        # Pillow resamples the two endpoints in C; do not loop over every
+        # column in Python while progress is changing during a scroll.
+        渐变 = _PILImage.new("RGB", (2, 1))
+        渐变.putdata([c0, c1])
+        self._fill = 渐变.resize((宽, 高), _PILImage.Resampling.BILINEAR,
+                               box=(0.5, 0, 1.5, 1)).convert("RGBA")
         self._fill_w = 宽
         return self._fill
 
@@ -2971,51 +3135,34 @@ class LiquidProgress(tk.Canvas):
         except Exception:
             pass
 
-    def _tick_ms(self):
-        """跟屏幕刷新率走：以前写死 33ms（30fps），条上的柔光看着就是一顿一顿的。"""
-        try:
-            from utils import anim
-            帧 = int(anim.frame_ms(self))
-        except Exception:
-            帧 = 0
-        if 帧 <= 0:
-            帧 = self._TICK_MS
-        return max(4, min(16, 帧))
-
     def _ensure_tick(self):
-        if self._job is not None:
+        if not self.winfo_ismapped():
             return
-        try:
-            self._job = self.after(self._tick_ms(), self._tick)
-        except Exception:
-            self._job = None
+        if not self._loop.running():
+            self._last_tick = time.perf_counter()
+            self._loop.start()
+
+    def _advance(self, elapsed):
+        elapsed = max(0.0, min(0.1, elapsed))
+        self._flow = (self._flow + 0.018 * elapsed / self._BASE_SECONDS) % 1.0
+        difference = self._fraction - self._shown
+        if abs(difference) > 0.0005:
+            factor = 1.0 - 0.78 ** (elapsed / self._BASE_SECONDS)
+            self._shown += difference * factor
+        if abs(self._fraction - self._shown) <= 0.0005:
+            self._shown = self._fraction
 
     def _tick(self):
-        self._job = None
-        try:
-            if not self.winfo_exists() or not self.winfo_ismapped():
-                return                  # 窗口没了/这一页没显示：停下，别空转
-        except Exception:
-            return
-        self._flow = (self._flow + 0.018) % 1.0
-        差 = self._fraction - self._shown
-        if abs(差) > 0.0005:
-            # 指数缓动：约 120ms 追上目标；一簇进度会摊成十几帧走完
-            self._shown += 差 * 0.22
-            if abs(self._fraction - self._shown) < 0.0005:
-                self._shown = self._fraction
-            self._fill = None
+        if not self.winfo_exists() or not self.winfo_ismapped():
+            return False
+        now = time.perf_counter()
+        self._advance(now - self._last_tick)
+        self._last_tick = now
         self._render()
-        # 只刷这一块画布（比整窗 update_idletasks 便宜得多），40ms 一次就够跟手
-        现在 = time.perf_counter()
-        if 现在 - getattr(self, "_刷图t", 0.0) >= 0.04:
-            self._刷图t = 现在
-            try:
-                super().update_idletasks()
-            except Exception:
-                pass
-        if self._shown < 0.999 or abs(self._fraction - self._shown) > 0.0005:
-            self._ensure_tick()
+        # Tk paints at idle. Calling update_idletasks here re-enters unrelated
+        # layout/paint callbacks and interrupts other animations on the window.
+        return (0.0 < self._shown < 0.999
+                or abs(self._fraction - self._shown) > 0.0005)
 
 
 def bind_text_scroll(text_widget, on_view):
@@ -3214,7 +3361,6 @@ class SwitchRow(tk.Canvas):
     _KNOB = 16
     _PAD_L = 12                 # 左边距
     _GAP = 12                   # 开关与文字之间
-    _TICK_MS = 10               # 帧间隔；进度按真实时间算，这个数只影响细腻度
     _DURATION = 0.13            # 动画时长（秒）
     _WARN_LIGHT = "#e53935"     # 浅色主题下的警示红（比主题的 fail_fg 更艳）
     _WARN_DARK = "#ff6b6b"
@@ -3261,7 +3407,7 @@ class SwitchRow(tk.Canvas):
         self._on = False
         self._enabled = True        # 禁用 = 灰掉 + 点不动（"现在不让改"）
         self._t = 0.0
-        self._job = None
+        self._loop = anim.FrameLoop(self, lambda: False)
         self._cw = 0
         self._photo = None
         self._img = self.create_image(0, 0, anchor="nw")
@@ -3285,12 +3431,13 @@ class SwitchRow(tk.Canvas):
 
     def set(self, on, animate=False):
         on = bool(on)
-        if on == self._on and self._t in (0.0, 1.0):
+        if on == self._on and self._t == (1.0 if on else 0.0):
             return
         self._on = on
         if animate:
             self._animate()
         else:
+            self._loop.stop()
             self._t = 1.0 if on else 0.0
             self._redraw()
             self._layout_text()
@@ -3406,34 +3553,23 @@ class SwitchRow(tk.Canvas):
             return tkfont.Font(font=self._font).measure(self._title)
 
     def _animate(self):
-        """按**真实时间**插值：Tk 的 after 说 10ms 实际可能 15ms，按帧数算时长会飘。"""
-        if self._job is not None:
-            try:
-                self.after_cancel(self._job)
-            except Exception:
-                pass
-        目标 = 1.0 if self._on else 0.0
-        起点 = self._t
-        开始 = time.perf_counter()
+        self._loop.stop()
+        target = 1.0 if self._on else 0.0
+        origin = self._t
+        started = time.perf_counter()
 
-        def 帧():
-            self._job = None
-            try:
-                if not self.winfo_exists():
-                    return
-            except Exception:
-                return
-            k = min(1.0, (time.perf_counter() - 开始) / self._DURATION)
-            缓动 = 1.0 - (1.0 - k) ** 3            # OutCubic
-            self._t = 起点 + (目标 - 起点) * 缓动
+        def step():
+            progress = min(1.0, (time.perf_counter() - started) / self._DURATION)
+            self._t = origin + (target - origin) * (1.0 - (1.0 - progress) ** 3)
             self._redraw()
-            if k < 1.0:
-                self._job = self.after(self._TICK_MS, 帧)
-            else:
-                self._t = 目标
-                self._redraw()
+            if progress >= 1.0:
+                self._t = target
                 self._layout_text()
-        帧()
+                return False
+            return True
+
+        self._loop.step = step
+        self._loop.start()
 
     # ---- 出图（缓存） ----
     def _card_imgs(self):
@@ -3523,7 +3659,6 @@ class SegmentedControl(tk.Canvas):
         seg.get()            # -> "skip"
     """
 
-    _TICK_MS = 10               # 帧间隔；进度按真实时间算，这个只影响细腻度
     _DURATION = 0.13            # 滑动时长（秒）
     PAD_X = 15                  # 每段左右内边距
     INSET = 2                   # 高亮块离轨道边的距离
@@ -3551,7 +3686,7 @@ class SegmentedControl(tk.Canvas):
         self._h = int(height)
         self._enabled = True
         self._hover = -1
-        self._job = None
+        self._loop = anim.FrameLoop(self, lambda: False)
         self._value = self._opts[0][0] if self._opts else None
         if value is not None and value in [v for v, _ in self._opts]:
             self._value = value
@@ -3777,40 +3912,25 @@ class SegmentedControl(tk.Canvas):
         return 0
 
     def _cancel(self):
-        if self._job is not None:
-            try:
-                self.after_cancel(self._job)
-            except Exception:
-                pass
-            self._job = None
+        self._loop.stop()
 
     def _animate(self):
-        """按真实时间插值：起点是当前位置（连续点几段也不会跳）。"""
-        self._cancel()
-        目标 = float(self._index())
-        起点 = float(self._t)
-        if abs(目标 - 起点) < 0.001:
-            self._redraw()
-            return
-        开始 = time.perf_counter()
+        self._loop.stop()
+        target = float(self._index())
+        origin = self._t
+        started = time.perf_counter()
 
-        def 帧():
-            self._job = None
-            try:
-                if not self.winfo_exists():
-                    return
-            except Exception:
-                return
-            k = min(1.0, (time.perf_counter() - 开始) / self._DURATION)
-            缓动 = 1.0 - (1.0 - k) ** 3            # OutCubic：快起慢收
-            self._t = 起点 + (目标 - 起点) * 缓动
+        def step():
+            progress = min(1.0, (time.perf_counter() - started) / self._DURATION)
+            self._t = origin + (target - origin) * (1.0 - (1.0 - progress) ** 3)
             self._redraw()
-            if k < 1.0:
-                self._job = self.after(self._TICK_MS, 帧)
-            else:
-                self._t = 目标
-                self._redraw()
-        帧()
+            if progress >= 1.0:
+                self._t = target
+                return False
+            return True
+
+        self._loop.step = step
+        self._loop.start()
 
     def _hit(self, x):
         i = int((x - self.INSET) // max(1, self._seg_w))

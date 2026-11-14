@@ -20,7 +20,7 @@ import tkinter as tk
 
 from utils.dpi import px
 from utils.textsafe import 可见
-from utils.helpers import create_gradient_button, set_window_icon
+from utils.helpers import create_gradient_button, set_window_icon, trace_exc
 from utils.i18n import trp
 
 # 卡片配色：主题里没有 card_bg / border，就自己从 bg 往 fg 混一点出来
@@ -258,6 +258,14 @@ def _弹(父窗, 主题, 标题, 副标题, 条目, 按钮, 宽=px(600), 图标�
                 pass
             try:
                 窗.destroy()
+            except Exception:
+                pass
+            # 把键盘焦点还给主窗口。弹窗开的时候 focus_force() 抢走了焦点，销毁后 Tk 不会
+            # 自动还回来：主窗口 focus_displayof() 变成 None，anim.is_slow() 把它当成"失焦"，
+            # 所有平滑滚动 / 悬停动画整体降到 30fps（实测滚轮 4 格 yview 只变 8 次、间隔 32ms，
+            # 正常是 74 次、3ms）—— 用户报「取消迁移后清单滚动卡顿」就是这个。
+            try:
+                父窗.focus_force()
             except Exception:
                 pass
 

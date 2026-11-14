@@ -16,9 +16,10 @@ from core import precheck
 from core.migrator import (
     _is_safe_path, do_backup, do_restore, get_backup_path, get_record_backup_path,
     list_record_backups, load_history, mark_rollback, match_mod,
-    prune_legacy_backup, run_migration,
+    prune_legacy_backup, run_migration, MigrationCancelled,
 )
 from core.scanner import scan_mod_differences
+from core.migration_plan import build_migration_plan, backup_size
 from pathlib import Path
 from tkinter import messagebox
 from ui.dialogs import ProgressWindow, ScanProgressWindow, ask_migrate_confirm
@@ -72,95 +73,27 @@ def _停计时(拥有者):
 
 
 class _SmoothText(tk.Text):
-    """日志框：滚轮走缓动，而不是一格一格地跳。
-
-    Tk 的 Text 没有像素滚动（`yview units` 的单位就是"行"），所以这里按**行**
-    做缓动：滚轮只改目标行号，然后每帧朝目标走一小段，看起来就是滑过去。
-    目标按"当前顶部行"重新算，所以拖滚动条/按 PageDown 之后也不会漂。
-
-    ⚠ 走多快**必须按真实时间折算**：改前是 after(16) + 每帧 1 行（= "1 行 / 16ms"）
-    定死的，帧间隔一变成 4ms，同样的"每帧 1 行"就快 4 倍。现在每帧先算"从手势开始
-    到现在本该滚过几行"（见 _anim），只把差额滚出去 —— 16ms 排帧和 4ms 排帧走完
-    同样的距离、花同样的时间，观感和改前一致。
-    """
+    """History log with pixel scrolling, including wrapped lines and touchpads."""
 
     def __init__(self, master, **kw):
         super().__init__(master, **kw)
-        self._job = None
-        self._target = 1
-        self._holding = False
-        # 兜底：日志框会随历史窗口一起销毁，那时链还没跑完（甚至正卡在一帧中间），
-        # 不走这条绑定的话 hold() 的计数永远停在 1，整机一直占着 1ms 精度。
-        self.bind("<Destroy>", lambda e: _停计时(self), add="+")
-        self.bind("<MouseWheel>", self._on_wheel, add="+")
-        self.bind("<Button-4>", lambda e: (self._scroll(-3), "break")[-1], add="+")
-        self.bind("<Button-5>", lambda e: (self._scroll(3), "break")[-1], add="+")
+        from utils.helpers import SmoothScroller
+        self._scroller = SmoothScroller.for_text(self)
+        self.bind("<Button-4>", lambda e: self._scroll(-3))
+        self.bind("<Button-5>", lambda e: self._scroll(3))
+        # Keyboard navigation and direct scrollbar dragging take priority.
+        self.bind("<KeyPress>", lambda e: self._scroller.stop(), add="+")
+        self.bind("<ButtonPress-1>", lambda e: self._scroller.stop(), add="+")
 
-    def _top(self):
-        try:
-            return int(float(self.index("@0,0")))
-        except Exception:
-            return 1
+    def yview(self, *args):
+        if args and hasattr(self, "_scroller"):
+            self._scroller.stop()
+        return super().yview(*args)
 
-    def _on_wheel(self, e):
-        步 = int(e.delta / 120) or (1 if e.delta > 0 else -1)
-        self._scroll(-步 * 3)
-        return "break"      # ⚠ 必须拦住 Text 的默认类绑定，否则它自己一次跳 3 行
-
-    def _scroll(self, 行):
-        if self._job is None:
-            self._target = self._top()
-        总 = 1
-        try:
-            总 = max(1, int(float(self.index("end-1c"))))
-        except Exception:
-            pass
-        self._target = max(1, min(总, self._target + 行))
-        self._anim()
-
-    # 手感基准：改前是 after(16) + 每帧滚 1 行，也就是"1 行 / 16ms"。这是**速度基准**，
-    # 不要换成 anim.frame_ms()：帧间隔是"多久算一次"，这里要的是"每毫秒走多远"。
-    _行基准 = 0.016
-
-    def _anim(self):
-        if self._job:
-            try:
-                self.after_cancel(self._job)
-            except Exception:
-                pass
-            self._job = None
-        _占定时器(self)            # 链一起跑就 raise 定时器精度，见 _占定时器 的说明
-        # 手势起点：这两帧之后"走了多远"一律按 (现在 - 起点) 的**绝对时间**算，
-        # 不逐帧累加。累加会把每帧取整的零头攒着，收尾时 4ms 排帧与 16ms 排帧能差
-        # 出一整帧的量（实测 3 行 47ms vs 36ms，差 24%）。
-        self._起_t = time.perf_counter()
-        self._起行 = self._top()
-
-        def 帧():
-            剩 = self._target - self._top()
-            if 剩 == 0:
-                self._job = None
-                _停计时(self)
-                return
-            # 这一帧"总共该滚过几行"：+1 是改前"滚轮一到就立刻滚 1 行"的那一步，
-            # 之后每过 _行基准(16ms) 再多 1 行。
-            # 那 1ms 是**取整余量**：真机的 after(16) 实测 15.6~16.1ms，差那么一点
-            # 就会被 int() 截掉，于是每一行都要多等一帧（3 行 47ms 而不是 32ms）。
-            # 反过来也不能"四舍五入"（+8ms 会让 4ms 排帧每行早到半格，实测快 41%）。
-            该走 = int((time.perf_counter() - self._起_t + 0.001) / self._行基准) + 1
-            已走 = abs(self._top() - self._起行)
-            步 = min(abs(剩), 该走 - 已走)
-            if 步 > 0:
-                self.yview_scroll(步 if 剩 > 0 else -步, "units")
-                # 到位就当场停：否则还要多排一帧空转，"开始到停住"的总时长会随帧间隔
-                # 长短而变化（帧间隔越短空转越短，看着像变快了）。
-                if self._top() == self._target:
-                    self._job = None
-                    _停计时(self)
-                    return
-            self._job = self.after(anim.delay(self), 帧)
-
-        帧()
+    def _scroll(self, lines):
+        from utils.helpers import _text_notch_px
+        self._scroller.scroll_px(float(lines) * _text_notch_px(self) / 3.0)
+        return "break"
 
 
 def _hex_rgb(v, 默认=(128, 128, 128)):
@@ -653,6 +586,7 @@ class MigrationMixin:
         详情["源"] = _行文本(trp("源目录"), 数据色)
         详情["目标"] = _行文本(trp("目标目录"), 数据色)
         详情["模组"] = _行数据(trp("模组"))
+        详情["存档"] = _行数据(trp("存档"))
         详情["config"] = _行数据("config")
         详情["其它"] = _行数据(trp("其它"))
         详情["耗时"] = _行文本(trp("耗时"), 数字色)
@@ -831,9 +765,11 @@ class MigrationMixin:
             详情["目标"].config(text=rec.get("target", "—"))
             统计 = rec.get("stats") or {}
             m = 统计.get("mods") or {}
+            w = 统计.get("saves") or {}
             c = 统计.get("config") or {}
             e = 统计.get("extra") or {}
             _填数据(详情["模组"], m.get("success", 0), m.get("skipped", 0), m.get("failed", 0))
+            _填数据(详情["存档"], w.get("success", 0), 0, w.get("failed", 0), 有跳过=False)
             _填数据(详情["config"], c.get("success", 0), 0, c.get("failed", 0), 有跳过=False)
             _填数据(详情["其它"], e.get("success", 0), e.get("skipped", 0), e.get("failed", 0))
             详情["耗时"].config(text=trp("{0} 秒", rec.get("duration", "—")))
@@ -1117,57 +1053,36 @@ class MigrationMixin:
 
     # ---------- 进度轮询 ----------
     def _poll_progress(self):
-        # 只要队列在就轮询：模拟运行没有进度窗口，但背面那条 3px 条一样要跟着走
-        # （见下面 progress_window 为 None 的分支）。
+        """Progress never owns the worker lifecycle or clears its cancellation signal."""
+        self.after_id = None
+        event = getattr(self, "_migration_cancel", None)
+        window = self.progress_window
+        if event is not None and window is not None and window.cancelled:
+            event.set()
+        latest = None
         if self.progress_queue is not None:
             try:
-                while True:
-                    msg = self.progress_queue.get_nowait()
-                    if msg is None:
-                        if self.progress_window is not None:
-                            self.progress_window.close()
-                        self.progress_window = None
-                        self.progress_queue = None
-                        if self.after_id is not None:
-                            self.root.after_cancel(self.after_id)
-                            self.after_id = None
-                        self._migration_running = False
-                        # 停在 85%：剩下 15% 交给"日志滚完"那一段推（用户要的是
-                        # 日志滚完条才满，不是活儿干完就满）。
-                        self._flip_progress(0.85)
-                        self._日志尾巴起步()
-                        # 收尾中不解锁：否则完成态被这条抢掉
-                        if not getattr(self, "_mig_finish_pending", False):
-                            self._unlock_main_window()  # 进度窗口关掉时同步解锁
-                        self._notify_task_done(
-                            "迁移", trp("任务已结束，点托盘图标打开主界面查看日志"))
-                        return
-                    if self.progress_window is not None:
-                        self.progress_window.update_progress(*msg)
-                    # 顺手把进度同步到背面那条 3px 条（copied_bytes / 总量）
-                    try:
-                        总 = float(getattr(self, "_mig_total_size", 0) or 0)
-                        if 总 > 0:
-                            # 0 → 85%：干活这一段（倒计时已经把条收空了）；
-                            # 剩下 15% 留给"日志还在一行行滚"
-                            self._flip_progress(
-                                0.85 * min(1.0, float(msg[2]) / 总))
-                    except Exception:
-                        pass
+                for _ in range(256):
+                    message = self.progress_queue.get_nowait()
+                    if message is not None:
+                        latest = message
             except queue.Empty:
                 pass
-            if self.progress_window and self.progress_window.cancelled:
-                if self.progress_queue:
-                    self.progress_queue.put(None)
+        if latest is not None:
+            if window is not None:
+                window.update_progress(*latest)
+            total = float(getattr(self, "_mig_total_size", 0) or 0)
+            if total:
+                self._flip_progress(0.85 * min(1.0, latest[2] / total))
+        if self._migration_running:
             self.after_id = self.root.after(100, self._poll_progress)
-        else:
-            self.after_id = None
 
     def _日志尾巴起步(self):
-        """迁移活儿干完了，但日志还在往外滚：条从 85% 推到 100%，和日志一个节奏。
+        """迁移活儿干完了：把条从 85% 推到 100%。
 
-        用剩余日志像素（`_log_remain_px`）当尺子 —— 它减到 0 的那一刻，正好是
-        用户看到日志停在最底下的那一刻，条也刚好满。
+        用剩余日志像素（`_log_remain_px`）当尺子。新日志视图直接把最新一批贴底渲染，
+        `_log_remain_px` 恒为 0，所以现在第一步就到 100%；保留这套步进是为了
+        日志视图以后又有滚动追赶时不用改这里。
         """
         if getattr(self, "_log_tail_job", None) is not None:
             return
@@ -1270,7 +1185,7 @@ class MigrationMixin:
                          len(缺)), level="WARNING")
 
         self._scanning = True
-        self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 扫描中…")
+        self.scan_btn.set_label("⏳ 扫描中…")
         self._refresh_busy_state()
         self.log("🔍 开始扫描模组差异，请稍候...", level="INFO")
         self.root.update_idletasks()
@@ -1397,10 +1312,9 @@ class MigrationMixin:
                 current, filename = 最新
                 total = getattr(self, '_scan_total', 0)
                 if total > 0:
-                    self.scan_btn.itemconfig(self.scan_btn.text_id,
-                                             text=trp("⏳ 解析中 ({0}/{1})", current, total))
+                    self.scan_btn.set_label(trp("⏳ 解析中 ({0}/{1})", current, total))
                 else:
-                    self.scan_btn.itemconfig(self.scan_btn.text_id, text="⏳ 解析中...")
+                    self.scan_btn.set_label("⏳ 解析中...")
                 if hasattr(self, 'scan_progress_window'):
                     self.scan_progress_window.update_progress(current, filename)
             except Exception:
@@ -1409,7 +1323,7 @@ class MigrationMixin:
         self.root.after(16, self._poll_scan_progress)
 
     def _finish_scan(self, data, error_msg):
-        self.scan_btn.itemconfig(self.scan_btn.text_id, text="🔍 扫描模组差异")
+        self.scan_btn.set_label("🔍 扫描模组差异")
         self._scanning = False
         self._refresh_busy_state()
 
@@ -1902,190 +1816,106 @@ class MigrationMixin:
         # 迁移的临时清单（不写回用户清单），用户要求"一切都要自己选" —— 那套删了。
         # 想带常用目录，去清单页用「＋ 常用目录」加进清单：看得见、能删、有备份策略。
 
-        # 计算要复制的文件数与总大小
-        total_files, total_size = self._calculate_migration_stats(
-            src_path, tgt_path, world, modlist, configlist, extralist)
-        self.log(trp("📦 待迁移文件 {0} 个，总大小 {1:.1f} MB", total_files, total_size / 1024 / 1024),
-                 level="INFO")
-
-        if total_files == 0:
-            messagebox.showinfo("提示", "没有找到需要复制的文件，请检查清单。")
-            return
-
-        # 磁盘空间检查（目标盘需容纳 迁移数据 + 目标备份，附带余量）
-        ok, free, needed = self._check_disk_space(tgt_path, total_size)
-        if free < 0:
-            self.log("⚠️ 无法读取目标磁盘信息，已跳过空间检查", level="WARNING")
-        elif not ok:
-            messagebox.showerror(
-                "磁盘空间不足",
-                trp("目标磁盘剩余空间 {0:.1f} MB，本次迁移约需 {1:.1f} MB（含备份余量）。\n空间不足，请清理目标磁盘后重试。", free / 1024 / 1024, needed / 1024 / 1024))
-            return
-
-        # 正式迁移前再确认一次（模拟运行不用 —— 它不改任何文件）。设置里可以关掉。
-        if not self.dry_run.get() and self.confirm_migrate.get():
-            确认框 = _打桩优先("ask_migrate_confirm", ask_migrate_confirm)
-            if not 确认框(self.root, self.theme, {
-                    "源": src, "目标": tgt, "存档": world,
-                    "模组": len(modlist), "config": len(configlist),
-                    "其它文件": len(extralist), "文件数": total_files,
-                    "大小MB": total_size / 1024 / 1024,
-                    "覆盖模组": self.overwrite_mods.get(),
-                    "其它文件冲突": self.extra_conflict.get()}):
-                self.log(trp("ℹ️ 已取消：确认框里点了「取消」，没有动任何文件。"), level="INFO")
-                return
-
-        # 置为"迁移中"，禁用相关按钮、并给主窗口上锁，防止重复触发/误操作
+        # Snapshot Tk values once; inventory and backups run off the UI thread.
+        self._migration_cancel = threading.Event()
         self._migration_running = True
-        self._clear_fail_marks()          # 新一次迁移，先把上次的红标和失败列表清掉
-        self._mig_t0 = time.time()        # 完成态总结要算耗时
+        self._clear_fail_marks()
+        self._mig_t0 = time.time()
         self._mig_plan = (len(modlist), len(configlist), len(extralist))
         self._refresh_busy_state()
-        self._lock_main_window(trp("正在执行迁移任务") if not self.dry_run.get()
-                              else trp("正在执行迁移任务（模拟运行）"))
+        params = dict(src_path=src_path, tgt_path=tgt_path, world=world,
+                      modlist=modlist, configlist=configlist, extralist=extralist,
+                      dry_run=bool(self.dry_run.get()),
+                      overwrite=bool(self.overwrite_mods.get()),
+                      extra_overwrite=self.extra_conflict.get() != "skip",
+                      marker=self.rename_marker if self.rename_migrated_mods else None,
+                      confirm=bool(self.confirm_migrate.get()),
+                      silent=bool(self.silent_background),
+                      cancel_event=self._migration_cancel)
+        threading.Thread(target=self._prepare_migration, args=(params,), daemon=True).start()
 
-        # 模拟模式
-        if self.dry_run.get():
-            # 模拟运行也开一条进度队列（不建进度窗口）：背面那条 3px 条就能跟着
-            # 「处理到第几个文件」走，和日志是同一个节奏 —— 用户要的同步就是这个。
-            try:
-                _总数, _总量 = self._calculate_migration_stats(
-                    src_path, tgt_path, world, modlist, configlist, extralist)
-                self.progress_queue = queue.Queue()
-                self._mig_total_size = float(_总量 or 0)
-                if self.after_id is None:
-                    self._poll_progress()
-            except Exception as e:
-                trace_exc("main_window/模拟运行进度队列", e)
-                self.progress_queue = None
-            self.log("========== 开始迁移（模拟） ==========", level="INFO")
-            self.log(trp("旧版目录（源）: {0}", src), level="INFO")
-            self.log(trp("新版目录（目标）: {0}", tgt), level="INFO")
-            self.log(trp("存档名称: {0}", world), level="INFO")
-            self.log("模拟模式: 是", level="INFO")
-            self.log("不会实际修改任何文件", level="INFO")
-            # 模拟运行不备份，但档案仍然要有自己唯一的 id —— 否则 record_id 传
-            # None 进去，档案文件名会变成 "None.json"，每次模拟都覆盖上一份
-            try:
-                from utils import history_store as _hs
-                _模拟记录id = _hs.new_id()
-            except Exception:
-                _模拟记录id = None
-            self._mig_record_id = _模拟记录id
-            thread = threading.Thread(
-                target=self._run_migration_thread,
-                args=(src_path, tgt_path, world, modlist, configlist, True,
-                      self.overwrite_mods.get(), extralist,
-                      self.extra_conflict.get() != "skip", _模拟记录id)
-            )
-            thread.daemon = True
-            thread.start()
+    def _prepare_migration(self, params):
+        """Worker: build one inventory and estimate the actual backup range."""
+        try:
+            plan = build_migration_plan(
+                params["src_path"], params["tgt_path"], params["world"],
+                params["modlist"], params["configlist"], params["extralist"],
+                params["overwrite"], params["extra_overwrite"], params["marker"],
+                params["cancel_event"].is_set)
+            disk = (True, -1, -1) if params["dry_run"] else self._check_disk_space(
+                params["tgt_path"], plan["total_size"], params["extralist"],
+                params["cancel_event"].is_set)
+            self._ui_post(self._migration_prepared, params, plan, disk)
+        except MigrationCancelled:
+            self.log(trp("⚠️ 用户取消了迁移"), "WARNING")
+            self._ui_post(self._complete_migration, False)
+        except Exception as error:
+            self._ui_post(self._complete_migration, False, str(error))
+
+    def _migration_prepared(self, params, plan, disk):
+        """UI: review the concrete inventory, then start backup/execution."""
+        if params["cancel_event"].is_set():
+            self._complete_migration(False)
             return
-
-        # 实际迁移：先备份。**要把这次迁移的「其它文件」清单一起传进去** ——
-        # 那些条目迁移时会被覆盖/新建，没备份的话"覆盖（先备份）"就是空话、回滚也还原不了
-        #
-        # 备份按"记录"分目录：先生成这次迁移的档案 id，备份存到 rec_<id>/ 下，
-        # 迁移结束时那份档案也用同一个 id —— 于是历史窗口里每一条都能对应到自己的回滚点。
-        try:
-            from utils import history_store as _hs
-            记录id = _hs.new_id()
-        except Exception:
-            记录id = None
-        self._mig_record_id = 记录id
-        try:
-            _打桩优先("do_backup", do_backup)(
-                tgt_path, log_func=self.log, extra_entries=extralist,
-                record_id=记录id)
-        except Exception as e:
-            self.log(trp("❌ 备份失败：{0}", e), level="ERROR")
-            messagebox.showerror("备份错误", trp("备份目标实例失败：{0}\n迁移已取消。", e))
-            self._migration_running = False
-            self._unlock_main_window()
-            self._refresh_busy_state()
+        total_files, total_size = plan["total_files"], plan["total_size"]
+        if not plan["files"] and not plan["dirs"]:
+            details = NL.join(f"{label}: {error}" for _, label, error in plan["errors"])
+            self._complete_migration(False, trp("没有找到需要复制的文件") + (NL + details if details else ""))
             return
-        # 新备份已经落盘，旧版那一份单一备份就没用了（不然一直占着几百兆）
-        try:
-            清掉 = _打桩优先("prune_legacy_backup", prune_legacy_backup)(
-                tgt_path, log_func=self.log)
-            if 清掉:
-                self.log(trp("🧹 已清理旧版留下的单一备份（{0} 项）", 清掉), level="INFO")
-        except Exception as e:
-            trace_exc("main_window/清理旧备份", e)
-
-        if self.silent_background:
-            # 后台静默执行：不弹进度窗口，也不建队列/轮询，全过程只写日志
-            self.progress_queue = None
-            self.progress_window = None
-            self.log("🤫 后台静默执行已开启：不显示进度窗口，完成后用系统通知提醒",
-                     level="INFO")
-            self._silent_notify_on_finish = True
-        else:
-            self.progress_queue = queue.Queue()
-            # 背面那条 3px 条按真实进度走，换算要用到总量
-            self._mig_total_size = float(total_size or 0)
-            # theme 一定要显式传：ProgressWindow 从 parent 上取不到（这里传的是 Tk 根窗口），
-            # 不传就一律退回 LIGHT_THEME —— 深色主题下这条进度条会一直是浅色。
-            self.progress_window = ProgressWindow(self.root, total_files, total_size,
-                                                  theme=self.theme)
-            if self.after_id is None:
-                self._poll_progress()
-
-        thread = threading.Thread(
-            target=self._run_migration_thread,
-            args=(src_path, tgt_path, world, modlist, configlist, False,
-                  self.overwrite_mods.get(), extralist,
-                  self.extra_conflict.get() != "skip", 记录id)
-        )
-        thread.daemon = True
-        thread.start()
+        self.log(trp("📦 待迁移文件 {0} 个，总大小 {1:.1f} MB",
+                     total_files, total_size / 1024 / 1024), "INFO")
+        selected_mods = sum(item["dst"].parent == plan["target"] / "mods"
+                            and item["dst"].suffix.lower() == ".jar" for item in plan["files"])
+        skipped_mods = sum(len(item["skipped"]) for item in plan.get("mod_resolutions", []))
+        if skipped_mods:
+            self.log(trp("已自动处理 {0} 个重复模组文件，本次选择 {1} 个模组；处理明细见执行日志。",
+                         skipped_mods, selected_mods), "INFO")
+        if not disk[0]:
+            self._complete_migration(False, trp(
+                "目标磁盘剩余空间 {0:.1f} MB，本次迁移约需 {1:.1f} MB（含备份余量）。",
+                disk[1] / 1024 / 1024, disk[2] / 1024 / 1024))
+            return
+        if not params["dry_run"] and params["confirm"]:
+            confirm = _打桩优先("ask_migrate_confirm", ask_migrate_confirm)
+            if not confirm(self.root, self.theme, {
+                    "源": str(params["src_path"]), "目标": str(params["tgt_path"]),
+                    "存档": params["world"], "模组": selected_mods,
+                    "config": len(params["configlist"]), "其它文件": len(params["extralist"]),
+                    "文件数": total_files, "大小MB": total_size / 1024 / 1024,
+                    "覆盖模组": params["overwrite"],
+                    "其它文件冲突": "overwrite" if params["extra_overwrite"] else "skip"}):
+                self._complete_migration(False)
+                return
+        from utils import history_store
+        params["record_id"] = history_store.new_id()
+        self._mig_record_id = params["record_id"]
+        self._mig_total_size = float(total_size)
+        # 静默模式没有进度窗口来宣布结束：收尾时即使窗口不在托盘也要发系统通知
+        self._silent_notify_on_finish = bool(params["silent"])
+        self.progress_queue = queue.Queue()
+        self.progress_window = None
+        if not params["dry_run"] and not params["silent"]:
+            self.progress_window = ProgressWindow(
+                self.root, total_files, total_size, theme=self.theme,
+                cancel_event=params["cancel_event"])
+        self._poll_progress()
+        backup_fn = _打桩优先("do_backup", do_backup)
+        prune_fn = _打桩优先("prune_legacy_backup", prune_legacy_backup)
+        threading.Thread(target=self._run_migration_thread,
+                         args=(params["src_path"], params["tgt_path"], params["world"],
+                               params["modlist"], params["configlist"], params["dry_run"],
+                               params["overwrite"], params["extralist"],
+                               params["extra_overwrite"], params["record_id"]),
+                         kwargs={"plan": plan, "cancel_event": params["cancel_event"],
+                                 "marker": params["marker"], "backup_fn": backup_fn,
+                                 "prune_fn": prune_fn},
+                         daemon=True).start()
 
     def _calculate_migration_stats(self, src_path, tgt_path, world, modlist,
                                    configlist, extralist=None):
-        total_files = 0
-        total_size = 0
-
-        src_mods = src_path / "mods"
-        if src_mods.exists():
-            source_files = {f.name: f for f in src_mods.glob("*.jar")}
-            for mod in modlist:
-                matched = match_mod(mod, source_files, {})
-                if matched:
-                    total_files += 1
-                    total_size += (src_mods / matched).stat().st_size
-
-        src_world = src_path / "saves" / world
-        if src_world.exists():
-            for f in src_world.rglob("*"):
-                if f.is_file():
-                    total_files += 1
-                    total_size += f.stat().st_size
-
-        src_config = src_path / "config"
-        for entry in configlist:
-            src_entry = src_config / entry
-            if src_entry.is_file():
-                total_files += 1
-                total_size += src_entry.stat().st_size
-            elif src_entry.is_dir():
-                for f in src_entry.rglob("*"):
-                    if f.is_file():
-                        total_files += 1
-                        total_size += f.stat().st_size
-
-        # 其它文件清单：相对整合包根目录（shaderpacks/、options.txt、kubejs/ 这类）
-        for entry in (extralist or []):
-            src_entry = src_path / str(entry).replace("\\", "/")
-            if src_entry.is_file():
-                total_files += 1
-                total_size += src_entry.stat().st_size
-            elif src_entry.is_dir():
-                for f in src_entry.rglob("*"):
-                    if f.is_file():
-                        total_files += 1
-                        total_size += f.stat().st_size
-
-        return total_files, total_size
+        plan = build_migration_plan(src_path, tgt_path, world, modlist,
+                                    configlist, extralist, overwrite=True)
+        return plan["total_files"], plan["total_size"]
 
     def _dir_size(self, path):
         """递归计算目录下所有文件大小（跳过迁移备份目录和符号链接，避免虚高/死循环）。
@@ -2108,96 +1938,83 @@ class MigrationMixin:
             pass
         return total
 
-    def _check_disk_space(self, tgt_path, total_size):
-        """检查目标磁盘空间是否足够（迁移数据 + 目标备份，附加余量）。
-        返回 (ok, free_bytes, needed_bytes)；无法读取磁盘时返回 (True, -1, -1)。"""
+    def _check_disk_space(self, tgt_path, total_size, extras=None, check_cancel=None):
         try:
             free = shutil.disk_usage(str(tgt_path)).free
-        except Exception:
+        except OSError:
             return True, -1, -1
-        # 备份需容纳目标实例当前大小，迁移需写入 total_size；加 1.2 倍余量 + 100MB 缓冲。
-        target_size = self._dir_size(tgt_path)
-        needed = int((total_size + target_size) * 1.2) + 100 * 1024 * 1024
+        needed = int((total_size + backup_size(tgt_path, extras, check_cancel)) * 1.2)
+        needed += 100 * 1024 * 1024
         return free >= needed, free, needed
 
     def _run_migration_thread(self, src_path, tgt_path, world, modlist, configlist,
                               dry_run, overwrite, extralist=None, extra_overwrite=True,
-                              record_id=None):
-        """迁移工作线程。
+                              record_id=None, plan=None, cancel_event=None,
+                              marker=None, backup_fn=do_backup, prune_fn=None):
+        event = cancel_event or threading.Event()
+        success, error_message = False, None
+        progress_queue = self.progress_queue
 
-        overwrite / extra_overwrite 由主线程读好再传进来：Tk 变量只能在主线程碰，
-        子线程直接 self.overwrite_mods.get() 会抛 "main thread is not in main loop"。
-        """
-        def progress_callback(file_index, file_name, copied_bytes, step=None):
-            if file_index is None:
-                # 这是迁移结束的哨兵：以前这里直接 return 把它吞了，_poll_progress
-                # 永远等不到 None —— 进度窗口（还是 grab_set 的）跑完也不关，
-                # 界面就那样卡在"迁移进度"上不收。
-                if self.progress_queue:
-                    self.progress_queue.put(None)
-                return
-            if self.progress_queue:
-                self.progress_queue.put((file_index, file_name, copied_bytes, step))
-
-        def check_cancel():
-            return self.progress_window and self.progress_window.cancelled
+        def progress(index, filename, size, step=None):
+            if index is not None and progress_queue is not None:
+                progress_queue.put((index, filename, size, step))
 
         try:
-            run_migration(
-                src_path=src_path,
-                tgt_path=tgt_path,
-                world_name=world,
-                modlist=modlist,
-                configlist=configlist,
-                dry_run=dry_run,
-                overwrite=overwrite,
-                progress_callback=progress_callback,
-                log_callback=self.log,
-                check_cancel=check_cancel,
-                add_history=True,
-                record_id=record_id,
-                # 迁移标记：只改目标文件名，加载器认的是 jar 里的 modid，不受影响
-                rename_marker=(self.rename_marker
-                               if getattr(self, "rename_migrated_mods", False) else None),
-                # 其它文件清单（相对整合包根目录）+ 同名冲突策略
-                extralist=extralist,
-                extra_overwrite=bool(extra_overwrite)
-            )
+            if not dry_run:
+                backup_fn(tgt_path, log_func=self.log, extra_entries=extralist,
+                          record_id=record_id, check_cancel=event.is_set)
+                if event.is_set():
+                    raise MigrationCancelled()
+                prune = prune_fn or prune_legacy_backup
+                # 新备份已经落盘，旧版那一份单一备份就没用了。清不掉不影响迁移，
+                # 单独兜住：别让它把整次迁移判成失败
+                try:
+                    清掉 = prune(tgt_path, log_func=self.log)
+                    if 清掉:
+                        self.log(trp("🧹 已清理旧版留下的单一备份（{0} 项）", 清掉), level="INFO")
+                except Exception as e:
+                    trace_exc("mw_migration/清理旧备份", e)
+            success = run_migration(
+                src_path, tgt_path, world, modlist, configlist, dry_run, overwrite,
+                progress_callback=progress, log_callback=self.log,
+                check_cancel=event.is_set, record_id=record_id, plan=plan,
+                rename_marker=marker, extralist=extralist,
+                extra_overwrite=extra_overwrite)
+        except MigrationCancelled:
+            self.log(trp("⚠️ 用户取消了迁移"), "WARNING")
+        except Exception as error:
+            error_message = str(error)
+            self.log(trp("❌ 迁移任务失败：{0}", error), "ERROR")
         finally:
-            # 先立"收尾中"标志，再翻 _migration_running：锁屏那个 250ms 的
-            # _watch_migration_end 一看到"没在跑"就会立刻解锁，和下面这条
-            # _ui_post(_finish_migration_lock) 抢 ——抢赢的那次用户就看不到
-            # 完成态（他报的"完成迁移后锁屏界面直接退出"就是这个）。
-            self._mig_finish_pending = True
-            self._migration_running = False
-            # 收尾交给"锁屏完成态"：写总结 → 边框红转绿 → 等用户按任意键。
-            # 这里是**迁移线程**，不能直接碰 Tk —— 丢给主线程的 UI 泵执行。
-            self._ui_post(self._finish_migration_lock)
+            # Only the worker's final message releases the UI and task ownership.
+            self._ui_post(self._complete_migration, success, error_message)
 
-            # 「迁移结束」这个标志要等**执行日志真的滚到底**再给：
-            # 用户看的是那片日志，日志还在滚就把「开始迁移」翻回正面、按钮全部点亮，
-            # 会觉得「我还没看完就结束了」。
-            def _收尾():
-                # 迁移结束（成功/失败/取消都走这里）：把「开始迁移」翻回正面
-                if getattr(self, "_log_tail_job", None) is not None:
-                    try:
-                        self.root.after_cancel(self._log_tail_job)
-                    except Exception:
-                        pass
-                    self._log_tail_job = None
-                # 条先留着（满格），等翻面那一下放完再复位 —— 否则它在翻之前就
-                # "啪"一下没了，正好卡在翻面那一帧，看着很突兀。
-                self._ending_wait_log = False
-                self._flip_start_btn(
-                    结束后=lambda: self._flip_progress(None))
-                self._refresh_busy_state()
+    def _complete_migration(self, success, error_message=None):
+        self._migration_running = False
+        self._mig_finish_pending = False
+        self._migration_cancel = None
+        if self.after_id is not None:
+            self.root.after_cancel(self.after_id)
+            self.after_id = None
+        if self.progress_window is not None:
+            self.progress_window.close()
+        self.progress_window = None
+        self.progress_queue = None
+        self._ending_wait_log = True
+        if success:
+            self._日志尾巴起步()
+        if error_message:
+            messagebox.showerror(trp("迁移错误"), error_message)
 
-            # 日志还没滚完的这段时间也要算「忙」：否则按钮先亮了、按钮却还在背面，
-            # 看着像两个状态打架。
-            self._ending_wait_log = True
-            self._ui_post(lambda: self.when_log_bottom(_收尾))
-            # 静默模式下没有进度窗口来宣布结束，这里补一条系统通知
-            if getattr(self, "_silent_notify_on_finish", False):
-                self._silent_notify_on_finish = False
-                self._ui_post(lambda: self._notify_task_done(
-                    "迁移", trp("后台静默执行已结束，点托盘图标查看日志"), force=True))
+        def finish():
+            self._ending_wait_log = False
+            self._flip_start_btn(结束后=lambda: self._flip_progress(None))
+            self._refresh_busy_state()
+        self.when_log_bottom(finish)
+        if getattr(self, "_silent_notify_on_finish", False):
+            self._silent_notify_on_finish = False
+            self._notify_task_done("迁移", trp("后台静默执行已结束，点托盘图标查看日志"),
+                                   force=True)
+            return
+        self._notify_task_done("迁移", trp("迁移结束：{0}",
+                              trp("成功") if success else trp("未完成，请检查日志")))

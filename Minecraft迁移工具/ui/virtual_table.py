@@ -175,7 +175,15 @@ class VirtualTable(tk.Frame):
 
     def _after_scroll(self):
         """滚动后重绘可见行，并通知外部（比如收起悬停提示）。"""
-        self._render()
+        # Canvas 的现有行会随 yview 自动移动；只有跨过行边界、出现新行时
+        # 才需要重新绑定槽位和读取 model。原来每个像素帧都完整跑一次
+        # _render()，滚动大量数据时会把 Tcl/Python 往返放大成明显卡顿。
+        try:
+            first = max(0, int(self.body.canvasy(0) // self.row_height))
+        except Exception:
+            first = self._first
+        if first != self._first:
+            self._render()
         if self.on_scroll:
             try:
                 self.on_scroll()

@@ -18,6 +18,8 @@ import shutil
 from pathlib import Path
 
 from utils.i18n import trp
+from utils.file_io import check_writable
+from core.migrator import _is_safe_world_name, _checked_path
 
 # 一次最多列几个名字，避免对话框被撑爆
 _列举上限 = 5
@@ -57,10 +59,8 @@ def _查路径(src_path, tgt_path):
         条们.append(_条("fail", trp("旧版目录（源）读不了：{0}", e)))
 
     # 写：在目标根下建一个临时文件再删（比 os.access 可靠，Windows 上 access 会骗人）
-    临时 = tgt_path / ".mctool_write_test"
     try:
-        临时.write_bytes(b"mctool")
-        临时.unlink()
+        check_writable(tgt_path)
     except OSError as e:
         权限不足 = isinstance(e, PermissionError) or getattr(e, "winerror", None) == 5
         if 权限不足:
@@ -70,12 +70,6 @@ def _查路径(src_path, tgt_path):
                 "可以点下面的「以管理员身份重启」，或把整合包放到用户目录下再迁移。）", e)))
         else:
             条们.append(_条("fail", trp("新版目录（目标）写不进去：{0}", e)))
-    finally:
-        try:
-            if 临时.exists():
-                临时.unlink()
-        except OSError:
-            pass
     return 条们
 
 
@@ -108,7 +102,13 @@ def _查存档(src_path, tgt_path, world):
     """
     if not world:
         return [_条("warn", trp("没有填存档名称，存档不会被迁移"))]
-    源存档 = src_path / "saves" / world
+    if not _is_safe_world_name(world):
+        return [_条("fail", trp("存档名称必须是单个文件夹名称：{0}", world))]
+    try:
+        源存档 = _checked_path(src_path, Path("saves") / world)
+        _checked_path(tgt_path, Path("saves") / world)
+    except ValueError as error:
+        return [_条("fail", str(error))]
     if 源存档.is_dir():
         return []
     目标存档 = tgt_path / "saves" / world
@@ -124,6 +124,10 @@ def _查模组清单(src_path, modlist):
     模组目录 = src_path / "mods"
     if not modlist:
         return 条们
+    modlist = [n for n in modlist if not (Path(str(n)).is_absolute()
+               and Path(str(n)).is_file() and Path(str(n)).suffix.lower() == ".jar")]
+    if not modlist:
+        return 条们
     if not 模组目录.is_dir():
         return [_条("fail", trp("源目录里没有 mods 文件夹，清单里的 {0} 个模组都复制不了",
                                 len(modlist)))]
@@ -135,15 +139,16 @@ def _查模组清单(src_path, modlist):
     # 清单里偶尔会混进"整条路径"（早期版本添加模组写的是绝对路径，或手工粘贴）
     # 按名字比对才不会把路径当文件名去源目录里找、报"源目录里没有"。
     名单 = [Path(str(n).strip()).name for n in modlist if str(n).strip()]
+    名单小写 = {n.lower() for n in 名单}
     缺 = [n for n in 名单 if n.lower() not in 实际]
     if 缺:
         条们.append(_条("warn", trp("清单里有 {0} 个模组在源目录找不到：{1}",
                                     len(缺), _列名(缺))))
-    重复 = len(名单) - len({n.lower() for n in 名单})
+    重复 = len(名单) - len(名单小写)
     if 重复 > 0:
         条们.append(_条("info", trp("清单里有 {0} 个重复条目（不会重复复制）", 重复)))
     清单外 = [v for k, v in 实际.items() if k.endswith(".jar") and
-              k not in {n.lower() for n in 名单}]
+              k not in 名单小写]
     if 清单外:
         条们.append(_条("info", trp("源目录里还有 {0} 个 jar 不在清单里，不会被复制（{1}）",
                                     len(清单外), _列名(清单外))))

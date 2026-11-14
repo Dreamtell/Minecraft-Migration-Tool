@@ -229,8 +229,36 @@ class ThemeMixin:
             except Exception:
                 pass
 
+        _lo = getattr(self, "log_overview", None)
+        if _lo is not None:                       # 日志右侧总览条跟着换底色/色点
+            try:
+                _lo.set_theme(self.theme)
+            except Exception:
+                pass
+        if hasattr(self, 'log_row'):
+            try:
+                self.log_row.configure(bg=self.theme["bg"])
+            except Exception:
+                pass
         if hasattr(self, 'bottom_frame'):
-            self.bottom_frame.configure(bg=self.theme["bottom_bg"])
+            _bbg = self.theme["bottom_bg"]
+            self.bottom_frame.configure(bg=_bbg)
+            # 底栏里这几个控件的底色是建界面时按主题定的，切主题必须一起换：
+            # 浅色主题下 bottom_bg 是 #ffffff、bg 是 #f0f0f0，不同步就会在白底上
+            # 留下一块块灰方块（网络灯、迷你折线图、图钉按钮各锁了一圈）。
+            for _名 in ("net_status", "net_spark", "msg_bell",
+                        "_bottom_decl", "net_float_btn"):
+                _w = getattr(self, _名, None)
+                if _w is None:
+                    continue
+                try:
+                    _w.configure(bg=_bbg)
+                except Exception:
+                    pass
+            try:
+                self._draw_net_spark()      # 折线下面的底色变了，重画一遍
+            except Exception:
+                pass
         if hasattr(self, 'warning_frame'):
             self.warning_frame.configure(bg=self.theme["warning_bg"])
             self.warning_label.configure(bg=self.theme["warning_bg"],
@@ -345,6 +373,15 @@ class ThemeMixin:
                 _toast.set_theme(self.theme)
             except Exception:
                 pass
+        # 三个清单框的占位提示（空清单时显示的浅灰字 Label）跟主题走
+        for _lbl_name in ("_mod_hint_label", "_config_hint_label", "_extra_hint_label"):
+            _lbl = getattr(self, _lbl_name, None)
+            if _lbl is not None:
+                try:
+                    _lbl.configure(fg=self.theme.get("muted_fg", "#aaa"),
+                                   bg=self.theme.get("text_bg", "#fff"))
+                except Exception:
+                    pass
         self._check_overflow()
 
         # 同步"执行日志放大查看"窗口的配色与主题
@@ -376,6 +413,12 @@ class ThemeMixin:
                     apply_theme_to_widget_tree(child, self.theme)
             except Exception:
                 pass
+
+        # 通用主题遍历后，统一日志正文、滚动条轨道和浮动按钮的底色。
+        for name in ("_log_view", "_log_big_live_view"):
+            view = getattr(self, name, None)
+            if view is not None and not view._closed:
+                view.set_theme(self.theme)
 
         # 把重绘在"覆盖层还盖着"的时候一次性冲掉。否则这些彩色文字（日志分类色、
         # 清单高亮）的重新着色会被推迟到圆形揭示把它们露出来的那一刻，用户就会

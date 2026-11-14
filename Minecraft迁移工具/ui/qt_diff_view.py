@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from shiboken6 import isValid
 
 from ui import qt_big_view as Q
 from ui.qt_big_view import (AnimButton, CardDelegate, CardModel, DetailDialog,
@@ -24,6 +25,7 @@ from ui.qt_big_view import (AnimButton, CardDelegate, CardModel, DetailDialog,
 from core.scanner import detect_instance_env
 # 界面语言：见 utils/i18n.py。中文（默认）时 tr() 原样返回，行为不变。
 from utils.i18n import tr, trf
+from utils.helpers import trace_exc
 
 ROLE_ITEM = Q.ROLE_ITEM
 
@@ -310,8 +312,8 @@ class QtDiffView(QtWidgets.QWidget):
         # 源实例的环境（MC 版本 + 加载器）：详情窗里的联网搜索拿它过滤候选池
         self.env = detect_instance_env(source_path) if source_path else \
             {"mc": "", "loader": "", "src": ""}
-        # 打开时用表格还是卡片：默认视图在设置里选（_DIFF_VIEWS），这里只管摆好初始状态
-        self._start_cards = bool(cards)
+        # 差异窗口统一使用卡片视图。保留 cards 参数以兼容旧调用方，实际不再允许切回表格。
+        self._start_cards = True
         self.store = DiffStore(data, theme, parent=self)
         self.setWindowTitle(tr("智能模组差异扫描（元数据级）"))
         self.setMinimumSize(1120, 520)
@@ -369,12 +371,10 @@ class QtDiffView(QtWidgets.QWidget):
         self.btn_all = AnimButton(tr("☑ 全选"), "#7c6cf0", "#5b4bd6", th)
         # 清空勾选是"破坏性"操作（勾好了手一抖就全没了），用红色
         self.btn_none = AnimButton(tr("⬜ 清空勾选"), "#e53935", "#c62828", th)
-        self.btn_view = AnimButton(tr("🗂 卡片视图"), "#0ea5a4", "#0b7f7f", th)
         for b in (self.btn_new, self.btn_upd, self.btn_only, self.btn_combo,
                   self.btn_all, self.btn_none):
             tools.addWidget(b)
         tools.addStretch(1)
-        tools.addWidget(self.btn_view)
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText(tr("🔍 搜索（文件名 / Mod ID / 版本 / 类型 / 备注）"))
         self.search.setFixedHeight(30)
@@ -383,20 +383,19 @@ class QtDiffView(QtWidgets.QWidget):
         tools.addWidget(self.search)
         lay.addLayout(tools)
 
-        self.btn_new.clicked.connect(lambda: self._by_status(tr("新增")))
-        self.btn_upd.clicked.connect(lambda: self._by_status(tr("更新")))
-        self.btn_only.clicked.connect(lambda: self._by_status(tr("目标独有")))
+        self.btn_new.clicked.connect(lambda: self._by_status("新增"))
+        self.btn_upd.clicked.connect(lambda: self._by_status("更新"))
+        self.btn_only.clicked.connect(lambda: self._by_status("目标独有"))
         self.btn_all.clicked.connect(lambda: self._set_checked(lambda it: True))
         self.btn_none.clicked.connect(lambda: self._set_checked(lambda it: False))
-        self.btn_view.clicked.connect(self._toggle_view)
 
         combo_menu = QtWidgets.QMenu(self)
         combo_menu.addAction(tr("新增 + 更新（排除目标独有）"),
-                             lambda: self._by_status(tr("新增"), tr("更新")))
+                             lambda: self._by_status("新增", "更新"))
         combo_menu.addAction(tr("新增 + 目标独有"),
-                             lambda: self._by_status(tr("新增"), tr("目标独有")))
+                             lambda: self._by_status("新增", "目标独有"))
         combo_menu.addAction(tr("更新 + 目标独有"),
-                             lambda: self._by_status(tr("更新"), tr("目标独有")))
+                             lambda: self._by_status("更新", "目标独有"))
         self._combo_menu = combo_menu
         # 用 popup 而不是 exec，而且丢回 Tk 的 after 里弹：exec 会开一层**嵌套事件循环**，
         # 而这段代码跑在 Tk 的 after → processEvents 回调里，嵌套事件循环 + 在 Qt 栈上
@@ -523,9 +522,8 @@ class QtDiffView(QtWidgets.QWidget):
             sb.valueChanged.connect(self._update_progress)
             sb.rangeChanged.connect(lambda *_a: self._update_progress())
         self.stack.currentChanged.connect(lambda *_a: self._update_progress())
-        if self._start_cards:                 # 设置里选了"打开就是卡片"
-            self.stack.setCurrentIndex(1)
-            self.btn_view.setText(tr("📋 表格视图"))
+        # 只保留卡片视图；表格模型暂时保留用于兼容内部排序/滚动代码。
+        self.stack.setCurrentIndex(1)
 
         # ---- 底栏 ----
         bottom = QtWidgets.QHBoxLayout()
@@ -607,26 +605,12 @@ class QtDiffView(QtWidgets.QWidget):
         self._update_progress()
 
     def _toggle_view(self):
-        cards = self.stack.currentIndex() == 0
-        # 切视图时按"当前第一行"把滚动位置对齐：表格一行 26px、卡片一张 104px，
-        # 直接沿用像素值会跳位置（看着像"两个视图显示的不是同一批"）
-        row_h = max(1, self.table.verticalHeader().defaultSectionSize())
-        if cards:
-            row = self.table.verticalScrollBar().value() // row_h
-            target = row * Q.CARD_H
-        else:
-            row = self.cards.verticalScrollBar().value() // max(1, Q.CARD_H)
-            target = row * row_h
-        self.stack.setCurrentIndex(1 if cards else 0)
-        self.btn_view.setText(tr("📋 表格视图") if cards else tr("🗂 卡片视图"))
-        self._t(tr("切到%s") % (tr("卡片") if cards else tr("表格")))
-        view = self.cards if cards else self.table
-        sb = view.verticalScrollBar()
+        """兼容旧调用方：视图固定为卡片，不再提供表格切换。"""
         try:
-            sb.setValue(max(0, min(int(target), sb.maximum())))
+            self.stack.setCurrentIndex(1)
+            self._update_progress()
         except Exception:
             pass
-        self._update_progress()
 
     # ------------------------------------------------------------------ 交互
     def _animate_sel(self, it):
@@ -718,6 +702,10 @@ class QtDiffView(QtWidgets.QWidget):
     def eventFilter(self, obj, ev):
         """表头滚轮转发 + 表格/卡片的悬停（都盯 viewport，原因见 qt_big_view 里的说明）。"""
         t = ev.type()
+        if t not in (QtCore.QEvent.Wheel, QtCore.QEvent.MouseMove, QtCore.QEvent.Leave):
+            return super().eventFilter(obj, ev)
+        if not isValid(self.table):
+            return super().eventFilter(obj, ev)
         if t == QtCore.QEvent.Wheel and obj is self.table.horizontalHeader():
             self.table.wheelEvent(ev)
             return True
@@ -729,7 +717,7 @@ class QtDiffView(QtWidgets.QWidget):
         else:
             # getattr：表格的过滤器装得比卡片早，建窗口期间就可能进来事件
             cards = getattr(self, "cards", None)
-            if cards is not None and obj is cards.viewport():
+            if cards is not None and isValid(cards) and obj is cards.viewport():
                 if t == QtCore.QEvent.MouseMove:
                     self._card_mouse_move(ev)
                 elif t == QtCore.QEvent.Leave:
@@ -1019,8 +1007,8 @@ class QtDiffView(QtWidgets.QWidget):
         try:
             self.overview.set_colors(self.store.overview_colors())
             self._sync_overview_viewport()
-        except Exception:
-            trace_exc("qt_diff_view", tr("刷新总览条"))
+        except Exception as e:
+            trace_exc("qt_diff_view/" + tr("刷新总览条"), e)
 
     def _jump_to_overview(self, 比例):
         """在总览条上点/拖：把那个位置对到视口中间。"""
@@ -1031,8 +1019,8 @@ class QtDiffView(QtWidgets.QWidget):
             总 = float(sb.maximum()) + page
             目标 = int(比例 * 总 - page / 2.0)
             sb.setValue(max(sb.minimum(), min(sb.maximum(), 目标)))
-        except Exception:
-            trace_exc("qt_diff_view", tr("总览条跳转"))
+        except Exception as e:
+            trace_exc("qt_diff_view/" + tr("总览条跳转"), e)
 
     def _schedule_icon(self):
         """排下一张图标的解析（走 Tk 的 after；拿不到就退回 QTimer 单次触发）。"""
@@ -1099,9 +1087,33 @@ class QtDiffView(QtWidgets.QWidget):
         return self._alive
 
     def show_centered(self):
-        scr = QtWidgets.QApplication.primaryScreen().availableGeometry()
-        self.move(scr.center().x() - self.width() // 2,
-                  scr.center().y() - self.height() // 2)
+        """在首次显示前完成原生窗口定位，避免先出现在默认位置再居中瞬移。"""
+        self.ensurePolished()
+        try:
+            if self.layout() is not None:
+                self.layout().activate()
+        except Exception:
+            pass
+        # QWidget 在第一次 show 时才创建 HWND。先强制创建隐藏的原生窗口，
+        # 再按最终 frameGeometry 定位，Windows 就不会把默认位置短暂画出来。
+        try:
+            self.setAttribute(QtCore.Qt.WA_NativeWindow, True)
+            self.winId()
+        except Exception:
+            pass
+        try:
+            scr_obj = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos())
+        except Exception:
+            scr_obj = None
+        if scr_obj is None:
+            scr_obj = self.screen() or QtWidgets.QApplication.primaryScreen()
+        scr = scr_obj.availableGeometry()
+        frame = self.frameGeometry()
+        frame.moveCenter(scr.center())
+        # QWidget.move() 接受的是客户区左上角，而 frameGeometry 包含窗口边框；
+        # 把两者的边框偏移扣掉，避免居中后仍偏 1~2px。
+        border = self.frameGeometry().topLeft() - self.geometry().topLeft()
+        self.move(frame.topLeft() - border)
         self.show()
         self.raise_()
         self.activateWindow()

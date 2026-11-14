@@ -7,12 +7,15 @@
 
 - `Minecraft迁移工具/app.py` —— 入口，`python app.py` 起主界面
 - `Minecraft迁移工具/core/` —— 迁移、自检、联网搜索（不碰 UI）
-- `Minecraft迁移工具/ui/` —— Tk 界面（`mw_*.py` 按功能分模块），`ui/qt_big_view.py` 是 Qt 大视图
+- `Minecraft迁移工具/ui/` —— Tk 界面（`mw_*.py` 按功能分模块）；`ui/qt_main/` 是 Qt 主界面
+  （含设置/托盘/浮标/历史/翻转按钮/星空滑块），`ui/qt_host.py` 是 Tk 主进程叫起 Qt 窗口的子进程宿主
 - `Minecraft迁移工具/utils/` —— i18n、动画、DPI、音效、国旗等基础设施
 - `docs/HANDOFF.md` —— 架构、约定、踩坑（最权威，先看它）
 - `docs/HANDOFF-flip-button.md` —— 「开始迁移」3D 翻转按钮的交接
 - `docs/RELEASE_v5.0.0_body.md` —— 发布正文模板
 - `打包_命令行.bat` —— 打包入口（在仓库根，不在产品目录）
+- `legacy/` —— v4 之前的**单文件版本**（`Minecraft存档迁移工具.py`，2941 行），只存档、不参与
+  构建和测试，**不要改它**；看当时的写法或对外解释历史时可以读（说明见 `legacy/README.md`）
 
 ## 换一台电脑要准备什么
 
@@ -38,9 +41,17 @@ cd Minecraft迁移工具
 python app.py                        # 跑源码
 python -m compileall -q .            # 语法自检
 
-cd ..                                # 打包（Windows cmd）
-cmd //c 打包_命令行.bat nopause       # 产物在 dist/app
+cd ..                                # 测试与打包
+python tools/run_all.py              # 全量测试：每个测试文件独立进程跑（CI 用这个，退出码可信）
+python tools/run_all.py qt_main      # 只跑文件名带 qt_main 的
+
+cmd //c 打包_命令行.bat nopause       # 打包（产物在 dist/app）
 ```
+
+> `python -m unittest discover -s tools` 仍可用，但**不要拿它当 CI 信号**：
+> 所有测试挤在一个进程里时，Qt 窗口/定时器/全局补丁会互相漏，偶发随机失败。
+> 配置路径已改成跟随 `MCTOOL_CONFIG` 的代理（`utils/config.py`），跨文件的
+> 配置污染没了；剩下的偶发项是 Qt 事件循环状态，靠分进程解决。
 
 ## 硬约束（违反过，会出事）
 

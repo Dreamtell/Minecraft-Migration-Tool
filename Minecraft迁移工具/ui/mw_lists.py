@@ -15,6 +15,7 @@ from ui.mw_common import _EXTRA_PRESETS, _center_window, _file_task_lock, _grad_
 from utils import i18n
 from utils.helpers import (
     DataText, RoundedTextArea, create_gradient_button, focus_window, set_window_icon,
+    trace_exc,
 )
 from utils.theme import apply_theme_to_widget_tree
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
@@ -439,106 +440,6 @@ class ListsMixin:
                 self._mod_flash_after = self.root.after(1000, self._clear_mod_status)
 
         上色(0)
-
-    # ---------- 从变更日志导入 ----------
-    def import_from_changelog(self):
-        # 单实例：变更日志对话框已打开则聚焦，避免重复弹窗
-        existing = getattr(self, "_changelog_dialog", None)
-        if existing is not None:
-            try:
-                if existing.winfo_exists():
-                    focus_window(existing)      # 已有就置顶
-                    return
-            except Exception:
-                pass
-        dialog = tk.Toplevel(self.root)
-        self._changelog_dialog = dialog
-        dialog.withdraw()       # 构建完居中后再显示，避免"闪现-跳到中间"
-        dialog.title("从变更日志提取模组清单")
-        dialog.geometry("800x600")
-        dialog.transient(self.root)
-        set_window_icon(dialog)
-        tk.Label(dialog,
-                 text="请粘贴完整的变更日志文本（包含 'Added mods:' 和 'Updated mods:' 部分）：").pack(pady=5)
-        text_box = RoundedTextArea(dialog, self.theme, wrap=tk.WORD, height=20)
-        text_widget = text_box.text
-        text_box.pack(fill="both", expand=True, padx=10, pady=5)
-        self._smooth(text_widget)
-
-        def extract_and_close():
-            raw_text = text_widget.get("1.0", tk.END)
-            added, updated = self.extract_mods_from_changelog(raw_text)
-            if not added and not updated:
-                messagebox.showwarning("无结果", "未能提取到模组文件名")
-                return
-
-            all_mods = []
-            if updated:
-                ans = messagebox.askyesnocancel(
-                    "发现 Updated mods",
-                    trp("已提取到 {0} 个 Added 模组，{1} 个 Updated 模组。\n是否将 Updated 模组也添加到复制清单中？\n\n点击“是” → 全部添加\n点击“否” → 只添加 Added 模组\n点击“取消” → 不添加任何模组", len(added), len(updated))
-                )
-                if ans is None:
-                    return
-                elif ans:
-                    all_mods = added + updated
-                else:
-                    all_mods = added
-            else:
-                all_mods = added
-
-            if all_mods:
-                self.mod_text.configure(state=tk.NORMAL)
-                self.mod_text.delete(1.0, tk.END)
-                self.mod_text.insert(tk.END, "\n".join(all_mods))
-                self.mod_text.edit_reset()
-                self.save_config()
-                self._update_text_states()
-                self.toast(
-                    trp("从变更日志中提取了 {0} 个模组（Added: {1}, Updated: {2}）", len(all_mods), len(added), len(updated)),
-                    level="ok"
-                )
-                self.save_config()
-                self._update_text_states()
-                dialog.destroy()
-            else:
-                messagebox.showinfo("提示", "未添加任何模组")
-
-        btn_extract = create_gradient_button(
-            dialog, "提取并应用", extract_and_close,
-            colors=("#00c853", "#00e676"),
-            width=_grad_width("提取并应用"), height=30, font=("微软雅黑", 9, "bold"))
-        btn_extract.pack(pady=10)
-        apply_theme_to_widget_tree(dialog, self.theme)
-        _center_window(dialog, 800, 600)
-        dialog.deiconify()
-        focus_window(dialog)
-
-    def extract_mods_from_changelog(self, text):
-        lines = text.splitlines()
-        added = []
-        updated = []
-        added_pattern = re.compile(r'^[\s]*\+[\s]*(.+\.jar)', re.IGNORECASE)
-        updated_pattern = re.compile(r'^[\s]*\-[\s]*(.+\.jar)', re.IGNORECASE)
-        for line in lines:
-            line_stripped = line.strip()
-            m = added_pattern.match(line_stripped)
-            if m:
-                added.append(m.group(1))
-                continue
-            m = updated_pattern.match(line_stripped)
-            if m:
-                updated.append(m.group(1))
-                continue
-            if re.match(r"^Added\s+mods[:：]", line_stripped, re.IGNORECASE):
-                continue
-            if re.match(r"^Updated\s+mods[:：]", line_stripped, re.IGNORECASE):
-                continue
-            if line_stripped.endswith(".jar"):
-                if not (line_stripped.startswith("Added") or line_stripped.startswith("Updated") or
-                        line_stripped.startswith("Removed")):
-                    added.append(line_stripped)
-        return added, updated
 
     # ---------- Config 清单相关 ----------
     def browse_add_config_entry(self):

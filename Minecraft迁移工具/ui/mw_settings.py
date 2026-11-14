@@ -15,12 +15,13 @@ from tkinter import messagebox, ttk
 from ui import button_prefs
 from ui.mw_common import (
     LINK_GITHUB, LINK_MCMOD, LINK_MINECRAFT, LINK_PCL,
-    _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS,
+    _BIG_VIEW_BACKENDS, _BIG_VIEW_VIEWS, _BUTTON_GROUPS, _MAIN_BACKENDS,
     _BUTTON_LABELS, _DIFF_VIEWS, _EXTRA_PRESETS, _GROUP_COLORS, _GROUP_ICONS,
     _RENAME_MARKERS, _SECTION_STYLE, _mix,
 )
 from utils import i18n
 from utils import secrets
+from utils import fx
 from utils.dpi import px
 from ui.slider_row import SliderRow
 
@@ -39,7 +40,7 @@ from utils.helpers import (
     center_window, create_gradient_button, focus_window, set_window_icon, trace_exc,
 )
 # 日志/文案模板：trp 按位置填值（中文模式下与原 f-string 逐字一致）
-from utils.i18n import trp
+from utils.i18n import trp, trf
 
 
 class SettingsMixin:
@@ -275,16 +276,17 @@ class SettingsMixin:
              (("light", "浅色"), ("dark", "深色")),
              lambda v: self.choose_theme(v), 名="theme")
 
-        # 「开始迁移」按钮的翻转手感（参数在 ui/flip_button.py 的 PRESETS）。
-        # 换完立刻生效（不用重启），并且当场写进配置。
-        self.settings_feel_var = tk.StringVar(value=self.start_btn_feel.get())
-        row_feel = tk.Frame(box1, bg=self.theme["bg"])
-        row_feel.pack(fill="x", pady=(10, 0))
-        tk.Label(row_feel, text="开始迁移按钮手感：", bg=self.theme["bg"],
+        # 特效强度：4 档统管启动动画 / 浮标粒子 / 翻转手感 / 消息卡片动画。
+        # 选完立刻落地（写进 splash / float_edge_fx / start_btn_feel 三个旧键），
+        # 这样 Tk 版和 Qt 版不用各写一套判断。
+        self.settings_fx_var = tk.StringVar(value=fx.current())
+        row_fx = tk.Frame(box1, bg=self.theme["bg"])
+        row_fx.pack(fill="x", pady=(10, 0))
+        tk.Label(row_fx, text="特效强度：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(side="left")
-        分段(row_feel, self.settings_feel_var,
-             (("crisp", "干脆"), ("standard", "标准"), ("heavy", "沉")),
-             lambda v: self._set_start_btn_feel(v), 名="btnfeel")
+        分段(row_fx, self.settings_fx_var,
+             tuple((lv, fx.LABELS[lv]) for lv in fx.LEVELS),
+             lambda v: self._set_fx_level(v), 名="fxlevel")
 
         # 点「开始迁移」后的倒计时秒数（1~10）。用滑杆：1~10 只有十档，拖到哪就是哪，
         # 比「＋/－」少点很多下；倒计时期间再点一下按钮就是取消（见 mw_migration）。
@@ -326,10 +328,6 @@ class SettingsMixin:
                                font=("微软雅黑", 9, "bold"),
                                sfx=False, sfx_hover=False).pack(side="left", padx=(12, 0))
 
-        self.settings_splash_var = tk.BooleanVar(value=self.splash_enabled)
-        开关(box1, "启用启动动画（下次启动程序生效）", self.settings_splash_var,
-             self._toggle_splash, 名="splash").pack(fill="x", pady=(6, 0))
-
         # 桌面浮标的大小：只给三档。太小数字放不下，太大挡住桌面；
         # 40~96 px 的硬限制在 _set_float_size 里还会再夹一次（防手改配置）。
         self.settings_float_size_var = tk.StringVar(
@@ -352,12 +350,6 @@ class SettingsMixin:
         开关(box1, "贴边时收纳浮标（只露一条边，鼠标移上去展开）",
              self.settings_float_dock_var, self._toggle_float_dock,
              名="floatdock").pack(fill="x", pady=(6, 0))
-
-        self.settings_float_edgefx_var = tk.BooleanVar(
-            value=bool(getattr(self, "float_edge_fx", True)))
-        开关(box1, trp("贴边时显示边缘特效（绿色光带 + 粒子）"),
-             self.settings_float_edgefx_var, self._toggle_float_edgefx,
-             名="floatedgefx").pack(fill="x", pady=(6, 0))
 
         # 配置文件是这个程序唯一的"数据文件"（语言 / 主题 / 各种偏好都在里面），
         # 给个一键用系统默认程序打开；改完要重启才生效，所以顺手写在旁边。
@@ -566,10 +558,7 @@ class SettingsMixin:
             command=self._on_qt_switch, accent="switch_on")
         self.settings_qt_sw.pack(fill="x", pady=(0, 8))
         self.settings_qt_sw.set(getattr(self, "qt_enabled", True))
-        self.settings_view_var = tk.StringVar(value=getattr(self, "big_view_backend", "qt"))
         _qt_ok, _qt_why = self._qt_available()
-        分段(box_view, self.settings_view_var, _BIG_VIEW_BACKENDS,
-             self._set_big_view_backend, 名="view")
         tk.Label(box_view,
                  text=i18n.trf("PySide6 当前{state}。{why}",
                                state=i18n.tr("可用" if _qt_ok else "不可用"),
@@ -577,28 +566,21 @@ class SettingsMixin:
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(4, 0))
-        tk.Label(box_view, text="打开时用哪个视图：", bg=self.theme["bg"],
+        tk.Label(box_view, text="放大查看：固定使用 Qt 卡片视图", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
-        self.settings_view_mode_var = tk.StringVar(
-            value=getattr(self, "big_view_view", "table"))
-        分段(box_view, self.settings_view_mode_var, _BIG_VIEW_VIEWS,
-             self._set_big_view_view, 名="view_mode")
 
-        # ---------- 差异窗口用哪个实现 ----------
-        tk.Label(box_view, text="差异扫描窗口用哪个实现：", bg=self.theme["bg"],
+        # ---------- 主界面用哪个实现（重启后生效） ----------
+        tk.Label(box_view, text="主界面用哪个实现（重启后生效）：", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
-        self.settings_diff_backend_var = tk.StringVar(
-            value=getattr(self, "diff_backend", "qt"))
-        分段(box_view, self.settings_diff_backend_var, _BIG_VIEW_BACKENDS,
-             self._set_diff_backend, 名="diff_backend")
-        tk.Label(box_view, text="差异窗口打开时用哪个视图：", bg=self.theme["bg"],
+        self.settings_main_backend_var = tk.StringVar(
+            value=getattr(self, "main_window_backend", "tk"))
+        分段(box_view, self.settings_main_backend_var, _MAIN_BACKENDS,
+             self._set_main_backend, 名="main_backend")
+
+        tk.Label(box_view, text="差异扫描：固定使用 Qt 卡片视图", bg=self.theme["bg"],
                  fg=self.theme["fg"], font=("微软雅黑", 9)).pack(anchor="w", pady=(10, 2))
-        self.settings_diff_view_var = tk.StringVar(
-            value=getattr(self, "diff_view", "table"))
-        分段(box_view, self.settings_diff_view_var, _DIFF_VIEWS, self._set_diff_view, 名="diff_view")
         tk.Label(box_view,
-                 text="两个窗口默认都用 PySide6；如果遇到窗口相关的异常，可以把它们切回"
-                      "经典 Tk 实现（功能和数据完全一样，只是观感旧一些）。",
+                 text="两个列表窗口优先使用 Qt 卡片视图，不提供表格 / 卡片切换；PySide6 不可用时才退回经典窗口。",
                  bg=self.theme["bg"], fg=self.theme.get("muted_fg", self.theme["fg"]),
                  font=("微软雅黑", 8), justify="left", wraplength=580).pack(anchor="w",
                                                                           pady=(2, 0))
@@ -1046,14 +1028,6 @@ class SettingsMixin:
         except Exception as e:
             trace_exc("settings/试听音效", e)
 
-    def _toggle_splash(self):
-        """启动动画开关：app.py 在创建闪屏前会直接读配置文件。"""
-        self.splash_enabled = bool(self.settings_splash_var.get())
-        self.save_config()
-        self.toast(trp("🎬 启动动画已{0}（下次启动程序生效）",
-                       i18n.tr('启用' if self.splash_enabled else '关闭')),
-                   level="ok", key="splash")
-
     def _refresh_net_float(self):
         """浮标参数变了：就地重建一个（位置保持不变）。"""
         try:
@@ -1081,23 +1055,6 @@ class SettingsMixin:
         self._refresh_net_float()
         self.toast(trp("📌 贴边收纳已{0}", i18n.tr("开启" if self.net_float_dock else "关闭")),
                    level="ok", key="float_dock")
-
-    def _toggle_float_edgefx(self):
-        """开关：贴边时的边缘特效（光带 + 粒子），立即生效。"""
-        try:
-            开 = bool(self.settings_float_edgefx_var.get())
-        except Exception:
-            开 = True
-        try:
-            self.set_float_edge_fx(开)
-        except Exception:
-            self.float_edge_fx = 开
-            try:
-                self.save_config()
-            except Exception:
-                pass
-        self.toast(trp("✨ 贴边特效已{0}", i18n.tr("开启" if 开 else "关闭")),
-                   level="ok", key="float_edgefx")
 
     def _toggle_toast(self):
         """开关：右下角的吐司消息是否显示（立即生效，顺便落盘）。"""
@@ -1337,48 +1294,51 @@ class SettingsMixin:
             return
 
     def _set_big_view_backend(self, value):
-        """放大查看窗口换实现（下一次打开生效）。"""
-        self.big_view_backend = value if value in ("qt", "tk") else "qt"
+        """兼容旧配置入口：放大查看固定使用 Qt。"""
+        self.big_view_backend = "qt"
         self.save_config()
-        used_qt = self.big_view_backend == "qt"
-        self.toast(trp("🗂 放大查看窗口已切换为：PySide6 试点窗口") if used_qt
-                   else trp("🗂 放大查看窗口已切换为：经典 Tk 窗口"),
-                   level="ok", key="big_view_backend")
-        if used_qt:
+        self.toast(trp("🗂 放大查看固定使用 Qt 卡片窗口"), level="ok",
+                   key="big_view_backend")
+        ok, why = self._qt_available()
+        if not ok:
+            self.toast("⚠ " + why, level="warn", key="big_view_backend")
+
+    def _set_main_backend(self, value):
+        """主界面用哪个实现（重启后生效；Qt 起不来时 app.py 自动回落 Tk）。"""
+        self.main_window_backend = value if value in ("qt", "tk") else "tk"
+        self.save_config()
+        self.toast(trp("🧪 下次启动使用 PySide6 主界面")
+                   if self.main_window_backend == "qt" else
+                   trp("🪟 下次启动使用经典 Tk 主界面"),
+                   level="ok", key="main_window_backend")
+        if self.main_window_backend == "qt":
             ok, why = self._qt_available()
             if not ok:
-                self.toast("⚠ " + why, level="warn", key="big_view_backend")
+                self.toast("⚠ " + why, level="warn", key="main_window_backend")
 
     def _set_diff_backend(self, value):
-        """差异窗口用哪个实现（下一次扫描生效）。"""
-        self.diff_backend = value if value in ("qt", "tk") else "qt"
+        """兼容旧配置入口：差异窗口固定使用 Qt。"""
+        self.diff_backend = "qt"
         self.save_config()
-        self.toast(trp("🧩 差异窗口已切换为：PySide6 窗口")
-                   if self.diff_backend == "qt" else
-                   trp("🧩 差异窗口已切换为：经典 Tk 窗口"),
-                   level="ok", key="diff_backend")
-        if self.diff_backend == "qt":
-            ok, why = self._qt_available()
-            if not ok:
-                self.toast("⚠ " + why, level="warn", key="diff_backend")
+        self.toast(trp("🧩 差异窗口固定使用 Qt 卡片窗口"), level="ok",
+                   key="diff_backend")
+        ok, why = self._qt_available()
+        if not ok:
+            self.toast("⚠ " + why, level="warn", key="diff_backend")
 
     def _set_big_view_view(self, value):
-        """放大查看窗口默认用哪个视图（下一次打开生效）。"""
-        self.big_view_view = value if value in ("table", "cards") else "table"
+        """兼容旧配置入口：放大查看固定使用卡片视图。"""
+        self.big_view_view = "cards"
         self.save_config()
-        self.toast(trp("🗂 放大查看窗口默认视图：卡片视图")
-                   if self.big_view_view == "cards" else
-                   trp("🗂 放大查看窗口默认视图：表格视图"),
-                   level="ok", key="big_view_view")
+        self.toast(trp("🗂 放大查看窗口固定使用卡片视图"), level="ok",
+                   key="big_view_view")
 
     def _set_diff_view(self, value):
-        """模组差异窗口默认用哪个视图（下一次打开生效）。"""
-        self.diff_view = value if value in ("table", "cards") else "table"
+        """兼容旧配置入口：差异窗口固定使用卡片视图。"""
+        self.diff_view = "cards"
         self.save_config()
-        self.toast(trp("🧩 模组差异窗口默认视图：卡片视图")
-                   if self.diff_view == "cards" else
-                   trp("🧩 模组差异窗口默认视图：列表视图"),
-                   level="ok", key="diff_view")
+        self.toast(trp("🧩 模组差异窗口固定使用卡片视图"), level="ok",
+                   key="diff_view")
 
     def _toggle_online_tags(self):
         """联网分类开关：开启后扫描会在后台去 Modrinth 取真实分类。"""
@@ -1580,6 +1540,36 @@ class SettingsMixin:
         self.toast(trp("点外部收回消息中心已{0}",
                        i18n.tr("开启" if self.msg_click_outside_close.get() else "关闭")),
                    level="ok", key="msg_outside")
+
+    def _set_fx_level(self, 级别):
+        """特效强度：4 档统管启动动画 / 浮标粒子 / 翻转手感 / 消息卡片动画。
+
+        落地方式和别的设置一样——先改内存状态、立刻存盘，能当场生效的就当场生效：
+        启动动画要下次启动才看得到（app.py 直接读配置），粒子/按钮手感/卡片动画都是即时的。
+        """
+        级别 = fx.set_level(级别)
+        try:
+            self.settings_fx_var.set(级别)
+        except Exception:
+            pass
+        派生 = fx.derived(级别)
+        self.fx_level = 级别
+        self.splash_enabled = bool(派生["splash"])
+        try:
+            self.set_float_edge_fx(bool(派生["float_edge_fx"]))
+        except Exception:
+            self.float_edge_fx = bool(派生["float_edge_fx"])
+        self.start_btn_feel.set(派生["start_btn_feel"])
+        btn = getattr(self, "start_btn", None)
+        换 = getattr(btn, "set_feel", None)
+        if 换 is not None:
+            try:
+                换(派生["start_btn_feel"])
+            except Exception:
+                pass
+        self.save_config()
+        self.toast(trp("✨ 特效强度已设为「{0}」", i18n.tr(fx.LABELS[级别])),
+                   level="ok", key="fxlevel")
 
     def _set_start_btn_feel(self, 值):
         """「开始迁移」按钮的翻转手感：立即生效 + 立刻存盘（下次启动还是它）。"""

@@ -5,8 +5,8 @@
 做不了卡片；而"放大查看"窗口是只读的，正适合这种一行一卡片的富信息列表。
 
 实现要点：
-- 只画可见行（算好首行/末行，其余不建 item），滚动时整块重画——
-  可见行只有十几行，一次重画 ≈ 3ms，比槽位复用简单且够快。
+- 只为可见行和两行缓冲创建 Canvas item；滚动时复用固定数量的行槽位。
+- 槽位首次需要图元时创建，后续通过 coords/itemconfigure 更新，不反复删除和创建。
 - 滚动交给 SmoothScroller（像素级），跟其它列表手感一致。
 - 图标懒加载：只有滚到的行才去解 jar 取图标（9ms/个，缓存后 0ms）。
 - 单击行体 = 勾选（和表格视图一致），双击 = 打开详情；双击由 Tk 原生
@@ -14,6 +14,7 @@
 """
 import tkinter as tk
 import tkinter.font as tkfont
+from collections import OrderedDict
 
 from utils.helpers import SmoothScroller, is_dark_theme
 # 界面语言：占位文字是画在画布上的（控件入口覆盖不到）
@@ -72,6 +73,7 @@ def rounded_image(w, h, radius, color, supersample=4):
         im = im.resize((max(1, w), max(1, h)), Image.LANCZOS)
     except Exception:
         return None
+    im.info["_mctool_photo_key"] = key
     if len(_ROUND_CACHE) > 300:
         # 展开动画每帧一个新宽度，缓存会持续增长（一张最大约 200KB），给个上限兜住
         _ROUND_CACHE.clear()
@@ -102,6 +104,79 @@ def default_fallback_icon(size=44, bg="#7a7a7a", fg="#ffffff"):
         return None
 
 
+class _CardItemSlot:
+    """复用一行卡片的 Canvas 图元；槽位绑定到可见行，而不是数据行。"""
+
+    def __init__(self, canvas, tag):
+        self.canvas = canvas
+        self.tag = tag
+        self.items = {"image": [], "text": [], "rectangle": []}
+        self.used = {kind: 0 for kind in self.items}
+        self._draw_order = []
+        self._order_signature = None
+        self._image_refs = {}
+
+    def begin(self):
+        for kind in self.used:
+            self.used[kind] = 0
+        self._draw_order.clear()
+
+    def _create(self, kind, coords, options):
+        options = dict(options)
+        options.pop("tags", None)
+        defaults = {
+            "image": {"anchor": "center", "image": ""},
+            "text": {"anchor": "center", "text": "", "fill": "black",
+                     "font": "TkDefaultFont", "justify": "left", "width": 0},
+            "rectangle": {"fill": "", "outline": "black", "width": 1,
+                          "stipple": ""},
+        }[kind]
+        options = {**defaults, **options}
+        items = self.items[kind]
+        index = self.used[kind]
+        self.used[kind] += 1
+        if index >= len(items):
+            item = getattr(self.canvas, f"create_{kind}")(*coords, tags=(self.tag,), **options)
+            items.append(item)
+        else:
+            item = items[index]
+            self.canvas.coords(item, *coords)
+            self.canvas.itemconfigure(item, state="normal", **options)
+        if kind == "image":
+            self._image_refs[item] = options.get("image")
+        self._draw_order.append(item)
+        return item
+
+    def create_image(self, *coords, **options):
+        return self._create("image", coords, options)
+
+    def create_text(self, *coords, **options):
+        return self._create("text", coords, options)
+
+    def create_rectangle(self, *coords, **options):
+        return self._create("rectangle", coords, options)
+
+    def finish(self):
+        for kind, items in self.items.items():
+            for item in items[self.used[kind]:]:
+                self.canvas.itemconfigure(item, state="hidden")
+        signature = tuple(self._draw_order)
+        if signature != self._order_signature:
+            # 槽位重绑到内容结构不同时才重排图层，避免动画帧重复调整层级。
+            for item in self._draw_order:
+                self.canvas.tag_raise(item)
+            self._order_signature = signature
+
+    def hide(self):
+        for items in self.items.values():
+            for item in items:
+                self.canvas.itemconfigure(item, state="hidden")
+        self._order_signature = None
+
+    def winfo_width(self):
+        return self.canvas.winfo_width()
+
+
 class ModCardList(tk.Frame):
     ROW_H = 64            # 卡片行高
     ICON_PX = 44          # 图标显示边长
@@ -130,12 +205,15 @@ class ModCardList(tk.Frame):
         self.on_check = on_check                    # 函数(index)：切换该行勾选
         self.on_context = on_context                # 函数(index, event)：右键菜单
         self.fallback_icon = fallback_icon          # PIL.Image
-        self._photos = {}                           # 图标路径 -> PhotoImage（留引用）
-        self._misc_photos = {}                      # 圆角底/chip 的 PhotoImage
+        self._photos = OrderedDict()                # 图标路径 -> PhotoImage（LRU）
+        self._misc_photos = OrderedDict()            # 圆角底/chip 的 PhotoImage（LRU）
         self._elide_cache = {}                      # (宽度, 原文) -> 截断结果
         self._top = 0.0                             # 滚动位置（像素，唯一真源）
         self._drawn_top = None                      # 上次整块重画时的 _top（None=还没画）
         self._drawn_first = None
+        self._slots = []
+        self._row_to_slot = {}
+        self._empty_item = None
         self._hover = -1
         self._sel = -1
         self._action_rects = {}                     # 行号 -> [(x0,y0,x1,y1,action)]
@@ -153,7 +231,7 @@ class ModCardList(tk.Frame):
         self._font_sub = tkfont.Font(family="微软雅黑", size=9)
         self._font_desc = tkfont.Font(family="微软雅黑", size=9)
 
-        self.canvas.bind("<Configure>", lambda e: self._render())
+        self.canvas.bind("<Configure>", lambda e: self._render(force=True))
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<Leave>", self._on_leave)
@@ -239,12 +317,13 @@ class ModCardList(tk.Frame):
         self._hover = -1
         self._sel = -1
         self._update_scrollbar()
-        self._render()
+        self._render(force=True)
 
     def refresh_row(self, index):
         """只重画某一行（悬停反馈/数据已更新时用）。"""
         if 0 <= index < len(self.rows) and self._first <= index <= self._first + self._rows_per_page() + 1:
-            self._draw_row(index)
+            if index in self._row_to_slot:
+                self._draw_row(index)
 
     def update_row(self, index, row_dict):
         """替换某一行的数据并重画（后台元数据扫描到这一行时用）。
@@ -259,7 +338,7 @@ class ModCardList(tk.Frame):
         self.theme = theme
         self.configure(bg=theme["bg"])
         self.canvas.configure(bg=theme["bg"])
-        self._render()
+        self._render(force=True)
 
     # ------------------------------------------------------------------ 滚动
     def _view_h(self):
@@ -513,8 +592,10 @@ class ModCardList(tk.Frame):
     def _icon_photo(self, row):
         """取（并缓存）这行的图标 PhotoImage；拿不到就用兜底图标。"""
         key = row.get("icon_key")
-        if key and key in self._photos:
-            return self._photos[key]
+        cache_key = ("icon", key) if key else ("fallback", id(self.fallback_icon))
+        if cache_key in self._photos:
+            self._photos.move_to_end(cache_key)
+            return self._photos[cache_key]
         img = None
         if self.icon_provider is not None and key:
             try:
@@ -532,17 +613,20 @@ class ModCardList(tk.Frame):
             photo = ImageTk.PhotoImage(im)
         except Exception:
             return None
-        if key:
-            self._photos[key] = photo
+        self._photos[cache_key] = photo
+        self._photos.move_to_end(cache_key)
+        while len(self._photos) > 512:
+            self._photos.popitem(last=False)
         return photo
 
     def _photo_for(self, pil_img):
         """PIL 图 → PhotoImage（按对象身份缓存；rounded_image 自己也有缓存）。"""
         if pil_img is None:
             return None
-        key = id(pil_img)
+        key = getattr(pil_img, "info", {}).get("_mctool_photo_key", id(pil_img))
         hit = self._misc_photos.get(key)
         if hit is not None:
+            self._misc_photos.move_to_end(key)
             return hit
         try:
             from PIL import ImageTk
@@ -550,6 +634,9 @@ class ModCardList(tk.Frame):
         except Exception:
             return None
         self._misc_photos[key] = photo
+        self._misc_photos.move_to_end(key)
+        while len(self._misc_photos) > 512:
+            self._misc_photos.popitem(last=False)
         return photo
 
     def _elide(self, text, font, max_w):
@@ -590,7 +677,7 @@ class ModCardList(tk.Frame):
     def _render_rows(self, indices):
         """只重画指定行（悬停反馈用；行没变就不用整块重画）。"""
         for i in indices:
-            if i is None or i < 0 or i >= len(self.rows):
+            if i is None or i < 0 or i >= len(self.rows) or i not in self._row_to_slot:
                 continue
             self._draw_row(i)
 
@@ -641,11 +728,20 @@ class ModCardList(tk.Frame):
                 c.create_image(cx, cy, anchor="nw", image=corner, tags=ctag)
 
     def _draw_row(self, i):
+        slot_index = self._row_to_slot.get(i)
+        if slot_index is None:
+            return
+        c = self._slots[slot_index]["surface"]
+        c.begin()
+        try:
+            self._paint_row(i, c)
+        finally:
+            c.finish()
+
+    def _paint_row(self, i, c):
         row = self.rows[i]
         y0 = (i - self._first) * self.ROW_H - self._offset
-        c = self.canvas
         ctag = f"row{i}"
-        c.delete(ctag)
         width = c.winfo_width()
         # 卡片本体：圆角矩形（留一点外边距，圆角才看得出来）
         mx = self.MARGIN_X
@@ -793,28 +889,82 @@ class ModCardList(tk.Frame):
                                               y0b + self.ACTION_W, act))
                 ax -= w_btn + 4
 
-    def _render(self):
+    def _render(self, force=False):
         c = self.canvas
-        c.delete("all")
-        self._action_rects.clear()
         # 整屏重画时把没跑完的选中动画丢掉：重画是按数据里的最终状态画的，
         # 留着旧动画的下一帧反而会把这一行画回中间态。
-        for anim in list(self._sel_anim.values()):
-            if anim.get("job") is not None:
-                try:
-                    self.after_cancel(anim["job"])
-                except Exception:
-                    pass
-        self._sel_anim.clear()
+        if force:
+            for anim in list(self._sel_anim.values()):
+                if anim.get("job") is not None:
+                    try:
+                        self.after_cancel(anim["job"])
+                    except Exception:
+                        pass
+            self._sel_anim.clear()
         if not self.rows:
-            c.create_text(c.winfo_width() // 2, 40, text=tr("（没有内容）"),
-                          fill=self.theme.get("muted_fg", self.theme["fg"]),
-                          font=self._font_sub)
+            self._action_rects.clear()
+            self._row_to_slot.clear()
+            for slot in self._slots:
+                slot["row"] = None
+                slot["surface"].hide()
+            if self._empty_item is None:
+                self._empty_item = c.create_text(0, 0, text=tr("（没有内容）"),
+                                                 fill=self.theme.get("muted_fg", self.theme["fg"]),
+                                                 font=self._font_sub)
+            c.coords(self._empty_item, c.winfo_width() // 2, 40)
+            c.itemconfigure(self._empty_item, state="normal", text=tr("（没有内容）"),
+                            fill=self.theme.get("muted_fg", self.theme["fg"]),
+                            font=self._font_sub)
+            self._drawn_top = self._top
+            self._drawn_first = self._first
+            self._update_scrollbar()
             return
+        if self._empty_item is not None:
+            c.itemconfigure(self._empty_item, state="hidden")
         per = self._rows_per_page()
-        end = min(len(self.rows), self._first + per + 2)     # 多画两行：像素滚动时上下不留缝
-        for i in range(self._first, end):
-            self._draw_row(i)
+        first = self._first
+        end = min(len(self.rows), first + per + 2)     # 多画两行：像素滚动时上下不留缝
+        visible = set(range(first, end))
+        previous_top = self._drawn_top
+        if not force and previous_top is not None and self._drawn_first != first:
+            dy = self._top - previous_top
+            if abs(dy) >= 0.01:
+                c.move("all", 0, -dy)
+                self._shift_rects(-dy)
+
+        # 保留仍在视口内的行，离开视口的槽位立即回收给新行。
+        for row_index, slot_index in list(self._row_to_slot.items()):
+            if row_index not in visible:
+                slot = self._slots[slot_index]
+                slot["row"] = None
+                slot["surface"].hide()
+                self._row_to_slot.pop(row_index, None)
+                self._action_rects.pop(row_index, None)
+                anim = self._sel_anim.pop(row_index, None)
+                if anim and anim.get("job") is not None:
+                    try:
+                        self.after_cancel(anim["job"])
+                    except Exception:
+                        pass
+
+        redraw = []
+        for row_index in range(first, end):
+            if row_index in self._row_to_slot:
+                if force:
+                    redraw.append(row_index)
+                continue
+            slot_index = next((j for j, slot in enumerate(self._slots)
+                               if slot["row"] is None), None)
+            if slot_index is None:
+                slot_index = len(self._slots)
+                self._slots.append({"row": None,
+                                    "surface": _CardItemSlot(c, f"card-slot-{slot_index}")})
+            self._slots[slot_index]["row"] = row_index
+            self._row_to_slot[row_index] = slot_index
+            redraw.append(row_index)
+
+        for row_index in redraw:
+            self._draw_row(row_index)
         # 记下"这一屏是按哪个 _top 画的"，像素滚动时据此只做平移
         self._drawn_top = self._top
         self._drawn_first = self._first

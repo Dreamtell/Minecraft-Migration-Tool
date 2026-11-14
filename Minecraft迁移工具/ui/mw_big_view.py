@@ -78,7 +78,7 @@ class BigViewMixin:
             width=_grad_width("❌ 关闭"), height=28, font=("微软雅黑", 9, "bold"))
         btn_refresh = create_gradient_button(
             toolbar, "🔄 刷新",
-            lambda: state.__setitem__("last", None),
+            lambda: None,
             colors=("#00bcd4", "#3f51b5"),
             width=_grad_width("🔄 刷新"), height=28, font=("微软雅黑", 9, "bold"))
         # 按「界面按钮」的配置摆（隐藏的不摆、顺序照配置；这类窗口下次打开生效）
@@ -95,68 +95,26 @@ class BigViewMixin:
         self._log_big_box.pack(fill="both", expand=True, padx=8, pady=8)
         self._log_big_text = big
         self._bind_log_locate(big)               # 放大的日志窗也能双击定位
-        self._smooth(big)
+        from ui.live_log import LiveLogView, create_log_button
+        view = LiveLogView(big, self._log_big_box, self._session_log, self.theme)
+        self._log_big_live_view = view
 
         # 使用与主日志一致的语义色（随主题）
         self._configure_log_colors(big)
 
-        state = {"last": None, "bottom": True}
-
         def sync():
-            try:
-                if not win.winfo_exists():
-                    return
-                content = self.log_text.get("1.0", tk.END)
-                if content != state["last"]:
-                    try:
-                        state["bottom"] = big.yview()[1] > 0.999
-                    except Exception:
-                        state["bottom"] = True
-                    big.configure(state=tk.NORMAL)
-                    big.delete("1.0", tk.END)
-                    big.insert("1.0", content)
-                    for tag in self._LOG_TAGS:
-                        ranges = self.log_text.tag_ranges(tag)
-                        # 个别 tk 版本 tag_ranges 会返回非迭代的 Tcl 对象，统一转成扁平串列表
-                        if not isinstance(ranges, (tuple, list)):
-                            ranges = self.log_text.tk.splitlist(ranges)
-                        for i in range(0, len(ranges), 2):
-                            big.tag_add(tag, ranges[i], ranges[i + 1])
-                    big.configure(state=tk.DISABLED)
-                    if state["bottom"]:
-                        big.see(tk.END)
-                    state["last"] = content
-                    self._roll_counter(count_lbl, trp("{0} 行", content.count(chr(10))))
-            except tk.TclError:
-                return
-            except Exception:
-                pass
-
-        def on_log_changed(_evt=None):
-            sync()
+            view.refresh()
+            count_lbl.configure(text=trp("最近 {0} 行；完整日志可打开文件查看", self._session_log.limit))
 
         def force_refresh():
-            state["last"] = None
-            sync()
-
-        # 事件驱动：主日志新增/清空时即时同步，无需轮询或手动刷新
-        # 先清理可能残留的旧绑定，避免重复打开时叠加
-        old_nid = getattr(self, '_log_big_notify_id', None)
-        if old_nid:
-            try:
-                self.log_text.unbind("<<LogChanged>>", old_nid)
-            except Exception:
-                pass
-        notify_id = self.log_text.bind("<<LogChanged>>", on_log_changed, add="+")
-        self._log_big_notify_id = notify_id
+            view.refresh()
 
         def on_close():
-            try:
-                self.log_text.unbind("<<LogChanged>>", notify_id)
-            except Exception:
-                pass
-            # 和"放大查看"一样走原生关闭（系统自己的关闭动画，不做淡化）
             _close_popup(win)
+
+        self._log_big_full_button = create_log_button(
+            toolbar, trp("打开完整日志"), self.open_full_log)
+        self._log_big_full_button.pack(side="right", padx=4)
 
         win.protocol("WM_DELETE_WINDOW", on_close)
         btn_close.set_command(on_close)
@@ -286,15 +244,15 @@ class BigViewMixin:
                 self._magnify_idle(btn, idle_text)
 
     def _open_big_view_dispatch(self, source_text, title):
-        """按设置选择放大查看窗口的实现；Qt 不可用就自动回落到 Tk 版。"""
-        if getattr(self, "big_view_backend", "qt") == "qt":
-            ok, why = self._qt_available()
-            if ok and self._open_big_view_qt(source_text, title):
-                return
-            if not ok:
-                self.log(trp("⚠ {0}，本次用经典窗口打开", why), level="WARNING", save=False)
-                # 用户点的是「放大查看」，实际弹出的却是另一种窗口 —— 不说明就成了怪事
-                self.toast(trp("⚠️ Qt 不可用，已用经典窗口打开"), level="warn")
+        """优先开 Qt 卡片放大查看；Qt 不可用 / 子进程起不来（含纯 Tk 模式）才回落到 Tk 版，
+        免得用户点了按钮什么都不出来。"""
+        ok, why = self._qt_available()
+        if ok and self._open_big_view_qt(source_text, title):
+            return
+        if not ok:
+            self.log(trp("⚠ {0}，本次用经典窗口打开", why), level="WARNING", save=False)
+            # 用户点的是「放大查看」，实际弹出的却是另一种窗口 —— 不说明就成了怪事
+            self.toast(trp("⚠️ Qt 不可用，已用经典窗口打开"), level="warn")
         self.open_big_view(source_text, title)
 
     def open_mod_big_view(self):
