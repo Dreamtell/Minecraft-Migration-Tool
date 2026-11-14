@@ -41,9 +41,17 @@ cd Minecraft迁移工具
 python app.py                        # 跑源码
 python -m compileall -q .            # 语法自检
 
-cd ..                                # 打包（Windows cmd）
-cmd //c 打包_命令行.bat nopause       # 产物在 dist/app
+cd ..                                # 测试与打包
+python tools/run_all.py              # 全量测试：每个测试文件独立进程跑（CI 用这个，退出码可信）
+python tools/run_all.py qt_main      # 只跑文件名带 qt_main 的
+
+cmd //c 打包_命令行.bat nopause       # 打包（产物在 dist/app）
 ```
+
+> `python -m unittest discover -s tools` 仍可用，但**不要拿它当 CI 信号**：
+> 所有测试挤在一个进程里时，Qt 窗口/定时器/全局补丁会互相漏，偶发随机失败。
+> 配置路径已改成跟随 `MCTOOL_CONFIG` 的代理（`utils/config.py`），跨文件的
+> 配置污染没了；剩下的偶发项是 Qt 事件循环状态，靠分进程解决。
 
 ## 硬约束（违反过，会出事）
 
