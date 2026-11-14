@@ -19,20 +19,59 @@
 
 ## 换一台电脑要准备什么
 
-1. **Python 3.12**（`python -V` 确认；低版本没有 `pathlib` 之外的一些新写法不用，但打包产物是 3.12 的）。
-2. 装依赖：`pip install -r requirements.txt`（Pillow / PyInstaller / tkinterdnd2）。
-3. **PySide6 不在 site-packages，而在仓库根的 `_qt/` 目录**（约 211 MB，**不进 git**）。
-   新机器上要自己放进去，否则大视图/图表起不来：
+1. **克隆仓库**（默认分支 `main` 已含全部代码与测试）：
 
-   ```
-   pip install "PySide6==6.11.2" --target _qt
+   ```bash
+   git clone https://github.com/Dreamtell/Minecraft-Migration-Tool.git
    ```
 
-   `打包_命令行.bat` 靠 `--paths _qt` 找它；直接 `python app.py` 跑源码时也从这里导入。
-4. 配置和密钥**不在仓库里**，在用户目录（换机不会跟着走，需重新设置）：
-   - `~/.minecraft_migrate_config.json` —— 主题、语言、各种开关
-   - `~/.minecraft_migrate_secret.json` —— CurseForge API Key，**永远不要提交**
-5. `_dctest/`（探针脚本）是本地临时目录，不进仓库；新机器上没有属正常，需要时重写。
+2. **Python 3.12**（`python -V` 确认；打包产物也是 3.12 的）。
+3. **装依赖**：`pip install -r requirements.txt`（Pillow / tkinterdnd2 / tendo / winotify /
+   matplotlib / PyInstaller）。
+4. **PySide6**（只在用 Qt 大视图、Qt 主界面时需要）—— 两种放法都支持：
+
+   - **推荐：装进 site-packages**
+
+     ```bash
+     pip install "PySide6==6.11.2"      # 本机实测 6.12.0 也能用
+     ```
+
+   - **可选：仓库根放一份便携版 `_qt/`**（约 211 MB，**不进 git**）
+
+     ```bash
+     pip install "PySide6==6.11.2" --target _qt
+     ```
+
+   代码是这么找的：`ui/mw_qt.py` / `ui/qt_big_view.py` 先把 `Minecraft迁移工具/_qt`
+   与仓库根 `_qt/` 加进 `sys.path`，再 `find_spec("PySide6")`；都没有就在设置页提示
+   “装好 PySide6 后可切到 Qt 版窗口”。所以 **site-packages 里有一份就够**。
+
+   ⚠️ `打包_命令行.bat` 里仍写着 `--paths _qt`：用 site-packages 方案时先跑一次打包确认
+   （本机目前没有 `_qt/`，**无 `_qt/` 情况下的打包尚未验证**）。
+
+5. **配置和密钥不随仓库走**，在新机器上要么手动拷、要么重新设置：
+
+   - `%USERPROFILE%\.minecraft_migrate_config.json` —— 主题、语言、各种开关
+   - `%USERPROFILE%\.minecraft_migrate_secret.json` —— CurseForge API Key，**永远不要提交**
+
+   直接拷这两个文件最省事；不拷就回到默认设置（语言会重新问一次）。
+
+6. **不在仓库里的东西**（没有也能开发，别去找）：
+
+   | 路径 | 说明 |
+   |---|---|
+   | `_qt/` | 可选的 PySide6 便携目录（见上） |
+   | `_dctest/` | 本地探针脚本与验收截图 |
+   | `_probe_shots/` | 渲染/截图输出 |
+   | `dist/`、`build/`、`*.spec` | 打包产物 |
+   | `.idea/`、`__pycache__/` | IDE 与解释器缓存 |
+
+7. **验证环境**（两条都过就说明这台机器能干活了）：
+
+   ```bash
+   cd Minecraft迁移工具 && python app.py      # 窗口能起来
+   cd .. && python tools/run_all.py           # 全量测试：应为 23 个文件全过
+   ```
 
 ## 常用命令
 
