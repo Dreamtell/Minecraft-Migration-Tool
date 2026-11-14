@@ -100,6 +100,11 @@ def run(icon_path=None):
         fx.bootstrap(cfg)
     except Exception:
         pass
+    try:                                  # 平滑滚动速度档位：启动时读一次，设置里改了会立刻生效
+        from ui.qt_big_view import _SmoothWheel
+        _SmoothWheel.set_speed(cfg.get("scroll_speed", 3))
+    except Exception:
+        pass
 
     # 闪屏(独立进程,失败就不显示,别挡启动)
     splash = None

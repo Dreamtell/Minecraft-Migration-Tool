@@ -56,6 +56,8 @@ except Exception:
 from utils.helpers import (begin_bulk_scan, end_bulk_scan,          # noqa: E402
                            get_icon_path, style_window_hwnd, text_delta,
                            trace_exc, trace_line)
+# 滚动速度档位表只此一份（Tk 版 SmoothScroller 的 1~5 档），Qt 滚轮缓动直接读它
+from utils.helpers import SmoothScroller as _TkSmoothScroller      # noqa: E402
 # 界面语言：Qt 侧没法包 Tk 那套，靠"包住会显示文字的 Qt API" + 这里显式的 tr()。
 # 中文（默认）时 tr() 原样返回，行为不变；英文时由 ui/qt_host.py 里的 install_qt() 激活。
 from utils.i18n import tr, trf                                      # noqa: E402
@@ -1274,6 +1276,32 @@ class _SmoothWheel:
     WHEEL_FRAME_S = 0.012      # 仅作时间标定基准，实际排帧跟随刷新率
     WHEEL_EASE = 0.44         # 缩短松手后的拖尾，每格距离仍由 wheel_px 决定
     WHEEL_SNAP_PX = 0.6        # 离目标不足这么多像素就吸附收工
+    # 手感速度旋钮（同 Tk 版 SmoothScroller.GLIDE_SCALE）：1.0 = 原速，>1 滑得更久更慢。
+    # 由设置里的 scroll_speed 档位决定；整个进程共用一份，所以只在 _SmoothWheel 上改。
+    GLIDE_SCALE = 1.0
+    _speed_loaded = False
+
+    @classmethod
+    def set_speed(cls, level) -> int:
+        """按设置里的档位（1 最慢 … 5 最快，3 = 原速）改手感速度，返回真正生效的档位。"""
+        try:
+            n = int(level)
+        except Exception:
+            n = 3
+        n = max(1, min(5, n))
+        _SmoothWheel.GLIDE_SCALE = _TkSmoothScroller._SPEED_SCALES[n - 1]
+        _SmoothWheel._speed_loaded = True
+        return n
+
+    @classmethod
+    def apply_config_speed(cls) -> int:
+        """从配置里读回档位并生效；读不到就按默认第 3 档。"""
+        try:
+            from utils.config import load_raw_config
+            level = (load_raw_config() or {}).get("scroll_speed", 3)
+        except Exception:
+            level = 3
+        return cls.set_speed(level)
 
     def wheel_px(self) -> float:
         """一格滚轮滚多少像素（子类覆盖）。"""
@@ -1281,6 +1309,8 @@ class _SmoothWheel:
 
     # ---- 状态（懒初始化，免得跟 Shiboken 的多继承 MRO 打架）----
     def _sw_setup(self):
+        if not _SmoothWheel._speed_loaded:      # 本进程第一次用滚轮缓动：读一次设置里的档位
+            self.apply_config_speed()
         self._sw_active = False
         self._sw_prec = _PrecHold()        # anim.hold() 的持有标记（与控件解耦）
         self._sw_cur = float(self.verticalScrollBar().value())
@@ -1343,7 +1373,7 @@ class _SmoothWheel:
             return False
         if dt <= 0.0:
             return True
-        k = 1.0 - (1.0 - self.WHEEL_EASE) ** (dt / self.WHEEL_FRAME_S)
+        k = 1.0 - (1.0 - self.WHEEL_EASE) ** (dt / (self.WHEEL_FRAME_S * self.GLIDE_SCALE))
         self._sw_cur += left * k
         bar.setValue(int(round(self._sw_cur)))
         return True

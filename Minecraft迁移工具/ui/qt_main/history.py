@@ -184,6 +184,10 @@ class HistoryDialog(QtWidgets.QDialog):
         self.rollback_btn = QtWidgets.QPushButton(tr("⏪ 回滚到这一次之前"))
         self.rollback_btn.clicked.connect(self._do_rollback)
         btn_row.addWidget(self.rollback_btn)
+        self.apply_btn = QtWidgets.QPushButton(tr("🔁 应用到主界面"))
+        self.apply_btn.setToolTip(tr("把这份档案里的路径、存档名和三个清单回填到主界面（不会开始迁移）"))
+        self.apply_btn.clicked.connect(self._apply_current)
+        btn_row.addWidget(self.apply_btn)
         self.delete_btn = QtWidgets.QPushButton(tr("🗑 删除这份档案"))
         self.delete_btn.clicked.connect(self._delete_current)
         btn_row.addWidget(self.delete_btn)
@@ -283,6 +287,7 @@ class HistoryDialog(QtWidgets.QDialog):
         busy = self._rb_thread is not None
         has = bool(rec) and not busy
         self.delete_btn.setEnabled(has)
+        self.apply_btn.setEnabled(has)                    # 没选中 / 回滚在跑时都不能应用
         self.clear_btn.setEnabled(bool(self.records) and not busy)
         can_rb = False
         if rec and not busy:
@@ -292,6 +297,18 @@ class HistoryDialog(QtWidgets.QDialog):
             self.rollback_btn.setToolTip(tr("这条记录没有自己的备份,无法回滚"))
         else:
             self.rollback_btn.setToolTip("")
+
+    def _apply_current(self):
+        """把选中的那份档案回填到主界面,成功了就关掉历史窗(同 Tk 版:应用完窗口就收)。
+
+        只回填、不启动迁移。回填失败(档案读不出来 / 没清单 / 主界面在忙)时窗口留着,
+        主窗口已经弹了原因,用户可以换一份再试。
+        """
+        rec = self._current()
+        if rec is None or self._rb_thread is not None:
+            return
+        if self.window._apply_record(rec, source=tr("历史里选中的那份档案")):
+            self.accept()
 
     def _record_backup_dir(self, rec):
         """返回这条记录可用的备份目录(Path),没有则 None。

@@ -2276,6 +2276,13 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较":
         "⚠️ {0} list entries are not in the source mods folder; marked as missing and skipped",
     # ---- Qt 主界面（ui/qt_main/）与本轮新增的 Tk 侧文案 ----
+    "把这份档案里的路径、存档名和三个清单回填到主界面（不会开始迁移）":
+        "Fill the main window with this record's paths, world name and the three lists (does not start a migration)",
+    "上一次的迁移记录": "the last migration record",
+    "迁移进行中，暂不能应用记录": "A task is running; records can't be applied right now",
+    "⚠ 回填记录失败：{0}": "⚠ Could not fill in the record: {0}",
+    "还原应用前状态失败: {0}": "Could not restore the state from before applying: {0}",
+    "读迁移档案失败: {0}": "Could not read the migration records: {0}",
     "把目标路径复制到源路径": "Copy the target path into the source path",
     "共 {0} 行": "{0} lines",
     "无法启动回滚：{0}": "Could not start the rollback: {0}",

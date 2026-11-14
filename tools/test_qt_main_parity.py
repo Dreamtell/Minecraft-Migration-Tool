@@ -253,5 +253,129 @@ class MainWindowTests(unittest.TestCase):
         self.w._quitting = False
 
 
+class ScrollSpeedTests(unittest.TestCase):
+    """scroll_speed(1~5 档)与 Tk 版同键:设置窗读写、_apply_settings 立刻生效并落盘、真的改变缓动曲线。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from ui.qt_big_view import _SmoothWheel
+        cls.SW = _SmoothWheel
+
+    def tearDown(self):
+        self.SW.set_speed(3)
+
+    def test_levels_map_to_tk_scales_and_clamp(self):
+        from utils.helpers import SmoothScroller
+        for lvl, scale in zip(range(1, 6), SmoothScroller._SPEED_SCALES):
+            self.assertEqual(self.SW.set_speed(lvl), lvl)
+            self.assertEqual(self.SW.GLIDE_SCALE, scale)
+        self.assertEqual(self.SW.set_speed(0), 1)
+        self.assertEqual(self.SW.set_speed(99), 5)
+        self.assertEqual(self.SW.set_speed("abc"), 3)
+        self.assertEqual(self.SW.set_speed(None), 3)
+
+    def test_apply_config_speed_reads_the_shared_config(self):
+        CFG.write_text('{"language":"zh","scroll_speed":5}', encoding="utf-8")
+        try:
+            self.assertEqual(self.SW.apply_config_speed(), 5)
+        finally:
+            CFG.write_text('{"language":"zh","theme":"dark","net_float_on":false}', encoding="utf-8")
+
+    def _travel(self, level, steps=6):
+        """一格滚轮后推进固定时长,返回已走的距离:档位越快,走得越远。"""
+        from ui.qt_big_view import SmoothTextEdit
+        self.SW.set_speed(level)
+        v = SmoothTextEdit()
+        v.resize(400, 200)
+        v.setPlainText(chr(10).join(str(n) for n in range(2000)))
+        v.show()
+        APP.processEvents()
+        v._sw_setup()
+        self.SW.set_speed(level)                      # _sw_setup 可能重读配置,这里以测试给的档位为准
+        v.verticalScrollBar().setValue(1000)
+        v._sw_cur = v._sw_target = 1000.0
+        v._sw_target = 1000.0 + 100.0
+        v._sw_active = True
+        v._sw_last = 0.0
+        for n in range(1, steps + 1):
+            v.tick_scroll(n * 0.008)
+        moved = v._sw_cur - 1000.0
+        v._sw_cancel()
+        v.close()
+        v.deleteLater()
+        return moved
+
+    def test_faster_level_travels_farther_in_the_same_time(self):
+        moved = [self._travel(n) for n in range(1, 6)]
+        self.assertEqual(moved, sorted(moved), moved)           # 档位越大走得越远
+        self.assertLess(moved[0], moved[2])
+        self.assertLess(moved[2], moved[4])
+
+    def test_default_level_matches_the_original_curve(self):
+        """第 3 档 = GLIDE_SCALE 1.0 = 改动前的曲线(不能因为接了档位就改掉默认手感)。"""
+        self.SW.set_speed(3)
+        ease, frame, dt = self.SW.WHEEL_EASE, self.SW.WHEEL_FRAME_S, 0.008
+        expect = 100.0 * (1.0 - (1.0 - ease) ** (dt / frame))
+        from ui.qt_big_view import SmoothTextEdit
+        v = SmoothTextEdit()
+        v.resize(400, 200)
+        v.setPlainText(chr(10).join(str(n) for n in range(2000)))
+        v.show()
+        APP.processEvents()
+        v._sw_setup()
+        self.SW.set_speed(3)
+        v.verticalScrollBar().setValue(1000)
+        v._sw_cur, v._sw_target, v._sw_active, v._sw_last = 1000.0, 1100.0, True, 0.0
+        v.tick_scroll(dt)
+        self.assertAlmostEqual(v._sw_cur - 1000.0, expect, places=6)
+        v._sw_cancel()
+        v.close()
+        v.deleteLater()
+
+
+class ScrollSpeedSettingsTests(unittest.TestCase):
+    def setUp(self):
+        from ui.qt_main.window import QtMainWindow
+        self.w = QtMainWindow()
+        self.w.show()
+        pump(30)
+
+    def tearDown(self):
+        from ui.qt_big_view import _SmoothWheel
+        _SmoothWheel.set_speed(3)
+        self.w.hide()
+        self.w._close_session_log()
+        self.w.deleteLater()
+        pump(30)
+
+    def test_settings_dialog_reads_and_returns_scroll_speed(self):
+        from ui.qt_main.settings import SettingsDialog
+        self.w.config["scroll_speed"] = 5
+        d = SettingsDialog(self.w, self.w.config)
+        self.assertEqual(d.scroll_speed_spin.value(), 5)
+        self.assertEqual(d.values()["scroll_speed"], 5)
+        d.scroll_speed_spin.setValue(2)
+        self.assertEqual(d.values()["scroll_speed"], 2)
+        self.assertEqual((d.scroll_speed_spin.minimum(), d.scroll_speed_spin.maximum()), (1, 5))
+        self.w.config["scroll_speed"] = "坏值"                  # 配置里是脏数据 → 回默认 3,不抛
+        self.assertEqual(SettingsDialog(self.w, self.w.config).scroll_speed_spin.value(), 3)
+
+    def test_apply_settings_takes_effect_immediately_and_persists(self):
+        from ui.qt_big_view import _SmoothWheel
+        from utils.helpers import SmoothScroller
+        self.w._apply_settings({"theme": "dark", "scroll_speed": 4})
+        self.assertEqual(_SmoothWheel.GLIDE_SCALE, SmoothScroller._SPEED_SCALES[3])
+        self.assertEqual(self.w.config["scroll_speed"], 4)
+        self.assertEqual(_cfg.load_raw_config()["scroll_speed"], 4)     # 写进了共用配置,Tk 版读得到
+
+    def test_apply_settings_without_the_key_keeps_the_current_speed(self):
+        from ui.qt_big_view import _SmoothWheel
+        _SmoothWheel.set_speed(5)
+        self.w.config["scroll_speed"] = 5
+        self.w._apply_settings({"theme": "dark"})
+        self.assertEqual(self.w.config["scroll_speed"], 5)
+        self.assertEqual(_SmoothWheel.GLIDE_SCALE, 0.75)
+
+
 if __name__ == "__main__":
     unittest.main()

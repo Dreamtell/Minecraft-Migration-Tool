@@ -544,6 +544,22 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if "blank_exit_edit" in vals:
             self.blank_exit_edit = bool(vals["blank_exit_edit"])
             self.config["blank_exit_edit"] = self.blank_exit_edit
+        if "online_tags" in vals:                  # 联网分类:下次打开放大查看时生效,与 Tk 版同键
+            new_tags = bool(vals["online_tags"])
+            if new_tags != bool(self.config.get("online_tags", False)):
+                self.toast(tr("🌐 联网分类已开启：重开一次“放大查看”就会在后台查询真实分类"
+                              "（结果会缓存到本地）") if new_tags
+                           else tr("🌐 联网分类已关闭：改回按关键词推测分类"),
+                           "ok", key="online_tags")
+            self.config["online_tags"] = new_tags
+        if "rollback_parts" in vals:               # 回滚默认还原范围:回滚选择框按它预勾
+            from core.migrator import _RESTORE_PARTS
+            picked = set(vals.get("rollback_parts") or [])
+            self.config["rollback_parts"] = ([p for p in _RESTORE_PARTS if p in picked]
+                                             or list(_RESTORE_PARTS))
+        if "scroll_speed" in vals:                 # 平滑滚动速度:立刻生效,与 Tk 版同键
+            from ui.qt_big_view import _SmoothWheel
+            self.config["scroll_speed"] = _SmoothWheel.set_speed(vals["scroll_speed"])
         self.config["rename_migrated_mods"] = bool(vals.get("rename_migrated_mods", False))
         self.config["rename_marker"] = str(vals.get("rename_marker", "★") or "★")
         self.config["silent_background"] = bool(vals.get("silent_background", False))
@@ -713,6 +729,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         extra_page = self._make_list_page(
             self.extra_text,
             [("add_extra_options", tr("＋ options.txt"), lambda: self._add_extra_rel("options.txt")),
+             ("add_extra_preset", tr("＋ 常用目录 ▾"), self._open_extra_preset_menu),
              ("add_extra_dir", tr("📁 添加文件夹"), self._add_extra_dir),
              ("add_extra_file", tr("📄 添加文件"), self._add_extra_files),
              ("clear_extra", tr("🗑️ 清空"), lambda: self._clear_list(self.extra_text)),
@@ -733,8 +750,22 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.pack_pill.setCursor(QtCore.Qt.PointingHandCursor)
         self.pack_pill.setFlat(True)
         self.pack_pill.clicked.connect(self.pack_warning_bar.open_dialog)
-        self.tabs.setCornerWidget(self.pack_pill, QtCore.Qt.TopRightCorner)
+        # 页签行右端的两颗药丸(同 Tk 版 _refresh_tail_buttons):⚠ 更新提醒 + 应用上次记录 / 还原到应用前
+        self.apply_pill = QtWidgets.QPushButton(tr("🔁 应用上次记录"))
+        self.apply_pill.setCursor(QtCore.Qt.PointingHandCursor)
+        self.apply_pill.setFlat(True)
+        self.apply_pill.clicked.connect(self._on_apply_pill)
+        corner = QtWidgets.QWidget()
+        corner_lay = QtWidgets.QHBoxLayout(corner)
+        corner_lay.setContentsMargins(0, 0, 0, 0)
+        corner_lay.setSpacing(6)
+        corner_lay.addWidget(self.pack_pill)
+        corner_lay.addWidget(self.apply_pill)
+        self._tab_corner = corner
+        self.tabs.setCornerWidget(corner, QtCore.Qt.TopRightCorner)
+        self._apply_undo = None               # 「应用记录」前的界面快照;有值时药丸变成「还原到应用前」
         self._layout_pack_warning()
+        self._refresh_apply_pill()
 
         # === 执行日志 ===
         log_group = QtWidgets.QGroupBox(tr("执行日志"))
@@ -1026,6 +1057,16 @@ class QtMainWindow(QtWidgets.QMainWindow):
             "QPushButton { color: %s; background: %s; border: 1px solid %s; border-radius: 9px;"
             " padding: 2px 10px; } QPushButton:hover { background: %s; }"
             % (c["main"], c["bg"], c["edge"], c["hover"]))
+        self._style_apply_pill()
+
+    def _style_apply_pill(self):
+        """「应用上次记录」药丸的蓝色(取值同 Tk 版 RoundedTabs._tail_color 的 apply 槽)。"""
+        dark = self.theme is DARK_THEME
+        fg, bg, hover = (("#66c6ff", "#12496e", "#155a86") if dark
+                         else ("#1565a8", "#d6ecfb", "#bfe0f7"))
+        self.apply_pill.setStyleSheet(
+            "QPushButton { color: %s; background: %s; border: 1px solid %s; border-radius: 9px;"
+            " padding: 2px 10px; } QPushButton:hover { background: %s; }" % (fg, bg, fg, hover))
 
     @QtCore.Slot(bool)
     def _on_pack_warning_collapsed(self, collapsed):
@@ -1239,7 +1280,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
     _BUSY_LOCKED_KEYS = (
         "history", "add_mods", "changelog", "scan_diff", "mod_magnify", "clear_mods",
         "check_mods", "add_cfg_dir", "add_cfg_file", "cfg_magnify", "clear_cfg",
-        "check_cfg", "add_extra_options", "add_extra_dir", "add_extra_file",
+        "check_cfg", "add_extra_options", "add_extra_preset", "add_extra_dir", "add_extra_file",
         "clear_extra", "check_extra", "log_clear",
     )
 
@@ -1261,7 +1302,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             w = widgets.get(key)
             if w is not None:
                 w.setEnabled(not busy)
-        for name in ("settings_btn", "theme_btn", "buttons_btn"):
+        for name in ("settings_btn", "theme_btn", "buttons_btn", "apply_pill"):
             w = getattr(self, name, None)
             if w is not None:
                 w.setEnabled(not busy)
@@ -1740,6 +1781,165 @@ class QtMainWindow(QtWidgets.QMainWindow):
                                           trp("源实例里没有 {0},没有加入清单", rel))
             return
         self._append_lines(self.extra_text, [rel], tr("其它文件"))
+
+    def _quick_add_preset(self, entry):
+        """「＋ 常用目录」菜单里的一项 → 加进「其它文件」清单(同 Tk 版 _quick_add_extra)。
+
+        先看源实例里到底有没有:没有就别往清单里塞(塞了迁移时也会被跳过,
+        只会让人以为「我明明加了」)。已经在清单里的只提示,不重复加。
+        返回实际加了几条(0 或 1)。
+        """
+        from core.extra_presets import describe
+        if not self.source_path:
+            self.toast(tr("⚠️ 请先选择源整合包目录，再往清单里加东西"), "warn")
+            return 0
+        if not (Path(self.source_path) / entry.replace("\\", "/").rstrip("/")).exists():
+            self.toast(trp("⚠️ 源目录里没有 {0}，没加进清单", entry), "warn")
+            return 0
+        norm = lambda x: x.strip().replace("\\", "/").rstrip("/").lower()       # noqa: E731
+        if norm(entry) in {norm(x) for x in self._list_lines(self.extra_text)}:
+            self.toast(trp("ℹ️ {0} 已经在清单里了", entry), "info")
+            return 0
+        added = self._append_lines(self.extra_text, [entry], tr("其它文件"))
+        if added:
+            note = describe(entry)
+            self.toast(trp("✅ 已把 {0} 加入「其它文件」清单，迁移时会一起带过去（{1}）", entry, note)
+                       if note else
+                       trp("✅ 已把 {0} 加入「其它文件」清单，迁移时会一起带过去", entry), "ok")
+        return added
+
+    def _open_extra_preset_menu(self):
+        """「＋ 常用目录 ▾」:弹出预设菜单,点一项就写进清单;已在清单里的打上 ✅。"""
+        from core.extra_presets import preset_rows
+        menu = QtWidgets.QMenu(self)
+        for rel, note, already in preset_rows(self._list_lines(self.extra_text)):
+            act = menu.addAction("%s   %s%s" % (rel, note, tr("　✅ 已在清单") if already else ""))
+            act.triggered.connect(lambda _checked=False, e=rel: self._quick_add_preset(e))
+        self._preset_menu = menu                      # 留引用:测试里要拿到它,也防被 GC
+        btn = self.__dict__.get("_btn_widgets", {}).get("add_extra_preset")
+        if btn is not None:
+            menu.popup(btn.mapToGlobal(QtCore.QPoint(0, btn.height())))
+        else:
+            menu.popup(QtGui.QCursor.pos())
+
+    # ---------------- 应用迁移记录(对齐 Tk 版 mw_lists._apply_record / _undo_apply_record) ----------------
+    def _snapshot_ui(self):
+        """记下当前主界面的可回填状态(路径 / 存档名 / 三个清单原文),给「还原到应用前」用。"""
+        return {
+            "source": self.source_edit.text(),
+            "target": self.target_edit.text(),
+            "world": self.world_edit.text(),
+            "mods": self.mod_text.toPlainText(),
+            "configs": self.config_text.toPlainText(),
+            "extras": self.extra_text.toPlainText(),
+        }
+
+    def _restore_ui(self, snap):
+        """把 `_snapshot_ui()` 存下的状态放回去。清单走 `_replace_text`,所以 Ctrl+Z 还能再退一步。"""
+        if not isinstance(snap, dict):
+            return False
+        try:
+            self.source_edit.setText(snap.get("source") or "")
+            self.target_edit.setText(snap.get("target") or "")
+            self.world_edit.setText(snap.get("world") or "")
+            self._replace_text(self.mod_text, snap.get("mods") or "")
+            self._replace_text(self.config_text, snap.get("configs") or "")
+            self._replace_text(self.extra_text, snap.get("extras") or "")
+        except Exception as e:
+            self.log(trp("还原应用前状态失败: {0}", str(e)), "ERROR")
+            return False
+        self._refresh_badges()
+        return True
+
+    def _apply_record(self, rec, source=None):
+        """把某份迁移档案的路径、存档名、三个清单**全部回填**到主界面。
+
+        只回填、不启动迁移 —— 回填完由用户自己确认再点【开始迁移】。
+        迁移 / 扫描 / 倒计时期间不让应用(清单这时是只读的,硬塞进去会和忙态锁打架)。
+        """
+        source = source or tr("上一次的迁移记录")
+        if self._is_busy():
+            self.toast(tr("迁移进行中，暂不能应用记录"), "warn")
+            return False
+        if not isinstance(rec, dict):
+            self.toast(tr("⚠ 这份档案读不出来"), "warn")
+            return False
+        lists = rec.get("lists") or {}
+        mods = [str(x) for x in (lists.get("mods") or []) if str(x).strip()]
+        configs = [str(x) for x in (lists.get("configs") or []) if str(x).strip()]
+        extras = [str(x) for x in (lists.get("extras") or []) if str(x).strip()]
+        if not (mods or configs or extras):
+            self.toast(tr("⚠ 这份记录里没有清单内容"), "warn")
+            return False
+        snap = self._snapshot_ui()                  # 反悔用:应用失败就不算数
+        try:
+            if rec.get("source"):
+                self.source_edit.setText(str(rec["source"]))
+            if rec.get("target"):
+                self.target_edit.setText(str(rec["target"]))
+            if rec.get("world"):
+                self.world_edit.setText(str(rec["world"]))
+            self._replace_text(self.mod_text, "\n".join(mods))
+            self._replace_text(self.config_text, "\n".join(configs))
+            self._replace_text(self.extra_text, "\n".join(extras))
+        except Exception as e:
+            self._restore_ui(snap)
+            self.toast(trp("⚠ 回填记录失败：{0}", str(e)), "warn")
+            return False
+        self._refresh_badges()
+        self.log(trp("🔁 已应用{0}（模组 {1} / config {2} / 其它 {3}）",
+                     source, len(mods), len(configs), len(extras)), "INFO")
+        self._apply_undo = snap                     # 药丸随即变成「↩ 还原到应用前」
+        self._refresh_apply_pill()
+        self.toast(trp("🔁 已回填{0}", source), "ok")
+        return True
+
+    def _apply_last_record(self):
+        """一键应用最近一次的迁移记录(历史窗口之外的入口)。"""
+        try:
+            from utils import history_store
+            records = history_store.list_records()
+        except Exception as e:
+            self.log(trp("读迁移档案失败: {0}", str(e)), "ERROR")
+            records = []
+        if not records:
+            self.toast(tr("🗂 还没有迁移记录，先跑一次迁移"), "warn")
+            return False
+        return self._apply_record(records[0])
+
+    def _undo_apply_record(self):
+        """撤销上一次「应用记录」:把界面还原成应用之前的样子。"""
+        snap = getattr(self, "_apply_undo", None)
+        if not snap:
+            self.toast(tr("没有可以还原的状态"), "warn")
+            return False
+        if self._is_busy():
+            self.toast(tr("迁移进行中，暂不能应用记录"), "warn")
+            return False
+        ok = self._restore_ui(snap)
+        if ok:
+            self._apply_undo = None
+            self.log(tr("↩ 已还原到应用记录之前的状态"), "INFO")
+            self.toast(tr("↩ 已还原"), "ok")
+        else:
+            self.toast(tr("⚠ 还原失败"), "warn")
+        self._refresh_apply_pill()
+        return ok
+
+    def _on_apply_pill(self):
+        """药丸只有一颗:没应用过 = 应用上次记录;应用过 = 还原到应用前。"""
+        if getattr(self, "_apply_undo", None):
+            self._undo_apply_record()
+        else:
+            self._apply_last_record()
+
+    def _refresh_apply_pill(self):
+        """按状态换药丸的字(应用上次记录 / 还原到应用前)。"""
+        pill = getattr(self, "apply_pill", None)
+        if pill is None:
+            return
+        pill.setText(tr("↩ 还原到应用前") if getattr(self, "_apply_undo", None)
+                     else tr("🔁 应用上次记录"))
 
     def _load_lists_from_config(self):
         """从配置加载三份清单内容。"""
