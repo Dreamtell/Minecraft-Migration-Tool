@@ -113,6 +113,7 @@ class BigViewMixin:
                             on_wheel=view._wheel_event)
             mm.pack(fill="both", expand=True)
             self._log_big_minimap = mm
+            view.add_scroll_listener(lambda _f, _l: mm.sync_slider())   # 滚动时滑块当场跟着动
         except Exception:
             # 缩略图只是锦上添花：建不出来（缺 Pillow 之类）就让出那一列，日志照常用
             self._log_big_minimap = None

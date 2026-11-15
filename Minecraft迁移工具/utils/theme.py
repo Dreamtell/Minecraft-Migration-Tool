@@ -18,7 +18,9 @@ LIGHT_THEME = {
     "log_bg": "#ffffff",
     "log_fg": "#000000",
     "warning_bg": "#ffcccc",
-    "warning_fg": "#ff0000",
+    # 顶部红色警告条的字：原来纯红 #ff0000 压在粉底 #ffcccc 上只有 2.81，粗体 10 号也读着费劲；
+    # #a31515 对粉底 5.52，仍然是明显的红
+    "warning_fg": "#a31515",
     "bottom_bg": "#ffffff",
     "bottom_fg": "gray",
     "tooltip_bg": "#ffffe0",
@@ -45,7 +47,10 @@ LIGHT_THEME = {
     "danger_bg": "#ffc7c7", "danger_fg": "#8b0000",
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     # warn_fg：路径"能用但建议改"那种警告（如含中文）的图标色，比 ok 重、比 fail 轻
-    "ok_fg": "#2e7d32", "fail_fg": "#c62828", "muted_fg": "#808080",
+    "ok_fg": "#2e7d32", "fail_fg": "#c62828",
+    # muted_fg：说明/未选择/提示这类次要文字。原来 #808080 对 #f0f0f0 只有 3.47、对白底 3.95，
+    # 够不上正文 4.5；#6b6b6b 是仍然"淡"的最浅一档（对 #f0f0f0 4.68、对白 5.33）
+    "muted_fg": "#6b6b6b",
     "warn_fg": "#e65100",
     "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
     "sel_bg": "#66bb6a", "sel_fg": "#ffffff",

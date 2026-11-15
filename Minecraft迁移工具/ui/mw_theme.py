@@ -259,6 +259,12 @@ class ThemeMixin:
                 self._draw_net_spark()      # 折线下面的底色变了，重画一遍
             except Exception:
                 pass
+            try:
+                # 网络灯的字色（绿/橙/红）取自主题，`_keep_fg` 又让通用遍历跳过它，
+                # 所以切主题要在这里按当前档位重算一次，不然浅色主题下还是深色那套绿
+                self._刷新网络状态文字()
+            except Exception:
+                pass
         if hasattr(self, 'warning_frame'):
             self.warning_frame.configure(bg=self.theme["warning_bg"])
             self.warning_label.configure(bg=self.theme["warning_bg"],

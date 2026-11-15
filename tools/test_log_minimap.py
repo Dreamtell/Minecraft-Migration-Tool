@@ -193,6 +193,58 @@ class MinimapTests(unittest.TestCase):
         self.assertEqual(_cells("\u200d"), 0)
         self.assertEqual(self.mm._spans("ab 中文  x"), [(0, 2), (3, 7), (9, 10)])
 
+    # ---------- 滚动同步 ----------
+    def test_slider_follows_scroll_and_base_is_reused_while_offset_is_unchanged(self):
+        """滑块是单独一个图像项：滚动时它的 y 坐标跟着变；底图只在缩略图自己的偏移变了才重画，
+        偏移没变（比如连续两次 _redraw、或只是悬停状态变了）就是同一个对象。"""
+        self.text.yview("300.0")
+        _pump(self.root, 80)
+        self.mm._redraw(force=True)
+        base = self.mm._base
+        y_before = self.mm.coords(self.mm._sl_id)[1]
+        self.mm._redraw()                      # 什么都没变：底图不能被重画
+        self.assertIs(self.mm._base, base)
+        self.mm._hover = True                  # 只是悬停状态变了：只换滑块的不透明度
+        self.mm._redraw()
+        self.assertIs(self.mm._base, base)
+        self.mm._hover = False
+        self.text.yview("340.0")
+        self.root.update_idletasks()
+        self.mm.sync_slider()
+        self.assertGreater(self.mm.coords(self.mm._sl_id)[1], y_before)
+
+    def test_sync_slider_is_cheap(self):
+        """只挪滑块（底图不变）要远小于一帧：单次 < 1 ms（实测约 0.014 ms，留足 CI 抖动余量）。"""
+        self.text.yview("300.0")
+        _pump(self.root, 80)
+        self.mm._redraw(force=True)
+        g, w = self.mm._geom(), self.mm.winfo_width()
+        t0 = time.perf_counter()
+        for _ in range(100):
+            self.mm._place_slider(g, w, 0)
+        self.assertLess((time.perf_counter() - t0) / 100 * 1000, 1.0)
+
+    def test_slider_is_a_separate_item_and_hidden_when_it_all_fits(self):
+        self.assertEqual(self.mm.itemcget(self.mm._sl_id, "state"), "normal")
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("end", "一行\n", "INFO")
+        self.text.configure(state="disabled")
+        _pump(self.root, 100)
+        self.mm._redraw(force=True)
+        self.assertEqual(self.mm.itemcget(self.mm._sl_id, "state"), "hidden")
+
+    def test_slider_image_is_reused_while_height_and_state_are_unchanged(self):
+        self.text.yview("200.0")
+        _pump(self.root, 60)
+        self.mm._redraw(force=True)
+        photo = self.mm._sl_photo
+        for ln in ("220.0", "240.0", "260.0"):
+            self.text.yview(ln)
+            self.root.update_idletasks()
+            self.mm.sync_slider()
+        self.assertIs(self.mm._sl_photo, photo)
+
 
 class MarksExpandTests(unittest.TestCase):
     """Tk 会把相邻的同 tag 文字合并成一个范围：连着 12 行 ERROR 只返回 1 对。"""

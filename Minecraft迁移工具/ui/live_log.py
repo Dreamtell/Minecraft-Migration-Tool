@@ -43,6 +43,10 @@ class LiveLogView:
         self._mutating = False
         self._idle = None
         self._closed = False
+        # 滚动订阅者：文本每滚一下（Tk 调 yscrollcommand）就同步通知一遍。总览条 / 缩略图靠它
+        # 让滑块当场跟着动，不用等自己的定时轮询（250 / 50 ms 一次，滚动一帧才 7 ms，
+        # 轮询追不上，滑块就一顿一顿地滞后）。回调参数是 (first, last) 两个字符串，和 yscrollcommand 一致
+        self._scroll_listeners = []
         self.button = create_log_button(
             container, trp("↓ 回到底部"), self.jump_to_bottom,
             primary=True, backdrop=text)
@@ -129,8 +133,18 @@ class LiveLogView:
         if not self.at_bottom():
             self.pause()
 
+    def add_scroll_listener(self, fn):
+        """登记一个滚动回调 fn(first, last)。重复登记同一个无害。"""
+        if fn not in self._scroll_listeners:
+            self._scroll_listeners.append(fn)
+
     def _scrolled(self, first, last):
         self.text.vbar.set(first, last)
+        for fn in tuple(self._scroll_listeners):
+            try:
+                fn(first, last)
+            except Exception:
+                pass                 # 订阅者出错不能拖垮日志滚动
         if self.text.compare("end-1c", "==", "1.0"):
             return
         if not self._mutating and not self.scroller.scrolling():

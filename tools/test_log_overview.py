@@ -253,5 +253,85 @@ class LogOverviewTruncateTests(unittest.TestCase):
         self.assertNotEqual(前, 后)
 
 
+class LogOverviewScrollSyncTests(unittest.TestCase):
+    """滚动时滑块要当场跟着动，不能靠 250 ms 一次的轮询追（那样滑块滞后 120~190 ms，一顿一顿）。"""
+
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.geometry("400x300+40+40")
+        self.text = tk.Text(self.root, height=10, wrap="word")
+        self.ov = LogOverview(self.root, self.text, DARK_THEME, width=14, height=1)
+        self.ov.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        for tag in ("INFO", "WARNING", "ERROR", "SUCCESS", "SIMULATE"):
+            self.text.tag_configure(tag)
+        for i in range(600):
+            self.text.insert("end", ("失败 %d\n" if i % 50 == 7 else "普通 %d\n") % i,
+                             "ERROR" if i % 50 == 7 else "INFO")
+        self.text.configure(state="disabled")
+        _pump(self.root, 300)
+        self.ov._redraw(force=True)
+
+    def tearDown(self):
+        try:
+            self.ov.destroy()
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_sync_box_moves_the_slider_immediately(self):
+        self.text.yview_moveto(0.2)
+        _pump(self.root, 60)
+        self.ov.sync_box()
+        before = self.ov._box
+        self.text.yview_moveto(0.6)
+        self.root.update_idletasks()
+        self.ov.sync_box()            # 不等轮询，直接调
+        after = self.ov._box
+        self.assertIsNotNone(before)
+        self.assertGreater(after[0], before[0] + 20)
+
+    def test_sync_box_does_not_rebuild_ticks(self):
+        """只挪滑块：色块列表和 canvas 里色点的数量都不变（没有 delete("all") 重建）。"""
+        segs = list(self.ov._segs)
+        n_items = len(self.ov.find_all())
+        for f in (0.1, 0.3, 0.5, 0.7):
+            self.text.yview_moveto(f)
+            self.root.update_idletasks()
+            self.ov.sync_box()
+        self.assertEqual(self.ov._segs, segs)
+        self.assertEqual(len(self.ov.find_all()), n_items)
+
+    def test_poll_redraw_while_scrolling_is_slider_only(self):
+        """轮询里发现只是 yview 变了，也只挪滑块，不重画色点。"""
+        self.ov._redraw()
+        ids = set(self.ov.find_all())
+        self.text.yview_moveto(0.4)
+        self.root.update_idletasks()
+        self.ov._redraw()
+        self.assertEqual(set(self.ov.find_all()), ids)      # canvas 项的 id 一个没换
+
+    def test_content_change_still_rebuilds(self):
+        """行数 / 标记变了必须全量重画，不能被"只挪滑块"短路掉。"""
+        segs = list(self.ov._segs)
+        self.text.configure(state="normal")
+        for i in range(600, 700):
+            self.text.insert("end", "失败 %d\n" % i, "ERROR")
+        self.text.configure(state="disabled")
+        _pump(self.root, 150)
+        self.ov._redraw()
+        self.assertNotEqual(self.ov._segs, segs)
+
+    def test_slider_is_removed_when_everything_fits(self):
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("end", "只有一行\n", "INFO")
+        self.text.configure(state="disabled")
+        _pump(self.root, 150)
+        self.ov._redraw()
+        self.assertIsNone(self.ov._box)
+        self.assertIsNone(self.ov._box_items)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

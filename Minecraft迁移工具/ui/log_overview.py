@@ -124,13 +124,15 @@ class LogOverview(tk.Canvas):
         super().__init__(parent, width=width, **kw)
         self.text = text
         self.theme = dict(theme)
-        self._sig = None            # (末行号, yview) —— 没变就不重画
+        self._sig = None            # 上次全量重绘时的完整签名（测试/排查看的）
+        self._body_sig = None       # 不含 yview 的签名：行数/总高/tag 范围/尺寸。没变 = 只可能是滚动
         self._interval = _POLL_MS   # 当前轮询间隔（长日志会放慢）
         self._after = None
         self._drag = False
         self._grab = 0.0            # 按下时抓住的位置相对"可见区中心"的偏移（占条高的比例）
         self._segs = []             # [(y0, y1, tag, [(y, 行号, tag)])]：上次画出来的色块，点击吸附用
         self._box = None            # 上次画出来的可见区框 (y0, y1)，没画（整份都看得见）是 None
+        self._box_items = None      # 可见区框的 3 个 canvas 项（矩形 + 上下两条线），滚动时只改它们的坐标
         self.configure(cursor="hand2")
         self.bind("<Button-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_drag)
@@ -265,6 +267,12 @@ class LogOverview(tk.Canvas):
         return tag_sig(self.text)
 
     def _redraw(self, force=False):
+        """全量重绘：轨道 + 色点 + 滑块。只在内容 / 尺寸 / 主题变了时才需要。
+
+        滚动（只有 yview 变了）走 `sync_box()`，那条路只挪滑块，不碰色点：
+        一次全量约 2 ms（占滚动一帧 7 ms 的三成），而且每次都 delete("all") 重建几十个
+        canvas 项，滚动时就是一顿一顿的。
+        """
         try:
             end = int(str(self.text.index("end-1c")).split(".")[0])
             yv = self.text.yview()
@@ -274,15 +282,19 @@ class LogOverview(tk.Canvas):
             return
         h = max(1, self.winfo_height())
         w = max(1, self.winfo_width())
-        sig = (end, total, tags, round(yv[0], 4), round(yv[1], 4), h, w)
-        if not force and sig == self._sig:
+        body = (end, total, tags, h, w)
+        if not force and body == self._body_sig:
+            # 内容没变：只可能是滚动了，只动滑块
+            self._move_box(yv, h, w)
             return
-        self._sig = sig
+        self._body_sig = body
+        self._sig = (body, round(yv[0], 4), round(yv[1], 4))
         # 日志长了就放慢轮询：几万行的时候每 250ms 扫一遍 tag 范围纯属浪费
         self._interval = _POLL_SLOW_MS if end > 8000 else _POLL_MS
         self.delete("all")
         self._segs = []
         self._box = None
+        self._box_items = None
         if end <= 0:
             return
         # 轨道：比底色略深/略浅一点点。竖条本身要有"存在的形状"，
@@ -339,25 +351,73 @@ class LogOverview(tk.Canvas):
             self.create_rectangle(1, y0, w - 1, min(h, y1),
                                   fill=self.theme.get(key, fallback), outline="")
             self._segs.append((y0, min(h, y1), tag, ms))
-        # 可见区域框：Tk canvas 没有 alpha，用"底色→强调色"混出来的实色块代替，
-        # 比 stipple 网点干净得多（网点在小尺寸下会变成一块噪点）
+        self._move_box(yv, h, w)
+
+    # ---------------- 滑块（可见区框） ----------------
+    def _box_geom(self, yv, h):
+        """可见区框的 (y0, y1)；整份日志一屏就放得下（yv 覆盖全部）时返回 None。"""
         top, bottom = float(yv[0]), float(yv[1])
-        if bottom - top < 0.999:
-            y0, y1 = top * h, bottom * h
-            # 日志特别长时可见区只有几个像素，太小既看不见也抓不住：
-            # 给一个最小高度，并以原来的中心对齐
-            if y1 - y0 < _MIN_BOX:
-                中 = (y0 + y1) / 2.0
-                y0, y1 = 中 - _MIN_BOX / 2.0, 中 + _MIN_BOX / 2.0
-                if y0 < 0:
-                    y0, y1 = 0, _MIN_BOX
-                if y1 > h:
-                    y0, y1 = h - _MIN_BOX, h
-            底 = self.theme.get("bg", "#1e1e1e")
-            强调 = self.theme.get("accent", "#4a90d9")
-            框 = _mix(底, 强调, 0.45)
-            self.create_rectangle(1, y0, w - 1, y1, fill=框, outline=强调)
-            # 上下各一条实线，拖动时能看清抓到的是哪一段
-            self.create_line(1, y0, w - 1, y0, fill=强调)
-            self.create_line(1, y1, w - 1, y1, fill=强调)
-            self._box = (y0, y1)
+        if bottom - top >= 0.999:
+            return None
+        y0, y1 = top * h, bottom * h
+        # 日志特别长时可见区只有几个像素，太小既看不见也抓不住：
+        # 给一个最小高度，并以原来的中心对齐
+        if y1 - y0 < _MIN_BOX:
+            中 = (y0 + y1) / 2.0
+            y0, y1 = 中 - _MIN_BOX / 2.0, 中 + _MIN_BOX / 2.0
+            if y0 < 0:
+                y0, y1 = 0, _MIN_BOX
+            if y1 > h:
+                y0, y1 = h - _MIN_BOX, h
+        return y0, y1
+
+    def _move_box(self, yv, h, w):
+        """画 / 挪滑块。已经画过就只改坐标（3 个 canvas 项），不重建。
+
+        Tk canvas 没有 alpha，用"底色→强调色"混出来的实色块代替，比 stipple 网点干净得多
+        （网点在小尺寸下会变成一块噪点）。上下各一条实线，拖动时能看清抓到的是哪一段。
+        """
+        g = self._box_geom(yv, h)
+        items = self._box_items
+        if g is None:
+            if items is not None:
+                for it in items:
+                    self.delete(it)
+                self._box_items = None
+            self._box = None
+            return
+        y0, y1 = g
+        self._box = (y0, y1)
+        if items is not None:
+            try:
+                self.coords(items[0], 1, y0, w - 1, y1)
+                self.coords(items[1], 1, y0, w - 1, y0)
+                self.coords(items[2], 1, y1, w - 1, y1)
+                return
+            except tk.TclError:
+                self._box_items = None
+        底 = self.theme.get("bg", "#1e1e1e")
+        强调 = self.theme.get("accent", "#4a90d9")
+        框 = _mix(底, 强调, 0.45)
+        r = self.create_rectangle(1, y0, w - 1, y1, fill=框, outline=强调)
+        l1 = self.create_line(1, y0, w - 1, y0, fill=强调)
+        l2 = self.create_line(1, y1, w - 1, y1, fill=强调)
+        self._box_items = (r, l1, l2)
+
+    def sync_box(self, first=None, last=None):
+        """文本滚动时由 LiveLogView 的 yscrollcommand 直接调：只挪滑块，立刻生效。
+
+        这是总览条"滚动跟手"的关键：以前靠 250 ms 一次的轮询追，滚动一次滑块只更新
+        一两次、滞后 120~190 ms。first/last 就是 Tk 传给 yscrollcommand 的那两个数；
+        没传就自己读一次 yview。
+        """
+        try:
+            if first is None or last is None:
+                yv = self.text.yview()
+            else:
+                yv = (float(first), float(last))
+            h = max(1, self.winfo_height())
+            w = max(1, self.winfo_width())
+        except (tk.TclError, ValueError):
+            return
+        self._move_box(yv, h, w)

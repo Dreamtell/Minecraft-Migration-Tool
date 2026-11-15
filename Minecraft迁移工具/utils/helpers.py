@@ -152,6 +152,20 @@ def _mix_color(c0, c1, t):
         return c0 if t < 0.5 else c1
 
 
+def _tone(bg, t):
+    """往 bg 的"反色方向"混 t：深底往白、浅底往黑。禁用控件的面/字色用它。
+
+    只看 #rrggbb；系统色名（SystemButtonFace 之类）认不出来就按浅底处理。
+    """
+    try:
+        r, g, b = (int(str(bg)[i:i + 2], 16) for i in (1, 3, 5))
+        lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+        tgt = 255 if lum < 0.5 else 0
+        return "#%02x%02x%02x" % tuple(int(round(c + (tgt - c) * t)) for c in (r, g, b))
+    except Exception:
+        return "#c8c8c8" if t < 0.4 else "#707070"
+
+
 def hover_pair(colors):
     """悬停时的配色 = 基色两个色标都调亮同样一档。
 
@@ -1878,6 +1892,76 @@ def _font_alive(f):
         return False
 
 
+def emoji_and_text_width(font, text):
+    """量一段可能含 emoji 的文字宽度 —— **不让 Tk 去量 emoji**。
+
+    为什么要绕：粗体 Font 第一次 measure 一个含 emoji 的串要 270~380 ms（Tk 现初始化
+    字体回退），之后才 0.13 ms。表头标题、按钮文字全以 emoji 开头，一次开窗光量字
+    就上百毫秒。emoji 的占宽很稳定（≈ 字号 × 1.88，8~14 号实测 1.78~1.91，
+    这里取 1.88 偏大，截断时只会多留余量），而普通文字量起来只要 0.1 ms。
+    "emoji + 空格 + 中文" 的拆分估算与直接实量逐个字号验过，完全相等。
+    """
+    s = str(text or "")
+    if not s:
+        return 0
+    # 有 emoji 才走拆分；纯普通文字直接量（这条路径最常用）
+    if not _EMOJI_RE.search(s):
+        try:
+            return font.measure(s)
+        except Exception:
+            return len(s) * 7
+    try:
+        size = abs(int(_font_size(font)))
+    except Exception:
+        size = 10
+    emoji_w = int(round(size * 1.88))
+    width = 0
+    plain = []
+    for ch in s:
+        if _emoji_re_char(ch):
+            if plain:
+                buf = "".join(plain)
+                try:
+                    width += font.measure(buf)
+                except Exception:
+                    width += len(buf) * 7
+                plain = []
+            width += emoji_w
+        elif ch in "\ufe0f\u200d":          # 变体选择符 / 零宽连接符：不占宽
+            continue
+        else:
+            plain.append(ch)
+    if plain:
+        buf = "".join(plain)
+        try:
+            width += font.measure(buf)
+        except Exception:
+            width += len(buf) * 7
+    return width
+
+
+def _font_size(font):
+    """取 Font 对象的字号；取不到就给个常见的 10。"""
+    try:
+        sz = font.cget("size")
+        return sz
+    except Exception:
+        pass
+    try:
+        return font.actual("size")
+    except Exception:
+        return 10
+
+
+# emoji / 符号：和 utils 里 _split_lead_symbol 那套码段一致，外加常见装饰符号
+_EMOJI_RE = __import__("re").compile(
+    r"[\u2190-\u21ff\u2300-\u27bf\u2b00-\u2bff\u3030\u303d\ufe0f\U0001f000-\U0001faff]")
+
+
+def _emoji_re_char(ch):
+    return bool(_EMOJI_RE.match(ch))
+
+
 def _btn_text_width(text, font=None):
     """量一段文字用渐变按钮字体画出来有多宽（Font 对象缓存，别每次 new）。
 
@@ -1893,7 +1977,7 @@ def _btn_text_width(text, font=None):
         except Exception:
             f = tkfont.Font(family="微软雅黑", size=10, weight="bold")
         _BTN_FONT_CACHE = f
-    return f.measure(str(text or ""))
+    return emoji_and_text_width(f, str(text or ""))
 
 
 _BTN_FONT_CACHE = None      # 量按钮文字用的 Font（tkinter 里 new Font 很慢，缓存）
@@ -2027,8 +2111,9 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
                 # 和文字挤在一个 create_text 里就没法单独上移（实测图标比文字低 3.5~4.5px）。
                 # 拆开后图标按 _sym_dy() 上提，两项各自 anchor="w"，合起来仍整体居中。
                 f = _btn_font_obj(font)
-                w_sym = max(_SYM_W, f.measure(lead))
-                w_rest = f.measure(rest)
+                # emoji 单独按比例估宽（让 Tk 量它会触发几百 ms 的字体回退初始化）
+                w_sym = max(_SYM_W, emoji_and_text_width(f, lead))
+                w_rest = emoji_and_text_width(f, rest)
                 x0 = (width - (w_sym + _SYM_GAP + w_rest)) / 2.0
                 canvas._sym_dy = _sym_dy(lead, font)
                 canvas.sym_id = canvas.create_text(x0, height // 2 - canvas._sym_dy, text=lead,
@@ -2067,6 +2152,27 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
     }
     face_size = (max(1, width - int(PADX * 2)), max(1, height - int(PADY * 2)))
 
+    def _container_bg():
+        """按钮所在容器的真实底色（取不到就退回画布自己的 bg）。"""
+        try:
+            return str(canvas.cget("bg"))
+        except Exception:
+            return "#f0f0f0"
+
+    def _disabled_face():
+        """禁用时的面色（单色，不渐变）：往容器底色里混一点"反色"。
+
+        以前是写死的 #9e9e9e→#bdbdbd 亮灰，白字压在上面对比度只有 1.9~2.7。深色主题里它是
+        整屏最亮的几块之一，浅色主题里又几乎和底一样，一排按钮里它"断成了两截"。
+        现在按容器底色的明暗来定：深底往亮混、浅底往暗混，混得很少，只是"比底略有层次"，
+        不再抢彩色按钮的视觉重量；字色见 _disabled_fg()（混 0.68：字对面 ≥ 4.5，深浅主题都过）。
+        """
+        c = _tone(_container_bg(), 0.14)
+        return (c, c)               # 单色：渐变的两个色标取同一个值
+
+    def _disabled_fg():
+        return _tone(_container_bg(), 0.68)
+
     def _face_base():
         """按钮面的底图：**按面自己的尺寸**渲染圆角渐变（不是从整图裁）。
 
@@ -2074,7 +2180,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
         剩下的角看着就是直角 —— 鼠标一碰（面浮起来）轮廓还会挪，角就更"不统一"。
         按面尺寸渲染只多一次渲染，但和整图那张二选一，总次数不变。
         """
-        colors = ("#9e9e9e", "#bdbdbd") if flags.get("disabled") else state["colors"]
+        colors = _disabled_face() if flags.get("disabled") else state["colors"]
         return _rounded_gradient(face_size[0], face_size[1], colors, colors,
                                  radius, parent)["normal"]
 
@@ -2344,6 +2450,12 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             canvas.configure(bg=new_bg)
         except Exception:
             pass
+        if flags.get("disabled"):          # 禁用面/字色取决于容器底色，换主题要重出
+            state["fg"] = _disabled_fg()
+            if use_img:
+                _drop_frames()
+                _render()
+            draw_content()
     canvas.set_corner_bg = set_corner_bg
 
     # 支持像普通 Button 一样动态改 command / state
@@ -2417,7 +2529,7 @@ def create_gradient_button(parent, text, command, colors=("#00bcd4", "#3f51b5"),
             return
         flags["disabled"] = want
         canvas._btn_disabled = want          # 给测试/排查看的只读标记
-        state["fg"] = "#f0f0f0" if want else "#ffffff"
+        state["fg"] = _disabled_fg() if want else "#ffffff"
         if want:                          # 禁用时把动画收干净：不许停在"浮起/按下"的样子
             for name in ("hover", "press"):
                 tw[name]["cur"] = 0.0
@@ -3366,13 +3478,19 @@ class SwitchRow(tk.Canvas):
     _WARN_DARK = "#ff6b6b"
 
     def __init__(self, parent, theme, title, desc="", command=None, height=None,
-                 compact=False, accent=None, warn_desc=None, **kw):
+                 compact=False, accent=None, warn_desc=None, keep_state_when_disabled=False,
+                 **kw):
         self._is_switch_row = True          # 给"点空白退出编辑"这类兜底逻辑认的标志
         try:
             bg = parent.cget("bg")
         except Exception:
             bg = theme.get("bg", "#f0f0f0")
         self._compact = bool(compact)
+        # 禁用时仍显示开/关状态：开着就保持强调色、字也保持正常字色，只是点不动（鼠标不再是手型）。
+        # 用在"迁移期间被锁住、但用户仍要看清当前是不是模拟运行/覆盖"的那种开关。
+        # 默认 False：别的禁用开关（比如被镜像窗口锁住的"主界面编辑"）还是整条灰掉，
+        # 那种灰是在告诉用户"这项现在不让你动、看说明里的原因"
+        self._keep_state = bool(keep_state_when_disabled)
         if self._compact:                   # 紧凑形态：开关小一号、没有卡片底
             self._SW, self._SH, self._KNOB = 36, 18, 14
             self._PAD_L, self._GAP = 0, 8
@@ -3460,6 +3578,8 @@ class SwitchRow(tk.Canvas):
 
         用来表达"这项现在不让改"（主界面编辑在放大查看/模组差异开着时就是这样），
         说明文字由调用方通过 `set_text(desc=...)` 写清楚原因。
+        构造时传了 `keep_state_when_disabled=True` 的开关例外：禁用后颜色不变（开着仍是强调色），
+        只是点不动，用来让用户在锁定期间仍看得清当前状态。
         """
         on = bool(on)
         if on == self._enabled:
@@ -3533,9 +3653,10 @@ class SwitchRow(tk.Canvas):
         y = self._h / 2.0
         self.coords(self._title_id, x, y)
         self.itemconfig(self._title_id, text=self._title,
-                        fill=self.theme.get("fg", "#222") if self._enabled else 灰)
+                        fill=self.theme.get("fg", "#222") if (self._enabled or self._keep_state) else 灰)
         self.coords(self._desc_id, x + self._text_width() + 14, y)
-        开 = self._t > 0.5 and self._enabled
+        开 = self._t > 0.5 and (self._enabled or self._keep_state)   # keep_state 的开关
+        # 禁用时仍按"开着"画说明（不然锁定期间警示语会退回普通说明，和轨道颜色自相矛盾）
         self.itemconfig(
             self._desc_id,
             text=self._desc if not 开 else self._warn_desc,
@@ -3589,7 +3710,7 @@ class SwitchRow(tk.Canvas):
             灰 = self._rgb(self.theme.get("muted_fg", "#9e9e9e"))
             self._track_off = _圆角矩形((self._SW, self._SH), self._SH / 2.0, 灰)
             self._track_on = _圆角矩形((self._SW, self._SH), self._SH / 2.0,
-                                       self._accent_rgb() if self._enabled else 灰)
+                                       self._accent_rgb() if (self._enabled or self._keep_state) else 灰)
         return self._track_off, self._track_on
 
     def _knob_img(self):

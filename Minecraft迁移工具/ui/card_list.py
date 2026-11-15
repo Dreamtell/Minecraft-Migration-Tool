@@ -8,10 +8,14 @@
 - 只为可见行和两行缓冲创建 Canvas item；滚动时复用固定数量的行槽位。
 - 槽位首次需要图元时创建，后续通过 coords/itemconfigure 更新，不反复删除和创建。
 - 滚动交给 SmoothScroller（像素级），跟其它列表手感一致。
-- 图标懒加载：只有滚到的行才去解 jar 取图标（9ms/个，缓存后 0ms）。
+- 图标懒加载 + **后台解码**：只有滚到的行才去解 jar 取图标（真实尺寸图标约 3.5ms/个，
+  最坏 10ms；滚进一屏要 12 张 = 41ms ≈ 6 帧）。解码放在后台线程，滚动时先画兜底图，
+  解码完再由主线程建 PhotoImage 并回填那一行 —— 滚动本身不再被图标卡住。
 - 单击行体 = 勾选（和表格视图一致），双击 = 打开详情；双击由 Tk 原生
   <Double-Button-1> 负责，间隔就是系统设置里的鼠标双击速度，程序不自己判。
 """
+import queue
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from collections import OrderedDict
@@ -206,6 +210,14 @@ class ModCardList(tk.Frame):
         self.on_context = on_context                # 函数(index, event)：右键菜单
         self.fallback_icon = fallback_icon          # PIL.Image
         self._photos = OrderedDict()                # 图标路径 -> PhotoImage（LRU）
+        # 图标后台解码：PIL 的解码/缩放可以在线程里做，但 ImageTk.PhotoImage 必须在主线程建。
+        # 所以线程只产出 PIL 图，主线程 16ms 轮询取回、转 PhotoImage、回填那一行。
+        self._icon_jobs = queue.Queue()             # 待解码：(cache_key, row 副本)
+        self._icon_done = queue.Queue()             # 已解码：(cache_key, PIL 图或 None)
+        self._icon_queued = set()                   # 已排队的 cache_key，防止同一张排两次
+        self._icon_thread = None
+        self._icon_poll_job = None
+        self._icon_stop = threading.Event()
         self._misc_photos = OrderedDict()            # 圆角底/chip 的 PhotoImage（LRU）
         self._elide_cache = {}                      # (宽度, 原文) -> 截断结果
         self._top = 0.0                             # 滚动位置（像素，唯一真源）
@@ -318,6 +330,23 @@ class ModCardList(tk.Frame):
         self._sel = -1
         self._update_scrollbar()
         self._render(force=True)
+
+    def destroy(self):
+        """销毁前收尾：停掉图标解码线程、撤销还没跑的回填轮询。"""
+        self._icon_stop.set()
+        job = self._icon_poll_job
+        self._icon_poll_job = None
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._icon_thread = None
+        try:
+            self._icon_jobs.put((None, None))       # 叫醒线程，让它看到 stop
+        except Exception:
+            pass
+        super().destroy()
 
     def refresh_row(self, index):
         """只重画某一行（悬停反馈/数据已更新时用）。"""
@@ -589,27 +618,77 @@ class ModCardList(tk.Frame):
             self.on_double_click(idx, event)
 
     # ---------------------------------------------------------------- 绘制
+    def _icon_state(self):
+        """图标后台解码用的几个容器，**用到时才建**。
+
+        不在 `__init__` 里一次建齐、而是这里补齐：测试（和别的地方）会用
+        `object.__new__(ModCardList)` 造个壳对象直接调 `_icon_photo`，那种对象没跑过
+        `__init__`。按需补全，两边都能用。
+        """
+        st = self.__dict__
+        if "_icon_jobs" not in st:
+            st["_icon_jobs"] = queue.Queue()
+        if "_icon_done" not in st:
+            st["_icon_done"] = queue.Queue()
+        if "_icon_queued" not in st:
+            st["_icon_queued"] = set()
+        if "_icon_thread" not in st:
+            st["_icon_thread"] = None
+        if "_icon_poll_job" not in st:
+            st["_icon_poll_job"] = None
+        if "_icon_stop" not in st:
+            st["_icon_stop"] = threading.Event()
+        return (st["_icon_jobs"], st["_icon_done"], st["_icon_queued"])
+
     def _icon_photo(self, row):
-        """取（并缓存）这行的图标 PhotoImage；拿不到就用兜底图标。"""
+        """取（并缓存）这行的图标 PhotoImage；拿不到就用兜底图标。
+
+        **解码在后台线程做**：真实尺寸的模组图标一次要 3.5ms（最坏 10ms），滚进一屏 12 张
+        就是 41ms —— 以前全在主线程同步做，于是每滚进一行界面就卡一下。现在第一次遇到就给
+        兜底图并把解码排到后台，解码完再回填（见 `_icon_poll`），滚动本身不被图标拖住。
+        """
         key = row.get("icon_key")
         cache_key = ("icon", key) if key else ("fallback", id(self.fallback_icon))
-        if cache_key in self._photos:
+        hit = self._photos.get(cache_key)
+        if hit is not None:
             self._photos.move_to_end(cache_key)
-            return self._photos[cache_key]
-        img = None
-        if self.icon_provider is not None and key:
+            return hit
+        if not key or self.icon_provider is None:
+            return self._fallback_photo()
+        jobs, _done, queued = self._icon_state()
+        if cache_key in queued:
+            return self._fallback_photo()        # 正在后台解码，先给兜底
+        queued.add(cache_key)
+        try:
+            jobs.put((cache_key, dict(row)))
+            self._ensure_icon_worker()
+        except Exception:
+            queued.discard(cache_key)
+        return self._fallback_photo()
+
+    def _fallback_photo(self):
+        """兜底图标（没有图标、或图标还在后台解码时用），按对象身份缓存。
+
+        没有兜底图时造一张 ICON_PX 的透明图而不是返回 None：`_paint_row` 里图标宽度
+        决定文字起点，返回 None 会让文字左移，图标回填时整行文字再跳回去。
+        """
+        cache_key = ("fallback", id(self.fallback_icon))
+        hit = self._photos.get(cache_key)
+        if hit is not None:
+            self._photos.move_to_end(cache_key)
+            return hit
+        img = self.fallback_icon
+        if img is None:
             try:
-                img = self.icon_provider(row)
+                from PIL import Image
+                img = Image.new("RGBA", (self.ICON_PX, self.ICON_PX), (0, 0, 0, 0))
             except Exception:
-                img = None
-        if img is None:
-            img = self.fallback_icon
-        if img is None:
-            return None
+                return None
         try:
             from PIL import ImageTk
             im = img.copy()
-            im.thumbnail((self.ICON_PX, self.ICON_PX), img.LANCZOS if hasattr(img, "LANCZOS") else None)
+            im.thumbnail((self.ICON_PX, self.ICON_PX),
+                         img.LANCZOS if hasattr(img, "LANCZOS") else None)
             photo = ImageTk.PhotoImage(im)
         except Exception:
             return None
@@ -618,6 +697,99 @@ class ModCardList(tk.Frame):
         while len(self._photos) > 512:
             self._photos.popitem(last=False)
         return photo
+
+    # ------------------------------------------------------ 图标后台解码
+    def _ensure_icon_worker(self):
+        """起解码线程（已经在跑就只确保主线程还在轮询结果）。"""
+        jobs, done, _queued = self._icon_state()
+        t = self._icon_thread
+        if t is None or not t.is_alive():
+            def 跑():
+                while not self._icon_stop.is_set():
+                    try:
+                        cache_key, row = jobs.get(timeout=0.3)
+                    except queue.Empty:
+                        continue
+                    if cache_key is None:
+                        break
+                    img = None
+                    try:
+                        img = self.icon_provider(row)
+                    except Exception:
+                        img = None
+                    if img is not None:
+                        try:
+                            img = img.copy()
+                            img.thumbnail((self.ICON_PX, self.ICON_PX),
+                                          img.LANCZOS if hasattr(img, "LANCZOS") else None)
+                        except Exception:
+                            img = None
+                    try:
+                        done.put((cache_key, img))
+                    except Exception:
+                        break
+            self._icon_thread = threading.Thread(target=跑, daemon=True,
+                                                 name="cardlist-icons")
+            try:
+                self._icon_thread.start()
+            except Exception:
+                self._icon_thread = None
+        self._schedule_icon_poll()
+
+    def _schedule_icon_poll(self):
+        if self.__dict__.get("_icon_poll_job") is not None:
+            return
+        try:
+            self._icon_poll_job = self.after(16, self._icon_poll)
+        except Exception:
+            self._icon_poll_job = None
+
+    def _icon_poll(self):
+        """主线程轮询：解码好的 PIL 图转 PhotoImage（必须在主线程），再回填用到它的行。"""
+        _jobs, done, queued = self._icon_state()
+        self._icon_poll_job = None
+        ready = []
+        try:
+            while True:
+                ready.append(done.get_nowait())
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        if ready:
+            changed = set()
+            for cache_key, img in ready:
+                queued.discard(cache_key)
+                if img is None:
+                    photo = self._fallback_photo()      # 没图标：别下次再排一次队反复失败
+                else:
+                    try:
+                        from PIL import ImageTk
+                        photo = ImageTk.PhotoImage(img)
+                    except Exception:
+                        photo = None
+                if photo is not None:
+                    self._photos[cache_key] = photo
+                    self._photos.move_to_end(cache_key)
+                    while len(self._photos) > 512:
+                        self._photos.popitem(last=False)
+                if cache_key[0] == "icon":
+                    changed.add(cache_key[1])
+            # 用 getattr 取：壳对象（测试里 object.__new__ 造的那种）没有这两项，
+            # 这只影响"要不要回填重画"，没有它们跳过就行
+            rows = getattr(self, "rows", None) or []
+            slots = getattr(self, "_row_to_slot", None) or {}
+            if changed and rows and slots:
+                for i in list(slots):
+                    if not (0 <= i < len(rows)):
+                        continue
+                    if rows[i].get("icon_key") in changed:
+                        try:
+                            self._draw_row(i)
+                        except Exception:
+                            pass
+        if queued:
+            self._schedule_icon_poll()
 
     def _photo_for(self, pil_img):
         """PIL 图 → PhotoImage（按对象身份缓存；rounded_image 自己也有缓存）。"""

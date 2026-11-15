@@ -88,6 +88,11 @@ class LogMinimap(tk.Canvas):
         self._spans_cache = {}
         self._photo = None
         self._img_id = self.create_image(0, 0, anchor="nw")
+        # 滑块是单独一个图像项（一张小的半透明图盖在底图上），滚动时只改它的坐标：
+        # 以前每次滚动都要把整张底图复制一份、叠上滑块、再整张贴回去，滚一下就是几毫秒
+        self._sl_id = self.create_image(0, 0, anchor="nw", state="hidden")
+        self._sl_photo = None
+        self._sl_key = None             # (宽, 高, 状态, 主题代数)：没变就不重生成滑块图
         self._base = None                       # 缓存的底图（RGBA）
         self._base_key = None
         self._sig = None
@@ -247,6 +252,7 @@ class LogMinimap(tk.Canvas):
         d.line((0, 0, 0, h), fill=self._edge)    # 左边一条 1px 分隔线，和文本框隔开
         return img
     def _redraw(self, force=False):
+        """全量：底图（逐行色块）变了才重画；滑块只是位置/状态变了就只挪它。"""
         g = self._geom()
         w = max(1, self.winfo_width())
         if g is None:
@@ -256,7 +262,11 @@ class LogMinimap(tk.Canvas):
                 self._base = None
                 self._base_key = None
                 self._photo = None
-                self.itemconfigure(self._img_id, image="")
+                try:
+                    self.itemconfigure(self._img_id, image="")
+                    self.itemconfigure(self._sl_id, state="hidden")
+                except tk.TclError:
+                    pass
             return
         try:
             first = self.text.get("1.0", "1.end")
@@ -273,24 +283,48 @@ class LogMinimap(tk.Canvas):
         if self._base is None or self._base_key != base_key:
             self._base = self._render_base(g, w)
             self._base_key = base_key
+            try:
+                if self._photo is not None and (self._photo.width(), self._photo.height()) == self._base.size:
+                    self._photo.paste(self._base)
+                else:
+                    self._photo = ImageTk.PhotoImage(self._base, master=self)
+                self.itemconfigure(self._img_id, image=self._photo)
+            except tk.TclError:
+                return
+        self._place_slider(g, w, state)
+
+    def _place_slider(self, g, w, state):
+        """画 / 挪滑块：高度和状态没变就只改坐标（0.2 ms），变了才重生成那张小图。"""
         box = self._slider_box(g, w)
         self._slider = box
-        img = self._base
-        if box is not None:
-            y0, y1 = int(round(box[0])), int(round(box[1]))
-            if y1 > y0:
-                region = img.crop((0, y0, w, y1))
-                over = Image.new("RGBA", region.size, self._fg + (int(255 * _ALPHA[state]),))
-                img = img.copy()
-                img.paste(Image.alpha_composite(region, over), (0, y0))
         try:
-            if self._photo is not None and (self._photo.width(), self._photo.height()) == img.size:
-                self._photo.paste(img)
-            else:
-                self._photo = ImageTk.PhotoImage(img, master=self)
-            self.itemconfigure(self._img_id, image=self._photo)
+            if box is None:
+                self.itemconfigure(self._sl_id, state="hidden")
+                return
+            y0, y1 = int(round(box[0])), int(round(box[1]))
+            if y1 <= y0:
+                self.itemconfigure(self._sl_id, state="hidden")
+                return
+            key = (w, y1 - y0, state, self._theme_gen)
+            if key != self._sl_key or self._sl_photo is None:
+                over = Image.new("RGBA", (w, y1 - y0), self._fg + (int(255 * _ALPHA[state]),))
+                self._sl_photo = ImageTk.PhotoImage(over, master=self)
+                self._sl_key = key
+                self.itemconfigure(self._sl_id, image=self._sl_photo)
+            self.coords(self._sl_id, 0, y0)
+            self.itemconfigure(self._sl_id, state="normal")
         except tk.TclError:
             pass
+
+    def sync_slider(self):
+        """文本滚动时由 LiveLogView 的 yscrollcommand 直接调：只挪滑块，立刻生效。
+
+        底图（逐行色块）只取决于"缩略图自己的滚动偏移"，而偏移只会随视口首行变，
+        所以视口首行没变时（滚动在同一行内的几个像素）连底图都不用动；首行变了偏移才变，
+        走 _redraw 去按需重画底图。两种情况都比轮询（50 ms 一次）及时。
+        """
+        self._redraw()
+
     # ---------------- 交互 ----------------
     def _before(self):
         if self._on_before is not None:
