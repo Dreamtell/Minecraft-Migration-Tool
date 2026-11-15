@@ -24,6 +24,8 @@ from utils.i18n import tr  # noqa: E402
 
 # Qt 主界面里实际有的按钮。组名/key 与 Tk 版一致;顺序 = Qt 版默认顺序
 GROUPS = (
+    ("path",        tr("路径区（来源）")),
+    ("path_target", tr("路径区（目标）")),
     ("mods",   tr("模组清单区")),
     ("config", tr("Config 清单区")),
     ("extra",  tr("其它文件区")),
@@ -31,6 +33,8 @@ GROUPS = (
     ("log",    tr("执行日志区")),
 )
 DEFAULT_ORDER = {
+    "path":        ["browse_source", "copy_target"],
+    "path_target": ["browse_target"],
     "mods":   ["add_mods", "changelog", "scan_diff", "mod_magnify", "clear_mods", "check_mods"],
     "config": ["add_cfg_dir", "add_cfg_file", "cfg_magnify", "clear_cfg", "check_cfg"],
     "extra":  ["add_extra_options", "add_extra_preset", "add_extra_dir", "add_extra_file",
@@ -39,6 +43,9 @@ DEFAULT_ORDER = {
     "log":    ["log_big", "log_open", "fail_locate", "log_clear"],
 }
 LABELS = {
+    "browse_source": tr("📂 浏览…（来源路径）"),
+    "copy_target": tr("← 填充路径"),
+    "browse_target": tr("📂 浏览…（目标路径）"),
     "add_mods": tr("➕ 添加模组"),
     "changelog": tr("📥 从变更日志导入"),
     "scan_diff": tr("🔍 扫描差异"),

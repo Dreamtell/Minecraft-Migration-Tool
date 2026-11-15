@@ -653,11 +653,15 @@ class QtMainWindow(QtWidgets.QMainWindow):
         src_row.addWidget(self.source_edit)
         self.src_browse_btn = QtWidgets.QPushButton(tr("浏览"))
         self.src_browse_btn.clicked.connect(self._browse_source)
-        src_row.addWidget(self.src_browse_btn)
         copy_btn = QtWidgets.QPushButton(tr("← 填充路径"))
         copy_btn.setToolTip(tr("把目标路径复制到源路径"))
         copy_btn.clicked.connect(self._copy_target_to_source)
-        src_row.addWidget(copy_btn)
+        # 两颗按钮单独一个子布局:「界面按钮」重排时只动这一排,不会把输入框和状态图标摘掉
+        src_btns = QtWidgets.QHBoxLayout()
+        src_btns.setContentsMargins(0, 0, 0, 0)
+        src_row.addLayout(src_btns)
+        self._register_button_row("path", src_btns, [
+            ("browse_source", self.src_browse_btn), ("copy_target", copy_btn)])
         self.source_status = self._make_path_status()
         src_row.addWidget(self.source_status)
         self._path_btns = {"browse_source": self.src_browse_btn, "copy_target": copy_btn}
@@ -670,7 +674,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
         tgt_row.addWidget(self.target_edit)
         self.tgt_browse_btn = QtWidgets.QPushButton(tr("浏览"))
         self.tgt_browse_btn.clicked.connect(self._browse_target)
-        tgt_row.addWidget(self.tgt_browse_btn)
+        tgt_btns = QtWidgets.QHBoxLayout()
+        tgt_btns.setContentsMargins(0, 0, 0, 0)
+        tgt_row.addLayout(tgt_btns)
+        self._register_button_row("path_target", tgt_btns, [
+            ("browse_target", self.tgt_browse_btn)])
         self.target_status = self._make_path_status()
         tgt_row.addWidget(self.target_status)
         paths_layout.addRow(tr("目标实例:"), tgt_row)

@@ -6,6 +6,7 @@
 """
 import sys
 import threading
+import webbrowser
 from pathlib import Path
 
 # 与 window.py 一致:确保 _qt 在路径里,便于独立导入(测试/工具进程)
@@ -22,6 +23,19 @@ from utils import history_store  # noqa: E402
 from utils import fx  # noqa: E402
 from utils import secrets  # noqa: E402
 from ui.qt_main.star_slider import StarSliderCard  # noqa: E402
+
+# 外部链接:抄自 ui/mw_common.py 的 LINK_* (那个模块顶层 import tkinter,Qt 进程不能导入它;
+# 测试里断言两边一致)。
+LINK_MINECRAFT = "https://www.minecraft.net/zh-hans"
+LINK_GITHUB = "https://github.com/Dreamtell/Minecraft-Migration-Tool"
+LINK_MCMOD = "https://www.mcmod.cn/"
+LINK_PCL = "https://pcl.ruanmao.net/"
+_LINKS = (
+    ("minecraft", "🌐 Minecraft 官网", LINK_MINECRAFT),
+    ("mcmod", "📚 MC百科", LINK_MCMOD),
+    ("pcl", "🚀 PCL 启动器", LINK_PCL),
+    ("github", "🐙 GitHub 仓库", LINK_GITHUB),
+)
 
 
 def ask_close_action(parent):
@@ -309,6 +323,24 @@ class SettingsDialog(QtWidgets.QDialog):
         backend_note.setStyleSheet("color: #888; font-size: 11px;")
         form.addRow("", backend_note)
 
+        # 快捷链接(与 Tk 版设置窗「快捷链接」区同四个入口,点了立即打开,不等「确定」)
+        form.addRow(QtWidgets.QLabel(tr("快捷链接")))
+        link_row = QtWidgets.QHBoxLayout()
+        self.link_buttons = {}
+        for key, label, url in _LINKS:
+            btn = QtWidgets.QPushButton(tr(label))
+            btn.setToolTip(url)
+            btn.clicked.connect(lambda _=False, u=url: self.open_link(u))
+            link_row.addWidget(btn)
+            self.link_buttons[key] = btn
+        link_row.addStretch()
+        form.addRow(link_row)
+        link_note = QtWidgets.QLabel(LINK_GITHUB + tr(
+            "\nMC百科：中文模组资料库　·　PCL：整合包启动器　·　欢迎反馈问题或提交建议。"))
+        link_note.setStyleSheet("color: #888; font-size: 11px;")
+        link_note.setWordWrap(True)
+        form.addRow(link_note)
+
         # 按钮
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -335,6 +367,16 @@ class SettingsDialog(QtWidgets.QDialog):
         bar_lay.addStretch(1)
         bar_lay.addWidget(buttons)
         root.addWidget(bar)
+
+    def open_link(self, url):
+        """打开外部链接;成功记日志 + 小提示,失败弹错误框(同 Tk 版 PagesMixin.open_link)。"""
+        try:
+            webbrowser.open_new_tab(url)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, tr("打开失败"), trp("无法打开链接：{0}", e))
+            return
+        self._cf_log(trp("🔗 已打开链接：{0}", url))
+        self._cf_toast(trp("🔗 已打开链接：{0}", url), "info")
 
     def _on_rollback_toggled(self, key, on):
         """回滚默认还原至少留一类(全不勾回滚就什么都不做):取消最后一个时把它勾回去。"""

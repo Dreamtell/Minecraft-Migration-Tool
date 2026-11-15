@@ -370,6 +370,23 @@ Qt主窗口本身就是纯Qt进程(没有Tk),qt_diff_view/qt_big_view 直接在�
 **第十二批补充**:完整日志写盘失败的提示。界面上只留最近几千行,完整日志在磁盘文件里;写盘失败(磁盘满 / 没权限)时,日志区下面出现一行红字「完整日志保存失败:原因」,好了就收回,正常时不占位(同 Tk 的 `_冲写日志`)。`window._refresh_log_status`,切主题跟着变色。测试 `LogWriteFailureNoticeTests`(6 条):用「日志目录的父路径是个文件」真实触发 `OSError`,不伪造状态;也钉住「写盘失败不影响界面继续显示新日志」。
 57. 日志目录放到不可写的地方(或磁盘满)后继续操作:日志区下面出现红字「完整日志保存失败:…」;界面上的日志照常滚动
 
+### 第十三批(已写完,待检查)—— 设置窗快捷链接、路径区按钮进「界面按钮」(只动 Qt 一侧,没碰任何 Tk 文件)
+
+拉齐 main 后再和 Tk 对一遍,剩下两处:
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 快捷链接 | `settings.SettingsDialog.open_link`、`settings._LINKS` | 设置窗最下面「快捷链接」:Minecraft 官网 / MC百科 / PCL 启动器 / GitHub 仓库四个按钮 + 一行说明,和 Tk「外观与启动」页那一区一致。点了立即用浏览器新标签打开,记日志并弹小提示,不关设置窗;打不开时弹错误框。网址抄自 `ui/mw_common.LINK_*`(那个模块 import tkinter,Qt 进程不能导入),测试断言两边一致 |
+| 路径区按钮可隐藏 / 排序 | `buttons.GROUPS/DEFAULT_ORDER/LABELS`、`window` 路径区 | 新增组 `path`(浏览来源 / ← 填充路径)和 `path_target`(浏览目标),组名、key、默认顺序与 Tk 的 `_DEFAULT_BUTTON_ORDER` 相同,所以在一边藏掉的按钮另一边也藏着。按钮放在各自的子布局里,重排时输入框和 ✅/❌ 状态图标不会被摘走;忙碌时照旧置灰 |
+
+对账结论:Tk `save_config` 的键里,Qt 不读写的只剩 `double_click_sec`、`double_click_auto`、`lock_mode`、`lock_wait_key`(Tk 自己也不再用)和 `qt_enabled`、`big_view_backend`、`diff_backend`(Tk 用来决定放大查看 / 差异窗走 Qt 还是 Tk,Qt 主界面本身就是 Qt),都原样保留不抹掉。按钮里 Tk 的 `rollback` 没做(Tk 已把回滚并进历史窗,Qt 同),Qt 多出的 `changelog`、`fail_locate`、`log` 组 Tk 不认识也不会被 Tk 抹掉。
+
+测试:`tools/test_qt_main_links_buttons.py`(11 个用例)。
+
+检查时补看:
+58. 设置窗拉到最下面有「快捷链接」四个按钮;点「📚 MC百科」浏览器打开 mcmod.cn,主界面弹「🔗 已打开链接」,设置窗还开着
+59. 「界面按钮」里最上面多了「路径区（来源）」「路径区（目标）」两组;取消勾选「← 填充路径」→ 主界面那颗按钮消失,输入框和状态图标还在原位;把两颗来源按钮调换顺序后确定,主界面跟着换
+
 ### 第七批(提案,等主界面重构完成后再决策)—— Tk 设置窗改由 Qt 渲染
 
 **背景**:Tk 设置窗(`ui/mw_settings.py`,约 1600 行)是手搓的一堆控件,和 Qt 设置窗
