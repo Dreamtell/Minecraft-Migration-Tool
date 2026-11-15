@@ -429,6 +429,19 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.toast(tr("🌙 已切换到深色主题") if new_name == "dark" else tr("☀️ 已切换到浅色主题"),
                    "ok", key="theme")
 
+    def _repaint_list_labels(self):
+        """清单页顶上的灰色说明 / 红色警告是手动上的色(不走全局 QSS),切主题要重新上色。"""
+        muted = self.theme.get("muted_fg", "#888")
+        fail = self.theme.get("fail_fg", "#c62828")
+        for lab in self.findChildren(QtWidgets.QLabel):
+            role = lab.property("_role")
+            if role == "list_hint":
+                lab.setStyleSheet(f"color: {muted};")
+            elif role == "list_warning":
+                lab.setStyleSheet(f"color: {fail}; font-weight: bold;")
+            elif role == "log_status":
+                lab.setStyleSheet(f"color: {fail};")
+
     def _after_theme_change(self):
         """换主题后:刷新那些按状态手动上色、不走全局 QSS 的控件(都是幂等的)。"""
         # 全局调色板先重铺：对话框/放大查看/原生控件只跟着 app palette 走，
@@ -446,7 +459,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
         for fn in (self._detect_env, self._update_world_status, self._refresh_msg_badge,
-                   self._repaint_path_status):
+                   self._repaint_path_status, self._repaint_list_labels,
+                   self._repaint_conflict_row):
             try:
                 fn()
             except Exception:
@@ -508,6 +522,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.config["dry_run"] = self.dry_run
         self.config["overwrite"] = self.overwrite_mods
         self.config["extra_conflict"] = self.extra_conflict
+        self._sync_conflict_row()           # 其它文件页里那个分段选择跟着设置窗走
 
         # 3) 启动动画(仅存配置,app.py 启动时读)
         self.config["splash"] = bool(vals.get("splash", True))
@@ -727,7 +742,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
              ("cfg_magnify", tr("📂 放大查看"), lambda: self._open_big_view("config")),
              ("clear_cfg", tr("🗑️ 清空"), lambda: self._clear_list(self.config_text)),
              ("check_cfg", tr("🔎 检查是否存在"), lambda: self._check_list("config"))],
-            group="config")
+            group="config",
+            hint=tr("每行一个相对路径，「相对源实例的 config 目录」（例：jei/jei.toml、sodium-options.json）。"),
+            warning=tr("⚠️ 注意：复制将直接覆盖目标 config 中的同名文件/文件夹，请谨慎操作！"))
         self._config_tab_index = self.tabs.addTab(config_page, tr("config 清单"))
 
         # 其它文件清单
@@ -742,7 +759,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
              ("add_extra_file", tr("📄 添加文件"), self._add_extra_files),
              ("clear_extra", tr("🗑️ 清空"), lambda: self._clear_list(self.extra_text)),
              ("check_extra", tr("🔎 检查是否存在"), lambda: self._check_list("extra"))],
-            group="extra")
+            group="extra",
+            hint=tr("每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。"
+                    "不会自动带任何东西 —— 想要的自己加。"
+                    "例：options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/"),
+            top_widget=self._make_conflict_row())
         self._extra_tab_index = self.tabs.addTab(extra_page, tr("其它文件"))
 
         # 恢复上次停留的页签
@@ -783,6 +804,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText(tr("操作日志将在此显示(双击错误/警告行可定位到清单条目)"))
         log_layout.addWidget(self.log_text)
+
+        # 完整日志写盘失败时才出现的一行红字(平时隐藏),见 _refresh_log_status
+        self.log_status_label = QtWidgets.QLabel("")
+        self.log_status_label.setWordWrap(True)
+        self.log_status_label.setProperty("_role", "log_status")
+        self.log_status_label.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')};")
+        self.log_status_label.setVisible(False)
+        log_layout.addWidget(self.log_status_label)
 
         log_tools = QtWidgets.QHBoxLayout()
         big_log_btn = QtWidgets.QPushButton(tr("📂 放大查看（日志）"))
@@ -887,20 +916,98 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.log(trp("主题: {0}", self.config.get("theme", "light")), "INFO")
         self._refresh_badges()
 
-    def _make_list_page(self, text_edit, buttons, group=None):
+    def _make_list_page(self, text_edit, buttons, group=None, hint=None, warning=None,
+                        top_widget=None):
         """造一个清单页:文本框 + 一排操作按钮。
 
         buttons = [(key, 文案, 回调), ...];key 对应 ui/qt_main/buttons.py 的登记表,
         用于「界面按钮」设置里的显示/隐藏和排序。
+        hint / warning:文本框上方的灰色说明 / 红色粗体警告(同 Tk 三个页);
+        top_widget:再往上放一个现成控件(其它文件页的「同名文件」选择)。
         """
         page = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(page)
         v.setContentsMargins(6, 6, 6, 6)
+        if hint:
+            lab = QtWidgets.QLabel(hint)
+            lab.setWordWrap(True)
+            lab.setProperty("_role", "list_hint")
+            lab.setStyleSheet(f"color: {self.theme.get('muted_fg', '#888')};")
+            v.addWidget(lab)
+        if warning:
+            lab = QtWidgets.QLabel(warning)
+            lab.setWordWrap(True)
+            lab.setProperty("_role", "list_warning")
+            lab.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')}; font-weight: bold;")
+            v.addWidget(lab)
+        if top_widget is not None:
+            v.addWidget(top_widget)
         v.addWidget(text_edit)
         row = QtWidgets.QHBoxLayout()
         v.addLayout(row)
         self._register_button_row(group, row, buttons, stretch_end=True)
         return page
+
+    def _conflict_qss(self):
+        """分段选择的样式:选中那段用主题的高亮色 + 加粗,没选的保持普通按钮外观。
+
+        全局样式表里没有 :checked 的规则,不单独写的话选中和没选中长得一模一样。
+        """
+        hi = self.theme.get("highlight_bg", "#cce5ff")
+        fg = self.theme.get("accent_fg", self.theme.get("fg", "#000"))
+        edge = self.theme.get("accent_fg", "#1976d2")
+        return ("QPushButton:checked{background:%s;color:%s;font-weight:bold;"
+                "border:2px solid %s;}" % (hi, fg, edge))
+
+    def _repaint_conflict_row(self):
+        for b in getattr(self, "_conflict_btns", {}).values():
+            b.setStyleSheet(self._conflict_qss())
+
+    def _make_conflict_row(self):
+        """「目标已有同名文件时:覆盖(先备份) / 跳过」分段选择(同 Tk 其它文件页)。
+
+        只是设置里「其它文件冲突」的页面内入口,同一个键 extra_conflict,点了立刻存。
+        """
+        box = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(QtWidgets.QLabel(tr("目标已有同名文件时：")))
+        self._conflict_btns = {}
+        group = QtWidgets.QButtonGroup(box)
+        group.setExclusive(True)
+        for value, label in (("overwrite", tr("覆盖（先备份）")), ("skip", tr("跳过（目标保持不变）"))):
+            b = QtWidgets.QPushButton(label)
+            b.setCheckable(True)
+            b.setChecked(self.extra_conflict == value)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, v=value: self._set_extra_conflict(v))
+            group.addButton(b)
+            h.addWidget(b)
+            self._conflict_btns[value] = b
+        h.addStretch(1)
+        self._conflict_group = group
+        self._repaint_conflict_row()
+        return box
+
+    def _set_extra_conflict(self, value):
+        """其它文件遇到目标已有同名文件时怎么办;和设置窗共用 extra_conflict,点了就存。"""
+        if value not in ("overwrite", "skip"):
+            return
+        changed = value != self.extra_conflict
+        self.extra_conflict = value
+        self.config["extra_conflict"] = value
+        self._sync_conflict_row()
+        if changed:
+            self.save_config()
+            self.toast(trp("同名文件：{0}", tr("覆盖（先备份）") if value == "overwrite" else tr("跳过")),
+                       "ok", key="extra_conflict")
+
+    def _sync_conflict_row(self):
+        """把页面里的分段选择对到当前值(设置窗改了之后也要调,两处才不会各说各话)。"""
+        for value, b in getattr(self, "_conflict_btns", {}).items():
+            b.blockSignals(True)
+            b.setChecked(self.extra_conflict == value)
+            b.blockSignals(False)
 
     # ---------------- 可自定义的按钮排(显示/隐藏 + 顺序) ----------------
     def _register_button_row(self, group, row, buttons, stretch_end=False, stretch_start=False):
@@ -1372,6 +1479,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 w.setEnabled(not busy)
         for w in getattr(self, "_path_btns", {}).values():
             w.setEnabled(not busy)
+        for b in getattr(self, "_conflict_btns", {}).values():
+            b.setEnabled(not busy)          # 迁移中改「同名文件」策略会和正在跑的那次对不上
         # 倒计时期间开始按钮要能点(取消),其余忙态由迁移流程管;空闲时一定是可点的
         if getattr(self, "_countdown_timer", None) is not None:
             self.start_btn.setEnabled(True)
@@ -2633,23 +2742,122 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if self._scanning:
             self.log(tr("⚠️ 已有扫描在进行中"), "WARNING")
             return
+
+        # 扫描之前先把「清单里这些文件到底在不在源 mods 里」查一遍:不在的标红、记日志
+        # (这些条目不会参与比较;和 Tk 的 _mark_missing_before_scan 同一套规则)
+        missing = self._mark_missing_before_scan(src)
+        if missing:
+            self.log(trp("⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较",
+                         len(missing)), "WARNING")
+
         self._scanning = True
         self._refresh_busy_state()
         self.log(tr("🔍 开始扫描模组差异..."), "INFO")
+        total = sum(1 for d in (src_p, tgt_p) if (d / "mods").is_dir()
+                    for _ in (d / "mods").glob("*.jar"))
+        self._scan_total = total
+        self._set_scan_label(tr("⏳ 扫描中…"))
 
-        # 在后台线程扫描(避免阻塞主界面);progress_queue 传 None(可选)。
+        # 在后台线程扫描(避免阻塞主界面)。进度走 queue.Queue:扫描线程只往队列里放,
+        # 主线程用 QTimer 取(不碰 Qt 控件的跨线程调用,也不依赖 invokeMethod)。
         # ⚠ 结果是 list/None,不能用 invokeMethod + Q_ARG(object, ...) 送回主线程:
         #   PySide6 报 "Unable to find a QMetaType for object"(用户实测)。
         #   改走 Signal(object):worker 线程 emit,Qt 自动排队到主线程的槽。
+        import queue
+        progress = queue.Queue()
+        self._scan_progress = progress
+
         def scan_task():
             from core.scanner import scan_mod_differences
             try:
-                result = scan_mod_differences(src_p, tgt_p, None, 0)
+                result = scan_mod_differences(src_p, tgt_p, progress, total)
             except Exception as e:
                 self._scan_failed.emit(str(e))
                 return
             self._scan_done.emit(result)
         threading.Thread(target=scan_task, daemon=True).start()
+        self._start_scan_poll()
+
+    # ---- 扫描进度:按钮文字 ----
+    def _scan_button(self):
+        return getattr(self, "_btn_widgets", {}).get("scan_diff")
+
+    def _set_scan_label(self, text):
+        btn = self._scan_button()
+        if btn is not None:
+            btn.setText(text)
+
+    def _start_scan_poll(self):
+        """16ms 一轮取队列里最新的进度;队列里同一轮的多条只留最后一条,免得一帧画几十次。"""
+        t = getattr(self, "_scan_poll_timer", None)
+        if t is None:
+            t = QtCore.QTimer(self)
+            t.setInterval(16)
+            t.timeout.connect(self._poll_scan_progress)
+            self._scan_poll_timer = t
+        t.start()
+
+    @QtCore.Slot()
+    def _poll_scan_progress(self):
+        import queue
+        q = getattr(self, "_scan_progress", None)
+        if q is None or not self._scanning:
+            self._stop_scan_poll()
+            return
+        latest = None
+        try:
+            while True:
+                msg = q.get_nowait()
+                if msg is None:               # 扫描器报「进度到头了」;结果还在后头,不能停轮询
+                    break
+                latest = msg
+        except queue.Empty:
+            pass
+        if latest is not None:
+            current = latest[0]
+            total = getattr(self, "_scan_total", 0)
+            self._set_scan_label(trp("⏳ 解析中 ({0}/{1})", current, total) if total > 0
+                                 else tr("⏳ 解析中..."))
+
+    def _stop_scan_poll(self):
+        t = getattr(self, "_scan_poll_timer", None)
+        if t is not None:
+            t.stop()
+        self._scan_progress = None
+        self._set_scan_label(tr("🔍 扫描差异"))
+
+    # ---- 扫描前:清单里源 mods 找不到的行标红 ----
+    def _mark_missing_before_scan(self, src):
+        """返回缺失条目名列表,并把对应行标红(文字一改就清掉,和「检查是否存在」同一个机制)。"""
+        from core.list_ops import missing_mod_rows
+        try:
+            rows, names = missing_mod_rows(src, self.mod_text.toPlainText())
+        except Exception:
+            return []
+        box = self.mod_text
+        if not rows:
+            return names
+        doc = box.document()
+        sels = []
+        red = QtGui.QColor(self.theme.get("fail_fg", "#c62828"))
+        bg = QtGui.QColor(red)
+        bg.setAlpha(40)
+        for line_no in rows:
+            blk = doc.findBlockByNumber(line_no)
+            if not blk.isValid():
+                continue
+            sel = QtWidgets.QTextEdit.ExtraSelection()
+            cur = QtGui.QTextCursor(blk)
+            cur.select(QtGui.QTextCursor.LineUnderCursor)
+            sel.cursor = cur
+            sel.format.setForeground(red)
+            sel.format.setBackground(bg)
+            sels.append(sel)
+        box.setExtraSelections(sels)
+        if not box.property("_check_marks_hooked"):
+            box.textChanged.connect(self._clear_check_marks)
+            box.setProperty("_check_marks_hooked", True)
+        return names
 
     @QtCore.Slot()
     def _on_diff_view_destroyed(self, token=None):
@@ -2665,19 +2873,32 @@ class QtMainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def _on_scan_failed(self, msg):
         self._scanning = False
+        self._stop_scan_poll()
         self._refresh_busy_state()
-        self.log(trp("扫描失败: {0}", msg), "ERROR")
+        self.log(trp("❌ 扫描出错: {0}", msg), "ERROR")
+        # 窗口收在托盘里就发系统通知,别突然弹模态框;在前台就弹出来(同 Tk 的 _finish_scan)
+        if self._in_tray():
+            self._notify(tr("扫描模组差异"), trp("扫描出错：{0}", msg))
+        else:
+            QtWidgets.QMessageBox.critical(
+                self, tr("扫描错误"), trp("扫描过程中发生异常：{0}", msg))
 
     @QtCore.Slot()
     def _scan_ended(self):
         """扫描失败时复位忙态(成功路径在 _show_diff_result 里复位)。"""
         self._scanning = False
+        self._stop_scan_poll()
         self._refresh_busy_state()
+
+    def _in_tray(self):
+        """窗口现在是不是收在系统托盘里(托盘里时别弹模态框、别突然开新窗口)。"""
+        return bool(getattr(self, "_hidden_in_tray", False))
 
     @QtCore.Slot(object)
     def _show_diff_result(self, result):
         """主线程:扫描完成,打开差异窗口。"""
         self._scanning = False
+        self._stop_scan_poll()
         self._refresh_busy_state()
         # scan_mod_differences 约定:None=路径/mods目录不存在,[]=无差异,list=有差异
         if result is None:
@@ -2685,13 +2906,30 @@ class QtMainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(
                 self, tr("提示"), tr("源或目标实例下找不到 mods 目录,无法扫描差异"))
             return
-        self.log(trp("✅ 扫描完成,共 {0} 项差异", len(result)), "OK")
         if not result:
-            QtWidgets.QMessageBox.information(self, tr("提示"),
-                                              tr("源和目标的模组列表一致,没有差异"))
+            self.log(tr("📊 扫描完成：无差异"), "INFO")
+            if self._in_tray():
+                self._notify(tr("扫描模组差异"), tr("两个 mods 目录完全一致，没有差异"))
+            else:
+                QtWidgets.QMessageBox.information(self, tr("提示"),
+                                                  tr("源和目标的模组列表一致,没有差异"))
             return
+        self.log(trp("📊 扫描完成，发现 {0} 项差异", len(result)), "OK")
+        if self._in_tray():
+            # 窗口挂在托盘里:别突然弹出差异窗口,先压着,等叫回主界面再开
+            self._pending_diff = result
+            self._notify(tr("扫描模组差异"), trp("发现 {0} 项差异，点托盘图标查看", len(result)))
+            return
+        self._open_diff_view(result)
 
-        # 调用 qt_diff_view(Qt主窗口直接在进程内用,不需要子进程/pump)
+    def _flush_pending_diff(self):
+        """窗口从托盘叫回来时,把之前压着的差异窗口补开出来。"""
+        result, self._pending_diff = getattr(self, "_pending_diff", None), None
+        if result:
+            self._open_diff_view(result)
+
+    def _open_diff_view(self, result):
+        """开差异窗口(进程内,不需要子进程/pump)。"""
         try:
             from ui import qt_diff_view
             if not qt_diff_view.available():
@@ -2838,6 +3076,22 @@ class QtMainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+    def _refresh_log_status(self):
+        """完整日志写盘失败时,在日志区下方常驻一行红字;正常时留空(同 Tk 的 `_冲写日志`)。
+
+        界面上只显示最近几千行,完整日志在磁盘文件里。写盘失败(磁盘满 / 没权限)时用户
+        以为日志都存着,其实没有 —— 不提示的话要到想翻旧日志时才发现。
+        """
+        label = getattr(self, "log_status_label", None)
+        store = getattr(self, "_session_log", None)
+        if label is None or store is None:
+            return
+        error = getattr(store, "error", None)
+        text = trp("完整日志保存失败：{0}", error) if error else ""
+        if label.text() != text:
+            label.setText(text)
+            label.setVisible(bool(text))
+
     @QtCore.Slot(str, str)
     def log(self, message, level="INFO"):
         """写日志到执行日志区(支持级别配色)。
@@ -2856,6 +3110,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 self._session_log.append(message, level, save=True)
             except Exception:
                 pass
+            self._refresh_log_status()
 
         color_map = {
             "INFO": self.theme.get("log_info_fg", "#808080"),
@@ -2958,6 +3213,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.raise_()
         self.activateWindow()
         self._force_foreground()
+        self._flush_pending_diff()
 
     def _force_foreground(self):
         """Win32 级置顶(同 utils.helpers.force_foreground,但那个模块顶层 import tkinter,

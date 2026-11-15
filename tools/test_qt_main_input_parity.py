@@ -28,7 +28,7 @@ _CFG_PATH = os.environ["MCTOOL_CONFIG"]
 def setUpModule():                     # 全量跑时各模块各用各的临时配置
     _use_config(_CFG_PATH)
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 from utils import config as _cfg  # noqa: E402
 
 _cfg.CONFIG_FILE = CFG
@@ -694,6 +694,491 @@ class ScanSameDirTests(_WinBase):
             self.w._scan_diff()
         thread.assert_called_once()
         self.w._scanning = False
+
+
+class MissingBeforeScanLogicTests(unittest.TestCase):
+    """core.list_ops.missing_mod_rows:规则同 Tk 的 _mark_missing_before_scan。"""
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory(prefix="mctool-miss-")
+        self.addCleanup(self.d.cleanup)
+        self.src = Path(self.d.name)
+        (self.src / "mods").mkdir()
+        for n in ("A.jar", "[CN] B.jar", "c-1.0.jar"):
+            (self.src / "mods" / n).write_text("x")
+
+    def rows(self, text, src=None):
+        from core.list_ops import missing_mod_rows
+        return missing_mod_rows(self.src if src is None else src, text)
+
+    def test_finds_only_the_missing_ones_with_line_numbers(self):
+        rows, names = self.rows("A.jar\nZ.jar\n# 注释\n\nc-1.0.jar\nY.jar")
+        self.assertEqual(rows, [1, 5])
+        self.assertEqual(names, ["Z.jar", "Y.jar"])
+
+    def test_bracket_prefix_is_ignored_in_both_directions(self):
+        self.assertEqual(self.rows("B.jar")[1], [])                 # 源里是 [CN] B.jar,清单写 B.jar
+        self.assertEqual(self.rows("[X] A.jar")[1], [])             # 清单带前缀,源里没有
+
+    def test_comments_and_blank_lines_are_never_missing(self):
+        self.assertEqual(self.rows("# a\n   \n\n#b"), ([], []))
+
+    def test_no_mods_dir_or_empty_mods_means_nothing_is_judged(self):
+        self.assertEqual(self.rows("A.jar", self.src / "nope"), ([], []))
+        empty = Path(self.d.name) / "empty"
+        (empty / "mods").mkdir(parents=True)
+        self.assertEqual(self.rows("A.jar\nZ.jar", empty), ([], []))   # 不能把整张清单都报成缺失
+
+    def test_blank_source_is_safe(self):
+        self.assertEqual(self.rows("A.jar", ""), ([], []))
+
+    def test_whole_line_is_matched_so_old_full_path_lines_are_flagged(self):
+        """和 Tk 一致:按整行匹配,不先取文件名。老式整条路径行会被标出来,让用户去整理。"""
+        self.assertEqual(self.rows("C:/x/mods/A.jar")[1], ["C:/x/mods/A.jar"])
+
+    def test_matches_tk_on_the_same_inputs(self):
+        """抽出 Tk 方法的源码,在假控件上跑,逐项对账(不 import Tk 模块)。"""
+        src = (ROOT / "Minecraft迁移工具" / "ui" / "mw_migration.py").read_text(encoding="utf-8")
+        cls = next(c for c in ast.parse(src).body
+                   if isinstance(c, ast.ClassDef) and c.name == "MigrationMixin")
+        fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "_mark_missing_before_scan")
+        ns = {"Path": Path, "tk": mock.MagicMock(END="end"), "trace_exc": lambda *a, **k: None}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "mw_migration", "exec"), ns)
+
+        class FakeText:
+            def __init__(self, text):
+                self.text, self.marked = text, []
+
+            def get(self, *_a):
+                return self.text
+
+            def tag_remove(self, *_a):
+                self.marked = []
+
+            def tag_add(self, _tag, start, _end):
+                self.marked.append(int(start.split(".")[0]) - 1)
+
+        class FakeSelf:
+            pass
+        for text in ("A.jar\nZ.jar\n# x\n\nc-1.0.jar", "B.jar\n[X] A.jar", "C:/x/A.jar\nA.jar", ""):
+            fs = FakeSelf()
+            fs.mod_text = FakeText(text)
+            tk_names = ns["_mark_missing_before_scan"](fs, str(self.src))
+            ours_rows, ours_names = self.rows(text)
+            self.assertEqual(ours_names, tk_names, text)
+            self.assertEqual(ours_rows, fs.mod_text.marked, text)
+
+class ScanFlowTests(_WinBase):
+    def setUp(self):
+        super().setUp()
+        self.tgt = make_pack(self.root / "tgt", mods=("A.jar",))
+        self.w.source_edit.setText(str(self.src))
+        self.w.target_edit.setText(str(self.tgt))
+
+    def run_scan(self, opened=None):
+        """真跑一次后台扫描,等它结束;差异窗口换成记录器,免得在测试里真弹窗。"""
+        if opened is None:
+            opened = []
+        with mock.patch.object(self.W, "_open_diff_view", lambda s, r: opened.append(r)):
+            self.w._scan_diff()
+            end = time.time() + 20
+            while self.w._scanning and time.time() < end:
+                pump(10)
+            pump(60)
+        return opened
+
+    def test_scan_button_shows_progress_then_resets(self):
+        labels = []
+        orig = self.w._set_scan_label
+        with mock.patch.object(self.w, "_set_scan_label", lambda t: (labels.append(t), orig(t))[1]):
+            self.run_scan()
+        self.assertEqual(labels[0], "⏳ 扫描中…")
+        self.assertEqual(self.w._scan_button().text(), "🔍 扫描差异")
+        self.assertFalse(self.w._scan_poll_timer.isActive())
+        self.assertIsNone(self.w._scan_progress)
+
+    def test_poll_turns_queued_progress_into_the_button_text(self):
+        """3 个 jar 扫得比 16ms 还快,真跑拿不到中间态;这里手工往队列里放,单独验证取队列的逻辑。"""
+        import queue
+        self.w._scanning = True
+        self.w._scan_total = 10
+        self.w._scan_progress = q = queue.Queue()
+        for i in (1, 2, 3):
+            q.put((i, "x%d.jar" % i))
+        self.w._poll_scan_progress()
+        self.assertEqual(self.w._scan_button().text(), "⏳ 解析中 (3/10)")    # 同一轮只留最后一条
+        q.put(None)                                                        # 「进度到头」不能把轮询停掉
+        self.w._poll_scan_progress()
+        self.assertEqual(self.w._scan_button().text(), "⏳ 解析中 (3/10)")
+        self.assertTrue(self.w._scanning)
+        self.w._scanning = False
+        self.w._stop_scan_poll()
+
+    def test_poll_without_a_known_total_uses_the_open_ended_text(self):
+        import queue
+        self.w._scanning = True
+        self.w._scan_total = 0
+        self.w._scan_progress = q = queue.Queue()
+        q.put((1, "a.jar"))
+        self.w._poll_scan_progress()
+        self.assertEqual(self.w._scan_button().text(), "⏳ 解析中...")
+        self.w._scanning = False
+        self.w._stop_scan_poll()
+
+    def test_poll_stops_itself_once_the_scan_is_over(self):
+        self.w._scanning = False
+        self.w._scan_poll_timer = QtCore.QTimer(self.w)
+        self.w._scan_poll_timer.start(1000)
+        self.w._poll_scan_progress()
+        self.assertFalse(self.w._scan_poll_timer.isActive())
+
+    def test_progress_total_counts_both_sides(self):
+        self.run_scan()                      # 源 2 个 + 目标 1 个
+        self.assertEqual(self.w._scan_total, 3)
+
+    def test_result_rows_reach_the_diff_view(self):
+        opened = self.run_scan()
+        self.assertEqual([(r[0], r[1]) for r in opened[0]], [("B.jar", "新增")])
+
+    def test_missing_entries_are_marked_and_logged_before_scanning(self):
+        self.w._replace_text(self.w.mod_text, "A.jar\nZ.jar")
+        with mock.patch.object(self.w, "log") as log:
+            self.run_scan()
+        self.assertTrue(any("1 项在源 mods 里找不到" in str(c.args[0]) for c in log.call_args_list))
+        self.assertEqual(len(self.w.mod_text.extraSelections()), 1)
+
+    def test_missing_marks_clear_when_the_text_changes(self):
+        self.w._replace_text(self.w.mod_text, "A.jar\nZ.jar")
+        self.w._mark_missing_before_scan(str(self.src))
+        self.assertEqual(len(self.w.mod_text.extraSelections()), 1)
+        self.w._replace_text(self.w.mod_text, "A.jar")
+        self.assertEqual(len(self.w.mod_text.extraSelections()), 0)
+
+    def test_missing_marks_clear_when_the_user_types(self):
+        """S07:用户手打字不走 _replace_text,标记也得清掉(靠 textChanged 的那条连接)。"""
+        self.w._replace_text(self.w.mod_text, "A.jar\nZ.jar")
+        self.w._mark_missing_before_scan(str(self.src))
+        self.assertEqual(len(self.w.mod_text.extraSelections()), 1)
+        self.w.mod_text.setReadOnly(False)
+        cur = self.w.mod_text.textCursor()
+        cur.movePosition(QtGui.QTextCursor.End)
+        self.w.mod_text.setTextCursor(cur)
+        self.w.mod_text.insertPlainText("x")          # 和敲键盘一样走文档编辑,不经过 _replace_text
+        self.assertEqual(len(self.w.mod_text.extraSelections()), 0)
+
+    def test_scanner_really_receives_the_progress_queue_and_total(self):
+        """S09:3 个 jar 扫得比 16ms 还快,看按钮文字抓不到;直接断言传给扫描器的参数。"""
+        got = {}
+
+        def fake_scan(src, tgt, progress_queue=None, total=0):
+            got["queue"], got["total"] = progress_queue, total
+            return []
+        with mock.patch("core.scanner.scan_mod_differences", fake_scan), \
+                mock.patch.object(QtWidgets.QMessageBox, "information"):
+            self.w._scan_diff()
+            end = time.time() + 10
+            while self.w._scanning and time.time() < end:
+                pump(10)
+            pump(40)
+        self.assertIsNotNone(got.get("queue"))
+        self.assertEqual(got["total"], 3)
+
+    def test_poll_timer_is_stopped_the_moment_a_scan_succeeds(self):
+        """S13:成功路径要立刻停轮询并复位按钮,不能等下一拍轮询自己发现。
+
+        不停也不会空转(轮询开头见 _scanning 为假会自停),但那样结束后按钮文字会多停留
+        十几拍(实测约 240ms),窗口又会在这期间弹出差异窗口。所以直接调结果槽,
+        不泵事件循环,看它返回时的状态。
+        """
+        self.w._scanning = True
+        self.w._scan_progress = object()
+        self.w._start_scan_poll()
+        self.assertTrue(self.w._scan_poll_timer.isActive())
+        self.w._set_scan_label("⏳ 解析中 (1/3)")
+        with mock.patch.object(self.W, "_open_diff_view"):
+            self.w._show_diff_result([("B.jar", "新增", "B.jar", 1.0, "", "?", "?", "?", "x")])
+        self.assertFalse(self.w._scan_poll_timer.isActive())
+        self.assertEqual(self.w._scan_button().text(), "🔍 扫描差异")
+        self.assertFalse(self.w._scanning)
+
+    def test_poll_timer_is_stopped_the_moment_a_scan_fails(self):
+        self.w._scanning = True
+        self.w._scan_progress = object()
+        self.w._start_scan_poll()
+        with mock.patch.object(QtWidgets.QMessageBox, "critical"):
+            self.w._on_scan_failed("坏了")
+        self.assertFalse(self.w._scan_poll_timer.isActive())
+        self.assertEqual(self.w._scan_button().text(), "🔍 扫描差异")
+
+    def test_nothing_missing_means_no_marks_and_no_warning(self):
+        self.w._replace_text(self.w.mod_text, "A.jar")
+        with mock.patch.object(self.w, "log") as log:
+            self.run_scan()
+        self.assertFalse(any("找不到" in str(c.args[0]) for c in log.call_args_list))
+        self.assertEqual(len(self.w.mod_text.extraSelections()), 0)
+
+    def test_scan_error_in_foreground_shows_a_dialog_and_resets(self):
+        with mock.patch("core.scanner.scan_mod_differences", side_effect=RuntimeError("坏了")), \
+                mock.patch.object(QtWidgets.QMessageBox, "critical") as crit:
+            self.w._scan_diff()
+            end = time.time() + 10
+            while self.w._scanning and time.time() < end:
+                pump(10)
+            pump(40)
+        crit.assert_called_once()
+        self.assertIn("坏了", crit.call_args[0][2])
+        self.assertFalse(self.w._scanning)
+        self.assertEqual(self.w._scan_button().text(), "🔍 扫描差异")
+
+    def test_scan_error_while_in_tray_notifies_instead_of_popping_a_dialog(self):
+        self.w._hidden_in_tray = True
+        sent = []
+        self.w._notify = lambda title, msg: sent.append((title, msg))
+        with mock.patch.object(QtWidgets.QMessageBox, "critical") as crit:
+            self.w._on_scan_failed("坏了")
+        crit.assert_not_called()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("坏了", sent[0][1])
+
+    def test_no_difference_in_foreground_informs_with_a_dialog(self):
+        with mock.patch.object(QtWidgets.QMessageBox, "information") as info:
+            self.w._show_diff_result([])
+        info.assert_called_once()
+
+    def test_no_difference_in_tray_notifies_and_does_not_pop_a_dialog(self):
+        self.w._hidden_in_tray = True
+        sent = []
+        self.w._notify = lambda title, msg: sent.append((title, msg))
+        with mock.patch.object(QtWidgets.QMessageBox, "information") as info:
+            self.w._show_diff_result([])
+        info.assert_not_called()
+        self.assertEqual(len(sent), 1)
+
+    def test_result_in_tray_is_held_back_then_opened_when_the_window_returns(self):
+        rows = [("B.jar", "新增", "B.jar", 1.0, "", "?", "?", "?", "x")]
+        self.w._hidden_in_tray = True
+        sent = []
+        self.w._notify = lambda title, msg: sent.append((title, msg))
+        opened = []
+        with mock.patch.object(self.W, "_open_diff_view", lambda s, r: opened.append(r)):
+            self.w._show_diff_result(rows)
+            self.assertEqual(opened, [])                       # 压着,不弹
+            self.assertIn("1 项差异", sent[0][1])
+            self.w.show_from_tray()
+            self.assertEqual(opened, [rows])                   # 叫回主界面才开
+            self.w.show_from_tray()
+            self.assertEqual(opened, [rows])                   # 只开一次
+
+    def test_result_in_foreground_opens_immediately(self):
+        rows = [("B.jar", "新增", "B.jar", 1.0, "", "?", "?", "?", "x")]
+        opened = []
+        with mock.patch.object(self.W, "_open_diff_view", lambda s, r: opened.append(r)):
+            self.w._show_diff_result(rows)
+        self.assertEqual(opened, [rows])
+
+    def test_none_result_still_warns_in_foreground(self):
+        with mock.patch.object(QtWidgets.QMessageBox, "warning") as warn:
+            self.w._show_diff_result(None)
+        warn.assert_called_once()
+
+class DiffApplyTests(_WinBase):
+    def test_apply_in_diff_view_appends_and_keeps_existing_entries(self):
+        """用户决定保持「追加」(Tk 是整张替换):清单里原有的条目不能被覆盖。"""
+        self.w._replace_text(self.w.mod_text, "Keep.jar")
+        captured = {}
+
+        class FakeView:
+            def __init__(self, result, theme, hooks=None, apply_callback=None, **kw):
+                captured["cb"] = apply_callback
+
+            def setAttribute(self, *a):
+                pass
+
+            class _Sig:
+                def connect(self, *a):
+                    pass
+            destroyed = _Sig()
+
+            def show_centered(self):
+                pass
+        with mock.patch("ui.qt_diff_view.QtDiffView", FakeView):
+            self.w._open_diff_view([("B.jar", "新增", "B.jar", 1.0, "", "?", "?", "?", "x")])
+        captured["cb"](["B.jar"])
+        self.assertEqual(self.lines(self.w.mod_text), ["Keep.jar", "B.jar"])
+        self.w._unlock_edit("diff")
+
+
+class ExtraConflictRowTests(_WinBase):
+    def tearDown(self):
+        CFG.write_text('{"language":"zh","theme":"dark","net_float_on":false}', encoding="utf-8")
+        super().tearDown()
+
+    def test_row_exists_and_reflects_the_config(self):
+        self.assertEqual(self.w.extra_conflict, "overwrite")
+        self.assertTrue(self.w._conflict_btns["overwrite"].isChecked())
+        self.assertFalse(self.w._conflict_btns["skip"].isChecked())
+        self.assertEqual(self.w._conflict_btns["overwrite"].text(), "覆盖（先备份）")
+        self.assertEqual(self.w._conflict_btns["skip"].text(), "跳过（目标保持不变）")
+
+    def test_click_updates_the_value_and_persists_it(self):
+        self.w._conflict_btns["skip"].click()
+        self.assertEqual(self.w.extra_conflict, "skip")
+        self.assertEqual(json.loads(CFG.read_text(encoding="utf-8")).get("extra_conflict"), "skip")
+        self.w._conflict_btns["overwrite"].click()
+        self.assertEqual(json.loads(CFG.read_text(encoding="utf-8")).get("extra_conflict"), "overwrite")
+
+    def test_invalid_value_is_ignored(self):
+        self.w._set_extra_conflict("nope")
+        self.assertEqual(self.w.extra_conflict, "overwrite")
+
+    def test_settings_dialog_change_moves_the_row(self):
+        self.w._apply_settings({**self.w.config, "extra_conflict": "skip", "theme": "dark"})
+        self.assertTrue(self.w._conflict_btns["skip"].isChecked())
+        self.assertFalse(self.w._conflict_btns["overwrite"].isChecked())
+
+    def test_sync_does_not_toast(self):
+        with mock.patch.object(self.w, "toast") as toast:
+            self.w.extra_conflict = "skip"
+            self.w._sync_conflict_row()
+        toast.assert_not_called()
+
+    def test_clicking_the_current_value_does_not_toast_again(self):
+        with mock.patch.object(self.w, "toast") as toast:
+            self.w._set_extra_conflict("overwrite")
+        toast.assert_not_called()
+
+    def test_locked_while_busy(self):
+        self.w._scanning = True
+        self.w._refresh_busy_state()
+        self.assertFalse(any(b.isEnabled() for b in self.w._conflict_btns.values()))
+        self.w._scanning = False
+        self.w._refresh_busy_state()
+        self.assertTrue(all(b.isEnabled() for b in self.w._conflict_btns.values()))
+
+    def _px(self, btn):
+        """按钮上边缘中间那个点的颜色(选中态是 2px 描边 + 高亮底,没选中是普通按钮底)。"""
+        img = btn.grab().toImage()
+        return QtGui.QColor(img.pixel(img.width() // 2, 3)).name()
+
+    def test_the_chosen_segment_looks_different_from_the_other_one(self):
+        """全局样式表里没有 :checked 规则,不单独写的话选中和没选中一模一样,用户看不出选的是哪个。"""
+        self.w.tabs.setCurrentIndex(self.w._extra_tab_index)
+        pump(30)
+        a, b = self.w._conflict_btns["overwrite"], self.w._conflict_btns["skip"]
+        self.assertNotEqual(self._px(a), self._px(b))
+        self.w._conflict_btns["skip"].click()
+        pump(30)
+        self.assertNotEqual(self._px(a), self._px(b))
+        # 选中的换成了 skip:它现在应当是主题的高亮色,原来选中的 overwrite 退回普通按钮底色
+        self.assertEqual(self._px(b).lower(), self.w.theme["highlight_bg"].lower())
+        self.assertNotEqual(self._px(a).lower(), self.w.theme["highlight_bg"].lower())
+
+    def test_chosen_segment_color_follows_the_theme(self):
+        self.w.tabs.setCurrentIndex(self.w._extra_tab_index)
+        pump(30)
+        sel = self.w._conflict_btns["overwrite"]
+        dark = self._px(sel)
+        self.w._toggle_theme()
+        pump(30)
+        light = self._px(sel)
+        self.assertNotEqual(dark, light)
+        self.assertEqual(light.lower(), self.w.theme["highlight_bg"].lower())
+
+class PageHintTests(_WinBase):
+    def labels(self, role):
+        return [l for l in self.w.findChildren(QtWidgets.QLabel) if l.property("_role") == role]
+
+    def test_config_and_extra_pages_have_their_hints_and_config_has_the_warning(self):
+        hints = [l.text() for l in self.labels("list_hint")]
+        self.assertTrue(any("相对源实例的 config 目录" in t for t in hints))
+        self.assertTrue(any("相对整合包根目录" in t and "不会自动带任何东西" in t for t in hints))
+        warns = [l.text() for l in self.labels("list_warning")]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("覆盖目标 config 中的同名文件", warns[0])
+
+    def test_labels_are_recolored_when_the_theme_switches(self):
+        warn = self.labels("list_warning")[0]
+        hint = self.labels("list_hint")[0]
+        before = (warn.styleSheet(), hint.styleSheet())
+        self.w._toggle_theme()
+        pump(20)
+        self.assertNotEqual((warn.styleSheet(), hint.styleSheet()), before)
+        self.assertIn("font-weight: bold", warn.styleSheet())
+
+    def test_the_conflict_row_lives_on_the_extra_page_only(self):
+        extra_page = self.w.tabs.widget(self.w._extra_tab_index)
+        self.assertTrue(extra_page.isAncestorOf(self.w._conflict_btns["skip"]))
+        mod_page = self.w.tabs.widget(self.w._mod_tab_index)
+        self.assertFalse(mod_page.isAncestorOf(self.w._conflict_btns["skip"]))
+
+
+class TrayNoticeTests(_WinBase):
+    def test_in_tray_follows_the_hidden_flag(self):
+        self.assertFalse(self.w._in_tray())
+        self.w._hidden_in_tray = True
+        self.assertTrue(self.w._in_tray())
+        self.w._hidden_in_tray = False
+        self.assertFalse(self.w._in_tray())
+
+
+class LogWriteFailureNoticeTests(_WinBase):
+    """界面上只留最近几千行,完整日志在磁盘文件里;写盘失败时用户得知道(同 Tk 的 `_冲写日志`)。"""
+
+    def break_disk(self):
+        """把日志目录指到一个「父路径是文件」的位置,真实触发 OSError,不去伪造状态。"""
+        blocker = Path(_tmp.name) / ("blocked-%d" % time.time_ns())
+        blocker.write_text("x")
+        self.w._session_log.close()
+        self.w._session_log.directory = blocker / "sub"
+
+    def test_hidden_when_everything_is_fine(self):
+        self.w.log("一行", "INFO")
+        self.assertFalse(self.w.log_status_label.isVisible())
+        self.assertEqual(self.w.log_status_label.text(), "")
+
+    def test_shown_with_the_reason_when_the_disk_write_fails(self):
+        self.break_disk()
+        self.w.log("写不进去的一行", "INFO")
+        self.assertTrue(self.w._session_log.error)                    # 真的是 SessionLog 报的错
+        self.assertTrue(self.w.log_status_label.isVisible())
+        self.assertIn("完整日志保存失败", self.w.log_status_label.text())
+        self.assertIn(self.w._session_log.error, self.w.log_status_label.text())
+
+    def test_the_line_is_still_shown_in_the_live_log_even_if_disk_fails(self):
+        self.break_disk()
+        self.w.log("第一行", "INFO")          # 写盘失败是在这一次 append 里才发生的
+        self.assertTrue(self.w._session_log.error)
+        self.w.log("仍然要显示在界面上", "INFO")   # 这时 error 已经有了:界面不能因此就不再显示新日志
+        text = self.w.log_text.toPlainText()
+        self.assertIn("第一行", text)
+        self.assertIn("仍然要显示在界面上", text)
+
+    def test_clears_again_once_the_error_is_gone(self):
+        self.break_disk()
+        self.w.log("坏的", "INFO")
+        self.assertTrue(self.w.log_status_label.isVisible())
+        self.w._session_log.error = None
+        self.w.log("好了", "INFO")
+        self.assertFalse(self.w.log_status_label.isVisible())
+
+    def test_color_follows_the_theme(self):
+        self.break_disk()
+        self.w.log("坏的", "INFO")
+        before = self.w.log_status_label.styleSheet()
+        self.assertIn(self.w.theme["fail_fg"], before)
+        self.w._toggle_theme()
+        pump(20)
+        after = self.w.log_status_label.styleSheet()
+        self.assertNotEqual(before, after)
+        self.assertIn(self.w.theme["fail_fg"], after)
+
+    def test_log_buttons_are_still_all_there(self):
+        """把提示行塞进日志区时不能把那排按钮挤丢(改版时就吃掉过 log_tools 一行)。"""
+        for key in ("log_big", "log_open", "fail_locate", "log_clear"):
+            self.assertIn(key, self.w._btn_widgets)
+            self.assertIsNotNone(self.w._btn_widgets[key].parent())
+
 
 
 if __name__ == "__main__":

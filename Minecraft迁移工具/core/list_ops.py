@@ -92,3 +92,36 @@ def mark_config_folders(src_config, content):
                 pass
         out.append(ln)
     return "\n".join(out), changed
+
+
+def missing_mod_rows(src, content):
+    """扫描差异之前:清单里「源 mods 里根本没有」的条目。返回 (缺失行号列表0起, 缺失条目名列表)。
+
+    规则同 Tk 的 `_mark_missing_before_scan`:只认源 `<实例>/mods/*.jar`,按 core.migrator.match_mod
+    匹配(它自己处理 `[前缀]`:清单写 `B.jar` 能对上源里的 `[CN] B.jar`,反过来也行);空行和 # 注释
+    跳过。源 mods 不存在或里面一个 jar 都没有时返回空(这时没法判断谁缺,不能把整张清单都报成缺失)。
+
+    和 Tk 一样**按整行**匹配,不先取文件名;所以清单里的老式整条路径行会被当成缺失,
+    这正是要让用户看到、去整理的东西。
+    """
+    from core.migrator import match_mod
+    mods_dir = Path(str(src or "")) / "mods"
+    try:
+        if not mods_dir.is_dir():
+            return [], []
+        source_files = {f.name: f for f in mods_dir.glob("*.jar")}
+    except OSError:
+        return [], []
+    if not source_files:
+        return [], []
+    # name_map 只是 match_mod 的快速通道(精确文件名 → 自己);去前缀的匹配 match_mod 会自己退回线性扫描
+    name_map = {orig: orig for orig in source_files}
+    rows, names = [], []
+    for i, ln in enumerate(str(content).split("\n")):
+        s2 = ln.strip()
+        if _is_note(ln):
+            continue
+        if not match_mod(s2, source_files, name_map):
+            rows.append(i)
+            names.append(s2)
+    return rows, names
