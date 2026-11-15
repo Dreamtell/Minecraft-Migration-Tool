@@ -18,7 +18,7 @@
 import tkinter as tk
 import tkinter.font as tkfont
 
-from utils.helpers import lighten_color
+from utils.helpers import emoji_and_text_width, lighten_color
 # 界面语言：表头等内容是画在画布上的，控件入口覆盖不到（见下面 create_text 处）
 from utils.i18n import tr
 
@@ -33,6 +33,66 @@ _DOT_PATTERN = (
     "  ###  ",
 )
 
+
+
+def prewarm_emoji_font(widget=None, font=("微软雅黑", 12, "bold"), chunk=8, delay=120):
+    """把 emoji 的字体回退在空闲时分批热身掉，别等到用户点开窗口那一刻。
+
+    为什么要做：Tk 第一次用某个字体**量或画**某个 emoji 时，要现场初始化字体回退。
+    实测粗体 12 号：第一个 emoji 273 ms，之后**每个不同字符**还要 5~16 ms；同一个字符
+    量过第二次就只要 0.13 ms。放大查看的表头 7 个标题各带一个 emoji，首次打开光这块
+    就七八十毫秒，加上主界面各按钮就是几百毫秒的"点下去没反应"。
+
+    做法：分批（默认每批 8 个字符、间隔 120 ms）在空闲时段跑，每批大约十几毫秒，
+    用户那时还在看主界面，感知不到；全部预热完约 1~2 秒。重复调用无害（量过的直接返回）。
+
+    widget 给了就用它的 after 排队；没给就当场同步跑完（测试/脚本用）。
+    """
+    chars = _PREWARM_CHARS
+    if widget is None:
+        _prewarm_batch(None, font, chars, 0, len(chars))
+        return
+
+    def 跑(i):
+        try:
+            if not widget.winfo_exists():
+                return
+        except Exception:
+            return
+        end = min(len(chars), i + chunk)
+        _prewarm_batch(None, font, chars, i, end)
+        if end < len(chars):
+            try:
+                widget.after(delay, lambda: 跑(end))
+            except Exception:
+                pass
+
+    try:
+        widget.after(delay, lambda: 跑(0))
+    except Exception:
+        pass
+
+
+def _prewarm_batch(_unused, font, chars, start, end):
+    """量一批字符（每个字符单独量：Tk 的回退是按字符初始化的，一串量不等于每个都热）。"""
+    try:
+        f = tkfont.Font(family=font[0], size=font[1],
+                        weight=(font[2] if len(font) > 2 else "normal"))
+    except Exception:
+        return
+    for ch in chars[start:end]:
+        try:
+            f.measure(ch)
+        except Exception:
+            pass
+
+
+# 主界面 / 放大查看 / 日志里出现频率最高的那些（按源码里出现次数排的前 60 个）。
+# 全部预热一遍实测约 1.5 秒，分批跑就摊平了。
+_PREWARM_CHARS = (
+    "⚠→❌✅🗑📂🗂⏳🌐🧩🔎📋🔍☑📦📁📄🔁⚙↩🚀🔄★📌📊📍📝✕🧪↓🏷●⏭✓🎨🧹🔔➕☐🪟🔗↑⬇←✖🔑🔒"
+    "🔵💾▲▾⛔①📈☀②⇄⬜🔖▼📥💡🔘⏪🌙⇅📜🖱📤🔊⌨👤🟡🔼📚🖼☆◆✦✚❗🚫■🌍🎮🎬🔓🛠✦"
+)
 
 class VirtualTable(tk.Frame):
     """虚拟化表格。columns 为 [(key, title, width, anchor)]，anchor 取 "w"/"e"/"center"。"""
@@ -532,16 +592,19 @@ class VirtualTable(tk.Frame):
         hit = self._fit_cache.get(key)
         if hit is not None:
             return hit
+        # 量字走 emoji 感知版本：表头标题都以 emoji 开头，直接用 Font.measure 量它
+        # 第一次要 270~380 ms（Tk 现场初始化字体回退），_fit 的二分查找又会对每个
+        # 候选串量一遍 —— 一次开窗光量字就上百毫秒。
         if avail <= 0:
             out = ""
-        elif self._font.measure(text) <= avail:
+        elif emoji_and_text_width(self._font, text) <= avail:
             out = text
         else:
             ell = "…"
             lo, hi = 0, len(text)
             while lo < hi:
                 mid = (lo + hi + 1) // 2
-                if self._font.measure(text[:mid] + ell) <= avail:
+                if emoji_and_text_width(self._font, text[:mid] + ell) <= avail:
                     lo = mid
                 else:
                     hi = mid - 1

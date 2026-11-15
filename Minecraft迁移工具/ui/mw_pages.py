@@ -10,7 +10,7 @@ import math
 import time
 import tkinter as tk
 from tkinter import messagebox
-from ui.mw_common import _ICON_BTN, _grad_width, WrapRow, _BTN_ADD, _BTN_DANGER, _BTN_NEUTRAL, _FS_HINT
+from ui.mw_common import _ICON_BTN, _grad_width, WrapRow, _BTN_ADD, _BTN_DANGER, _BTN_NEUTRAL, _FS_BODY, _FS_HINT
 from ui.pack_warning import PackWarning
 from ui.rounded_tabs import RoundedTabs
 from utils.dpi import UI_SCALE, px, window_geometry
@@ -168,8 +168,10 @@ class PagesMixin:
         # 左下角：网络状态**圆点 + 文字**。光一个点用户看不懂，得有字。
         # **必须先 pack**（pack 先到先得）：下面那行声明是居中占满整行的，
         # 后 pack 的话这一块会被挤出窗口。
+        # 网络状态：字号和正文同一档（10）。原来跟说明文字一起用 9 号，在底栏里小又偏淡，
+        # 是整个窗口里最需要"一眼看出通不通"的字却最不显眼。
         self.net_status = tk.Label(
-            self.bottom_frame, text="● 正在检测网络…", font=("微软雅黑", _FS_HINT),
+            self.bottom_frame, text="● 正在检测网络…", font=("微软雅黑", _FS_BODY, "bold"),
             bg=_bbg, fg=self.theme.get("muted_fg", self.theme["fg"]))
         self.net_status._keep_fg = True        # 颜色由网络状态决定，别被主题统一刷掉
         self.net_status.pack(side="left", padx=(2, 4))
@@ -850,13 +852,17 @@ class PagesMixin:
         self.opt_frame.pack(fill="x", padx=10, pady=5)
         # 这两个原来也是方框勾选框，跟上面的编辑开关统一成自绘开关（紧凑形态：只有
         # 小开关 + 一行文字，不铺卡片底）。强调色用主题的选中蓝，别用橙 —— 它们不是危险操作。
+        # 迁移 / 倒计时期间这两个会被锁住（点不动），但要让用户仍看得清"现在是不是模拟运行"
+        # "覆盖开没开"，所以锁住后不变灰（keep_state_when_disabled）。
         self.dry_run_sw = SwitchRow(
             self.opt_frame, self.theme, "模拟运行（仅显示操作）",
-            command=self._on_dry_run_switch, compact=True, accent="switch_on")
+            command=self._on_dry_run_switch, compact=True, accent="switch_on",
+            keep_state_when_disabled=True)
         self.dry_run_sw.pack(side="left")
         self.overwrite_sw = SwitchRow(
             self.opt_frame, self.theme, "覆盖已存在的模组",
-            command=self._on_overwrite_switch, compact=True, accent="switch_on")
+            command=self._on_overwrite_switch, compact=True, accent="switch_on",
+            keep_state_when_disabled=True)
         self.overwrite_sw.pack(side="left", padx=(20, 0))
         self.dry_run_sw.set(self.dry_run.get())
         self.overwrite_sw.set(self.overwrite_mods.get())
@@ -1008,8 +1014,11 @@ class PagesMixin:
         self.log_text_box.pack(side="left", fill="both", expand=True)
         try:
             from ui.log_overview import LogOverview
+            # height=1：Canvas 默认请求高度是 7cm（约 265px），会把并排的日志框
+            # 撑到这个高度、清单被挤没；实际高度由 fill="y" 跟日志框一样高
             self.log_overview = LogOverview(self.log_row, self.log_text_box.text,
-                                            self.theme, width=max(12, px(14)))
+                                            self.theme, width=max(12, px(14)),
+                                            height=1)
             self.log_overview.pack(side="right", fill="y", padx=(4, 0))
         except Exception:
             self.log_overview = None
@@ -1039,6 +1048,9 @@ class PagesMixin:
         self._log_view = LiveLogView(self.log_text, self.log_text_box,
                                     self._session_log, self.theme)
         self._log_scroller = self._log_view.scroller
+        if getattr(self, "log_overview", None) is not None:
+            # 滚动时总览条的滑块当场跟着动（不等它 250 ms 一次的轮询）
+            self._log_view.add_scroll_listener(self.log_overview.sync_box)
         status_row = tk.Frame(frame_log, bg=self.theme["bg"])
         status_row.pack(fill="x", padx=8)
         self._log_status_label = tk.Label(

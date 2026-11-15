@@ -105,5 +105,233 @@ class LogOverviewTests(unittest.TestCase):
         ov2.destroy()
 
 
+class LogOverviewWrapTests(unittest.TestCase):
+    """折行的长行把"行号"和"像素位置"拆开了：色点要按像素摆，点色点要真的看到那条错误。"""
+
+    ERR = (20, 120, 220, 320, 380)
+
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.geometry("500x260+40+40")
+        # 顺序和主界面一致：总览条先 pack(side=right)，文本框再占剩下的
+        self.text = tk.Text(self.root, height=10, wrap="word")
+        self.ov = LogOverview(self.root, self.text, DARK_THEME, width=14, height=1)
+        self.ov.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        for tag in ("INFO", "WARNING", "ERROR", "SUCCESS", "SIMULATE"):
+            self.text.tag_configure(tag)
+        长 = "目标目录已存在同名文件且无法覆盖，" * 12
+        for i in range(400):
+            if i in self.ERR:
+                self.text.insert("end", "失败 %d\n" % i, "ERROR")
+            else:
+                # 前半段全是折行的长行，后半段全是短行：行号比例和像素比例差得很远
+                self.text.insert("end", "普通 %d %s\n" % (i, 长 if i < 200 else ""), "INFO")
+        self.text.configure(state="disabled")
+        _pump(self.root, 300)
+        # Tk 在后台量折行高度，总高要几百毫秒才收敛：等它稳住再测
+        上次 = -1
+        for _ in range(40):
+            _pump(self.root, 100)
+            cur = self.ov._total_px()
+            if cur == 上次:
+                break
+            上次 = cur
+        self.ov._redraw(force=True)
+
+    def tearDown(self):
+        try:
+            self.ov.destroy()
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _err_lines(self):
+        r = self.text.tag_ranges("ERROR")
+        return [int(str(self.text.index(r[i])).split(".")[0]) for i in range(0, len(r), 2)]
+
+    def test_ticks_follow_pixels_not_line_numbers(self):
+        """按行号摆的话，前半段折行的错误会整体偏向顶部；按像素摆则和文本里的真实位置一致。"""
+        total = self.ov._total_px()
+        h = self.ov.winfo_height()
+        self.assertGreater(total, 0)
+        期望 = sorted(
+            (self.text.count("1.0", "%d.0" % ln, "ypixels") or (0,))[0] / float(total) * h
+            for ln in self._err_lines())
+        实际 = sorted((y0 + y1) / 2.0 for y0, y1, tag, _m in self.ov._segs if tag == "ERROR")
+        self.assertEqual(len(实际), len(期望))
+        for e, a in zip(期望, 实际):
+            self.assertLess(abs(e - a), 5.0, (期望, 实际))
+
+    def test_click_on_tick_shows_that_error(self):
+        h = self.ov.winfo_height()
+        命中 = 0
+        for y0, y1, tag, _m in list(self.ov._segs):
+            if tag != "ERROR":
+                continue
+            self.text.yview_moveto(0.0)
+            _pump(self.root, 60)
+            self.ov._on_press(type("E", (), {"y": (y0 + y1) / 2.0})())
+            self.ov._on_release(None)
+            _pump(self.root, 80)
+            r = self.text.tag_ranges("ERROR")
+            if any(self.text.dlineinfo(r[i]) is not None for i in range(0, len(r), 2)):
+                命中 += 1
+        self.assertEqual(命中, len(self.ERR))
+
+    def test_click_on_blank_centers_viewport(self):
+        h = self.ov.winfo_height()
+        self.text.yview_moveto(0.0)
+        _pump(self.root, 60)
+        self.ov._on_press(type("E", (), {"y": h * 0.5})())
+        self.ov._on_release(None)
+        _pump(self.root, 80)
+        a, b = self.text.yview()
+        self.assertAlmostEqual((a + b) / 2.0, 0.5, delta=0.03)
+
+    def test_drag_box_does_not_jump_on_press(self):
+        """按在可见区框上只是"抓住"，不能一按就把视口挪到点击处。"""
+        self.text.yview_moveto(0.4)
+        _pump(self.root, 120)
+        self.ov._redraw(force=True)
+        self.assertIsNotNone(self.ov._box)
+        y0, y1 = self.ov._box
+        before = self.text.yview()[0]
+        self.ov._on_press(type("E", (), {"y": (y0 + y1) / 2.0 + 1})())
+        _pump(self.root, 60)
+        self.assertAlmostEqual(self.text.yview()[0], before, delta=0.005)
+        self.ov._on_drag(type("E", (), {"y": (y0 + y1) / 2.0 + 1 + 20})())
+        _pump(self.root, 60)
+        self.assertGreater(self.text.yview()[0], before + 0.02)
+        self.ov._on_release(None)
+
+
+class LogOverviewTruncateTests(unittest.TestCase):
+    """日志满额后头部被截掉：行数和总高都不变，但每个标记的行号整体前移，色点必须跟着动。"""
+
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.geometry("400x300+40+40")
+        self.text = tk.Text(self.root, height=10)
+        self.ov = LogOverview(self.root, self.text, DARK_THEME, width=14, height=1)
+        self.ov.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        self.text.tag_configure("ERROR")
+        self.text.tag_configure("INFO")
+
+    def tearDown(self):
+        try:
+            self.ov.destroy()
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _fill(self, a, b):
+        self.text.configure(state="normal")
+        for i in range(a, b):
+            err = i % 400 == 7
+            self.text.insert("end", ("失败 %d\n" if err else "普通 %d\n") % i, "ERROR" if err else "INFO")
+        self.text.configure(state="disabled")
+
+    def _ticks(self):
+        return sorted((y0, y1) for y0, y1, _t, _m in self.ov._segs)
+
+    def test_ticks_move_after_head_is_trimmed(self):
+        self._fill(0, 2000)
+        _pump(self.root, 300)
+        self.ov._redraw(force=True)
+        前 = self._ticks()
+        self.assertTrue(前)
+        # 再追加 150 行、同时从头部删掉 150 行：行数不变，ERROR 的行号全部前移 150
+        self._fill(2000, 2150)
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "151.0")
+        self.text.configure(state="disabled")
+        _pump(self.root, 300)
+        self.ov._redraw()                 # 不 force：要靠签名自己发现变化
+        后 = self._ticks()
+        self.assertNotEqual(前, 后)
+
+
+class LogOverviewScrollSyncTests(unittest.TestCase):
+    """滚动时滑块要当场跟着动，不能靠 250 ms 一次的轮询追（那样滑块滞后 120~190 ms，一顿一顿）。"""
+
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.geometry("400x300+40+40")
+        self.text = tk.Text(self.root, height=10, wrap="word")
+        self.ov = LogOverview(self.root, self.text, DARK_THEME, width=14, height=1)
+        self.ov.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        for tag in ("INFO", "WARNING", "ERROR", "SUCCESS", "SIMULATE"):
+            self.text.tag_configure(tag)
+        for i in range(600):
+            self.text.insert("end", ("失败 %d\n" if i % 50 == 7 else "普通 %d\n") % i,
+                             "ERROR" if i % 50 == 7 else "INFO")
+        self.text.configure(state="disabled")
+        _pump(self.root, 300)
+        self.ov._redraw(force=True)
+
+    def tearDown(self):
+        try:
+            self.ov.destroy()
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_sync_box_moves_the_slider_immediately(self):
+        self.text.yview_moveto(0.2)
+        _pump(self.root, 60)
+        self.ov.sync_box()
+        before = self.ov._box
+        self.text.yview_moveto(0.6)
+        self.root.update_idletasks()
+        self.ov.sync_box()            # 不等轮询，直接调
+        after = self.ov._box
+        self.assertIsNotNone(before)
+        self.assertGreater(after[0], before[0] + 20)
+
+    def test_sync_box_does_not_rebuild_ticks(self):
+        """只挪滑块：色块列表和 canvas 里色点的数量都不变（没有 delete("all") 重建）。"""
+        segs = list(self.ov._segs)
+        n_items = len(self.ov.find_all())
+        for f in (0.1, 0.3, 0.5, 0.7):
+            self.text.yview_moveto(f)
+            self.root.update_idletasks()
+            self.ov.sync_box()
+        self.assertEqual(self.ov._segs, segs)
+        self.assertEqual(len(self.ov.find_all()), n_items)
+
+    def test_poll_redraw_while_scrolling_is_slider_only(self):
+        """轮询里发现只是 yview 变了，也只挪滑块，不重画色点。"""
+        self.ov._redraw()
+        ids = set(self.ov.find_all())
+        self.text.yview_moveto(0.4)
+        self.root.update_idletasks()
+        self.ov._redraw()
+        self.assertEqual(set(self.ov.find_all()), ids)      # canvas 项的 id 一个没换
+
+    def test_content_change_still_rebuilds(self):
+        """行数 / 标记变了必须全量重画，不能被"只挪滑块"短路掉。"""
+        segs = list(self.ov._segs)
+        self.text.configure(state="normal")
+        for i in range(600, 700):
+            self.text.insert("end", "失败 %d\n" % i, "ERROR")
+        self.text.configure(state="disabled")
+        _pump(self.root, 150)
+        self.ov._redraw()
+        self.assertNotEqual(self.ov._segs, segs)
+
+    def test_slider_is_removed_when_everything_fits(self):
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("end", "只有一行\n", "INFO")
+        self.text.configure(state="disabled")
+        _pump(self.root, 150)
+        self.ov._redraw()
+        self.assertIsNone(self.ov._box)
+        self.assertIsNone(self.ov._box_items)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

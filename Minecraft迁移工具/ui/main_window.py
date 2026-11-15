@@ -66,6 +66,14 @@ class MigrationGUI(
         # 建完界面再来一次兜底：布局里的 minsize / 内容撑开可能把窗口顶到任务栏上，
         # 那样窗口自己那圈亮边就"盖住任务栏"了（用户截图报过）。等首帧布局稳了再量。
         self.root.after(150, lambda: ensure_on_screen(self.root))
+        # 空闲时分批把 emoji 的字体回退预热掉：Tk 第一次量/画某个 emoji 要现场初始化
+        # 回退（第一个 273 ms、之后每个字符 5~16 ms），放到用户点开窗口那一刻就是
+        # 明显的卡顿。这里每批 8 个字符、间隔 120 ms，摊在主界面空闲时，感知不到。
+        try:
+            from ui.virtual_table import prewarm_emoji_font
+            prewarm_emoji_font(self.root)      # 自己分批排队，不占启动那一帧
+        except Exception:
+            pass
 
         # 读了配置先按「特效强度」派生一遍 splash / float_edge_fx / start_btn_feel：
         # 老配置里没有 fx_level 时 fx.from_config() 原样返回，行为跟以前完全一致。
@@ -110,7 +118,10 @@ class MigrationGUI(
 
         self.source_path = tk.StringVar(value=self.config.get("source", ""))
         self.target_path = tk.StringVar(value=self.config.get("target", ""))
-        self.world_name = tk.StringVar(value=self.config.get("world", "老子的世界"))
+        # 存档名默认值：Minecraft 自己新建世界的默认名（和输入框旁边的示例文字一致）。
+        # 以前是一句口语化的梗，对外发布不合适；老用户的配置里已经存着自己填的名字，不受影响，
+        # 这个默认值只在配置里没有 world 这个键时（新装、或删过配置）才用得上。
+        self.world_name = tk.StringVar(value=self.config.get("world", i18n.tr("新的世界")))
         self.dry_run = tk.BooleanVar(value=self.config.get("dry_run", True))
         self.overwrite_mods = tk.BooleanVar(value=self.config.get("overwrite", False))
         # 「开始迁移」按钮的翻转手感：crisp（干脆）/ standard（标准）/ heavy（沉）。
@@ -426,8 +437,12 @@ class MigrationGUI(
         档位 = getattr(self, "_net_档位", None)
         明细 = getattr(self, "_net_明细", None) or {}
         try:
-            色 = {"ok": "#81c784", "warn": "#e65100", "fail": "#c62828"}.get(
-                档位, self.theme.get("muted_fg", "#888888"))
+            # 颜色取主题里的日志三色（深浅各自按 WCAG AA 校过，对底栏都 ≥ 4.9）。
+            # 以前写死 #81c784 / #e65100 / #c62828：浅色主题下绿字对白底只有 2.0，
+            # 深色主题下橙/红对 #2e2e2e 只有 3.6 / 2.4，都看不清。
+            色 = self.theme.get({"ok": "log_success_fg", "warn": "log_warning_fg",
+                                "fail": "log_error_fg"}.get(档位, "muted_fg"),
+                               self.theme.get("muted_fg", "#888888"))
             文案 = {"ok": "网络已连接", "warn": "网络部分不通",
                     "fail": "网络未连接"}.get(档位, "正在检测网络…")
             self.net_status.configure(text="● " + i18n.tr(文案), fg=色)

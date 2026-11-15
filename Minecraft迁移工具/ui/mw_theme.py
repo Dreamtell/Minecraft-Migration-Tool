@@ -259,6 +259,12 @@ class ThemeMixin:
                 self._draw_net_spark()      # 折线下面的底色变了，重画一遍
             except Exception:
                 pass
+            try:
+                # 网络灯的字色（绿/橙/红）取自主题，`_keep_fg` 又让通用遍历跳过它，
+                # 所以切主题要在这里按当前档位重算一次，不然浅色主题下还是深色那套绿
+                self._刷新网络状态文字()
+            except Exception:
+                pass
         if hasattr(self, 'warning_frame'):
             self.warning_frame.configure(bg=self.theme["warning_bg"])
             self.warning_label.configure(bg=self.theme["warning_bg"],
@@ -399,6 +405,19 @@ class ThemeMixin:
                 if bt is not None and bt.winfo_exists():
                     bt.configure(bg=self.theme["log_bg"], fg=self.theme["log_fg"])
                     self._configure_log_colors(bt)
+                for _n in ("_log_big_body", "_log_big_minimap"):      # 并排的容器 + 右侧缩略图
+                    _w = getattr(self, _n, None)
+                    if _w is not None and _w.winfo_exists():
+                        try:
+                            if _n == "_log_big_minimap":
+                                _w.set_theme(self.theme)
+                            else:
+                                _w.configure(bg=self.theme["bg"])
+                                for _c in _w.winfo_children():
+                                    if isinstance(_c, tk.Frame) and _c is not getattr(self, "_log_big_box", None):
+                                        _c.configure(bg=self.theme["bg"])
+                        except Exception:
+                            pass
         except Exception:
             pass
 

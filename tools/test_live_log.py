@@ -135,6 +135,43 @@ class LiveLogTests(unittest.TestCase):
         self.root.after(ms, self.root.quit)
         self.root.mainloop()
 
+    def test_scroll_listeners_are_called_with_the_scroll_fraction(self):
+        """总览条 / 缩略图靠它在滚动的同一刻挪滑块，不用等自己的定时轮询。"""
+        got = []
+        self.view.add_scroll_listener(lambda first, last: got.append((float(first), float(last))))
+        self.append(0, 300)
+        self.text.yview_moveto(0.3)
+        self.root.update_idletasks()
+        self.wait(30)
+        self.assertTrue(got)
+        first, last = got[-1]
+        self.assertAlmostEqual(first, self.text.yview()[0], places=3)
+        self.assertGreater(last, first)
+
+    def test_broken_scroll_listener_does_not_break_scrolling(self):
+        """订阅者抛异常不能拖垮日志：滚动条照常更新，后面的订阅者照常被调。"""
+        after = []
+
+        def boom(_f, _l):
+            raise RuntimeError("订阅者出错")
+
+        self.view.add_scroll_listener(boom)
+        self.view.add_scroll_listener(lambda f, l: after.append(f))
+        self.append(0, 300)
+        self.text.yview_moveto(0.5)
+        self.root.update_idletasks()
+        self.wait(30)
+        self.assertTrue(after)                       # boom 之后的订阅者仍被调到
+        self.assertAlmostEqual(float(self.text.vbar.get()[0]), self.text.yview()[0], places=3)
+
+    def test_same_listener_is_only_registered_once(self):
+        calls = []
+        fn = lambda f, l: calls.append(1)
+        self.view.add_scroll_listener(fn)
+        self.view.add_scroll_listener(fn)
+        self.view._scrolled("0.0", "0.5")
+        self.assertEqual(calls, [1])
+
     def test_bottom_follows_and_only_paused_view_shows_button(self):
         self.append(0, 200)
         self.assertTrue(self.view.at_bottom())

@@ -18,7 +18,9 @@ LIGHT_THEME = {
     "log_bg": "#ffffff",
     "log_fg": "#000000",
     "warning_bg": "#ffcccc",
-    "warning_fg": "#ff0000",
+    # 顶部红色警告条的字：原来纯红 #ff0000 压在粉底 #ffcccc 上只有 2.81，粗体 10 号也读着费劲；
+    # #a31515 对粉底 5.52，仍然是明显的红
+    "warning_fg": "#a31515",
     "bottom_bg": "#ffffff",
     "bottom_fg": "gray",
     "tooltip_bg": "#ffffe0",
@@ -45,7 +47,10 @@ LIGHT_THEME = {
     "danger_bg": "#ffc7c7", "danger_fg": "#8b0000",
     "edit_bg": "#ff9800", "edit_fg": "#000000",
     # warn_fg：路径"能用但建议改"那种警告（如含中文）的图标色，比 ok 重、比 fail 轻
-    "ok_fg": "#2e7d32", "fail_fg": "#c62828", "muted_fg": "#808080",
+    "ok_fg": "#2e7d32", "fail_fg": "#c62828",
+    # muted_fg：说明/未选择/提示这类次要文字。原来 #808080 对 #f0f0f0 只有 3.47、对白底 3.95，
+    # 够不上正文 4.5；#6b6b6b 是仍然"淡"的最浅一档（对 #f0f0f0 4.68、对白 5.33）
+    "muted_fg": "#6b6b6b",
     "warn_fg": "#e65100",
     "badge_rollback_bg": "#ffdddd", "badge_normal_bg": "#ffffff",
     "sel_bg": "#66bb6a", "sel_fg": "#ffffff",
@@ -67,6 +72,12 @@ LIGHT_THEME = {
     "log_info_fg": "#6e6e6e", "log_warning_fg": "#c74600",
     "log_error_fg": "#ad2323", "log_success_fg": "#2e7d32",
     "log_simulate_fg": "#1565c0",
+    # INFO 行的子类色（ui/log_kinds.py）：阶段(青) / 统计(紫) / 提示(沙) / 操作反馈(粉)。
+    # 对白底的对比度：阶段 5.3 / 统计 9.4 / 提示 6.3 / 操作 7.0，都过 WCAG AA；
+    # 和灰、和其它级别色的感知色差（CIE ΔE）都 ≥ 30：之前提示用青灰 #546e7a，
+    # 离 INFO 灰只有 ΔE≈11，肉眼就是灰的，等于没上色。
+    "log_phase_fg": "#00796b", "log_stat_fg": "#6a1b9a",
+    "log_note_fg": "#7a5c00", "log_action_fg": "#ad1457",
     # "数据"文本配色：界面上一眼分得清"哪个是数据、哪个是说明"
     #   data_fg     路径、文件名、存档名这类主体数据
     #   data_num_fg 数量、条数、大小这类数字
@@ -135,6 +146,10 @@ DARK_THEME = {
     "log_info_fg": "#9e9e9e", "log_warning_fg": "#ffb74d",
     "log_error_fg": "#ff8a8a", "log_success_fg": "#7ee787",
     "log_simulate_fg": "#64b5f6",
+    # INFO 行的子类色（同上，深色用亮一档）。对 #1e1e1e 的对比度：
+    # 阶段 9.0 / 统计 8.6 / 提示 9.7 / 操作 8.4；和灰、其它级别色的 ΔE ≥ 30
+    "log_phase_fg": "#5ad1c6", "log_stat_fg": "#d2a8ff",
+    "log_note_fg": "#d8c48a", "log_action_fg": "#f0a1c8",
     # "数据"文本配色（深色主题用亮一档的同类色）
     "data_fg": "#79b8ff", "data_num_fg": "#d2a8ff", "data_id_fg": "#7ee787",
     # 清单页签条数（深色主题本身底就暗，选中时的亮绿不用再拔那么高）

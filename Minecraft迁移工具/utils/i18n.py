@@ -87,6 +87,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "浏览…": "Browse…",
     "存档文件夹名称": "Save folder name",
     "（例如：新的世界）": "(e.g. New World)",
+    "新的世界": "New World",
     "✅ 存档已存在": "✅ Save exists",
     "❌ 存档不存在": "❌ Save not found",
     "⚠ 路径含中文": "⚠ Path contains non-ASCII characters",

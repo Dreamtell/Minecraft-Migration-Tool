@@ -228,6 +228,13 @@ class LogMixin:
             widget.tag_config("ERROR", background=self.theme.get("danger_bg", ""))
         except Exception:
             pass
+        # INFO 行的子类颜色（阶段/统计/提示/操作，见 ui/log_kinds.py）
+        try:
+            from ui.log_kinds import configure_tags
+            from utils.helpers import log_font
+            configure_tags(widget, self.theme, font=log_font())
+        except Exception:
+            pass
 
     # ---------- 日志 ----------
     # 明显无用的提示（纯 UI 反馈，不算操作记录），保存到日志文件时过滤掉；屏幕仍会显示。

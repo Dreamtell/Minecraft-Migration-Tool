@@ -4,6 +4,7 @@ from tkinter import ttk
 
 from utils.helpers import SmoothScroller, create_gradient_button
 from utils.i18n import trp
+from ui.log_kinds import LINE_KINDS, classify
 
 
 def create_log_button(parent, text, command, *, primary=False, backdrop=None):
@@ -42,6 +43,10 @@ class LiveLogView:
         self._mutating = False
         self._idle = None
         self._closed = False
+        # 滚动订阅者：文本每滚一下（Tk 调 yscrollcommand）就同步通知一遍。总览条 / 缩略图靠它
+        # 让滑块当场跟着动，不用等自己的定时轮询（250 / 50 ms 一次，滚动一帧才 7 ms，
+        # 轮询追不上，滑块就一顿一顿地滞后）。回调参数是 (first, last) 两个字符串，和 yscrollcommand 一致
+        self._scroll_listeners = []
         self.button = create_log_button(
             container, trp("↓ 回到底部"), self.jump_to_bottom,
             primary=True, backdrop=text)
@@ -128,8 +133,18 @@ class LiveLogView:
         if not self.at_bottom():
             self.pause()
 
+    def add_scroll_listener(self, fn):
+        """登记一个滚动回调 fn(first, last)。重复登记同一个无害。"""
+        if fn not in self._scroll_listeners:
+            self._scroll_listeners.append(fn)
+
     def _scrolled(self, first, last):
         self.text.vbar.set(first, last)
+        for fn in tuple(self._scroll_listeners):
+            try:
+                fn(first, last)
+            except Exception:
+                pass                 # 订阅者出错不能拖垮日志滚动
         if self.text.compare("end-1c", "==", "1.0"):
             return
         if not self._mutating and not self.scroller.scrolling():
@@ -188,9 +203,17 @@ class LiveLogView:
             if rebuild:
                 self.text.delete("1.0", "end")
             # One Tcl insertion per batch, preserving semantic colors.
+            # INFO 行再按内容叠一个子类标签（阶段/统计/提示/操作），级别标签原样保留，
+            # 所以红底、定位错误、总览条这些只认级别的逻辑都不受影响。子类标签的定义在
+            # 标签表里排在 INFO 之后，Tk 里后定义的标签优先，所以前景色会盖过 INFO 的灰。
             args = []
             for _, level, line in rows:
-                args.extend((line, (level,)))
+                tags = (level,)
+                if level == "INFO":
+                    kind = classify(line)
+                    if kind is not None:
+                        tags = (level, LINE_KINDS[kind][0])
+                args.extend((line, tags))
             if args:
                 self.text.insert("end", *args)
             count = int(self.text.index("end-1c").split(".")[0]) - 1

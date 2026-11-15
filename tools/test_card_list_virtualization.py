@@ -153,9 +153,23 @@ class CardListVirtualizationTests(unittest.TestCase):
                 self.image = image
 
         with mock.patch("PIL.ImageTk.PhotoImage", side_effect=FakePhoto):
+            # 图标改成了后台解码：_icon_photo 先给兜底图、把解码排进队列。这里不起线程
+            # （_ensure_icon_worker 打桩），手动把"解码结果"喂回去，再走一次真实的
+            # _icon_poll 回填路径，最后检查两个缓存都被 LRU 限住。
+            widget._ensure_icon_worker = lambda: None
+            jobs, done, _queued = widget._icon_state()
             for index in range(520):
                 ModCardList._icon_photo(widget, {
                     "icon_key": f"icon-{index}", "image": FakeImage()})
+            # 第一次见到图标时先画兜底图（不能返回 None，否则文字起点会跳）
+            self.assertIn(("fallback", id(None)), widget._photos)
+            while True:
+                try:
+                    cache_key, row = jobs.get_nowait()
+                except Exception:
+                    break
+                done.put((cache_key, row["image"]))
+            ModCardList._icon_poll(widget)
             self.assertEqual(len(widget._photos), 512)
             self.assertNotIn(("icon", "icon-0"), widget._photos)
             self.assertIn(("icon", "icon-519"), widget._photos)
@@ -165,6 +179,41 @@ class CardListVirtualizationTests(unittest.TestCase):
             self.assertEqual(len(widget._misc_photos), 512)
             self.assertNotIn((20, 17, 8, "#000000"), widget._misc_photos)
             self.assertIn((20, 17, 8, "#000207"), widget._misc_photos)
+
+    def test_icon_is_decoded_off_the_main_thread(self):
+        """滚动路径上不能同步跑 icon_provider：真实图标 3.5ms/张，一屏 12 张就是 41ms。
+
+        这里让 provider 故意慢 50ms，量 `_icon_photo` 的返回耗时 —— 它只该排队 + 给兜底图。
+        """
+        import time
+        widget = object.__new__(ModCardList)
+        widget._photos = OrderedDict()
+        widget._misc_photos = OrderedDict()
+        widget.fallback_icon = None
+        widget.ICON_PX = 44
+        widget.icon_provider = lambda row: time.sleep(0.05) or None
+
+        class FakeImage:
+            LANCZOS = object()
+
+            def copy(self):
+                return self
+
+            def thumbnail(self, *_a):
+                pass
+
+        class FakePhoto:
+            def __init__(self, image):
+                self.image = image
+
+        with mock.patch("PIL.ImageTk.PhotoImage", side_effect=FakePhoto):
+            widget._ensure_icon_worker = lambda: None
+            t0 = time.perf_counter()
+            ModCardList._icon_photo(widget, {"icon_key": "slow", "image": FakeImage()})
+            spent = (time.perf_counter() - t0) * 1000
+        self.assertLess(spent, 20, "取图标不该等解码：%.1fms" % spent)
+        self.assertNotIn(("icon", "slow"), widget._photos)     # 还没解码完
+        self.assertIn(("fallback", id(None)), widget._photos)  # 先给兜底
 
 
 if __name__ == "__main__":
