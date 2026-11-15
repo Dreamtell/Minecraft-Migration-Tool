@@ -191,25 +191,9 @@ _LOCK_MODES = (
 # 迁移标记可选的符号：都是微软雅黑里有字形、且文件名安全的（不含 \ / : * ? " < > |）
 _RENAME_MARKERS = ("★", "☆", "▶", "◆", "●", "✦", "✚", "【新】", "NEW_")
 
-# 「默认携带的目录」候选：(配置键, 条目（相对整合包根目录）, 中文说明)
-# 勾上之后每次迁移都自动带上 —— 只并进这一次的迁移清单，**不改用户的「其它文件」清单**，
-# 免得上一次删掉的条目下一次又被塞回来。源实例里不存在的会被跳过（不报错）。
-_EXTRA_PRESETS = (
-    ("shaderpacks",    "shaderpacks/",    trp("光影包（Iris / OptiFine）")),
-    ("resourcepacks",  "resourcepacks/",  trp("资源包（材质包）")),
-    ("schematics",     "schematics/",     trp("投影 / 蓝图（Litematica、WorldEdit）")),
-    ("XaeroWorldMap",  "XaeroWorldMap/",  trp("Xaero 世界地图数据")),
-    ("XaeroWaypoints", "XaeroWaypoints/", trp("Xaero 路径点")),
-    ("xaero",          "xaero/",          trp("Xaero 小地图（旧版目录）")),
-    ("journeymap",     "journeymap/",     trp("JourneyMap 地图数据")),
-    ("kubejs",         "kubejs/",         trp("KubeJS 脚本")),
-    ("defaultconfigs", "defaultconfigs/", trp("整合包默认配置（Forge / NeoForge）")),
-    ("local",          "local/",          trp("本地数据（部分模组自建）")),
-    ("screenshots",    "screenshots/",    trp("截图")),
-    ("servers.dat",    "servers.dat",     trp("服务器列表")),
-    ("optionsof.txt",  "optionsof.txt",   trp("OptiFine 视频设置")),
-    ("iris.properties", "iris.properties", trp("Iris 光影设置")),
-)
+# 「＋ 常用目录」预设表已抽到 core/extra_presets.py(Qt 主界面也要用,而本模块顶层 import
+# tkinter,Qt 进程不能碰)。这里原名引入,`MW._EXTRA_PRESETS` 的老接口面不变。
+from core.extra_presets import EXTRA_PRESETS as _EXTRA_PRESETS      # noqa: E402
 
 # 迁移这种会改文件的活儿，不该有"偷偷多带几样"的默认值：**清单是唯一依据**，
 # 要带什么由用户自己加（清单页的「＋ 常用目录」提供现成条目）。

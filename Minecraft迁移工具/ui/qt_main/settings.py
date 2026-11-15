@@ -5,6 +5,7 @@
 设历史份数、刷新界面)由主窗口的 _apply_settings 负责,保持单一写入口。
 """
 import sys
+import threading
 from pathlib import Path
 
 # 与 window.py 一致:确保 _qt 在路径里,便于独立导入(测试/工具进程)
@@ -16,9 +17,10 @@ from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 from utils import i18n  # noqa: E402
 from ui.qt_win import fit_window
-from utils.i18n import tr  # noqa: E402
+from utils.i18n import tr, trp  # noqa: E402
 from utils import history_store  # noqa: E402
 from utils import fx  # noqa: E402
+from utils import secrets  # noqa: E402
 from ui.qt_main.star_slider import StarSliderCard  # noqa: E402
 
 
@@ -56,6 +58,10 @@ def ask_close_action(parent):
 
 class SettingsDialog(QtWidgets.QDialog):
     """设置对话框。读入当前 config,OK 后用 values() 取回选择。"""
+
+    _cf_test_done = QtCore.Signal(bool, str)        # 后台测试线程 → 主线程
+    # 回滚类别的固定顺序,和 core.migrator._RESTORE_PARTS 一致(测试里有断言钉住)
+    _ROLLBACK_ORDER = ("mods", "config", "saves", "files", "extras")
 
     def __init__(self, parent, config):
         super().__init__(parent)
@@ -116,6 +122,33 @@ class SettingsDialog(QtWidgets.QDialog):
         self.history_spin.setRange(history_store.MIN_LIMIT, history_store.MAX_LIMIT)
         self.history_spin.setValue(history_store.get_limit())
         form.addRow(tr("历史保存份数"), self.history_spin)
+
+        # 回滚时默认还原哪几类(与 Tk 版同键 rollback_parts;回滚对话框里勾「记住我的选择」会覆盖它)
+        form.addRow(QtWidgets.QLabel(tr("回滚时默认还原：")))
+        rollback_items = (("mods", tr("模组（mods/）")),
+                          ("config", tr("配置（config/）")),
+                          ("saves", tr("存档（saves/）")),
+                          ("files", tr("根目录文件（options.txt 等）")),
+                          ("extras", tr("「其它文件」清单里的条目")))
+        saved_parts = cfg.get("rollback_parts")
+        if isinstance(saved_parts, (list, tuple)) and saved_parts:
+            saved_parts = set(saved_parts)
+        else:
+            saved_parts = {k for k, _ in rollback_items}          # 没存过 = 全勾
+        self._rollback_checks = {}
+        for part_key, part_text in rollback_items:
+            cb = QtWidgets.QCheckBox(part_text)
+            cb.setChecked(part_key in saved_parts)
+            cb.toggled.connect(lambda on, k=part_key: self._on_rollback_toggled(k, on))
+            self._rollback_checks[part_key] = cb
+            form.addRow("", cb)
+        rollback_note = QtWidgets.QLabel(
+            tr("注：回滚对话框里勾「记住我的选择」会用那一次的选择覆盖这里。"))
+        rollback_note.setWordWrap(True)
+        rollback_note.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow("", rollback_note)
+        if not any(cb.isChecked() for cb in self._rollback_checks.values()):
+            self._rollback_checks["mods"].setChecked(True)        # 脏配置(类别名全不认识)至少留 mods
 
         # 默认开关
         self.dry_run_check = QtWidgets.QCheckBox(tr("默认开启模拟运行"))
@@ -193,6 +226,56 @@ class SettingsDialog(QtWidgets.QDialog):
         self.blank_exit_check.setToolTip(tr("关闭后只能用编辑开关自己关"))
         self.blank_exit_check.setChecked(bool(cfg.get("blank_exit_edit", True)))
         form.addRow("", self.blank_exit_check)
+        # 平滑滚动速度(与 Tk 版同键 scroll_speed:1 最慢 … 5 最快,3 = 原速)
+        self.scroll_speed_spin = QtWidgets.QSpinBox()
+        self.scroll_speed_spin.setRange(1, 5)
+        self.scroll_speed_spin.setToolTip(tr("档（1 最慢 – 5 最快，3 = 原速）"))
+        try:
+            self.scroll_speed_spin.setValue(max(1, min(5, int(cfg.get("scroll_speed", 3)))))
+        except Exception:
+            self.scroll_speed_spin.setValue(3)
+        form.addRow(tr("平滑滚动速度"), self.scroll_speed_spin)
+
+        # 联网获取真实分类(与 Tk 版同键 online_tags,默认关;下次打开放大查看时生效)
+        self.tags_check = QtWidgets.QCheckBox(tr("联网获取真实分类（Modrinth；默认关闭）"))
+        self.tags_check.setChecked(bool(cfg.get("online_tags", False)))
+        form.addRow("", self.tags_check)
+        tags_note = QtWidgets.QLabel(tr(
+            "关闭时按关键词推测（标注“推测”的就是它）。开启后扫描会在后台联网查询，"
+            "结果缓存到本地；断网或匹配不到时自动沿用推测结果。"))
+        tags_note.setWordWrap(True)
+        tags_note.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow("", tags_note)
+        self.tag_cache_label = QtWidgets.QLabel()
+        self.tag_cache_label.setWordWrap(True)
+        self.tag_cache_label.setStyleSheet("color: #888; font-size: 11px;")
+        self._update_tag_cache_label()
+        form.addRow("", self.tag_cache_label)
+
+        # CurseForge API Key(可选)。和其它项不同:点按钮就生效(同 Tk 版),不等「确定」,
+        # 而且只写密钥文件(~/.minecraft_migrate_secret.json),不进主配置、不进日志。
+        form.addRow(QtWidgets.QLabel(tr("CurseForge API Key（可选）")))
+        key_row = QtWidgets.QHBoxLayout()
+        self.cf_key_edit = QtWidgets.QLineEdit()
+        self.cf_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        key_row.addWidget(self.cf_key_edit, 1)
+        self.cf_save_btn = QtWidgets.QPushButton(tr("保存"))
+        self.cf_test_btn = QtWidgets.QPushButton(tr("测试"))
+        self.cf_clear_btn = QtWidgets.QPushButton(tr("清除"))
+        for b in (self.cf_save_btn, self.cf_test_btn, self.cf_clear_btn):
+            b.setAutoDefault(False)          # 在输入框里回车别顺手触发「确定」
+            key_row.addWidget(b)
+        self.cf_save_btn.clicked.connect(self._save_cf_key)
+        self.cf_test_btn.clicked.connect(self._test_cf_key)
+        self.cf_clear_btn.clicked.connect(self._clear_cf_key)
+        form.addRow(key_row)
+        self.cf_status_label = QtWidgets.QLabel()
+        self.cf_status_label.setWordWrap(True)
+        self.cf_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow(self.cf_status_label)
+        self._cf_testing = False
+        self._cf_test_done.connect(self._on_cf_test_done)
+        self._update_cf_status()
         # 按钮音效(与 Tk 版同键 sfx_on;音源路径 sfx_hover / sfx_press 沿用配置,默认用随包的合成音)
         sfx_row = QtWidgets.QHBoxLayout()
         self.sfx_check = QtWidgets.QCheckBox(tr("🔊 按钮音效（悬停 / 按下）"))
@@ -252,6 +335,120 @@ class SettingsDialog(QtWidgets.QDialog):
         bar_lay.addStretch(1)
         bar_lay.addWidget(buttons)
         root.addWidget(bar)
+
+    def _on_rollback_toggled(self, key, on):
+        """回滚默认还原至少留一类(全不勾回滚就什么都不做):取消最后一个时把它勾回去。"""
+        if on or any(cb.isChecked() for cb in self._rollback_checks.values()):
+            return
+        cb = self._rollback_checks[key]
+        cb.blockSignals(True)
+        cb.setChecked(True)
+        cb.blockSignals(False)
+
+    def _update_tag_cache_label(self):
+        """显示本地分类缓存条数,让用户知道「查过一次就不会再联网」。"""
+        try:
+            from core.mod_search import tag_cache_size, TAG_CACHE_FILE
+            self.tag_cache_label.setText(
+                tr("本地分类缓存：") + str(tag_cache_size()) + tr(" 条（")
+                + str(TAG_CACHE_FILE) + tr("，删掉它会重新联网查）"))
+        except Exception:
+            self.tag_cache_label.setText("")
+
+    # ---- CurseForge API Key:界面在这里,存/取/脱敏全在 utils/secrets.py ----
+    def _cf_toast(self, text, level="info"):
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "toast"):
+            try:
+                parent.toast(text, level)
+            except Exception:
+                pass
+
+    def _cf_log(self, text, level="INFO"):
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "log"):
+            try:
+                parent.log(text, level)
+            except Exception:
+                pass
+
+    def _update_cf_status(self):
+        """Key 状态那一行:只显示「来源 + 末 4 位 + 指纹」,不显示 key 本身。"""
+        try:
+            text = secrets.status_text()
+        except Exception:
+            text = tr("读取失败")
+        self.cf_status_label.setText(tr("CurseForge：") + text)
+
+    def _save_cf_key(self):
+        """把输入框里的 key 存进密钥文件(不进主配置、不进日志、不进仓库)。"""
+        raw = self.cf_key_edit.text()
+        if not secrets.clean(raw):
+            self._cf_toast(tr("ℹ️ 输入框是空的：没有保存任何东西（要删掉已保存的 Key 请点「清除」）。"),
+                           "warn")
+            return
+        if secrets.set_key(raw):
+            self.cf_key_edit.clear()          # 存完立刻清空:明文没必要一直摆在界面上
+            self._cf_log(trp("🔑 CurseForge API Key 已保存：{0}（指纹 {1}）",
+                             secrets.mask(), secrets.fingerprint()), "INFO")
+            self._cf_toast(tr("🔑 CurseForge API Key 已保存"), "ok")
+        else:
+            self._cf_log(trp("❌ CurseForge API Key 保存失败：写不了 {0}",
+                             secrets.where_text()), "ERROR")
+            self._cf_toast(tr("❌ CurseForge API Key 保存失败，详见日志"), "warn")
+        self._update_cf_status()
+
+    def _clear_cf_key(self):
+        """删掉本机保存的 key。"""
+        self.cf_key_edit.clear()
+        if secrets.clear_key():
+            msg = tr("🗑 已删除本机保存的 CurseForge API Key（联网搜索仍走 Modrinth）。")
+            self._cf_log(msg, "INFO")
+            self._cf_toast(msg, "ok")
+        self._update_cf_status()
+
+    def _test_cf_key(self):
+        """测一下 Key 能不能用:后台线程发一次最小请求,别卡住设置窗口。"""
+        if self._cf_testing:
+            return
+        pending = secrets.clean(self.cf_key_edit.text())
+        if not pending and not secrets.has_key():
+            self._cf_toast(tr("ℹ️ 先在输入框里粘一个 Key，或者先「保存」一个再测。"), "warn")
+            return
+        self._cf_toast(tr("🌐 正在测试 CurseForge API Key…（首次联网可能要几秒）"), "info")
+        self._cf_testing = True
+        self.cf_test_btn.setEnabled(False)
+
+        def run():
+            try:
+                from core.mod_search import test_curseforge_key
+                ok, note = test_curseforge_key(pending or None)
+            except Exception as e:
+                ok, note = False, secrets.redact_exc(e)
+            try:
+                self._cf_test_done.emit(bool(ok), str(note))
+            except RuntimeError:              # 设置窗已经关了,对象没了
+                pass
+
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except Exception as e:
+            self._cf_testing = False
+            self.cf_test_btn.setEnabled(True)
+            self._cf_log(trp("❌ 起不了测试线程：{0}", secrets.redact_exc(e)), "ERROR")
+            self._cf_toast(tr("❌ 起不了测试线程，详见日志"), "warn")
+
+    @QtCore.Slot(bool, str)
+    def _on_cf_test_done(self, ok, note):
+        self._cf_testing = False
+        self.cf_test_btn.setEnabled(True)
+        self._cf_log(trp("✅ CurseForge Key 可用：{0}", note) if ok
+                     else trp("❌ CurseForge Key 不可用：{0}", note),
+                     "INFO" if ok else "ERROR")
+        self._cf_toast(tr("✅ CurseForge Key 可用") if ok
+                       else tr("❌ CurseForge Key 不可用，详见日志"),
+                       "ok" if ok else "warn")
+        self._update_cf_status()
 
     @staticmethod
     def _level_to_value(level):
@@ -318,6 +515,10 @@ class SettingsDialog(QtWidgets.QDialog):
             "net_float_shadow": self.float_shadow_check.isChecked(),
             "msg_click_outside_close": self.msg_outside_check.isChecked(),
             "blank_exit_edit": self.blank_exit_check.isChecked(),
+            "scroll_speed": int(self.scroll_speed_spin.value()),
+            "online_tags": self.tags_check.isChecked(),
+            "rollback_parts": [k for k in self._ROLLBACK_ORDER
+                               if self._rollback_checks[k].isChecked()],
             "sfx_on": self.sfx_check.isChecked(),
             "toast_on": self.toast_check.isChecked(),
             "close_action": self.close_combo.currentData(),

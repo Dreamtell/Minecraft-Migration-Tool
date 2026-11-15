@@ -33,8 +33,8 @@ GROUPS = (
 DEFAULT_ORDER = {
     "mods":   ["add_mods", "changelog", "scan_diff", "mod_magnify", "clear_mods", "check_mods"],
     "config": ["add_cfg_dir", "add_cfg_file", "cfg_magnify", "clear_cfg", "check_cfg"],
-    "extra":  ["add_extra_options", "add_extra_dir", "add_extra_file", "clear_extra",
-               "check_extra"],
+    "extra":  ["add_extra_options", "add_extra_preset", "add_extra_dir", "add_extra_file",
+               "clear_extra", "check_extra"],
     "action": ["history", "start"],
     "log":    ["log_big", "log_open", "fail_locate", "log_clear"],
 }
@@ -49,6 +49,7 @@ LABELS = {
     "cfg_magnify": tr("📂 放大查看(config 清单)"),
     "clear_cfg": tr("🗑️ 清空(config)"),
     "add_extra_options": tr("＋ options.txt"),
+    "add_extra_preset": tr("＋ 常用目录 ▾"),
     "add_extra_dir": tr("📁 添加文件夹(其它文件)"),
     "add_extra_file": tr("📄 添加文件(其它文件)"),
     "clear_extra": tr("🗑️ 清空(其它文件)"),

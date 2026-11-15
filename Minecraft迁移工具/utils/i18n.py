@@ -2276,6 +2276,13 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "⚠️ 清单里有 {0} 项在源 mods 里找不到，已标成「不存在」并跳过比较":
         "⚠️ {0} list entries are not in the source mods folder; marked as missing and skipped",
     # ---- Qt 主界面（ui/qt_main/）与本轮新增的 Tk 侧文案 ----
+    "把这份档案里的路径、存档名和三个清单回填到主界面（不会开始迁移）":
+        "Fill the main window with this record's paths, world name and the three lists (does not start a migration)",
+    "上一次的迁移记录": "the last migration record",
+    "迁移进行中，暂不能应用记录": "A task is running; records can't be applied right now",
+    "⚠ 回填记录失败：{0}": "⚠ Could not fill in the record: {0}",
+    "还原应用前状态失败: {0}": "Could not restore the state from before applying: {0}",
+    "读迁移档案失败: {0}": "Could not read the migration records: {0}",
     "把目标路径复制到源路径": "Copy the target path into the source path",
     "共 {0} 行": "{0} lines",
     "无法启动回滚：{0}": "Could not start the rollback: {0}",
@@ -2528,6 +2535,21 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "正在搜索…": "Searching…",
     "以管理员身份重启被取消，继续用普通权限运行。": "Restart as administrator was cancelled; continuing with normal rights.",
     "(无异常对象)": "(no exception object)",
+    # ---- 第十批:路径有效性 / 文件夹多选 / 模组添加反馈 ----
+    "🧹 顺手整理了 {0} 行重复/带路径的旧条目":
+        "🧹 Tidied {0} duplicate or full-path lines left from older versions",
+    "ℹ️ 所选内容均已在清单中，未重复添加":
+        "ℹ️ Everything you picked is already in the list; nothing added",
+    "路径不存在": "Path does not exist",
+    "不是目录": "Not a folder",
+    "无读写权限，请以管理员身份运行": "No read/write access; run as administrator",
+    "缺少 mods 目录（不是有效的整合包）": "No mods folder (not a valid pack)",
+    "缺少 config 目录（不是有效的整合包）": "No config folder (not a valid pack)",
+    "mods 目录为空（没有模组文件）": "The mods folder is empty (no mod files)",
+    "缺少 version.json 或 options.txt，无法识别为有效实例":
+        "No version.json or options.txt; cannot be recognized as a valid instance",
+    "已勾选 {0} 个文件夹": "{0} folders ticked",
+    "本次还原：{0}": "Restoring this time: {0}",
 }
 
 
