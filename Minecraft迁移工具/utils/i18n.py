@@ -2549,6 +2549,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "缺少 version.json 或 options.txt，无法识别为有效实例":
         "No version.json or options.txt; cannot be recognized as a valid instance",
     "已勾选 {0} 个文件夹": "{0} folders ticked",
+    "本次还原：{0}": "Restoring this time: {0}",
 }
 
 
