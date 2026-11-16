@@ -38,6 +38,36 @@ _LINKS = (
 )
 
 
+def extra_status_text(lines, source):
+    """设置窗「默认携带的目录」那行状态:清单几条、源目录里找得到几条、缺哪些。
+
+    文案与判断同 Tk 版 mw_settings._update_extra_defaults_label / _extra_list_status
+    (条目按正斜杠、去末尾 / 后拼到源目录上看是否存在;注释行同 Tk 一样不特殊处理)。
+    """
+    entries = [x.strip() for x in (lines or []) if str(x).strip()]
+    source = str(source or "").strip()
+    if not entries:
+        return tr("当前清单是空的：迁移时只带模组 / config / 存档，别的一律不动。")
+    if not source:
+        return i18n.trf("清单里 {n} 条；选了源整合包目录后才能显示哪些实际存在。",
+                        n=len(entries))
+    base = Path(source)
+    found, missing = [], []
+    for e in entries:
+        try:
+            ok = (base / e.replace("\\", "/").rstrip("/")).exists()
+        except Exception:
+            ok = False
+        (found if ok else missing).append(e)
+    text = i18n.trf("清单里 {n} 条，源目录里找得到 {m} 条", n=len(entries), m=len(found))
+    if missing:
+        text += i18n.trf("（找不到：{names}{more}）", names="、".join(missing[:4]),
+                         more=tr(" 等") if len(missing) > 4 else "")
+    else:
+        text += tr("，这次都会带上 ✅")
+    return text
+
+
 def ask_close_action(parent):
     """点 ❌ 时问一次:收进托盘 / 直接退出 / 取消。返回 (action|None, remember)。
 
@@ -130,6 +160,20 @@ class SettingsDialog(QtWidgets.QDialog):
             conflict_val = "overwrite"
         self._select_by_data(self.conflict_combo, conflict_val, 0)
         form.addRow(tr("其它文件冲突"), self.conflict_combo)
+
+        # 默认携带的目录:同 Tk 设置窗「extras」区 —— 清单是唯一依据,这里只说明 + 显示清单现状
+        form.addRow(QtWidgets.QLabel(tr("默认携带的目录")))
+        extra_note = QtWidgets.QLabel(tr(
+            "迁移只带「其它文件」清单里列出的东西（还有模组 / config / 存档这三个清单）。\n"
+            "清单是唯一依据：不在这里的一律不动。常用目录在「其它文件」页用「＋ 常用目录」加，"
+            "加完能看见、能改、能删。"))
+        extra_note.setStyleSheet("color: #888; font-size: 11px;")
+        extra_note.setWordWrap(True)
+        form.addRow(extra_note)
+        self.extra_status_label = QtWidgets.QLabel(self._extra_status_from_parent())
+        self.extra_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.extra_status_label.setWordWrap(True)
+        form.addRow(self.extra_status_label)
 
         # 历史保存份数
         self.history_spin = QtWidgets.QSpinBox()
@@ -367,6 +411,19 @@ class SettingsDialog(QtWidgets.QDialog):
         bar_lay.addStretch(1)
         bar_lay.addWidget(buttons)
         root.addWidget(bar)
+
+    def _extra_status_from_parent(self):
+        """从主窗口取「其它文件」清单和源路径;没有主窗口(测试/独立打开)时当作空清单。"""
+        parent = self.parent()
+        lines, source = [], ""
+        try:
+            box = getattr(parent, "extra_text", None)
+            if box is not None:
+                lines = box.toPlainText().splitlines()
+            source = str(getattr(parent, "source_path", "") or "")
+        except Exception:
+            pass
+        return extra_status_text(lines, source)
 
     def open_link(self, url):
         """打开外部链接;成功记日志 + 小提示,失败弹错误框(同 Tk 版 PagesMixin.open_link)。"""

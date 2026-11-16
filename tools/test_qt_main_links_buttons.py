@@ -25,7 +25,7 @@ _CFG_PATH = os.environ["MCTOOL_CONFIG"]
 def setUpModule():                     # 全量跑时各模块各用各的临时配置
     _use_config(_CFG_PATH)
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 from utils import config as _cfg  # noqa: E402
 
 _cfg.CONFIG_FILE = CFG
@@ -164,6 +164,171 @@ class PathButtonPrefsTests(unittest.TestCase):
             w._refresh_busy_state()
         self.assertFalse(w._path_btns["copy_target"].isEnabled())
         self.assertFalse(w.tgt_browse_btn.isEnabled())
+
+
+class ExtraStatusTextTests(unittest.TestCase):
+    def setUp(self):
+        self.src = Path(tempfile.mkdtemp(dir=_tmp.name))
+        (self.src / "shaderpacks").mkdir()
+        (self.src / "servers.dat").write_text("x", encoding="utf-8")
+
+    def text(self, lines, src=None):
+        from ui.qt_main.settings import extra_status_text
+        return extra_status_text(lines, self.src if src is None else src)
+
+    def test_empty_list(self):
+        self.assertIn("当前清单是空的", self.text(["", "  "]))
+
+    def test_no_source(self):
+        self.assertIn("清单里 2 条；选了源整合包目录后", self.text(["a/", "b"], src=""))
+
+    def test_all_found(self):
+        t = self.text(["shaderpacks/", "servers.dat", "shaderpacks\\"])
+        self.assertIn("清单里 3 条，源目录里找得到 3 条", t)
+        self.assertIn("这次都会带上", t)
+
+    def test_missing_lists_first_four_then_etc(self):
+        t = self.text(["shaderpacks/"] + ["m%d/" % i for i in range(6)])
+        self.assertIn("找得到 1 条", t)
+        self.assertIn("m0/、m1/、m2/、m3/", t)
+        self.assertNotIn("m4/", t)
+        self.assertIn(" 等", t)
+
+    def test_dialog_reads_parent_list_and_source(self):
+        from ui.qt_main.settings import SettingsDialog
+        host = _Host()
+        host.extra_text = QtWidgets.QPlainTextEdit("shaderpacks/\nnope/")
+        host.source_path = str(self.src)
+        dlg = SettingsDialog(host, {})
+        try:
+            self.assertIn("清单里 2 条，源目录里找得到 1 条", dlg.extra_status_label.text())
+            self.assertIn("nope/", dlg.extra_status_label.text())
+        finally:
+            dlg.deleteLater()
+            host.deleteLater()
+            pump(20)
+
+
+class LegacyExtraDefaultsTests(unittest.TestCase):
+    """老配置的 extra_defaults 在 Qt 主界面启动时也要一次性并进清单(同 Tk)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from ui.qt_main.window import QtMainWindow
+        cls.W = QtMainWindow
+
+    def make(self, **raw):
+        cfg = {"language": "zh", "theme": "dark", "net_float_on": False}
+        cfg.update(raw)
+        _cfg.save_raw_config(cfg)
+        w = self.W()
+        self.addCleanup(self._close, w)
+        return w
+
+    @staticmethod
+    def _close(w):
+        w._close_session_log()
+        w.deleteLater()
+        pump(30)
+
+    def lines(self, w):
+        return [x for x in w.extra_text.toPlainText().splitlines() if x.strip()]
+
+    def test_merged_once_and_cleared(self):
+        w = self.make(extra_list="options.txt\nshaderpacks", extra_defaults=[
+            "shaderpacks", "kubejs", "bogus", "kubejs"])
+        self.assertEqual(self.lines(w), ["options.txt", "shaderpacks", "kubejs/"])
+        self.assertEqual(w.config["extra_defaults"], [])
+        raw = _cfg.load_raw_config()
+        self.assertEqual(raw["extra_defaults"], [])
+        self.assertIn("kubejs/", raw["extra_list"])          # 并入结果已落盘
+        self.assertEqual(w.extra_text._undo_stack, [])       # 并入不算一步撤销
+
+    def test_deleted_entries_do_not_come_back(self):
+        self.make(extra_defaults=["kubejs"])._close_session_log()
+        raw = _cfg.load_raw_config()
+        raw["extra_list"] = ""
+        _cfg.save_raw_config(raw)
+        w = self.W()
+        self.addCleanup(self._close, w)
+        self.assertEqual(self.lines(w), [])
+
+    def test_all_present_still_clears_and_logs(self):
+        w = self.make(extra_list="kubejs/", extra_defaults=["kubejs"])
+        self.assertEqual(self.lines(w), ["kubejs/"])
+        self.assertEqual(_cfg.load_raw_config()["extra_defaults"], [])
+        self.assertIn("都在清单里了", w.log_text.toPlainText())
+
+    def test_nothing_valid_leaves_config_alone(self):
+        w = self.make(extra_list="a", extra_defaults=["bogus"])
+        self.assertEqual(self.lines(w), ["a"])
+        self.assertEqual(_cfg.load_raw_config()["extra_defaults"], ["bogus"])
+
+    def test_garbage_value_is_ignored(self):
+        w = self.make(extra_list="a", extra_defaults="shaderpacks")
+        self.assertEqual(self.lines(w), ["a"])
+
+
+class SmallListPageTests(unittest.TestCase):
+    """模组页说明、config 页检查图例、倒计时开始时关子窗口(都对齐 Tk)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from ui.qt_main.window import QtMainWindow
+        cls.W = QtMainWindow
+
+    def setUp(self):
+        _cfg.save_raw_config({"language": "zh", "theme": "dark", "net_float_on": False})
+        self.w = self.W()
+        self.w.show()
+        pump(30)
+
+    def tearDown(self):
+        self.w._stop_countdown_timer()
+        self.w.hide()
+        self.w._close_session_log()
+        self.w.deleteLater()
+        pump(30)
+
+    def test_mod_page_has_hint(self):
+        page = self.w.tabs.widget(self.w._mod_tab_index)
+        texts = [lab.text() for lab in page.findChildren(QtWidgets.QLabel)]
+        self.assertTrue(any("同名匹配不区分大小写" in t for t in texts))
+
+    def test_legend_on_config_page_only_and_matches_mark_colors(self):
+        legend = self.w._check_legend
+        self.assertEqual([c.text() for c in legend.values()], ["✅ 存在", "❌ 缺失", "⚠️ 重复"])
+        cfg_page = self.w.tabs.widget(self.w._config_tab_index)
+        for chip in legend.values():
+            self.assertTrue(cfg_page.isAncestorOf(chip))
+        colors = self.w._check_mark_colors()
+        for st, chip in legend.items():
+            self.assertIn(QtGui.QColor(colors[st]).name(), chip.styleSheet())
+
+    def test_legend_follows_theme(self):
+        from ui.qt_main import window as win
+        self.w.theme = win.LIGHT_THEME if self.w.theme is win.DARK_THEME else win.DARK_THEME
+        self.w._repaint_list_labels()
+        for st, chip in self.w._check_legend.items():
+            self.assertIn(QtGui.QColor(self.w._check_mark_colors()[st]).name(), chip.styleSheet())
+
+    def test_countdown_closes_titled_children_but_not_frameless(self):
+        child = QtWidgets.QWidget(self.w, QtCore.Qt.Window)
+        child.setWindowTitle("diff")
+        child.show()
+        floater = QtWidgets.QWidget(self.w, QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint)
+        floater.show()
+        loose = QtWidgets.QDialog()                 # 没有 parent 的顶层窗(差异窗就是这样)
+        loose.show()
+        pump(30)
+        self.w._begin_countdown(3, {})
+        pump(30)
+        self.assertFalse(child.isVisible())
+        self.assertFalse(loose.isVisible())
+        self.assertTrue(floater.isVisible())
+        self.assertTrue(self.w.isVisible())
+        for x in (child, floater, loose):
+            x.deleteLater()
 
 
 if __name__ == "__main__":
