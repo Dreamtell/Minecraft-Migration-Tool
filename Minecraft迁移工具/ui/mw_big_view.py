@@ -208,8 +208,33 @@ class BigViewMixin:
         except Exception:
             pass
 
-    def _check_overflow(self):
-        """检查并更新放大按钮高亮状态"""
+    def _check_overflow(self, now=False):
+        """检查并更新放大按钮高亮状态（默认防抖：150ms 内连着调只算一次）。
+
+        为什么要防抖：它要对两个清单各做一次 update_idletasks + 读全文 + 量字符位置，
+        实测一次约 18ms（大清单更久）；而 save_config / _update_text_states / 切主题都在
+        末尾顺手调它 —— 切一次页签就会保存配置、于是同步重排版一遍（探针里切页签 5 次
+        共 117ms，其中 90ms 是这个）。放大按钮变橙只是个提示，晚 150ms 看不出来。
+
+        now=True：要立刻出结果的场合（目前没有，留作开关）直接算。
+        """
+        if now:
+            self._check_overflow_now()
+            return
+        try:
+            旧 = getattr(self, "_overflow_job", None)
+            if 旧 is not None:
+                self.root.after_cancel(旧)
+            self._overflow_job = self.root.after(150, self._check_overflow_run)
+        except Exception:
+            # root 没了 / after 不可用：退回同步算，宁可慢一点也别漏
+            self._check_overflow_now()
+
+    def _check_overflow_run(self):
+        self._overflow_job = None
+        self._check_overflow_now()
+
+    def _check_overflow_now(self):
         self._set_magnify_overflow(self.mod_magnify_btn,
                                    self._is_text_overflow(self.mod_text))
         self._set_magnify_overflow(self.config_magnify_btn,

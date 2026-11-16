@@ -488,8 +488,11 @@ class ThemeMixin:
             self.current_theme = new_name
             self.theme = new_theme
             self.apply_theme()
-            self.on_path_change()
-            self.save_config()
+            # 不再在这里调 on_path_change()：它要把源/目标路径各重新校验一遍（扫实例目录，
+            # 实测 17~65ms，模组越多越慢），而切主题时路径根本没变；三个状态标签的颜色
+            # apply_theme 里已经通过 _apply_status_semantic_colors 换好了。
+            # 这一段在覆盖层盖住旧界面之后、圆洞开始扩散之前同步跑，每少一毫秒，
+            # 圆圈就早一毫秒开始扩。save_config 也挪到动画结束之后（见下面 done()）。
             # 主题切换**不弹**消息：这条提示每次都踩在揭示动画的整窗截图上（约 100ms
             # 主线程阻塞），带动画必被卡住、不带又显得生硬；而「主题变了」本身一眼可见，
             # 不需要再用吐司告知。
@@ -510,6 +513,12 @@ class ThemeMixin:
                 do_switch()
             finally:
                 self._theme_animating = False
+            # 动画结束、界面静止了再落盘：配置里要记的是 current_theme，晚几百毫秒无所谓；
+            # 放在动画前要同步写一次文件（8~16ms），白白推迟圆圈开始扩散。
+            try:
+                self.save_config()
+            except Exception:
+                pass
 
         # 扩散圆心：优先用触发它的按钮，其次鼠标位置，最后窗口中心
         cx = cy = None
