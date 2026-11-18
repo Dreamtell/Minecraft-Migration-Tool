@@ -18,7 +18,7 @@ from ui.mw_common import _center_window, _close_popup, _grad_width
 from ui.virtual_table import VirtualTable
 from utils.helpers import (
     DataText, RoundedEntry, RoundedTextArea, begin_bulk_scan, create_gradient_button,
-    end_bulk_scan, focus_window, log_font, set_window_icon, text_delta,
+    end_bulk_scan, focus_window, is_dark_theme, log_font, set_window_icon, text_delta,
 )
 from utils.theme import apply_theme_to_widget_tree
 
@@ -1261,7 +1261,11 @@ class BigViewMixin:
                 "subtitle": subtitle,
                 "version": str(m.get("version") or ""),
                 "desc": str(m.get("desc") or ""),
-                "icon_key": m.get("path") or "",
+                # config 条目没有模组图标：现画文件夹/文件图标。键只含「是不是文件夹 + 扩展名 + 深浅」，
+                # 同类条目共用一张图（不按路径各解一次）；换主题时 _rebuild_rows 重建行，键跟着换
+                "icon_key": (m.get("path") or "") if is_mod else _cfg_icon_key(
+                    entries[idx] if idx < len(entries) else (m.get("name") or ""),
+                    m.get("type") or ""),
                 # 稳定身份（行号会因为扫描/排序/搜索而变化；卡片列表的键盘/滚动用得到）
                 "dc_key": key_of(entries[idx]) if idx < len(entries) else "",
                 "tags": m.get("tags") or [],
@@ -1271,12 +1275,23 @@ class BigViewMixin:
                 "checked": bool(checked.get(key_of(entries[idx]))) if idx < len(entries) else False,
             }
 
+        def _cfg_icon_key(entry, typ):
+            from utils.file_icons import config_entry_is_dir, _ext_of
+            is_dir = config_entry_is_dir(entry, typ)
+            return "cfgicon|%d|%s|%d" % (1 if is_dir else 0, "" if is_dir else _ext_of(entry),
+                                         1 if is_dark_theme(self.theme) else 0)
+
         def card_rows():
             """按当前显示顺序生成卡片数据。"""
             return [make_row(idx) for idx in order]
 
         def _card_icon(row):
-            path = get_mod_icon(row.get("icon_key") or "")
+            key = row.get("icon_key") or ""
+            if key.startswith("cfgicon|"):
+                from utils.file_icons import config_icon
+                _, is_dir, ext, dk = (key.split("|") + ["0", "", "0"])[:4]   # 扩展名里不会有 |
+                return config_icon(is_dir == "1", ext, 44, dk == "1")
+            path = get_mod_icon(key)
             if not path:
                 return None
             from PIL import Image
@@ -1376,6 +1391,8 @@ class BigViewMixin:
                                on_check=card_check)
             card.grid(row=0, column=0, sticky="nsew")
             card.grid_remove()
+            # 换主题时由 mw_theme 先调它：config 图标的键带深浅，不重建行就一直拿旧主题的图
+            card._rebuild_rows = (lambda: card.set_rows(card_rows())) if not is_mod else None
             if not hasattr(self, '_big_view_cards'):
                 self._big_view_cards = []
             self._big_view_cards.append(card)

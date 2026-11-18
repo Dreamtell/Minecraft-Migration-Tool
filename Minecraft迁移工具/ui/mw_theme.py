@@ -142,6 +142,12 @@ class ThemeMixin:
         for cdl in getattr(self, '_big_view_cards', []):
             try:
                 if cdl.winfo_exists():
+                    rebuild = getattr(cdl, "_rebuild_rows", None)
+                    if rebuild is not None:
+                        try:
+                            rebuild()          # 行数据里带主题相关的键（config 图标深浅）
+                        except Exception:
+                            pass
                     cdl.apply_theme(self.theme)
                     alive_cards.append(cdl)
             except Exception:
