@@ -88,6 +88,15 @@ class LogMixin:
             self.btn_fail_locate.set_text("📍 定位错误" + (" (%d)" % n if n else ""))
         except Exception:
             pass
+        # 文字带条数后按钮会变宽（实测 153 → 191px），可它坐在 WrapRow 里：WrapRow 是用
+        # place 按**排版那一刻**的宽度摆的，只在容器宽度变化时才重排，不会知道按钮变宽了，
+        # 结果画布还是 153px，「(2)」被右边裁掉。文字改完要让它按新宽度重排一次。
+        try:
+            条 = getattr(self, "log_toolbar", None)
+            if 条 is not None and hasattr(条, "relayout"):
+                条.relayout(force=True)
+        except Exception:
+            pass
         try:
             # 顺序要紧：set_state 禁用时会按当前文字重出一遍灰面图，
             # 所以先把文字改好再切状态

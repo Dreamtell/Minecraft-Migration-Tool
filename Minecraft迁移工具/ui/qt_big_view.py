@@ -1898,6 +1898,36 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
                 "❌ 缺失": _fail_red(self.theme)}.get(
                     it.status, self.theme.get("muted_fg", "#999999"))
 
+    def _config_icon(self, it):
+        """config 清单的卡片图标：文件夹 / 文件（带扩展名角标），区分一眼就看得出。
+
+        图由 utils/file_icons 用 PIL 现画（Tk 卡片也用同一份），这里转成 QPixmap 缓存；
+        换主题时 _pix.clear() 会把它一起丢掉，按新的深浅重画。
+        """
+        try:
+            from utils.file_icons import config_entry_is_dir, config_entry_icon, _ext_of
+            is_dir = config_entry_is_dir(it.entry, it.type)
+            ext = "" if is_dir else _ext_of(it.entry)
+            dark = _is_dark(self.theme)
+        except Exception:
+            return None
+        key = ("cfg", is_dir, ext, dark)
+        if key in self._pix:
+            return self._pix[key]
+        pm = None
+        try:
+            im = config_entry_icon(("x/" if is_dir else "x." + ext) if (is_dir or ext) else "x",
+                                   "文件夹" if is_dir else "文件", size=ICON_PX * 2, dark=dark)
+            if im is not None:
+                im = im.convert("RGBA")
+                qi = QtGui.QImage(im.tobytes("raw", "RGBA"), im.width, im.height,
+                                  im.width * 4, QtGui.QImage.Format_RGBA8888).copy()
+                pm = QtGui.QPixmap.fromImage(qi)
+        except Exception:
+            pm = None
+        self._pix[key] = pm
+        return pm
+
     def _fallback_icon(self):
         """没图标时画的兜底方块：模组是 M，config 清单是 C。
 
@@ -1981,7 +2011,10 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
 
         ix = rect.left() + 14
         iy = rect.center().y() - ICON_PX / 2
-        pm = self._icon(it) or self._fallback_icon()
+        pm = (self._icon(it) if self.store.is_mod else self._config_icon(it)) \
+            or self._fallback_icon()
+        # config 图标是 2 倍尺寸画好的，缩到 ICON_PX 要平滑采样，否则角标字和描边发糙
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
         painter.drawPixmap(QtCore.QRectF(ix, iy, ICON_PX, ICON_PX), pm,
                            QtCore.QRectF(pm.rect()))
         tx = ix + ICON_PX + 12

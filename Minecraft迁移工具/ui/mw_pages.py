@@ -948,9 +948,11 @@ class PagesMixin:
             colors=_BTN_NEUTRAL, height=30, font=("微软雅黑", 9, "bold"))
         btn_open_log.pack(side="right", padx=5)
         # 定位错误：一次点击就跳到下一个出错的清单条目（比在日志里找、双击都快）
+        # 红色：它只在日志里有错误时才能点（没错误自动置灰，见 mw_log._refresh_fail_button），
+        # 点了是去找出错的条目 —— 语义跟「清空日志」同属「出问题/危险」一档，别用蓝色。
         self.btn_fail_locate = create_gradient_button(
             log_toolbar, "📍 定位错误", self._goto_next_fail,
-            colors=_BTN_NEUTRAL,
+            colors=_BTN_DANGER,
             width=_grad_width("📍 定位错误") + 26, height=30,
             font=("微软雅黑", 9, "bold"))
         self.btn_fail_locate.pack(side="left", padx=(8, 0))
@@ -1023,8 +1025,10 @@ class PagesMixin:
         except Exception:
             self.log_overview = None
         try:
-            # RoundedTextArea 里全是 place 摆的，自身没有"请求高度"，只能硬给
-            self.log_text_box.configure(height=150)
+            # RoundedTextArea 里全是 place 摆的，自身没有"请求高度"，只能硬给。
+            # 按 DPI 缩放：以前写死 150，在 125% 缩放下字号放大了（行高 25px）、框却没放大，
+            # 只剩 5 行。基准 160（100% 下约 7 行）× 缩放，125% 下 200px ≈ 7 行（内层减掉 2×pad）。
+            self.log_text_box.configure(height=px(160))
             self.log_text_box.pack_propagate(False)
         except Exception:
             pass
@@ -1036,7 +1040,7 @@ class PagesMixin:
             # 这里的基准曾经写成 px(720)：窗口一到 1080，日志就先吃掉 160 多 px，
             # 清单框被挤到只剩 3 行（量过：1000x1080 时清单 55px、日志 312px）。
             extra = max(0, self.root.winfo_height() - px(1080))
-            height = 150 + min(px(180), int(extra * 0.45))
+            height = px(160) + min(px(180), int(extra * 0.45))     # 同上：基准高度按 DPI 缩放
             if int(self.log_text_box.cget("height")) != height:
                 self.log_text_box.configure(height=height)
 
@@ -1186,7 +1190,7 @@ class PagesMixin:
                 通 = 历史[-1][2] > 0
                 色 = (129, 199, 132, 255) if 通 else (198, 40, 40, 255)
 
-                img = Image.new("RGBA", (w * S, h * S), self.theme["bg"])
+                img = Image.new("RGBA", (w * S, h * S), c.cget("bg"))
                 d = ImageDraw.Draw(img)
                 d.line(坐标, fill=色, width=max(2, int(round(1.4 * S))), joint="curve")
                 lx, ly = 坐标[-1]
