@@ -107,6 +107,30 @@ class RollbackDefaultsTests(_Base):
         self.assertEqual(len(d2.values()["rollback_parts"]), 5)
 
 
+class DialogThemeAndButtonsTests(_Base):
+    def test_muted_notes_use_the_dialog_theme(self):
+        d = self.dialog(theme="dark")
+        note = next(label for label in d.findChildren(QtWidgets.QLabel)
+                    if label.text().startswith("※ 关掉后没有启动动画"))
+        self.assertIn("color: #aaaaaa", note.styleSheet())
+        d.deleteLater()
+        d = self.dialog(theme="light")
+        note = next(label for label in d.findChildren(QtWidgets.QLabel)
+                    if label.text().startswith("※ 关掉后没有启动动画"))
+        self.assertIn("color: #6b6b6b", note.styleSheet())
+        d.deleteLater()
+
+    def test_settings_actions_have_semantic_button_kinds(self):
+        d = self.dialog()
+        self.assertEqual(d.cf_save_btn.property("kind"), "add")
+        self.assertEqual(d.cf_test_btn.property("kind"), "neutral")
+        self.assertEqual(d.cf_clear_btn.property("kind"), "danger")
+        self.assertEqual(d.sfx_test_btn.property("kind"), "neutral")
+        buttons = d.findChild(QtWidgets.QDialogButtonBox)
+        self.assertEqual(buttons.button(QtWidgets.QDialogButtonBox.Ok).property("kind"), "add")
+        self.assertEqual(buttons.button(QtWidgets.QDialogButtonBox.Cancel).property("kind"), "neutral")
+
+
 class OnlineTagsTests(_Base):
     def test_default_off_and_roundtrip(self):
         d = self.dialog()

@@ -22,6 +22,7 @@ from PySide6 import QtWidgets, QtCore  # noqa: E402
 from ui.qt_win import fit_window
 from utils.i18n import tr, trp  # noqa: E402
 from utils import history_store  # noqa: E402
+from ui.qt_main.dialog_style import apply_button_styles, set_button_kind, theme_for  # noqa: E402
 
 # 回滚类别的中文标签(键见 core.migrator._RESTORE_PARTS)
 _PART_LABELS = {
@@ -93,10 +94,14 @@ class PartPickerDialog(QtWidgets.QDialog):
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(tr("开始回滚"))
+        ok_button = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        ok_button.setText(tr("开始回滚"))
+        set_button_kind(ok_button, "danger")
+        set_button_kind(buttons.button(QtWidgets.QDialogButtonBox.Cancel), "neutral")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        apply_button_styles(self, theme_for(self))
 
     @staticmethod
     def _label_for(key, cnt):
@@ -191,6 +196,7 @@ class HistoryDialog(QtWidgets.QDialog):
         log_bar.addStretch(1)
         log_bar.addWidget(self.log_count)
         self.zoom_btn = QtWidgets.QPushButton(tr("⤢  放大"))
+        set_button_kind(self.zoom_btn, "neutral")
         self.zoom_btn.setCheckable(True)
         self.zoom_btn.clicked.connect(self._toggle_zoom)
         log_bar.addWidget(self.zoom_btn)
@@ -206,23 +212,29 @@ class HistoryDialog(QtWidgets.QDialog):
         # 底部按钮
         btn_row = QtWidgets.QHBoxLayout()
         self.rollback_btn = QtWidgets.QPushButton(tr("⏪ 回滚到这一次之前"))
+        set_button_kind(self.rollback_btn, "danger")
         self.rollback_btn.clicked.connect(self._do_rollback)
         btn_row.addWidget(self.rollback_btn)
         self.apply_btn = QtWidgets.QPushButton(tr("🔁 应用到主界面"))
+        set_button_kind(self.apply_btn, "neutral")
         self.apply_btn.setToolTip(tr("把这份档案里的路径、存档名和三个清单回填到主界面（不会开始迁移）"))
         self.apply_btn.clicked.connect(self._apply_current)
         btn_row.addWidget(self.apply_btn)
         self.delete_btn = QtWidgets.QPushButton(tr("🗑 删除这份档案"))
+        set_button_kind(self.delete_btn, "danger")
         self.delete_btn.clicked.connect(self._delete_current)
         btn_row.addWidget(self.delete_btn)
         self.clear_btn = QtWidgets.QPushButton(tr("清空全部"))
+        set_button_kind(self.clear_btn, "danger")
         self.clear_btn.clicked.connect(self._clear_all)
         btn_row.addWidget(self.clear_btn)
         btn_row.addStretch()
         close_btn = QtWidgets.QPushButton(tr("关闭"))
+        set_button_kind(close_btn, "neutral")
         close_btn.clicked.connect(self.reject)
         btn_row.addWidget(close_btn)
         root.addLayout(btn_row)
+        apply_button_styles(self, theme_for(self))
 
         self._refresh()
 
@@ -503,7 +515,10 @@ class HistoryDialog(QtWidgets.QDialog):
         box.setWindowTitle(tr("↩ 回滚到迁移前"))
         box.setText(body)
         go = box.addButton(tr("回滚"), QtWidgets.QMessageBox.AcceptRole)
-        box.addButton(tr("先不滚"), QtWidgets.QMessageBox.RejectRole)
+        cancel = box.addButton(tr("先不滚"), QtWidgets.QMessageBox.RejectRole)
+        set_button_kind(go, "danger")
+        set_button_kind(cancel, "neutral")
+        apply_button_styles(box, theme_for(self))
         box.setDefaultButton(box.buttons()[-1])          # 默认落在「先不滚」,回车不会误回滚
         box.exec()
         return box.clickedButton() is go

@@ -113,6 +113,8 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "🧩 模组清单 {n}": "🧩 Mods {n}",
     "⚙️ config 清单 {n}": "⚙️ Config {n}",
     "📦 其它文件 {n}": "📦 Other files {n}",
+    "每行一个 .jar 文件名（点「添加模组」或直接拖进来）":
+        "One .jar file name per line (use Add mods or drag files here)",
     "【免费声明】本工具完全免费，严禁用于商业用途或转卖。":
         "[Free of charge] This tool is completely free; selling or commercial use is prohibited.",
     "如有任何收费行为，请立即举报。作者不会以任何形式向你收费。":

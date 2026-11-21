@@ -3,6 +3,7 @@
 import sys
 import os
 import threading
+import time
 from pathlib import Path
 
 # 确保 _qt 在路径里
@@ -20,13 +21,18 @@ except ImportError as e:
 from utils.config import load_raw_config, save_raw_config, CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME
 from ui.qt_main.pack_warning import palette as palette_warn
+from ui.qt_main import look
+from ui.qt_main.switch_row import SwitchRow
+from ui.qt_main.main_tabs import MainTabs, _Bar as _TabBarTypes
+from ui.qt_main.bottom_bar import BottomBar
+from ui.qt_big_view import _SmoothWheel
 from utils import i18n
 from utils import fx
 from ui.qt_win import fit_window
 from utils.i18n import tr, trp
 
 
-class ListEdit(QtWidgets.QTextEdit):
+class ListEdit(_SmoothWheel, QtWidgets.QTextEdit):
     """清单文本框:拖进文件/文件夹时不插入文字,而是交给 on_files(paths) 处理。
 
     HANDOFF 里记的「Qt 窗口一拖就崩」是 Tk+Qt 同进程时的病(OLE 回调绕过 Tk 的
@@ -47,6 +53,12 @@ class ListEdit(QtWidgets.QTextEdit):
         self._last = ""
         self._restoring = False
         self.textChanged.connect(self._snapshot)
+
+    def wheel_px(self) -> float:
+        try:
+            return max(16.0, float(self.fontMetrics().lineSpacing())) * 3.0
+        except Exception:
+            return 48.0
 
     UNDO_LIMIT = 200
 
@@ -156,70 +168,116 @@ class ListEdit(QtWidgets.QTextEdit):
         super().insertFromMimeData(source)
 
 
-class LogEdit(QtWidgets.QTextEdit):
+class LogEdit(_SmoothWheel, QtWidgets.QTextEdit):
     """执行日志框:双击某一行时把那一行的块(QTextBlock)交给 on_double_click。"""
 
     def __init__(self, on_double_click=None, parent=None):
         super().__init__(parent)
         self._on_dbl = on_double_click
 
-    def mouseDoubleClickEvent(self, e):
-        if self._on_dbl is not None:
-            try:
-                blk = self.cursorForPosition(e.position().toPoint()).block()
-                self._on_dbl(blk)
-                return
-            except Exception:
-                pass
-        super().mouseDoubleClickEvent(e)
+    def wheel_px(self) -> float:
+        try:
+            return max(16.0, float(self.fontMetrics().lineSpacing())) * 3.0
+        except Exception:
+            return 48.0
+
+    def _dispatch_double_click(self, point):
+        """Dispatch viewport double-clicks to the log locator."""
+        if self._on_dbl is None:
+            return False
+        try:
+            block = self.cursorForPosition(point).block()
+            self._on_dbl(block)
+            return True
+        except Exception:
+            return False
+
+    def event(self, event):
+        # QTest (and some platform styles) deliver the double-click to the
+        # scroll-area widget itself instead of its viewport child.
+        if event.type() == QtCore.QEvent.MouseButtonDblClick and \
+                event.button() == QtCore.Qt.LeftButton:
+            point = self.viewport().mapFrom(self, event.position().toPoint())
+            if self._dispatch_double_click(point):
+                event.accept()
+                return True
+        return super().event(event)
+
+    def viewportEvent(self, event):
+        # QTextEdit receives mouse events through its viewport child.  Handling
+        # this here keeps QTest and real clicks on the same path.
+        if event.type() == QtCore.QEvent.MouseButtonDblClick and \
+                event.button() == QtCore.Qt.LeftButton and \
+                self._dispatch_double_click(event.position().toPoint()):
+            event.accept()
+            return True
+        return super().viewportEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton and \
+                self._dispatch_double_click(event.position().toPoint()):
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
-# 动作按钮的语义配色：深色主题下全局 QSS 给的是灰底，跟"禁用态"几乎一个样，
-# 用户会以为按钮点不动。这里按用途给一支颜色（白字，深浅两套主题都够对比）。
-# 键→色：c1 常态 / c2 悬停 / 按下自动再压暗 18%。
-_ACTION_COLORS = {
-    "add":     ("#2f9e44", "#37b34e"),   # 添加 / 导入文件
-    "import":  ("#6f42c1", "#7d52cf"),   # 从变更日志导入
-    "scan":    ("#0f7f96", "#1494ae"),   # 扫描差异 / 检查是否存在
-    "view":    ("#2f7fd1", "#3d8ee0"),   # 放大查看
-    "open":    ("#3d7a8c", "#4a8c9f"),   # 打开文件夹 / 打开页面
-    "clear":   ("#c62828", "#d93b3b"),   # 清空（破坏性）
-    "warn":    ("#d98218", "#e69225"),   # 定位错误
-    "history": ("#7a4fd0", "#8a5fe0"),   # 查看历史
-    "tool":    ("#455a75", "#52688a"),   # 工具类（界面按钮/设置）
-}
+class EmptyHint(QtWidgets.QLabel):
+    """Tk-style in-place hint that disappears as soon as a list has content."""
 
+    def __init__(self, editor, text, theme):
+        super().__init__(text, editor.viewport())
+        self.editor = editor
+        self.setWordWrap(True)
+        self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._editor_viewport = editor.viewport()
+        self._editor_viewport.installEventFilter(self)
+        editor.textChanged.connect(self.refresh)
+        self.set_theme(theme)
+        self._position()
+        self.refresh()
 
+    def set_theme(self, theme):
+        self.setStyleSheet("color: %s; background: transparent; font-size: 9pt;" %
+                           theme.get("muted_fg", "#888"))
+
+    def _position(self):
+        try:
+            self.setGeometry(self._editor_viewport.rect().adjusted(10, 8, -10, -8))
+        except RuntimeError:
+            pass
+
+    def refresh(self):
+        self.setVisible(not bool(self.editor.toPlainText().strip()))
+
+    def eventFilter(self, watched, event):
+        if watched is self._editor_viewport and event.type() == QtCore.QEvent.Resize:
+            self._position()
+        return super().eventFilter(watched, event)
+
+# 动作按钮的语义色:渐变按钮的色值、圆角、悬停/禁用规则都在 look.py(取自 Tk 的
+# create_gradient_button)。这里只负责把「按钮 key」映射到语义色。
 def _action_kind(key):
-    """按钮 key → 颜色种类（ui/qt_main/buttons.py 里那套 key）。"""
+    """按钮 key → 语义色(ui/qt_main/buttons.py 那套 key)。认不出来返回 None。"""
     if key.startswith("add_"):
         return "add"
     if key.startswith("clear_"):
-        return "clear"
-    if key.startswith("check_") or key.startswith("scan"):
-        return "scan"
+        return "danger"
+    if key.startswith("check_"):
+        return "neutral"                 # Tk:检查存在是蓝色(_BTN_NEUTRAL)
+    if key.startswith("scan"):
+        return "add"
     if "magnify" in key:
-        return "view"
+        return "neutral"
     if key == "changelog":
-        return "import"
+        return "add"
+    if key in ("browse_source", "browse_target", "copy_target"):
+        return "neutral"
+    if key in ("log_big", "log_open", "history"):
+        return "neutral"
+    if key in ("log_clear", "fail_locate"):
+        return "danger"
     return None
-
-
-def _darken(hex_color, k=0.18):
-    c = QtGui.QColor(hex_color)
-    return QtGui.QColor(int(c.red() * (1 - k)), int(c.green() * (1 - k)),
-                        int(c.blue() * (1 - k))).name()
-
-
-def _action_qss(kind):
-    c1, c2 = _ACTION_COLORS[kind]
-    return ("QPushButton{background:%s;color:#ffffff;border:none;border-radius:6px;"
-            "padding:6px 14px;min-height:24px;}"
-            "QPushButton:hover{background:%s;}"
-            "QPushButton:pressed{background:%s;}"
-            # 真·禁用态：压成中性灰 + 暗字，和彩色按钮一眼能分开
-            "QPushButton:disabled{background:#59636e;color:#c6ccd2;}"
-            % (c1, c2, _darken(c1)))
 
 
 class QtMainWindow(QtWidgets.QMainWindow):
@@ -245,7 +303,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         # 信号的接收者是 self(主线程的 QObject),所以默认 AutoConnection 会排队到主线程
         self._scan_done.connect(self._show_diff_result)
         self._scan_failed.connect(self._on_scan_failed)
-        fit_window(self, 900, 680, 1000, 760)
+        fit_window(self, 720, 680, 1000, 760)
+        self._base_minimum_width = self.minimumWidth()
 
         # 加载配置
         # 老配置没有 fx_level，from_config() 原样返回；有的话按档位派生三个旧键
@@ -314,104 +373,48 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
         # 启动时主动检测一次实例环境(构造函数setText不触发textChanged,
         # 所以从配置载入的源路径不会自动触发检测,这里补一次)
-        if self.source_path:
-            self._detect_env()
         self._update_world_status()
         # 同理:路径状态图标、config 里文件夹条目补末尾 /(内容载入后的安全时机)
         self._validate_paths()
         self._mark_config_folders()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "log_text"):
+            self._resize_log_area()
+            self._update_log_hint()
+
     def _apply_theme(self):
-        """应用主题色到窗口调色板。"""
+        """应用主题:全局样式表(look.build_qss)+ 标题栏深浅色。"""
         try:
-            self.setStyleSheet(f"""
-                QMainWindow {{
-                    background: {self.theme.get("bg", "#f0f0f0")};
-                    color: {self.theme.get("fg", "#000")};
-                }}
-                QTextEdit {{
-                    background: {self.theme.get("text_bg", "#fff")};
-                    color: {self.theme.get("text_fg", "#000")};
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-radius: 4px;
-                    padding: 4px;
-                }}
-                QLineEdit {{
-                    background: {self.theme.get("entry_bg", "#fff")};
-                    color: {self.theme.get("entry_fg", "#000")};
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-radius: 4px;
-                    padding: 4px;
-                }}
-                QPushButton {{
-                    background: {self.theme.get("button_bg", "#e0e0e0")};
-                    color: {self.theme.get("button_fg", "#000")};
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-radius: 4px;
-                    padding: 6px 12px;
-                    min-height: 24px;
-                }}
-                QPushButton:hover {{
-                    background: {self.theme.get("hover_bg", "#e9eef5")};
-                }}
-                QLabel {{
-                    color: {self.theme.get("fg", "#000")};
-                }}
-                QGroupBox {{
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-radius: 6px;
-                    margin-top: 10px;
-                    padding-top: 8px;
-                    font-weight: bold;
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    subcontrol-position: top left;
-                    left: 10px;
-                    padding: 0 4px;
-                    color: {self.theme.get("accent_fg", self.theme.get("fg", "#000"))};
-                }}
-                QTabWidget::pane {{
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-radius: 4px;
-                    top: -1px;
-                }}
-                QTabBar::tab {{
-                    background: {self.theme.get("button_bg", "#e0e0e0")};
-                    color: {self.theme.get("fg", "#000")};
-                    padding: 6px 14px;
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-bottom: none;
-                    border-top-left-radius: 4px;
-                    border-top-right-radius: 4px;
-                }}
-                QTabBar::tab:selected {{
-                    background: {self.theme.get("text_bg", "#fff")};
-                    color: {self.theme.get("accent_fg", self.theme.get("fg", "#000"))};
-                }}
-                QProgressBar {{
-                    border: 1px solid {self.theme.get("muted_fg", "#888")};
-                    border-radius: 4px;
-                    text-align: center;
-                    background: {self.theme.get("text_bg", "#fff")};
-                    color: {self.theme.get("fg", "#000")};
-                }}
-                QProgressBar::chunk {{
-                    background: {self.theme.get("accent_fg", "#4a90d9")};
-                    border-radius: 3px;
-                }}
-                QCheckBox {{
-                    color: {self.theme.get("fg", "#000")};
-                    spacing: 6px;
-                }}
-            """)
+            self.setStyleSheet(look.build_qss(self.theme))
         except Exception as e:
             print(f"[Qt主窗口] 应用主题失败: {e}")
+        if self.isVisible():
+            self._style_titlebar()
+        for sec in self.findChildren(look.SectionFrame):
+            sec.set_theme(self.theme)
+        if getattr(self, "warning_banner", None) is not None:
+            self.warning_banner.set_theme(self.theme)
+
+    def _style_titlebar(self):
+        """Win11 标题栏跟随主题(同 Tk 的 style_window_hwnd)。窗口还没建好 winId 时静默跳过。"""
+        try:
+            from ui.qt_main.winstyle import style_window_hwnd
+            style_window_hwnd(int(self.winId()), self.theme is DARK_THEME)
+        except Exception:
+            pass
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_titlebar_done", False):
+            self._titlebar_done = True          # 第一次显示时 HWND 才稳定;之后切主题再刷
+            self._style_titlebar()
 
     def _theme_btn_label(self):
         """主题按钮文案:显示“点击会切到哪个主题”。"""
         is_dark = self.theme is DARK_THEME
-        return tr("☀️ 浅色") if is_dark else tr("🌙 深色")
+        return "☀" if is_dark else "🌙"          # 图标即可,提示文字在 tooltip 里(同 Tk)
 
     def _toggle_theme(self):
         """浅/深主题切换:换 theme → 重套样式表 → 刷新手动上色的控件 → 存配置。"""
@@ -452,14 +455,34 @@ class QtMainWindow(QtWidgets.QMainWindow):
             ensure_app(self.theme)
         except Exception:
             pass
-        for _v in list(getattr(self, "_big_views", {}) or {}):
+        for _v in list((getattr(self, "_big_views", {}) or {}).values()):
             _fn = getattr(_v, "set_theme", None)
             if callable(_fn):
                 try:
                     _fn(self.theme)
                 except Exception:
                     pass
-        for fn in (self._detect_env, self._update_world_status, self._refresh_msg_badge,
+        diff_view = getattr(self, "_diff_view", None)
+        _fn = getattr(diff_view, "set_theme", None)
+        if callable(_fn):
+            try:
+                _fn(self.theme)
+            except Exception:
+                pass
+        if hasattr(self, "tabs"):
+            self.tabs.set_theme(self.theme)
+        for hint in getattr(self, "_empty_hints", ()):
+            hint.set_theme(self.theme)
+        overview = getattr(self, "log_overview", None)
+        if overview is not None:
+            overview.set_theme(self.theme)
+        if getattr(self, "bottom_bar", None) is not None:
+            self.bottom_bar.set_theme(self.theme)
+        for _sw in (getattr(self, "edit_switch", None), getattr(self, "dry_run_check", None),
+                    getattr(self, "overwrite_check", None)):
+            if _sw is not None:
+                _sw.set_theme(self.theme)
+        for fn in (self._update_world_status, self._refresh_msg_badge,
                    self._repaint_path_status, self._repaint_list_labels,
                    self._repaint_conflict_row):
             try:
@@ -598,8 +621,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         # 4) 历史份数:走 history_store.set_limit(它自己写配置并夹紧范围)
         try:
             from utils import history_store
-            history_store.set_limit(int(vals.get("history_limit",
-                                                 history_store.DEFAULT_LIMIT)))
+            self.config["history_limit"] = history_store.set_limit(
+                int(vals.get("history_limit", history_store.DEFAULT_LIMIT)))
         except Exception:
             pass
 
@@ -619,40 +642,54 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
     def _build_ui(self):
         """构建整体布局(第一阶段简化版:路径+单个清单+底栏)。"""
+        self._empty_hints = []
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        # === 顶部工具条(设置 / 主题切换) ===
+        # === 顶部工具条:「界面按钮」(Qt 独有入口) + 设置⚙ + 主题☀/🌙(右对齐,同 Tk 顶栏) ===
         topbar = QtWidgets.QHBoxLayout()
+        topbar.setContentsMargins(0, 0, 0, 0)
+        topbar.setSpacing(6)
         topbar.addStretch()
         self.buttons_btn = QtWidgets.QPushButton(tr("🔘 界面按钮"))
-        self.buttons_btn.setStyleSheet(_action_qss("tool"))
         self.buttons_btn.setToolTip(tr("显示/隐藏、调整各区按钮的顺序"))
         self.buttons_btn.clicked.connect(self._open_button_prefs)
+        look.style_button(self.buttons_btn, "tool")
         topbar.addWidget(self.buttons_btn)
-        self.settings_btn = QtWidgets.QPushButton(tr("⚙️ 设置"))
-        self.settings_btn.setStyleSheet(_action_qss("tool"))
+        self.settings_btn = QtWidgets.QPushButton("⚙")
+        self.settings_btn.setToolTip(tr("设置"))
+        self.settings_btn.setFixedSize(34, 34)
         self.settings_btn.clicked.connect(self._open_settings)
+        look.style_button(self.settings_btn, "tool", icon_only=True)
         topbar.addWidget(self.settings_btn)
-        # 按钮文案显示“点了会变成什么”:浅色主题时提示切到深色,反之亦然
+        # 主题按钮只放图标(同 Tk);悬停提示写「点了会变成什么」
         self.theme_btn = QtWidgets.QPushButton(self._theme_btn_label())
+        self.theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
+        self.theme_btn.setFixedSize(34, 34)
         self.theme_btn.clicked.connect(self._toggle_theme)
+        look.style_button(self.theme_btn, "theme", icon_only=True)
         topbar.addWidget(self.theme_btn)
         layout.addLayout(topbar)
 
-        # === 路径区 ===
-        paths_group = QtWidgets.QGroupBox(tr("路径设置"))
-        paths_layout = QtWidgets.QFormLayout(paths_group)
+        # === 红色免费声明条(Tk 顶部那条,RIDGE 凸边) ===
+        self.warning_banner = look.WarningBanner(
+            tr("⚠️ 本工具完全免费，请勿上当受骗！如遇收费行为，请立即举报。⚠️"), self.theme)
+        layout.addWidget(self.warning_banner)
 
+        # === 路径区:三张卡片(旧版 / 新版 / 存档名),和 Tk 的三个 LabelFrame 一一对应 ===
         # 源路径
-        src_row = QtWidgets.QHBoxLayout()
+        src_card = look.SectionFrame(tr("📤 旧版整合包（要迁移出去的源）"), self.theme)
+        src_row = QtWidgets.QHBoxLayout(src_card)
+        src_row.setContentsMargins(0, 0, 0, 0)
+        src_row.setSpacing(8)
         self.source_edit = QtWidgets.QLineEdit(self.source_path)
+        self.source_edit.setObjectName("pathEdit")
         self.source_edit.textChanged.connect(self._on_source_changed)
-        src_row.addWidget(self.source_edit)
-        self.src_browse_btn = QtWidgets.QPushButton(tr("浏览"))
+        src_row.addWidget(self.source_edit, 1)
+        self.src_browse_btn = QtWidgets.QPushButton(tr("📂 浏览..."))
         self.src_browse_btn.clicked.connect(self._browse_source)
         copy_btn = QtWidgets.QPushButton(tr("← 填充路径"))
         copy_btn.setToolTip(tr("把目标路径复制到源路径"))
@@ -660,57 +697,71 @@ class QtMainWindow(QtWidgets.QMainWindow):
         # 两颗按钮单独一个子布局:「界面按钮」重排时只动这一排,不会把输入框和状态图标摘掉
         src_btns = QtWidgets.QHBoxLayout()
         src_btns.setContentsMargins(0, 0, 0, 0)
+        src_btns.setSpacing(8)
         src_row.addLayout(src_btns)
         self._register_button_row("path", src_btns, [
             ("browse_source", self.src_browse_btn), ("copy_target", copy_btn)])
         self.source_status = self._make_path_status()
         src_row.addWidget(self.source_status)
+        self._source_row_layout = src_row
         self._path_btns = {"browse_source": self.src_browse_btn, "copy_target": copy_btn}
-        paths_layout.addRow(tr("源实例:"), src_row)
+        layout.addWidget(src_card)
 
         # 目标路径
-        tgt_row = QtWidgets.QHBoxLayout()
+        tgt_card = look.SectionFrame(tr("⬇ 新版整合包（迁移目的地）"), self.theme)
+        tgt_row = QtWidgets.QHBoxLayout(tgt_card)
+        tgt_row.setContentsMargins(0, 0, 0, 0)
+        tgt_row.setSpacing(8)
         self.target_edit = QtWidgets.QLineEdit(self.target_path)
+        self.target_edit.setObjectName("pathEdit")
         self.target_edit.textChanged.connect(self._on_target_changed)
-        tgt_row.addWidget(self.target_edit)
-        self.tgt_browse_btn = QtWidgets.QPushButton(tr("浏览"))
+        tgt_row.addWidget(self.target_edit, 1)
+        self.tgt_browse_btn = QtWidgets.QPushButton(tr("📂 浏览..."))
         self.tgt_browse_btn.clicked.connect(self._browse_target)
         tgt_btns = QtWidgets.QHBoxLayout()
         tgt_btns.setContentsMargins(0, 0, 0, 0)
+        tgt_btns.setSpacing(8)
         tgt_row.addLayout(tgt_btns)
         self._register_button_row("path_target", tgt_btns, [
             ("browse_target", self.tgt_browse_btn)])
         self.target_status = self._make_path_status()
         tgt_row.addWidget(self.target_status)
-        paths_layout.addRow(tr("目标实例:"), tgt_row)
+        self._target_row_layout = tgt_row
+        layout.addWidget(tgt_card)
 
-        # 存档名 + 实时"存在/不存在"状态
-        world_row = QtWidgets.QHBoxLayout()
+        # 存档名 + 实时"存在/不存在"状态(同 Tk:短输入框 + 例子 + 状态,贴着左边)
+        world_card = look.SectionFrame(tr("存档文件夹名称"), self.theme)
+        world_row = QtWidgets.QHBoxLayout(world_card)
+        world_row.setContentsMargins(0, 0, 0, 0)
+        world_row.setSpacing(8)
         self.world_edit = QtWidgets.QLineEdit(self.world_name)
+        self.world_edit.setObjectName("worldEdit")
+        self.world_edit.setFixedWidth(230)
         self.world_edit.textChanged.connect(self._on_world_changed)
         world_row.addWidget(self.world_edit)
+        world_row.addWidget(QtWidgets.QLabel(tr("（例如：新的世界）")))
         self.world_status = QtWidgets.QLabel("")
         self.world_status.setMinimumWidth(140)
+        world_row.addSpacing(4)
         world_row.addWidget(self.world_status)
-        paths_layout.addRow(tr("存档名称:"), world_row)
+        world_row.addStretch(1)
+        layout.addWidget(world_card)
 
-        # 实例状态(简化:只显示文字,不做检测)
-        self.env_label = QtWidgets.QLabel(tr("未检测"))
-        self.env_label.setStyleSheet(f"color: {self.theme.get('muted_fg', '#888')};")
-        paths_layout.addRow(tr("实例环境:"), self.env_label)
-
-        layout.addWidget(paths_group)
+        # === 清单区卡片:编辑开关 + 更新提醒 + 三个页签都在这一张卡片里(同 Tk 的 LabelFrame) ===
+        self.list_area = look.SectionFrame(tr("清单（三个页共用一个区，点标签切换）"), self.theme)
+        area_lay = QtWidgets.QVBoxLayout(self.list_area)
+        area_lay.setContentsMargins(0, 0, 0, 0)
+        area_lay.setSpacing(4)
+        _page_layout = layout
+        layout = area_lay
 
         # === 主界面编辑开关(对三个清单都生效,所以放在页外) ===
-        self.edit_switch = QtWidgets.QCheckBox(tr("主界面编辑"))
-        self.edit_switch.setToolTip(tr("直接改动清单文字 · 谨慎使用"))
+        # 卡片形态开关(同 Tk 的 SwitchRow):标题 + 副标题,开着时整条往强调色染并换成警示语
+        self.edit_switch = SwitchRow(self.theme, tr("主界面编辑"),
+                                     tr("直接改动清单文字 · 谨慎使用"),
+                                     warn_desc=tr("⚠ 已开启"))
         self.edit_switch.setChecked(self.edit_enabled)
-        self.edit_desc = QtWidgets.QLabel(tr("直接改动清单文字 · 谨慎使用"))
-        self.edit_desc.setStyleSheet(f"color: {self.theme.get('muted_fg', '#888')};")
-        edit_row = QtWidgets.QHBoxLayout()
-        edit_row.addWidget(self.edit_switch)
-        edit_row.addWidget(self.edit_desc, 1)
-        layout.addLayout(edit_row)
+        layout.addWidget(self.edit_switch)
         self.edit_switch.toggled.connect(self._on_edit_switch)
 
         # === 整合包更新提醒(只能收起,不能关;收起后入口是页签行右端的 ⚠ 药丸) ===
@@ -723,60 +774,66 @@ class QtMainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.pack_warning_bar)
 
         # === 三个清单页(模组 / config / 其它文件) ===
-        self.tabs = QtWidgets.QTabWidget()
+        self.tabs = MainTabs(self.theme)
 
         # 模组清单
         self.mod_text = ListEdit(on_files=self._drop_mods)
-        self.mod_text.setPlaceholderText(tr("每行一个 .jar 文件名(可拖入 jar 或 mods 文件夹)"))
+        self.mod_text.setObjectName("modListEdit")
+        self.mod_text.setPlaceholderText(
+            tr("每行一个 .jar 文件名（点「添加模组」或直接拖进来）"))
         self.mod_text.textChanged.connect(self._refresh_badges)
         mod_page = self._make_list_page(
             self.mod_text,
-            [("add_mods", tr("➕ 添加模组"), self._add_mods),
-             ("changelog", tr("📥 从变更日志导入"), self._import_changelog),
+            [("mod_magnify", tr("📂 放大查看"), lambda: self._open_big_view("mod")),
+             ("add_mods", tr("➕ 添加模组"), self._add_mods),
              ("scan_diff", tr("🔍 扫描差异"), self._scan_diff),
-             ("mod_magnify", tr("📂 放大查看"), lambda: self._open_big_view("mod")),
-             ("clear_mods", tr("🗑️ 清空"), lambda: self._clear_list(self.mod_text)),
-             ("check_mods", tr("🔎 检查是否存在"), lambda: self._check_list("mods"))],
+             ("clear_mods", tr("🗑️ 清空清单"), lambda: self._clear_list(self.mod_text)),
+             ("check_mods", tr("🔎 检查存在"), lambda: self._check_list("mods")),
+             ("changelog", tr("📥 从变更日志导入"), self._import_changelog)],
             group="mods",
             hint=tr("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，"
                     "或直接把 jar / mods 文件夹拖进来）。同名匹配不区分大小写，改过名的也能对上。"))
-        self._mod_tab_index = self.tabs.addTab(mod_page, tr("模组清单"))
+        self._mod_tab_index = self.tabs.addTab(mod_page, tr("🧩 模组清单"))
 
         # config清单
         self.config_text = ListEdit(on_files=lambda ps: self._add_paths_to("config", ps))
-        self.config_text.setPlaceholderText(tr("每行一个 config 下的相对路径(可拖入)"))
+        self.config_text.setObjectName("configListEdit")
+        self.config_text.setPlaceholderText(
+            tr("每行一个相对路径，格式: config/<路径>（可从整合包复制，或点「添加配置」）"))
         self.config_text.textChanged.connect(self._refresh_badges)
         config_page = self._make_list_page(
             self.config_text,
-            [("add_cfg_dir", tr("📁 添加文件夹"), self._add_config_dir),
+            [("cfg_magnify", tr("📂 放大查看"), lambda: self._open_big_view("config")),
+             ("add_cfg_dir", tr("📁 添加文件夹"), self._add_config_dir),
              ("add_cfg_file", tr("📄 添加文件"), self._add_config_files),
-             ("cfg_magnify", tr("📂 放大查看"), lambda: self._open_big_view("config")),
-             ("clear_cfg", tr("🗑️ 清空"), lambda: self._clear_list(self.config_text)),
-             ("check_cfg", tr("🔎 检查是否存在"), lambda: self._check_list("config"))],
+             ("clear_cfg", tr("🗑️ 清空 config 清单"), lambda: self._clear_list(self.config_text)),
+             ("check_cfg", tr("🔎 检查存在"), lambda: self._check_list("config"))],
             group="config",
             hint=tr("每行一个相对路径，「相对源实例的 config 目录」（例：jei/jei.toml、sodium-options.json）。"),
             warning=tr("⚠️ 注意：复制将直接覆盖目标 config 中的同名文件/文件夹，请谨慎操作！"),
             legend=True)
-        self._config_tab_index = self.tabs.addTab(config_page, tr("config 清单"))
+        self._config_tab_index = self.tabs.addTab(config_page, tr("⚙️ config 清单"))
 
         # 其它文件清单
         self.extra_text = ListEdit(on_files=lambda ps: self._add_paths_to("extra", ps))
-        self.extra_text.setPlaceholderText(tr("每行一个相对整合包根目录的路径(文件或目录,可拖入)"))
+        self.extra_text.setObjectName("extraListEdit")
+        self.extra_text.setPlaceholderText(
+            tr("每行一个相对路径，如 options.txt（可从整合包复制，或点「添加文件」）"))
         self.extra_text.textChanged.connect(self._refresh_badges)
         extra_page = self._make_list_page(
             self.extra_text,
-            [("add_extra_options", tr("＋ options.txt"), lambda: self._add_extra_rel("options.txt")),
-             ("add_extra_preset", tr("＋ 常用目录 ▾"), self._open_extra_preset_menu),
-             ("add_extra_dir", tr("📁 添加文件夹"), self._add_extra_dir),
+            [("add_extra_dir", tr("📁 添加文件夹"), self._add_extra_dir),
              ("add_extra_file", tr("📄 添加文件"), self._add_extra_files),
-             ("clear_extra", tr("🗑️ 清空"), lambda: self._clear_list(self.extra_text)),
-             ("check_extra", tr("🔎 检查是否存在"), lambda: self._check_list("extra"))],
+             ("add_extra_options", tr("＋ options.txt"), lambda: self._add_extra_rel("options.txt")),
+             ("add_extra_preset", tr("＋ 常用目录 ▾"), self._open_extra_preset_menu),
+             ("clear_extra", tr("🗑️ 清空清单"), lambda: self._clear_list(self.extra_text)),
+             ("check_extra", tr("🔎 检查存在"), lambda: self._check_list("extra"))],
             group="extra",
             hint=tr("每行一个路径，「相对整合包根目录」（文件或文件夹；文件夹会递归复制）。"
                     "不会自动带任何东西 —— 想要的自己加。"
                     "例：options.txt   servers.dat   shaderpacks/   resourcepacks/   kubejs/"),
             top_widget=self._make_conflict_row())
-        self._extra_tab_index = self.tabs.addTab(extra_page, tr("其它文件"))
+        self._extra_tab_index = self.tabs.addTab(extra_page, tr("📦 其它文件"))
 
         # 恢复上次停留的页签
         try:
@@ -786,90 +843,112 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         layout.addWidget(self.tabs, stretch=3)
+        layout = _page_layout
+        layout.addWidget(self.list_area, stretch=3)
 
-        self.pack_pill = QtWidgets.QPushButton(tr("⚠ 更新提醒"))
-        self.pack_pill.setCursor(QtCore.Qt.PointingHandCursor)
-        self.pack_pill.setFlat(True)
-        self.pack_pill.clicked.connect(self.pack_warning_bar.open_dialog)
-        # 页签行右端的两颗药丸(同 Tk 版 _refresh_tail_buttons):⚠ 更新提醒 + 应用上次记录 / 还原到应用前
-        self.apply_pill = QtWidgets.QPushButton(tr("🔁 应用上次记录"))
-        self.apply_pill.setCursor(QtCore.Qt.PointingHandCursor)
-        self.apply_pill.setFlat(True)
-        self.apply_pill.clicked.connect(self._on_apply_pill)
-        corner = QtWidgets.QWidget()
-        corner_lay = QtWidgets.QHBoxLayout(corner)
-        corner_lay.setContentsMargins(0, 0, 0, 0)
-        corner_lay.setSpacing(6)
-        corner_lay.addWidget(self.pack_pill)
-        corner_lay.addWidget(self.apply_pill)
-        self._tab_corner = corner
-        self.tabs.setCornerWidget(corner, QtCore.Qt.TopRightCorner)
+        # 页签行右端的两颗药丸(同 Tk 版 _refresh_tail_buttons):⚠ 更新提醒 + 应用上次记录 / 还原到应用前。
+        # 和 Tk 一样画在页签条上、跟标签同款药丸,**按住 1 秒才触发**(防误点)。
+        self.pack_pill = self.tabs.add_tail("pack", "warn", tr("⚠ 更新提醒"),
+                                            self.pack_warning_bar.open_dialog, visible=False)
+        self.apply_pill = self.tabs.add_tail("apply", "apply", tr("🔁 应用上次记录"),
+                                             self._on_apply_pill)
         self._apply_undo = None               # 「应用记录」前的界面快照;有值时药丸变成「还原到应用前」
         self._layout_pack_warning()
         self._refresh_apply_pill()
 
-        # === 执行日志 ===
-        log_group = QtWidgets.QGroupBox(tr("执行日志"))
+        # === 执行日志(结构同 Tk 的 _create_log_widgets:工具栏在上、日志在中、脚注行在下) ===
+        log_group = look.SectionFrame(tr("执行日志"), self.theme)
         log_layout = QtWidgets.QVBoxLayout(log_group)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setSpacing(5)
 
-        self.log_text = LogEdit(on_double_click=self._locate_from_log_line)
-        self.log_text.setReadOnly(True)
-        self.log_text.setPlaceholderText(tr("操作日志将在此显示(双击错误/警告行可定位到清单条目)"))
-        log_layout.addWidget(self.log_text)
-
-        # 完整日志写盘失败时才出现的一行红字(平时隐藏),见 _refresh_log_status
-        self.log_status_label = QtWidgets.QLabel("")
-        self.log_status_label.setWordWrap(True)
-        self.log_status_label.setProperty("_role", "log_status")
-        self.log_status_label.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')};")
-        self.log_status_label.setVisible(False)
-        log_layout.addWidget(self.log_status_label)
-
-        log_tools = QtWidgets.QHBoxLayout()
-        big_log_btn = QtWidgets.QPushButton(tr("📂 放大查看（日志）"))
+        big_log_btn = QtWidgets.QPushButton(tr("📂 放大查看"))
         big_log_btn.clicked.connect(self._open_big_log_view)
         open_folder_btn = QtWidgets.QPushButton(tr("📂 打开日志文件夹"))
         open_folder_btn.clicked.connect(self._open_log_folder)
         self.fail_btn = QtWidgets.QPushButton(tr("📍 定位错误"))
         self.fail_btn.setEnabled(False)          # 没有出错条目时置灰(同 Tk 版)
         self.fail_btn.clicked.connect(self._goto_next_fail)
-        clear_log = QtWidgets.QPushButton(tr("🧹 清空日志"))
+        clear_log = QtWidgets.QPushButton(tr("🗑️ 清空日志"))
         clear_log.clicked.connect(self._clear_log)
-        big_log_btn.setStyleSheet(_action_qss("view"))
-        open_folder_btn.setStyleSheet(_action_qss("open"))
-        self.fail_btn.setStyleSheet(_action_qss("warn"))
-        clear_log.setStyleSheet(_action_qss("clear"))
-        for _b in (big_log_btn, open_folder_btn, self.fail_btn, clear_log):
-            _b.setCursor(QtCore.Qt.PointingHandCursor)
+        look.style_button(big_log_btn, "neutral")
+        look.style_button(open_folder_btn, "neutral")
+        look.style_button(self.fail_btn, "danger")          # Tk:定位错误是红色,没有错误时自动置灰
+        look.style_button(clear_log, "danger")
+        # 工具栏:左边 放大查看 + 💡提示 + 定位错误,右边 打开日志文件夹 + 清空日志(同 Tk 的 pack 顺序)
+        log_tools = QtWidgets.QHBoxLayout()
+        log_tools.setContentsMargins(0, 0, 0, 0)
+        log_tools.setSpacing(8)
+        self.log_hint_label = QtWidgets.QLabel(tr("💡 双击日志行可定位到清单里的那条"))
+        self.log_hint_label.setProperty("_role", "list_hint")
+        self.log_hint_label.setStyleSheet(f"color: {self.theme.get('muted_fg', '#888')};")
+        self._log_hint_long = tr("💡 双击日志行可定位到清单里的那条")
+        self._log_hint_short = tr("💡 双击日志行可定位")
         log_layout.addLayout(log_tools)
         self._register_button_row("log", log_tools,
                                   [("log_big", big_log_btn),
-                                   ("log_open", open_folder_btn),
                                    ("fail_locate", self.fail_btn),
+                                   ("log_open", open_folder_btn),
                                    ("log_clear", clear_log)],
-                                  stretch_end=True)
+                                  after={"log_big": self.log_hint_label},
+                                  spring_before="log_open")
         self._failed_items = []     # [(页索引, 条目名)]
         self._fail_cursor = 0
 
-        layout.addWidget(log_group, stretch=2)
+        self.log_text = LogEdit(on_double_click=self._locate_from_log_line)
+        self.log_text.setObjectName("logEdit")
+        self.log_text.setReadOnly(True)
+        self.log_text.document().setMaximumBlockCount(5001)
+        log_row = QtWidgets.QWidget()
+        log_row_layout = QtWidgets.QHBoxLayout(log_row)
+        log_row_layout.setContentsMargins(0, 0, 0, 0)
+        log_row_layout.setSpacing(4)
+        log_row_layout.addWidget(self.log_text, 1)
+        from ui.qt_main.log_overview import LogOverview
+        self.log_overview = LogOverview(self.log_text, self.theme, log_row)
+        log_row_layout.addWidget(self.log_overview)
+        log_layout.addWidget(log_row, 1)
+
+        # 脚注行(Tk 的 status_row):平时是空的,完整日志写盘失败时才写红字;右边常驻「打开完整日志」
+        foot = QtWidgets.QHBoxLayout()
+        foot.setContentsMargins(8, 0, 8, 0)
+        self.log_status_label = QtWidgets.QLabel("")
+        self.log_status_label.setWordWrap(True)
+        self.log_status_label.setProperty("_role", "log_status")
+        self.log_status_label.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')};")
+        self.log_status_label.setVisible(False)
+        foot.addWidget(self.log_status_label, 1)
+        foot.addStretch(1)
+        self.log_full_btn = QtWidgets.QPushButton(tr("打开完整日志"))
+        self.log_full_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.log_full_btn.clicked.connect(self._open_full_log)
+        look.style_button(self.log_full_btn, "log")      # Tk: create_log_button 的灰蓝 #607d8b→#78909c
+        foot.addWidget(self.log_full_btn)
+        log_layout.addLayout(foot)
+
+        layout.addWidget(log_group)
 
         # === 底栏(开关+按钮) ===
         bottom = QtWidgets.QHBoxLayout()
 
-        self.dry_run_check = QtWidgets.QCheckBox(tr("🧪 模拟运行(不实际复制)"))
+        # 紧凑形态开关(同 Tk 的 dry_run_sw / overwrite_sw):只有小开关 + 一行字,强调色用 switch_on;
+        # 迁移 / 倒计时期间被锁住也不变灰,好让用户仍看得清「现在是不是模拟运行」
+        self.dry_run_check = SwitchRow(self.theme, tr("模拟运行（仅显示操作）"), compact=True,
+                                       accent="switch_on", keep_state_when_disabled=True)
         self.dry_run_check.setChecked(self.dry_run)
         self.dry_run_check.toggled.connect(self._on_dry_run_toggled)
         bottom.addWidget(self.dry_run_check)
+        bottom.addSpacing(20)
 
-        self.overwrite_check = QtWidgets.QCheckBox(tr("覆盖同名模组"))
+        self.overwrite_check = SwitchRow(self.theme, tr("覆盖已存在的模组"), compact=True,
+                                         accent="switch_on", keep_state_when_disabled=True)
         self.overwrite_check.setChecked(self.overwrite_mods)
         self.overwrite_check.toggled.connect(self._on_overwrite_toggled)
         bottom.addWidget(self.overwrite_check)
 
         # 查看历史按钮
-        self.history_btn = QtWidgets.QPushButton(tr("📜 查看历史"))
-        self.history_btn.setStyleSheet(_action_qss("history"))
-        self.history_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.history_btn = QtWidgets.QPushButton(tr("📋 查看历史"))
+        look.style_button(self.history_btn, "neutral")
         self.history_btn.clicked.connect(self._view_history)
 
         # 开始迁移按钮:3D 翻转(正面绿/模拟运行黄,迁移中翻到背面红;手感与 Tk 共用 start_btn_feel)
@@ -889,10 +968,18 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
         layout.addLayout(bottom)
 
-        # === 状态栏:网络连通性(复用 ui/mw_net 的纯函数探测,不消耗 API 配额) ===
-        self.net_label = QtWidgets.QLabel(tr("● 正在检测网络…"))
+        # === 底栏(同 Tk 的 bottom_frame):网络灯 + 迷你延迟折线 + 📌 + 居中声明 + 🔔 ===
+        # 网络连通性复用 ui/mw_net 的纯函数探测,不消耗 API 配额
+        self.bottom_bar = BottomBar(self.theme, tr("本工具完全免费，仅供个人学习交流使用。严禁倒卖或用于商业目的。"))
+        self.net_label = self.bottom_bar.net_label
+        self.net_label.setText(tr("● 正在检测网络…"))
         self.net_label.setStyleSheet(f"color: {self.theme.get('muted_fg', '#888')};")
-        self.statusBar().addPermanentWidget(self.net_label)
+        self.bottom_bar.spark.setToolTip(tr("最近几次探测的连接延迟（双击看完整折线图）"))
+        self.bottom_bar.spark.doubleClicked.connect(self._open_net_chart)
+        self.bottom_bar.pin_btn.setToolTip(tr("在主窗口内显示延迟浮标（点浮标打开曲线图，可拖动）"))
+        self.bottom_bar.pin_btn.clicked.connect(self._toggle_net_float)
+        look.style_button(self.bottom_bar.pin_btn, "pin")
+        layout.addWidget(self.bottom_bar)
 
         # === 消息中心:铃铛 + 右侧停靠面板(和 Tk 版共用 utils.message_store 的存档) ===
         try:
@@ -901,11 +988,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
         except Exception:
             self._msg_store = None
         self._msg_dock = None
-        self.msg_bell = QtWidgets.QToolButton()
-        self.msg_bell.setAutoRaise(True)
-        self.msg_bell.setToolTip(tr("消息中心 (Ctrl+M)"))
+        self.msg_bell = self.bottom_bar.bell
+        self.msg_bell.setToolTip(tr("消息中心：最近的提示消息（Ctrl+M）"))
         self.msg_bell.clicked.connect(self.toggle_message_center)
-        self.statusBar().addPermanentWidget(self.msg_bell)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+M"), self,
                         activated=self.toggle_message_center)
         self._refresh_msg_badge()
@@ -927,6 +1012,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.log(tr("Qt主界面已就绪(第一阶段完整版:迁移已接入)"), "INFO")
         self.log(trp("主题: {0}", self.config.get("theme", "light")), "INFO")
         self._refresh_badges()
+        self._update_window_constraints()
+        self._resize_log_area()
 
     def _make_list_page(self, text_edit, buttons, group=None, hint=None, warning=None,
                         top_widget=None, legend=False):
@@ -953,6 +1040,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
             lab.setProperty("_role", "list_warning")
             lab.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')}; font-weight: bold;")
             v.addWidget(lab)
+        empty_text = text_edit.placeholderText()
+        if empty_text:
+            text_edit.setPlaceholderText("")
+            self._empty_hints.append(EmptyHint(text_edit, empty_text, self.theme))
         if top_widget is not None:
             v.addWidget(top_widget)
         v.addWidget(text_edit)
@@ -1050,7 +1141,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
             b.blockSignals(False)
 
     # ---------------- 可自定义的按钮排(显示/隐藏 + 顺序) ----------------
-    def _register_button_row(self, group, row, buttons, stretch_end=False, stretch_start=False):
+    def _register_button_row(self, group, row, buttons, stretch_end=False, stretch_start=False,
+                             after=None, spring_before=None):
         """建一排按钮并登记;之后 _apply_button_prefs() 会按配置重排这一排。"""
         rows = self.__dict__.setdefault("_btn_rows", {})
         widgets = self.__dict__.setdefault("_btn_widgets", {})
@@ -1060,16 +1152,18 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 key, label, cb = item
                 b = QtWidgets.QPushButton(label)
                 b.clicked.connect(cb)
-                _kind = _action_kind(key)          # 灰底按钮在深色主题里像"禁用"
-                if _kind:
-                    b.setStyleSheet(_action_qss(_kind))
-                    b.setCursor(QtCore.Qt.PointingHandCursor)
+                look.style_button(b, _action_kind(key))
             else:                         # (key, 现成控件)
                 key, b = item
+                if isinstance(b, QtWidgets.QPushButton) and not b.property("kind"):
+                    look.style_button(b, _action_kind(key))
             widgets[key] = b
             keys.append(key)
         rows[group] = {"layout": row, "keys": keys,
-                       "stretch_end": stretch_end, "stretch_start": stretch_start}
+                       "stretch_end": stretch_end, "stretch_start": stretch_start,
+                       # after: {按钮 key: 控件} —— 固定跟在某个按钮后面、不参与显示/隐藏/排序的控件
+                       # (日志工具栏里那句「💡 双击日志行可定位」)。spring_before: 排到这个 key 时先放一个弹簧
+                       "after": dict(after or {}), "spring_before": spring_before}
         self._layout_button_row(group)
 
     def _layout_button_row(self, group):
@@ -1087,16 +1181,79 @@ class QtMainWindow(QtWidgets.QMainWindow):
         ordered += [k for k in info["keys"] if k not in ordered]   # 登记表里没有的兜底
         if info["stretch_start"]:
             row.addStretch()
+        sprung = False
         for k in ordered:
+            if info.get("spring_before") == k and not sprung:
+                row.addStretch()
+                sprung = True
             w = self._btn_widgets[k]
             row.addWidget(w)
             w.setVisible(k not in hidden)
-        if info["stretch_end"]:
+            extra = info.get("after", {}).get(k)
+            if extra is not None:
+                row.addWidget(extra)
+        if info["stretch_end"] and not sprung:
             row.addStretch()
 
     def _apply_button_prefs(self):
         for g in list(getattr(self, "_btn_rows", {})):
             self._layout_button_row(g)
+        self._update_window_constraints()
+        self._update_log_hint()
+
+    def _update_window_constraints(self):
+        """Keep the log controls and path rows from collapsing at narrow widths."""
+        if not hasattr(self, "_btn_rows") or "log" not in self._btn_rows:
+            return
+        try:
+            widths = [self._btn_rows["log"]["layout"].minimumSize().width() + 90,
+                      self._source_row_layout.minimumSize().width() + 60,
+                      self._target_row_layout.minimumSize().width() + 60]
+            required = max(getattr(self, "_base_minimum_width", 720),
+                           720, min(1400, max(widths)))
+            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+            if screen is not None:
+                available_width = screen.availableGeometry().width()
+                if available_width > 0:
+                    required = min(required, max(240, round(available_width * 0.9)))
+            self.setMinimumWidth(required)
+        except Exception:
+            pass
+
+    def _update_log_hint(self):
+        hint = getattr(self, "log_hint_label", None)
+        row = self._btn_rows.get("log", {}).get("layout") if hasattr(self, "_btn_rows") else None
+        if hint is None or row is None:
+            return
+        try:
+            buttons = self._btn_rows["log"]["keys"]
+            shown = [self._btn_widgets[key] for key in buttons
+                     if not self._btn_widgets[key].isHidden()]
+            widths = sum(button.sizeHint().width() for button in shown)
+            visible = len(shown)
+            available = self.width() - widths - max(0, visible - 1) * 8 - 150
+            long_w = hint.fontMetrics().horizontalAdvance(self._log_hint_long)
+            short_w = hint.fontMetrics().horizontalAdvance(self._log_hint_short)
+            if available >= long_w:
+                hint.setText(self._log_hint_long)
+                hint.show()
+            elif available >= short_w:
+                hint.setText(self._log_hint_short)
+                hint.show()
+            else:
+                hint.hide()
+        except Exception:
+            pass
+
+    def _resize_log_area(self):
+        """Match Tk: keep the log at 160px, then give it 45% of taller-window space."""
+        log = getattr(self, "log_text", None)
+        if log is None:
+            return
+        extra = max(0, self.height() - 1080)
+        height = 160 + min(180, round(extra * 0.45))
+        if log.minimumHeight() != height or log.maximumHeight() != height:
+            log.setFixedHeight(height)
 
     def _open_button_prefs(self):
         from ui.qt_main.buttons import ButtonPrefsDialog, merge_into_config
@@ -1120,17 +1277,29 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 if x.strip() and not x.strip().startswith("#")]
 
     def _refresh_badges(self):
-        """在页签标题上显示每个清单的条数。"""
+        """在页签标题上显示每个清单的条数(同 Tk 的 _refresh_list_badges):
+        「🧩 模组清单 52」,数字另画成数据色(见 main_tabs)。
+
+        计数口径也和 Tk 一致:模组清单数所有非空行,config / 其它文件清单跳过 # 注释行。
+        """
         try:
-            n_mod = len(self._list_lines(self.mod_text))
-            n_cfg = len(self._list_lines(self.config_text))
-            n_extra = len(self._list_lines(self.extra_text))
-            self.tabs.setTabText(self._mod_tab_index,
-                                 trp("模组清单 ({0})", n_mod) if n_mod else tr("模组清单"))
-            self.tabs.setTabText(self._config_tab_index,
-                                 trp("config 清单 ({0})", n_cfg) if n_cfg else tr("config 清单"))
-            self.tabs.setTabText(self._extra_tab_index,
-                                 trp("其它文件 ({0})", n_extra) if n_extra else tr("其它文件"))
+            def count(box, skip_comments):
+                n = 0
+                for ln in box.toPlainText().splitlines():
+                    t = ln.strip()
+                    if not t or (skip_comments and t.startswith("#")):
+                        continue
+                    n += 1
+                return n
+            n_mod = count(self.mod_text, False)
+            n_cfg = count(self.config_text, True)
+            n_extra = count(self.extra_text, True)
+            self.tabs.setTabText(self._mod_tab_index, i18n.trf("🧩 模组清单 {n}", n=n_mod)
+                                 if n_mod else tr("🧩 模组清单"))
+            self.tabs.setTabText(self._config_tab_index, i18n.trf("⚙️ config 清单 {n}", n=n_cfg)
+                                 if n_cfg else tr("⚙️ config 清单"))
+            self.tabs.setTabText(self._extra_tab_index, i18n.trf("📦 其它文件 {n}", n=n_extra)
+                                 if n_extra else tr("📦 其它文件"))
         except Exception:
             pass
 
@@ -1233,7 +1402,6 @@ class QtMainWindow(QtWidgets.QMainWindow):
         """源路径变化:更新变量并检测环境+存档状态。"""
         self.source_path = text.strip()
         self._validate_paths()
-        self._detect_env()
         self._update_world_status()
         self._mark_config_folders()
 
@@ -1249,25 +1417,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
     # ---------------- 整合包更新提醒 ----------------
     def _layout_pack_warning(self):
-        """展开 = 红条显示、药丸隐藏;收起 = 红条隐藏、药丸显示(同 Tk 版 _pack_warning_layout)。"""
+        """展开 = 红条显示、药丸隐藏;收起 = 红条隐藏、药丸显示(同 Tk 版 _pack_warning_layout)。
+        药丸的配色在 main_tabs.py 里(取自 Tk RoundedTabs._tail_color),这里只管显隐。"""
         collapsed = self.pack_warning_bar.is_collapsed()
         self.pack_warning_bar.setVisible(not collapsed)
         self.pack_pill.setVisible(collapsed)
-        c = palette_warn(self.theme is DARK_THEME)
-        self.pack_pill.setStyleSheet(
-            "QPushButton { color: %s; background: %s; border: 1px solid %s; border-radius: 9px;"
-            " padding: 2px 10px; } QPushButton:hover { background: %s; }"
-            % (c["main"], c["bg"], c["edge"], c["hover"]))
-        self._style_apply_pill()
-
-    def _style_apply_pill(self):
-        """「应用上次记录」药丸的蓝色(取值同 Tk 版 RoundedTabs._tail_color 的 apply 槽)。"""
-        dark = self.theme is DARK_THEME
-        fg, bg, hover = (("#66c6ff", "#12496e", "#155a86") if dark
-                         else ("#1565a8", "#d6ecfb", "#bfe0f7"))
-        self.apply_pill.setStyleSheet(
-            "QPushButton { color: %s; background: %s; border: 1px solid %s; border-radius: 9px;"
-            " padding: 2px 10px; } QPushButton:hover { background: %s; }" % (fg, bg, fg, hover))
 
     @QtCore.Slot(bool)
     def _on_pack_warning_collapsed(self, collapsed):
@@ -1312,10 +1466,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.edit_switch.blockSignals(False)
         if locks:
             names = "、".join(tr(self._MIRROR_EDIT_NAMES.get(k, k)) for k in locks)
-            self.edit_desc.setText(trp("{0} 开着时不能编辑 · 关掉那个窗口即可恢复", names))
+            self.edit_switch.setText(desc=trp("{0} 开着时不能编辑 · 关掉那个窗口即可恢复", names))
             self.edit_switch.setEnabled(False)
         else:
-            self.edit_desc.setText(tr("直接改动清单文字 · 谨慎使用"))
+            self.edit_switch.setText(desc=tr("直接改动清单文字 · 谨慎使用"))
             self.edit_switch.setEnabled(not self._is_busy())
 
     @QtCore.Slot(bool)
@@ -1384,7 +1538,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
     # 「有意图的交互」控件:点它们不算点空白(按钮 / 输入框 / 勾选框 / 下拉框 / 滚动条 / 页签 / 表格…)
     _INTERACTIVE = (QtWidgets.QAbstractButton, QtWidgets.QLineEdit, QtWidgets.QComboBox,
                     QtWidgets.QAbstractSpinBox, QtWidgets.QAbstractSlider,
-                    QtWidgets.QTabBar, QtWidgets.QAbstractItemView, QtWidgets.QMenu)
+                    QtWidgets.QTabBar, QtWidgets.QAbstractItemView, QtWidgets.QMenu,
+                    SwitchRow, _TabBarTypes)
 
     def _is_blank_click_target(self, w):
         """点到的控件算不算「空白」:三个清单本身、交互控件、日志框都不算。"""
@@ -1503,6 +1658,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             w = widgets.get(key)
             if w is not None:
                 w.setEnabled(not busy)
+        self.tabs.set_locked(busy)                  # 同 Tk:迁移/扫描期间不让切页
         for name in ("settings_btn", "theme_btn", "buttons_btn", "apply_pill"):
             w = getattr(self, name, None)
             if w is not None:
@@ -1543,29 +1699,6 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.toast(tr("覆盖同名模组:开") if checked else tr("覆盖同名模组:关"),
                    "info", key="overwrite")
 
-    def _detect_env(self):
-        """调用 core.scanner.detect_instance_env 检测实例环境。"""
-        try:
-            from core.scanner import detect_instance_env
-            if not self.source_path or not Path(self.source_path).is_dir():
-                self.env_label.setText(tr("路径无效"))
-                self.env_label.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')};")
-                return
-            result = detect_instance_env(self.source_path)
-            mc, loader, src = result.get("mc", ""), result.get("loader", ""), result.get("src", "")
-            if mc or loader:
-                text = f"✅ {mc or '?'} / {loader or '?'}"
-                if src:
-                    text += f" ({src})"
-                self.env_label.setText(text)
-                self.env_label.setStyleSheet(f"color: {self.theme.get('ok_fg', '#2e7d32')};")
-            else:
-                self.env_label.setText(tr("未识别到版本/加载器"))
-                self.env_label.setStyleSheet(f"color: {self.theme.get('warn_fg', '#e65100')};")
-        except Exception as e:
-            self.env_label.setText(tr("检测失败: {0}").format(str(e)))
-            self.env_label.setStyleSheet(f"color: {self.theme.get('fail_fg', '#c62828')};")
-
     # ---------------- 消息(吐司) / 消息中心 ----------------
     def toast(self, text, level="info", ms=None, key=None):
         """统一的操作反馈入口(对齐 Tk 版 MigrationGUI.toast 的签名)。
@@ -1599,8 +1732,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 host = self._toast_host = False
         if host:
             host.show(msg, {"warning": "warn", "err": "error"}.get(level, level), ms=ms, key=key)
-        else:
-            self.statusBar().showMessage(msg, int(ms or 3000))
+        # 吐司建不出来就只留在消息中心:Tk 没有状态栏,Qt 也不再造一条(底栏是自己的 BottomBar)
 
     def _refresh_msg_badge(self):
         bell = getattr(self, "msg_bell", None)
@@ -1695,6 +1827,27 @@ class QtMainWindow(QtWidgets.QMainWindow):
             save_raw_config({"net_float_x": int(dx), "net_float_y": int(dy)})
         except Exception:
             pass
+
+    def _toggle_net_float(self):
+        """📌:开 / 关桌面浮标(同 Tk toggle_net_float),并把开关记进配置。"""
+        try:
+            want = not bool(self.config.get("net_float_on", False))
+            self.config["net_float_on"] = want
+            self._sync_net_float()
+            ok = (getattr(self, "_net_float", None) is not None) == want
+            if not ok:
+                self.config["net_float_on"] = not want
+                self.toast(tr("⚠️ 浮标打不开，详见日志"), "warn")
+                return
+            try:
+                save_raw_config({"net_float_on": want})
+            except Exception:
+                pass
+            self.toast(tr("📌 桌面浮标已显示（可拖动，双击看曲线）") if want
+                       else tr("📌 桌面浮标已关闭"), "ok", key="net_float")
+        except Exception as e:
+            self.log(trp("❌ 切换浮标失败：{0}", e), "ERROR")
+            self.toast(tr("⚠️ 浮标打不开，详见日志"), "warn")
 
     def _open_net_chart(self):
         dlg = getattr(self, "_net_chart", None)
@@ -2373,16 +2526,22 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
     # ---------------- 开始前倒计时 ----------------
     def _begin_countdown(self, secs, params):
-        self._countdown_left = secs
+        self._countdown_total = float(secs)
+        self._countdown_end = time.perf_counter() + self._countdown_total
+        self._countdown_zero_at = None
+        self._countdown_text = None
         self._countdown_params = params
         self._close_child_windows()          # 同 Tk:倒计时一开始,差异窗 / 放大查看 / 历史窗…全关
         # 其它控件先灰掉;开始按钮保持可点(点它 = 取消)
         self.dry_run_check.setEnabled(False)
         self.overwrite_check.setEnabled(False)
+        self.start_btn.set_progress(1.0)
+        self.start_btn.flip_to_back()
         self._countdown_timer = QtCore.QTimer(self)
+        self._countdown_timer.setTimerType(QtCore.Qt.PreciseTimer)
         self._countdown_timer.timeout.connect(self._countdown_tick)
-        self._countdown_timer.start(1000)
-        self._show_countdown()
+        self._countdown_timer.start(16)
+        self._countdown_tick()
         self.log(trp("⏳ 开始前倒计时 {0} 秒:期间再点一下「开始迁移」可取消", secs), "INFO")
         self._refresh_busy_state()
 
@@ -2406,16 +2565,30 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 pass
 
     def _show_countdown(self):
-        self.start_btn.setText(trp("⏳ {0} 秒后开始(点击取消)", self._countdown_left))
+        remaining = self._countdown_end - time.perf_counter()
+        seconds = 0 if remaining <= 0 else max(1, int(remaining + 0.9999))
+        text = trp("⏳ {0} 秒后开始", seconds)
+        if text != self._countdown_text:
+            self._countdown_text = text
+            self.start_btn.set_back_text(text)
+        total = max(1.0, self._countdown_total)
+        self.start_btn.set_progress(max(0.0, min(1.0, remaining / total)))
 
     def _countdown_tick(self):
-        self._countdown_left -= 1
-        if self._countdown_left > 0:
+        now = time.perf_counter()
+        remaining = self._countdown_end - now
+        if remaining <= 0:
+            if self._countdown_zero_at is None:
+                self._countdown_zero_at = now
+                self._show_countdown()
+            elif now - self._countdown_zero_at >= 0.9:
+                self._stop_countdown_timer()
+                params, self._countdown_params = self._countdown_params, None
+                self.start_btn.set_progress(None if params and params.get("dry_run") else 0.0)
+                self._begin_prepare(params)
+                return
+        else:
             self._show_countdown()
-            return
-        self._stop_countdown_timer()
-        params, self._countdown_params = self._countdown_params, None
-        self._begin_prepare(params)
 
     def _stop_countdown_timer(self):
         t = getattr(self, "_countdown_timer", None)
@@ -2427,7 +2600,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
     def _cancel_countdown(self):
         self._stop_countdown_timer()
         self._countdown_params = None
-        self.start_btn.setText(tr("🚀 开始迁移"))
+        self._countdown_text = None
+        self.start_btn.set_back_text(None)
+        self.start_btn.set_progress(None)
+        self.start_btn.flip_to_front()
         self.dry_run_check.setEnabled(True)
         self.overwrite_check.setEnabled(True)
         self.log(tr("ℹ️ 已取消:倒计时期间又点了一下「开始迁移」,没有动任何文件"), "INFO")
@@ -2657,6 +2833,22 @@ class QtMainWindow(QtWidgets.QMainWindow):
             return
         HistoryDialog(self).exec()
 
+    def _open_full_log(self):
+        """打开本次会话的完整日志文件(同 Tk 版 open_full_log)。"""
+        try:
+            self._session_log.flush()
+            path = self._session_log.path
+            if path is None or not Path(path).is_file():
+                QtWidgets.QMessageBox.information(self, tr("提示"), tr("暂无已保存的日志。"))
+                return
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            else:
+                import subprocess
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, tr("错误"), trp("无法打开日志：{0}", error))
+
     def _open_log_folder(self):
         """打开日志文件夹(同 Tk 版 open_log_folder)。"""
         try:
@@ -2714,12 +2906,51 @@ class QtMainWindow(QtWidgets.QMainWindow):
         box.ensureCursorVisible()
         self._update_big_log_count()
 
-    def _update_big_log_count(self):
+    def _update_big_log_count(self, immediate=False):
+        lbl = getattr(self, "_log_big_count", None)
+        if lbl is None:
+            return
+        # 末尾总有一个空块(每行都带换行),不算。
+        target = max(0, self.log_text.document().blockCount() - 1)
+        current = getattr(self, "_log_big_count_display", None)
+        old_anim = getattr(self, "_log_big_count_anim", None)
+        if old_anim is not None:
+            try:
+                current = int(old_anim.currentValue())
+                old_anim.stop()
+            except Exception:
+                pass
+            self._log_big_count_anim = None
+
+        try:
+            scale = float(fx.anim_scale())
+        except Exception:
+            scale = 1.0
+        if immediate or current is None or current == target or scale <= 0.0:
+            self._log_big_count_display = target
+            lbl.setText(trp("共 {0} 行", target))
+            return
+
+        anim = QtCore.QVariantAnimation(self)
+        anim.setStartValue(int(current))
+        anim.setEndValue(int(target))
+        anim.setDuration(max(1, round(180 * scale)))
+        anim.valueChanged.connect(self._set_big_log_count)
+        self._log_big_count_anim = anim
+        anim.finished.connect(lambda a=anim, n=target: self._finish_big_log_count(a, n))
+        anim.start()
+
+    def _set_big_log_count(self, value):
+        self._log_big_count_display = int(value)
         lbl = getattr(self, "_log_big_count", None)
         if lbl is not None:
-            # 末尾总有一个空块(每行都带换行),不算
-            n = max(0, self.log_text.document().blockCount() - 1)
-            lbl.setText(trp("共 {0} 行", n))
+            lbl.setText(trp("共 {0} 行", self._log_big_count_display))
+
+    def _finish_big_log_count(self, anim, target):
+        self._set_big_log_count(target)
+        if getattr(self, "_log_big_count_anim", None) is anim:
+            self._log_big_count_anim = None
+        anim.deleteLater()
 
     def _append_big_log(self, message, color):
         """放大窗口开着时,把新的一行跟着追加进去(实时跟随)。"""
@@ -2736,7 +2967,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         cur.insertText(message + "\n", fmt)
         if at_bottom:                     # 用户在往回翻就别把他拽到底
             bar.setValue(bar.maximum())
-        self._update_big_log_count()
+        self._update_big_log_count(immediate=True)
 
     # ---------------- 放大查看(进程内直接用 QtBigView) ----------------
     def _open_big_view(self, which):
@@ -3073,8 +3304,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
     # ---------------- 出错条目:标记 / 定位(规则同 Tk 版 mw_log) ----------------
     # 日志行级别 → QTextBlock.userState。0 = 普通;只有 2/3 的行响应双击定位
-    _LOG_LEVEL_CODES = {"INFO": 1, "WARNING": 2, "ERROR": 3, "OK": 1, "SUCCESS": 1,
-                        "SIMULATE": 1}
+    _LOG_LEVEL_CODES = {"INFO": 1, "WARNING": 2, "ERROR": 3, "OK": 4, "SUCCESS": 4,
+                        "SIMULATE": 5, "PLAIN": 6}
 
     def _list_pages(self):
         return ((0, self.mod_text, tr("模组清单")),
@@ -3137,7 +3368,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             return
         hit = self._find_entry_in(text)
         if hit is None:
-            self.statusBar().showMessage(tr("这一行没提到清单中的条目,无法定位"), 2500)
+            self.toast(tr("这一行没提到清单中的条目,无法定位"), "info", ms=2500, key="locate")
             return
         self._goto_list_line(hit[0], self._list_pages()[hit[0]][1], hit[1])
 
@@ -3167,6 +3398,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
     def _clear_log(self):
         self.log_text.clear()
+        self._clear_fail_marks()
         if hasattr(self, "_session_log"):
             try:
                 self._session_log.clear()
@@ -3188,6 +3420,51 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if label.text() != text:
             label.setText(text)
             label.setVisible(bool(text))
+
+    @staticmethod
+    def _set_log_block_alpha(block, color, alpha):
+        """Apply one foreground alpha to a newly inserted log block."""
+        if block is None or not block.isValid():
+            return
+        try:
+            cursor = QtGui.QTextCursor(block)
+            cursor.select(QtGui.QTextCursor.LineUnderCursor)
+            fmt = QtGui.QTextCharFormat()
+            face = QtGui.QColor(color)
+            face.setAlpha(max(0, min(255, int(alpha))))
+            fmt.setForeground(face)
+            cursor.mergeCharFormat(fmt)
+        except Exception:
+            pass
+
+    def _fade_log_block(self, block, color):
+        """Fade one log line in, respecting the global effects setting."""
+        try:
+            scale = float(fx.anim_scale())
+        except Exception:
+            scale = 1.0
+        if scale <= 0.0:
+            return
+        self._set_log_block_alpha(block, color, 0)
+        anim = QtCore.QVariantAnimation(self)
+        anim.setStartValue(0)
+        anim.setEndValue(255)
+        anim.setDuration(max(1, round(180 * scale)))
+        anim.valueChanged.connect(
+            lambda value, b=block, c=color: self._set_log_block_alpha(b, c, value))
+        animations = self.__dict__.setdefault("_log_fade_anims", [])
+
+        def finish():
+            self._set_log_block_alpha(block, color, 255)
+            try:
+                animations.remove(anim)
+            except ValueError:
+                pass
+            anim.deleteLater()
+
+        anim.finished.connect(finish)
+        animations.append(anim)
+        anim.start()
 
     @QtCore.Slot(str, str)
     def log(self, message, level="INFO"):
@@ -3213,12 +3490,16 @@ class QtMainWindow(QtWidgets.QMainWindow):
             "INFO": self.theme.get("log_info_fg", "#808080"),
             "WARNING": self.theme.get("log_warning_fg", "#e65100"),
             "ERROR": self.theme.get("log_error_fg", "#c62828"),
+            "PLAIN": self.theme.get("log_error_fg", "#c62828"),
             "OK": self.theme.get("log_success_fg", "#2e7d32"),
             "SUCCESS": self.theme.get("log_success_fg", "#2e7d32"),
             "SIMULATE": self.theme.get("log_simulate_fg", "#1565c0"),
         }
         color = color_map.get(level, self.theme.get("fg", "#000"))
 
+        bar = self.log_text.verticalScrollBar()
+        follow_tail = bar.value() >= bar.maximum() - 4
+        old_scroll = bar.value()
         cursor = self.log_text.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
 
@@ -3226,6 +3507,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         fmt = QtGui.QTextCharFormat()
         fmt.setForeground(QtGui.QColor(color))
         cursor.insertText(str(message) + "\n", fmt)
+        blk = None
         try:
             blk = cursor.block().previous()      # 刚插完的那一行(光标已到下一空行)
             blk.setUserState(self._LOG_LEVEL_CODES.get(level, 0))
@@ -3236,7 +3518,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
         # 自动滚到底部
         self.log_text.setTextCursor(cursor)
-        self.log_text.ensureCursorVisible()
+        bar.setValue(bar.maximum() if follow_tail else old_scroll)
+        self._fade_log_block(blk, color)
         self._append_big_log(str(message), color)
     def save_config(self):
         """保存配置(继承Tk版的键名,无缝切换)。"""

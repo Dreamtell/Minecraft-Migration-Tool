@@ -128,7 +128,7 @@ class MirrorLockTests(Base):
         w._lock_edit("bigview")
         self.assertTrue(w.mod_text.isReadOnly())
         self.assertFalse(w.edit_switch.isEnabled())          # 开关灰掉点不动
-        self.assertIn("放大查看", w.edit_desc.text())
+        self.assertIn("放大查看", w.edit_switch.description())
         self.assertTrue(w._edit_enabled_for_config())        # 存盘存的是意图,不是被锁成的 False
         w.save_config()
         self.assertTrue(_cfg.load_raw_config()["edit_enabled"])
@@ -136,7 +136,7 @@ class MirrorLockTests(Base):
         self.assertTrue(w.edit_switch.isEnabled())
         self.assertTrue(w.edit_switch.isChecked())           # 还回「开」
         self.assertFalse(w.mod_text.isReadOnly())
-        self.assertEqual(w.edit_desc.text(), "直接改动清单文字 · 谨慎使用")
+        self.assertEqual(w.edit_switch.description(), "直接改动清单文字 · 谨慎使用")
 
     def test_lock_when_editing_was_off_stays_off_after_unlock(self):
         w = self.make()
