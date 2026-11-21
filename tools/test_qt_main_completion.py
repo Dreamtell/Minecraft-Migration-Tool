@@ -89,6 +89,7 @@ class MainWindowCompletionTests(unittest.TestCase):
 
     def test_log_levels_match_overview_markers_and_plain_summary_color(self):
         from ui.qt_main.window import QtMainWindow
+        from ui.qt_main.log_overview import _LEVELS
 
         codes = QtMainWindow._LOG_LEVEL_CODES
         self.assertEqual(codes["WARNING"], 2)
@@ -96,6 +97,12 @@ class MainWindowCompletionTests(unittest.TestCase):
         self.assertEqual(codes["SUCCESS"], 4)
         self.assertEqual(codes["SIMULATE"], 5)
         self.assertEqual(codes["PLAIN"], 6)
+
+        # 总览条自己写了一份级别表：两张表脱钩时总览条会静默少画点，这里必须对账。
+        for code, (name, _color_key, _order) in _LEVELS.items():
+            self.assertEqual(codes[name], code, name)           # window → 总览条
+        for name in ("WARNING", "ERROR", "SUCCESS", "SIMULATE"):
+            self.assertIn(codes[name], _LEVELS, name)           # 总览条 → window（双向）
 
         self.window.log("missing summary", "PLAIN")
         block = self.window.log_text.document().findBlockByNumber(
@@ -146,10 +153,19 @@ class MainWindowCompletionTests(unittest.TestCase):
 
     def test_main_qss_styles_only_named_list_and_log_scrollbars(self):
         from ui.qt_main import look
+        import re
 
         qss = look.build_qss(DARK_THEME)
         for name in ("modListEdit", "configListEdit", "extraListEdit", "logEdit"):
             self.assertIn(f"QTextEdit#{name} QScrollBar:vertical", qss)
+        # 反向:不能出现「不带 objectName 限定」的 QTextEdit 滚动条规则 ——
+        # 那会把差异窗、放大查看里的 QTextEdit 一起改掉,而它们的滚动条要保持原生。
+        self.assertIsNone(
+            re.search(r"QTextEdit\s+QScrollBar", qss),
+            "出现了未限定 objectName 的 QTextEdit 滚动条规则")
+        self.assertIsNone(
+            re.search(r"QTextEdit\s*\{[^}]*QScrollBar", qss, re.S),
+            "滚动条样式混进了全局 QTextEdit 规则")
 
 
 if __name__ == "__main__":

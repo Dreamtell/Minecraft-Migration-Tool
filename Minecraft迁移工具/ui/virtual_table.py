@@ -67,8 +67,30 @@ def prewarm_emoji_font(widget=None, font=("微软雅黑", 12, "bold"), chunk=8, 
             except Exception:
                 pass
 
+    def 等显示():
+        """先等主窗口真正显示出来，再开始预热。
+
+        为什么不能直接 after(delay, 跑(0))：启动构建期间 app.py 的 on_stage 每步都调
+        root.update()，而 update() 会把到期的 after 定时器一起处理 —— 12 批预热就全被
+        泵进构建期，启动平白多等半秒多（实测单批最多 237 ms）。这里只做一个极轻的
+        「窗口显示了吗」探测，没显示就再排一轮，真正的量字工作在显示之后才跑。
+        """
+        try:
+            if not widget.winfo_exists():
+                return
+            shown = bool(widget.winfo_ismapped())
+        except Exception:
+            return
+        if not shown:
+            try:
+                widget.after(delay, 等显示)
+            except Exception:
+                pass
+            return
+        跑(0)
+
     try:
-        widget.after(delay, lambda: 跑(0))
+        widget.after(delay, 等显示)
     except Exception:
         pass
 

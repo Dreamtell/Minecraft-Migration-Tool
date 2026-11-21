@@ -46,7 +46,9 @@ class SparkLine(QtWidgets.QWidget):
     def _history():
         try:
             from ui import mw_net
-            return mw_net.rtt_history()
+            # 先做快照：探测线程会在后台 append 同一个 deque，直接遍历可能抛
+            # RuntimeError: deque mutated during iteration（画一帧就整条降级）。
+            return list(mw_net.rtt_history())
         except Exception:
             return []
 

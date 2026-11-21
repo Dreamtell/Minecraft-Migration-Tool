@@ -303,8 +303,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
         # 信号的接收者是 self(主线程的 QObject),所以默认 AutoConnection 会排队到主线程
         self._scan_done.connect(self._show_diff_result)
         self._scan_failed.connect(self._on_scan_failed)
-        fit_window(self, 720, 680, 1000, 760)
+        # 与 Tk 版同一个设计稿尺寸（ui/main_window.py 用 window_geometry(root, 1000, 1080)）。
+        # 原来这里写的是 1000x760，比 Tk 矮 320px；高度不够时清单区被压、日志只剩一点。
+        fit_window(self, 720, 700, 1000, 1080)
         self._base_minimum_width = self.minimumWidth()
+        self._base_minimum_height = self.minimumHeight()
 
         # 加载配置
         # 老配置没有 fx_level，from_config() 原样返回；有的话按档位派生三个旧键
@@ -1202,7 +1205,12 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self._update_log_hint()
 
     def _update_window_constraints(self):
-        """Keep the log controls and path rows from collapsing at narrow widths."""
+        """Keep the log controls and path rows from collapsing at narrow widths.
+
+        同时把**最小高度**抬到内容真正需要的高度：原来写死 680，而实测内容要 741，
+        往下拖窗口时清单区被压掉 61px（日志有固定下限，只能压清单）。屏幕放不下时
+        按可用区域的 90% 夹住，不许因为下限把窗口顶出屏幕。
+        """
         if not hasattr(self, "_btn_rows") or "log" not in self._btn_rows:
             return
         try:
@@ -1217,8 +1225,46 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 if available_width > 0:
                     required = min(required, max(240, round(available_width * 0.9)))
             self.setMinimumWidth(required)
+
+            # 最小高度 = 内容需要的高度（布局自己算出来的），并且不小于设计下限
+            need_h = 0
+            central = self.centralWidget()
+            if central is not None:
+                need_h = int(central.minimumSizeHint().height())   # QLayout 没有这个方法
+                if central.layout() is not None:
+                    need_h = max(need_h, int(central.layout().minimumSize().height()))
+            need_h = max(int(getattr(self, "_base_minimum_height", 700)), int(need_h))
+            if screen is not None:
+                available_height = screen.availableGeometry().height()
+                if available_height > 0:
+                    need_h = min(need_h, max(360, round(available_height * 0.9)))
+            if need_h > 0:
+                self.setMinimumHeight(need_h)
         except Exception:
             pass
+
+    def _schedule_constraints_recalc(self):
+        """窗口尺寸变了就重算一次最小高度。
+
+        内容需要的高度**随宽度变化**（窄窗时页签/底栏会换行、说明文字折行），构建期
+        算一次是不够的：实测同一份界面 1000 宽时需要 661，720 宽时需要 741。用 0ms
+        单次定时器合并连续的 resize，够快又不会在 resizeEvent 里改尺寸（那样会抖）。
+        """
+        if getattr(self, "_constraints_timer", None) is None:
+            t = QtCore.QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(0)
+            t.timeout.connect(self._update_window_constraints)
+            self._constraints_timer = t
+        self._constraints_timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_constraints_recalc()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_constraints_recalc()
 
     def _update_log_hint(self):
         hint = getattr(self, "log_hint_label", None)
@@ -2889,6 +2935,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
             v.addLayout(toolbar)
             self._log_big_text = QtWidgets.QTextEdit()
             self._log_big_text.setReadOnly(True)
+            # 与主日志同一个上限:长迁移每文件一行,不封顶等于把整轮日志留在内存里
+            self._log_big_text.document().setMaximumBlockCount(5001)
             v.addWidget(self._log_big_text, 1)
             self._log_big_view = win
         self._refresh_big_log()
@@ -2918,6 +2966,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
             try:
                 current = int(old_anim.currentValue())
                 old_anim.stop()
+            except Exception:
+                pass
+            # stop() 不发 finished,而 deleteLater 只挂在 finished 上 —— 不补这一句就每轮漏一个动画
+            try:
+                old_anim.deleteLater()
             except Exception:
                 pass
             self._log_big_count_anim = None
@@ -3397,8 +3450,27 @@ class QtMainWindow(QtWidgets.QMainWindow):
         flash(0)
 
     def _clear_log(self):
+        """清空显示(完整日志仍留在文件里)。
+
+        「定位错误」的条目来自三个清单,和日志文字无关 —— 清日志不该把它一起清掉:
+        迁移部分失败时界面会提示「点「📍 定位错误」查看」,清一次日志就把这个入口废了。
+        """
+        # 先把还在跑的淡入动画停掉:它们的回调会去改已经被 clear() 掉的块
+        for anim in list(getattr(self, "_log_fade_anims", []) or []):
+            try:
+                anim.stop()
+                anim.deleteLater()
+            except Exception:
+                pass
+        self.__dict__["_log_fade_anims"] = []
         self.log_text.clear()
-        self._clear_fail_marks()
+        big = getattr(self, "_log_big_text", None)
+        if big is not None:
+            big.clear()
+            lbl = getattr(self, "_log_big_count", None)
+            if lbl is not None:
+                lbl.setText(trp("共 {0} 行", 0))
+            self._log_big_count_display = 0
         if hasattr(self, "_session_log"):
             try:
                 self._session_log.clear()

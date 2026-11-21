@@ -165,6 +165,13 @@ class LogOverview(QtWidgets.QWidget):
         self._segments = segments
         self.update()
 
+    def _accent_color(self):
+        """视口框的强调色。与 Tk 侧同一取法:theme 里没有 "accent" 就用 #4a90d9。
+
+        不能用 accent_fg —— 那是「accent_bg 上的文字色」(浅色主题黑、深色白)。
+        """
+        return QtGui.QColor(self.theme.get("accent") or "#4a90d9")
+
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         if not self._pixmap.isNull():
@@ -172,7 +179,7 @@ class LogOverview(QtWidgets.QWidget):
         box = self._viewport_box()
         if box is not None:
             y0, y1 = box
-            accent = QtGui.QColor(self.theme.get("accent_fg", "#4a90d9"))
+            accent = self._accent_color()
             fill = QtGui.QColor(accent)
             fill.setAlpha(70)
             painter.fillRect(QtCore.QRectF(1, y0, self.width() - 2, y1 - y0), fill)

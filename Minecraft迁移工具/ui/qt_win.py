@@ -57,6 +57,11 @@ def fit_window(win, min_w, min_h, want_w, want_h, screen=None):
     try:
         win.setMinimumSize(min_w, min_h)
         win.resize(want_w, want_h)
+        if av is not None:
+            # 居中（同 Tk 的 window_geometry）。不设位置时 Qt 由窗口管理器决定，
+            # 实测会开在左上角，和 Tk 版观感差很远。
+            win.move(av.x() + max(0, (av.width() - want_w) // 2),
+                     av.y() + max(0, (av.height() - want_h) // 2))
     except Exception:
         pass
     return want_w, want_h

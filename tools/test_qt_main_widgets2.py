@@ -125,6 +125,14 @@ class SwitchRowTests(unittest.TestCase):
         seen = []
         w.toggled.connect(seen.append)
         QtTest = __import__("PySide6.QtTest", fromlist=["QTest"]).QTest
+        # 控件外按下:不切换
+        QtTest.mouseClick(w, QtCore.Qt.LeftButton, pos=QtCore.QPoint(w.width() + 8, 5))
+        self.assertEqual(seen, [])
+        # 里面按下、拖到外面松手:不切换(标准按钮语义,靠 rect().contains 守卫)
+        QtTest.mousePress(w, QtCore.Qt.LeftButton, pos=QtCore.QPoint(10, 10))
+        QtTest.mouseRelease(w, QtCore.Qt.LeftButton, pos=QtCore.QPoint(w.width() + 8, 5))
+        self.assertEqual(seen, [])
+        # 按下和松手都在里面:切换
         QtTest.mouseClick(w, QtCore.Qt.LeftButton, pos=QtCore.QPoint(10, 10))
         self.assertEqual(seen, [True])
 
@@ -392,15 +400,27 @@ class MainTabsTests(unittest.TestCase):
         self.assertEqual(px(img, int(x2 + 6), 22), DARK_THEME["button_bg"])   # 未选中的底
 
     def test_number_gets_data_color(self):
-        """条数那段字用 tab_num_fg(选中的那块用 tab_num_sel_fg),不和名字同色。"""
+        """条数那段字用 tab_num_fg，**名字那段不能**也用它（否则整块同色，看不出哪个是数字）。"""
         t = self.make(labels=("名字 7", "名字 8"))
         img = grab(t.bar)
         tabs, _ = t.bar.layout_items()
-        want_unsel = QtGui.QColor(DARK_THEME["tab_num_fg"]).name()
+        want_num = QtGui.QColor(DARK_THEME["tab_num_fg"]).name()
+        want_name = QtGui.QColor(DARK_THEME["fg"]).name()
+        fm = QtGui.QFontMetrics(t.bar.font_())
         x, w = tabs[1]
-        found = {px(img, xx, yy) for xx in range(int(x), int(x + w))
-                 for yy in range(12, 34)}
-        self.assertIn(want_unsel, found)
+        main, num = "名字", "8"
+        total = max(fm.horizontalAdvance(main) + fm.horizontalAdvance(num),
+                    fm.horizontalAdvance("名字 8"))
+        x0 = int(x + max(0, (w - total) // 2))
+        name_end = x0 + fm.horizontalAdvance(main)
+        num_start = name_end + 2
+        name_zone = {px(img, xx, yy) for xx in range(x0, name_end) for yy in range(18, 30)}
+        num_zone = {px(img, xx, yy)
+                    for xx in range(num_start, num_start + fm.horizontalAdvance(num) + 2)
+                    for yy in range(18, 30)}
+        self.assertIn(want_num, num_zone)                  # 数字是数据色
+        self.assertNotIn(want_num, name_zone)              # 名字不是数据色
+        self.assertIn(want_name, name_zone)                # 名字用的是正文色
 
 
 # ====================================================================
@@ -584,10 +604,18 @@ class WindowWiringTests(unittest.TestCase):
         self.assertTrue(w.dry_run_check._compact and w.overwrite_check._compact)
         self.assertEqual(w.dry_run_check.text(), "模拟运行（仅显示操作）")
         self.assertEqual(w.overwrite_check.text(), "覆盖已存在的模组")
-        w._migration_running = True
-        w._refresh_busy_state()
-        self.assertTrue(w.dry_run_check.isChecked())              # 锁住后状态还看得清
-        self.assertTrue(w.dry_run_check._keep_state)
+        # 真正要守的是「禁用后还看得清」：_keep_state 决定禁用时要不要灰掉。
+        # 断言它驱动的那条行为，而不是断言构造期就定死的值。
+        sw = w.dry_run_check
+        self.assertTrue(sw.isChecked())
+        sw.setEnabled(False)
+        self.assertFalse(sw._gray_on_disabled())          # 锁住 ≠ 灰掉
+        self.assertTrue(sw.isChecked())                   # 状态仍读得出来
+        sw._keep_state = False
+        self.assertTrue(sw._gray_on_disabled())           # 关掉这个开关才会灰
+        sw._keep_state = True
+        sw.setEnabled(True)
+        self.assertTrue(sw.isChecked())
 
     def test_tabs_locked_while_busy(self):
         w = self.make()

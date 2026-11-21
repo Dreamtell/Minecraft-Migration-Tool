@@ -1907,7 +1907,10 @@ def emoji_and_text_width(font, text):
         size = abs(int(_font_size(font)))
     except Exception:
         size = 10
-    emoji_w = int(round(size * 1.88))
+    # 磅值 → 像素要乘 Tk 的 scaling（app.py 把它设成 4/3 * UI_SCALE）。原来固定按
+    # 「字号×1.88」算：100% 下偏大一点（安全），150%（4K）下会估小约四成，图标压字。
+    # 1.41 = 1.88 / (4/3)，换算后 100% 下的结果与改动前完全一致。
+    emoji_w = int(round(size * 1.41 * _tk_scaling(font)))
     width = 0
     plain = []
     for ch in s:
@@ -1931,6 +1934,21 @@ def emoji_and_text_width(font, text):
         except Exception:
             width += len(buf) * 7
     return width
+
+
+def _tk_scaling(font=None):
+    """当前 Tk 的 scaling（1 磅等于多少像素）。拿不到就按 Windows 100% 的 4/3 算。
+
+    app.py 里 `tk scaling` 被设成 4/3 * UI_SCALE：100% 是 1.333，150% 是 2.0。
+    纯估算函数（emoji 宽度）必须乘上它，否则高 DPI 下所有 emoji 都会被量窄。
+    """
+    try:
+        root = getattr(font, "_root", None)
+        if root is not None:
+            return max(1.0, float(root.tk.call("tk", "scaling")))
+    except Exception:
+        pass
+    return 4.0 / 3.0
 
 
 def _font_size(font):

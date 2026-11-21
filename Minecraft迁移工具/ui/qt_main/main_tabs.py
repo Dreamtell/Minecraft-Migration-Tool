@@ -74,6 +74,8 @@ class _Bar(QtWidgets.QWidget):
         self._anim = QtCore.QVariantAnimation(self)
         self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._anim.valueChanged.connect(self._on_anim)
+        # 结束时按当前几何校准:滑动期间标签文字可能改过(条数变了),不然会停在旧尺寸上
+        self._anim.finished.connect(self._on_anim_done)
 
     # ---- 几何 ----
     def font_(self):
@@ -130,6 +132,11 @@ class _Bar(QtWidgets.QWidget):
         self._sel_x, self._sel_w = float(v.x()), float(v.y())
         self.update()
 
+    def _on_anim_done(self):
+        """动画跑完:按当前标签宽度重新贴一次,别停在启动时算出的旧几何上。"""
+        self._sel_x = float(self._sel_x)
+        self.snap_selection()
+
     def _hit(self, x):
         tabs, _ = self.layout_items()
         for i, (px, pw) in enumerate(tabs):
@@ -174,6 +181,12 @@ class _Bar(QtWidgets.QWidget):
             self.update()
         super().leaveEvent(e)
 
+    def event(self, e):
+        """抓取被收回 / 窗口失活时也取消长按 —— 这两种情况都收不到 mouseReleaseEvent。"""
+        if e.type() in (QtCore.QEvent.UngrabMouse, QtCore.QEvent.WindowDeactivate):
+            self._cancel_press()
+        return super().event(e)
+
     def mousePressEvent(self, e):
         if e.button() != QtCore.Qt.LeftButton or self._tabs.locked:
             return
@@ -209,6 +222,11 @@ class _Bar(QtWidgets.QWidget):
     def _tick_press(self):
         if self._press < 0:
             self._press_timer.stop()
+            return
+        # 鼠标抓取可能被系统收回(弹出菜单 / 切窗口 / 别的窗口抢走 capture):这时收不到
+        # mouseReleaseEvent,只靠进度判断就会在松手之后照样触发。左键已经不按着就取消。
+        if not (QtGui.QGuiApplication.mouseButtons() & QtCore.Qt.LeftButton):
+            self._cancel_press()
             return
         if self.press_progress() >= 1.0:
             idx = self._press
@@ -456,10 +474,17 @@ class MainTabs(QtWidgets.QWidget):
         return self._labels[idx] if 0 <= idx < len(self._labels) else ""
 
     def setTabText(self, idx, text):
-        """只改文字(主界面拿它挂条数)。文字变了宽度就变:整条重排,选中块立刻贴回当前页,不做动画。"""
+        """只改文字(主界面拿它挂条数)。文字变了宽度就变:整条重排,选中块立刻贴回当前页,不做动画。
+
+        如果此刻正在滑动(启动恢复上次页签后就紧接着写条数),先把动画停掉 —— 否则下一次
+        tick 会用旧尺寸的插值把刚贴好的几何覆盖回去,结束时停在旧位置。
+        """
         if not (0 <= idx < len(self._labels)) or self._labels[idx] == str(text):
             return
         self._labels[idx] = str(text)
+        anim = getattr(self.bar, "_anim", None)
+        if anim is not None and anim.state() == QtCore.QAbstractAnimation.Running:
+            anim.stop()
         self.bar.snap_selection()
 
     def currentIndex(self):

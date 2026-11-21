@@ -305,9 +305,27 @@ class TitleBarTests(unittest.TestCase):
         with mock.patch.object(winstyle.sys, "platform", "linux"):
             self.assertFalse(winstyle.style_window_hwnd(1, True))
 
-    def test_bad_hwnd_is_swallowed(self):
+    def test_dwm_failure_returns_false_instead_of_raising(self):
+        """DWM 调用抛异常时要被吞掉并返回 False；原来是 assertIn(结果, (True, False))，恒真。"""
+        import ctypes
+        from unittest import mock
         from ui.qt_main import winstyle
-        self.assertIn(winstyle.style_window_hwnd(0, True), (True, False))   # 不抛即可
+        boom = mock.MagicMock()
+        boom.dwmapi.DwmSetWindowAttribute.side_effect = OSError("dwm 不可用")
+        with mock.patch.object(winstyle.sys, "platform", "win32"), \
+                mock.patch.object(ctypes, "windll", boom):
+            self.assertFalse(winstyle.style_window_hwnd(1234, True))
+
+    def test_dwm_success_writes_the_four_attributes(self):
+        import ctypes
+        from unittest import mock
+        from ui.qt_main import winstyle
+        fake = mock.MagicMock()
+        with mock.patch.object(winstyle.sys, "platform", "win32"), \
+                mock.patch.object(ctypes, "windll", fake):
+            self.assertTrue(winstyle.style_window_hwnd(1234, True, round_corners=True))
+        attrs = [c.args[1] for c in fake.dwmapi.DwmSetWindowAttribute.call_args_list]
+        self.assertEqual([a.value for a in attrs], [20, 35, 36, 33])
 
     def test_dark_and_light_colors_match_tk(self):
         """写进 DWM 的标题栏色值和 helpers.style_window_hwnd 一致:深 #202020/白字,浅 #f0f0f0/黑字。"""

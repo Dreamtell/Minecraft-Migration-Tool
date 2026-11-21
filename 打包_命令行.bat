@@ -90,7 +90,7 @@ py -3.12 -m PyInstaller --noconfirm --onedir --windowed ^
 
 rem The key is already inside the bundle by now; do not leave it in the
 rem source tree (and .gitignore is the second line of defence).
-if exist "%BUILTIN_FILE%" del /q "%BUILTIN_FILE%"
+if exist "%SEED_FILE%" del /q "%SEED_FILE%"
 
 echo.
 if not defined NOPAUSE pause
