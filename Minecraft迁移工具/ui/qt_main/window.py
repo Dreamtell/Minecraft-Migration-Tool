@@ -441,6 +441,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 lab.setStyleSheet(f"color: {fail}; font-weight: bold;")
             elif role == "log_status":
                 lab.setStyleSheet(f"color: {fail};")
+        self._repaint_check_legend()
 
     def _after_theme_change(self):
         """换主题后:刷新那些按状态手动上色、不走全局 QSS 的控件(都是幂等的)。"""
@@ -653,11 +654,15 @@ class QtMainWindow(QtWidgets.QMainWindow):
         src_row.addWidget(self.source_edit)
         self.src_browse_btn = QtWidgets.QPushButton(tr("浏览"))
         self.src_browse_btn.clicked.connect(self._browse_source)
-        src_row.addWidget(self.src_browse_btn)
         copy_btn = QtWidgets.QPushButton(tr("← 填充路径"))
         copy_btn.setToolTip(tr("把目标路径复制到源路径"))
         copy_btn.clicked.connect(self._copy_target_to_source)
-        src_row.addWidget(copy_btn)
+        # 两颗按钮单独一个子布局:「界面按钮」重排时只动这一排,不会把输入框和状态图标摘掉
+        src_btns = QtWidgets.QHBoxLayout()
+        src_btns.setContentsMargins(0, 0, 0, 0)
+        src_row.addLayout(src_btns)
+        self._register_button_row("path", src_btns, [
+            ("browse_source", self.src_browse_btn), ("copy_target", copy_btn)])
         self.source_status = self._make_path_status()
         src_row.addWidget(self.source_status)
         self._path_btns = {"browse_source": self.src_browse_btn, "copy_target": copy_btn}
@@ -670,7 +675,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
         tgt_row.addWidget(self.target_edit)
         self.tgt_browse_btn = QtWidgets.QPushButton(tr("浏览"))
         self.tgt_browse_btn.clicked.connect(self._browse_target)
-        tgt_row.addWidget(self.tgt_browse_btn)
+        tgt_btns = QtWidgets.QHBoxLayout()
+        tgt_btns.setContentsMargins(0, 0, 0, 0)
+        tgt_row.addLayout(tgt_btns)
+        self._register_button_row("path_target", tgt_btns, [
+            ("browse_target", self.tgt_browse_btn)])
         self.target_status = self._make_path_status()
         tgt_row.addWidget(self.target_status)
         paths_layout.addRow(tr("目标实例:"), tgt_row)
@@ -728,7 +737,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
              ("mod_magnify", tr("📂 放大查看"), lambda: self._open_big_view("mod")),
              ("clear_mods", tr("🗑️ 清空"), lambda: self._clear_list(self.mod_text)),
              ("check_mods", tr("🔎 检查是否存在"), lambda: self._check_list("mods"))],
-            group="mods")
+            group="mods",
+            hint=tr("每行一个 .jar 文件名（可从变更日志导入、点「添加模组」选，"
+                    "或直接把 jar / mods 文件夹拖进来）。同名匹配不区分大小写，改过名的也能对上。"))
         self._mod_tab_index = self.tabs.addTab(mod_page, tr("模组清单"))
 
         # config清单
@@ -744,7 +755,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
              ("check_cfg", tr("🔎 检查是否存在"), lambda: self._check_list("config"))],
             group="config",
             hint=tr("每行一个相对路径，「相对源实例的 config 目录」（例：jei/jei.toml、sodium-options.json）。"),
-            warning=tr("⚠️ 注意：复制将直接覆盖目标 config 中的同名文件/文件夹，请谨慎操作！"))
+            warning=tr("⚠️ 注意：复制将直接覆盖目标 config 中的同名文件/文件夹，请谨慎操作！"),
+            legend=True)
         self._config_tab_index = self.tabs.addTab(config_page, tr("config 清单"))
 
         # 其它文件清单
@@ -917,13 +929,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self._refresh_badges()
 
     def _make_list_page(self, text_edit, buttons, group=None, hint=None, warning=None,
-                        top_widget=None):
+                        top_widget=None, legend=False):
         """造一个清单页:文本框 + 一排操作按钮。
 
         buttons = [(key, 文案, 回调), ...];key 对应 ui/qt_main/buttons.py 的登记表,
         用于「界面按钮」设置里的显示/隐藏和排序。
         hint / warning:文本框上方的灰色说明 / 红色粗体警告(同 Tk 三个页);
-        top_widget:再往上放一个现成控件(其它文件页的「同名文件」选择)。
+        top_widget:再往上放一个现成控件(其它文件页的「同名文件」选择);
+        legend:按钮排下面再放一行「✅ 存在 / ❌ 缺失 / ⚠️ 重复」图例(同 Tk config 页)。
         """
         page = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(page)
@@ -946,7 +959,34 @@ class QtMainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout()
         v.addLayout(row)
         self._register_button_row(group, row, buttons, stretch_end=True)
+        if legend:
+            # 独立一行,不和按钮混排(「界面按钮」重排只动按钮那一排)
+            leg = QtWidgets.QHBoxLayout()
+            leg.setSpacing(4)
+            self._check_legend = {}
+            for st, text in (("ok", tr("✅ 存在")), ("missing", tr("❌ 缺失")),
+                             ("dup", tr("⚠️ 重复"))):
+                chip = QtWidgets.QLabel(text)
+                self._check_legend[st] = chip
+                leg.addWidget(chip)
+            leg.addStretch(1)
+            v.addLayout(leg)
+            self._repaint_check_legend()
         return page
+
+    def _check_mark_colors(self):
+        """「检查是否存在」逐行上色用的三种颜色;图例和上色共用这一份,保证对得上。"""
+        return {"ok": self.theme.get("ok_fg", "#2e7d32"),
+                "missing": self.theme.get("fail_fg", "#c62828"),
+                "dup": self.theme.get("warn_fg", "#e65100")}
+
+    def _repaint_check_legend(self):
+        colors = self._check_mark_colors()
+        for st, chip in getattr(self, "_check_legend", {}).items():
+            c = QtGui.QColor(colors[st])
+            chip.setStyleSheet(
+                "QLabel{color:%s;background:rgba(%d,%d,%d,40);font-weight:bold;"
+                "padding:1px 4px;border-radius:3px;}" % (c.name(), c.red(), c.green(), c.blue()))
 
     def _conflict_qss(self):
         """分段选择的样式:选中那段用主题的高亮色 + 加粗,没选的保持普通按钮外观。
@@ -1787,9 +1827,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self.toast(trp("⚠️ 当前{0}清单为空", label), "warn")
             return
 
-        colors = {"ok": self.theme.get("ok_fg", "#2e7d32"),
-                  "missing": self.theme.get("fail_fg", "#c62828"),
-                  "dup": self.theme.get("warn_fg", "#e65100")}
+        colors = self._check_mark_colors()
         sels = []
         doc = box.document()
         for line_no, st in r["rows"].items():
@@ -2199,7 +2237,46 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self.extra_text.setPlainText(extra_list)
         for box in (self.mod_text, self.config_text, self.extra_text):
             box.reset_undo()            # 载入的清单是撤销的起点,不是第一步
+        self._merge_legacy_extra_defaults()
         self._refresh_badges()
+
+    def _merge_legacy_extra_defaults(self):
+        """老配置里勾过的「默认携带的目录」(extra_defaults)一次性并进「其它文件」清单。
+
+        同 Tk 版 mw_settings._并入旧的默认携带目录:那套"迁移时自动并进临时清单"的机制
+        已删,清单是唯一依据;第一次跑新版本时把原本会带的条目写进清单并清掉 extra_defaults,
+        之后用户手动删掉的条目不会又被塞回来。不认识的键忽略;一个都不认识就什么都不动。
+        """
+        from core.extra_presets import EXTRA_PRESETS
+        old = self.config.get("extra_defaults") or []
+        if not isinstance(old, (list, tuple)):
+            return
+        valid = {k: entry for k, entry, _ in EXTRA_PRESETS}
+        entries = [valid[k] for k in old if isinstance(k, str) and k in valid]
+        if not entries:
+            return
+
+        def norm(x):
+            return x.strip().replace("\\", "/").rstrip("/").lower()
+
+        current = self.extra_text.toPlainText()
+        have = {norm(x) for x in current.splitlines() if x.strip()}
+        to_add = []
+        for e in entries:
+            if norm(e) not in have:
+                have.add(norm(e))
+                to_add.append(e)
+        if to_add:
+            if current and not current.endswith("\n"):
+                current += "\n"
+            self.extra_text.setPlainText(current + "".join(e + "\n" for e in to_add))
+            self.extra_text.reset_undo()        # 并入是载入的一部分,不进撤销栈
+        self.config["extra_defaults"] = []
+        self.save_config()
+        self.log(trp("📦 原先勾选的「默认携带目录」已并入「其它文件」清单（{0} 项：{1}）。"
+                     "以后**清单就是唯一依据** —— 从清单里删掉就不会再带。",
+                     len(to_add),
+                     "、".join(to_add) if to_add else trp("都在清单里了")), "INFO")
 
     def _start_migration(self):
         """开始迁移(主线程):校验→自检→倒计时→后台准备→确认→执行。
@@ -2298,6 +2375,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
     def _begin_countdown(self, secs, params):
         self._countdown_left = secs
         self._countdown_params = params
+        self._close_child_windows()          # 同 Tk:倒计时一开始,差异窗 / 放大查看 / 历史窗…全关
         # 其它控件先灰掉;开始按钮保持可点(点它 = 取消)
         self.dry_run_check.setEnabled(False)
         self.overwrite_check.setEnabled(False)
@@ -2307,6 +2385,25 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self._show_countdown()
         self.log(trp("⏳ 开始前倒计时 {0} 秒:期间再点一下「开始迁移」可取消", secs), "INFO")
         self._refresh_busy_state()
+
+    def _close_child_windows(self):
+        """关掉主窗口以外所有带标题栏的窗口(差异 / 放大查看 / 历史 / 延迟曲线…)。
+
+        同 Tk mw_migration._close_child_windows:无边框的不算(网络浮标、边缘特效、吐司),
+        浮标迁移期间也得挂着;菜单 / 提示框这类弹出层、停靠的消息中心也不动。
+        """
+        app = QtWidgets.QApplication.instance()
+        skip_types = (QtCore.Qt.Popup, QtCore.Qt.ToolTip, QtCore.Qt.SplashScreen)
+        for w in list(app.topLevelWidgets()):
+            try:
+                if (w is self or not w.isVisible() or not w.isWindow()
+                        or isinstance(w, QtWidgets.QDockWidget)
+                        or w.windowType() in skip_types
+                        or w.windowFlags() & QtCore.Qt.FramelessWindowHint):
+                    continue
+                w.close()
+            except RuntimeError:                 # 底层对象已没了
+                pass
 
     def _show_countdown(self):
         self.start_btn.setText(trp("⏳ {0} 秒后开始(点击取消)", self._countdown_left))

@@ -127,6 +127,9 @@
 - **文件拖拽**：直接把 `.jar` / 配置文件拖进窗口即可添加
 - **单实例运行**：重复启动会把已有窗口叫回来（挂在托盘里也能叫），避免多开冲突
 - **后台运行**：关窗口可选收进系统托盘继续跑，任务结束弹 Windows 通知
+- **可选 Qt 主界面**：设置 →「主界面用哪个实现（重启后生效）」——默认经典 Tk，也可切到
+  PySide6 版主界面；两套界面跑同一个迁移引擎、读同一份配置，切换在下次启动才生效
+  （需要已安装 PySide6，没装会自动退回 Tk）
 
 ---
 
@@ -142,7 +145,7 @@
 2. 安装依赖：
 
    ```bash
-   pip install tendo winotify tkinterdnd2 pillow pywin32 pywinstyles
+   pip install tendo winotify tkinterdnd2 pillow pywin32 pywinstyles matplotlib
    ```
 
 3. 运行：
@@ -155,6 +158,8 @@
 > `pillow` 用于主题切换时的圆形过渡（需要截取窗口画面），`pywin32` 用于系统托盘
 > （关窗口后挂在后台）。若打包后拖拽失效，通常就是漏了 `tkinterdnd2`；
 > 若关窗口直接退出、没有托盘图标，通常就是漏了 `pywin32`。
+> `matplotlib` 用于「网络延迟」曲线窗口，没装的话那个窗口曲线是空的；
+> 想要 **Qt 版主界面**还要装 `PySide6`，否则设置里切过去会退回经典 Tk 界面。
 
 ---
 

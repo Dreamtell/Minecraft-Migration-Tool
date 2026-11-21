@@ -66,6 +66,9 @@ have tuned for months.
 - Customisable toolbar: hide the buttons you never use and reorder the rest.
 - System tray: closing the window can keep a running task alive in the background.
 - Animated splash screen that stays smooth (60 fps) while the main window is being built.
+- **Optional Qt main window** — *Settings → Main window implementation*: keep the classic Tk
+  window (default) or switch to the PySide6 build. Both run the same `core/` engine and read the
+  same config; the switch takes effect on the next start.
 
 ---
 
@@ -144,7 +147,7 @@ Download the released `.exe` and run it. No Python installation required.
 
 ```bash
 cd Minecraft迁移工具
-pip install tendo winotify tkinterdnd2 pillow pywin32 pywinstyles
+pip install tendo winotify tkinterdnd2 pillow pywin32 pywinstyles matplotlib
 python app.py
 ```
 
@@ -152,8 +155,9 @@ Optional extras:
 
 - `pywin32` — system tray (without it, closing the window exits the app)
 - `pywinstyles` — native dark title bars / Win11 rounded corners
-- `PySide6` — the big-view / diff windows and the out-of-process splash screen
-  (without it the tool falls back to classic Tk windows automatically)
+- `PySide6` — the big-view / diff windows, the out-of-process splash screen, and the
+  **optional Qt main window** (without it the tool falls back to classic Tk windows automatically)
+- `matplotlib` — the network-latency chart (without it that window just shows no curve)
 
 ---
 
