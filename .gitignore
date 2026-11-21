@@ -37,3 +37,9 @@ desktop.ini
 
 # 手工备份（源码 zip / 旧包），不入库
 /_backup/
+
+# 仓库根的一次性发布包（181 MB，一次 git add -A 就会整个进库）
+/*.zip
+
+# Claude Code 的 worktree 目录：里面是整份仓库副本，会污染全局搜索，也不该入库
+.claude/

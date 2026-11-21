@@ -1,0 +1,35 @@
+# 行尾契约：仓库内一律存 LF，Windows 检出为 CRLF。
+#
+# 为什么需要它：本仓库的产品源码在硬盘上是 CRLF，而 git 索引里存的是 LF。
+# 没有这条规则时，git 靠机器上的 core.autocrlf 和 git 版本的隐式行为去折叠，
+# 结果同一份代码在不同机器上得出不同结论——实测一个环境报 143 个文件被改、
+# 另一个环境只报 17 个，且把 1,296 行真实改动显示成 16,925 行。
+#
+# 加了这个文件之后：谁都不用记规则，git 自己按这里说的办。
+* text=auto eol=crlf
+
+# 二进制：显式声明，不让 git 靠启发式去猜（猜错会让 diff/合并试图按文本处理）
+*.zip   binary
+*.exe   binary
+*.dll   binary
+*.pyd   binary
+*.pyc   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.icns  binary
+*.gif   binary
+*.webp  binary
+*.wav   binary
+*.mp3   binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.pdf   binary
+*.jar   binary
+
+# 批处理必须是 CRLF，否则 cmd 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf

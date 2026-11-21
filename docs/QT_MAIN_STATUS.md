@@ -238,7 +238,7 @@ Qt主窗口本身就是纯Qt进程(没有Tk),qt_diff_view/qt_big_view 直接在�
 | 整合包更新提醒 | `ui/qt_main/pack_warning.py` | 红条 + 复制 AI 提示词 + 收起成页签行右端的「⚠ 更新提醒」药丸;`pack_warning_collapsed` 与 Tk 共用,默认收起 |
 | 浮标阴影 / 点消息中心外面收回 | `net_float.py`、`messages.py`、设置窗 | `net_float_shadow` / `msg_click_outside_close`,默认值与 Tk 一致 |
 
-**不做(而不是漏了)**:迁移锁屏遮罩——Tk 的 c915ef8 已整体删除(用户:「锁屏这个选择不要了」),`lock_mode` / `lock_wait_key` 只是死配置键。
+**不做(而不是漏了)**:迁移锁屏遮罩——Tk 的 c915ef8 删掉的是**全屏遮罩那一层**(用户:「锁屏这个选择不要了」)。但 `ui/mw_lock.py` 并没有删:它还在(182 行,`LockMixin`,`main_window.py:28` 导入),只剩「迁移期间按钮禁用 + 输入只读」这层保护(`_lock_main_window` / `_set_edit_lock` / `_refresh_busy_state`)。`lock_mode` / `lock_wait_key` 仍会被读(`main_window.py:175-179`)和写回(`:770-771`),但全仓没有消费者——属于死配置键,新代码别依赖它们。
 
 **本次补的**:主界面编辑开关(`edit_enabled` / `blank_exit_edit`)、按钮音效(`sfx_on` / `sfx_hover` / `sfx_press`)。
 

@@ -46,8 +46,10 @@
    与仓库根 `_qt/` 加进 `sys.path`，再 `find_spec("PySide6")`；都没有就在设置页提示
    “装好 PySide6 后可切到 Qt 版窗口”。所以 **site-packages 里有一份就够**。
 
-   ⚠️ `打包_命令行.bat` 里仍写着 `--paths _qt`：用 site-packages 方案时先跑一次打包确认
-   （本机目前没有 `_qt/`，**无 `_qt/` 情况下的打包尚未验证**）。
+   ⚠️ `打包_命令行.bat` 里写着 `--paths "%ROOT%_qt"`：说明这台机器用的是**便携版**方案
+   （实测 `_qt/` 有 215 MB）。原因见脚本第 6-8 行注释：`--target` 装出来的包 PyInstaller
+   看不见，必须显式传 `--paths`。若改用 site-packages 方案，打包会不会重复带一份
+   PySide6 **尚未验证**——先跑一次打包，看 `dist/app` 的体积和下文的验证步骤再说。
 
 5. **配置和密钥不随仓库走**，在新机器上要么手动拷、要么重新设置：
 
@@ -70,7 +72,7 @@
 
    ```bash
    cd Minecraft迁移工具 && python app.py      # 窗口能起来
-   cd .. && python tools/run_all.py           # 全量测试：应为 23 个文件全过
+   cd .. && python tools/run_all.py           # 全量测试：全过即可（清单由脚本现收集，别写死数字）
    ```
 
 ## 常用命令
@@ -94,12 +96,18 @@ cmd //c 打包_命令行.bat nopause       # 打包（产物在 dist/app）
 
 ## 硬约束（违反过，会出事）
 
-- 产品源码 CRLF；根目录原型脚本与 `docs/*.md` 用 LF；
-  `打包_命令行.bat` 必须 UTF-8 无 BOM，否则 cmd 会把中文目录名弄坏
+- **行尾不要手改**：仓库内一律存 LF、Windows 上检出为 CRLF，由根目录 `.gitattributes`
+  保证（`* text=auto eol=crlf`）。没有它时 git 会把 1,296 行真实改动显示成 16,925 行，
+  而且换台机器可能给出完全不同的结论（实测一台报 17 个文件、另一台报 143 个）
+- `打包_命令行.bat` 必须 UTF-8 无 BOM，否则 cmd 会把中文目录名弄坏
 - 控制台是 GBK：跑脚本前设 `PYTHONIOENCODING=utf-8`，别打印 ✓ 之类符号
-- 新增配置键必须同时写进 `ui/main_window.py` 的 `save_config()`，
-  否则用户下次改任何设置都会把它抹掉；且要在 `load_config()` 之后**立刻**读，
-  晚读会被别处的 `save_config()` 用默认值写回
+- 配置键的**权威列表**是 `ui/main_window.py` 的 `save_config()`（全量重建全部键）。
+  新增键必须写在这里，否则用户下次改任何设置都会把它抹掉；且要在 `load_config()`
+  之后**立刻**读，晚读会被别处的 `save_config()` 用默认值写回
+- **别以为两边 save_config 对称**：Qt 侧 `ui/qt_main/window.py` 的 `save_config()`
+  走 `dict(self.config)` 合并，只更新它自己编辑的那十几项，**不负责清理键**；
+  而 `self.config` 是启动时的快照，所以外部手删的键会被它下一次保存复活。
+  `utils/config.py` 的 `save_raw_config()` 是读-改-写（保留式）。
 - 中文是安装态零成本路径：新增文案只改 `utils/i18n.py`，拼接串走 `trf`/`trp`
 - 探针必须先预置配置（`MCTOOL_CONFIG` 指向写好的临时配置），
   否则会弹语言选择框等人工点击而挂到超时

@@ -55,7 +55,7 @@ have tuned for months.
   translation layer), the execution log, and the system message boxes. Two independent checks
   report **zero** untranslated strings: a source scan over ~380 text-API literals, and a walk of
   the real widget tree in English mode.
-- The dictionary (`utils/i18n.py`, 821 entries) is the only thing you touch to add a string, and
+- The dictionary (`utils/i18n.py`, ~1,700 entries) is the only thing you touch to add a string, and
   values assembled from several pieces use `trf`/`trp` templates so they can be translated too.
 - Under the hood: in Chinese (the default) the translation layer is **not installed at all**, so
   the behaviour is byte-for-byte what it was before.

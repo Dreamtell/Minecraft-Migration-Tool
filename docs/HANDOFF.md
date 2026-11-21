@@ -1,7 +1,7 @@
 # 会话交接（Hand-off）
 
-> 基线提交：`cd38991`（v5.0.0 之前）· **后续改动以 `git log -1` 为准**
-> 最近更新：2026-11-01（v5.0.0 已发布；换机器上手看仓库根 `AGENTS.md`）
+> 基线提交：**不写死**——分支和提交号常变，一律以 `git branch --show-current` 与 `git log -1` 为准
+> 最近更新：2026-11-22（v5.0.0 已发布；换机器上手看仓库根 `AGENTS.md`）
 > 这份文件是跨会话的记忆。新会话开工前先读它，能省掉一轮"你重新熟悉环境"。
 > 文中的路径与提交号都经过实测核对；与旧版记录冲突时**以本文为准**。
 
@@ -11,7 +11,7 @@
 
 | 项 | 值 |
 |---|---|
-| 仓库 | 放在哪个目录都行，产品在子目录 `Minecraft迁移工具\`（作者机器上是 `%USERPROFILE%\Downloads\output`，**仅作示例**）；分支 `main` |
+| 仓库 | 放在哪个目录都行，产品在子目录 `Minecraft迁移工具\`（作者机器上是 `%USERPROFILE%\PycharmProjects\Minecraft-Migration-Tool`，2026-11-14 从 `Downloads\output` 搬来，**路径仅作示例**）；工作分支见 `git branch --show-current` |
 | 源码根 | `Minecraft迁移工具\`（Tk 主进程 + Qt 子进程） |
 | Python | 3.12（`python -V` 自行确认；作者机器 3.12.4） |
 | 远端 | `https://github.com/Dreamtell/Minecraft-Migration-Tool.git` |
