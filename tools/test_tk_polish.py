@@ -335,5 +335,24 @@ class LightWindowTests(unittest.TestCase):
         _pump(self.root, 1.0)
 
 
+
+class LogToolbarBindingTests(unittest.TestCase):
+    """日志工具栏的 <Configure> 绑定不能把 WrapRow 自己的那一个顶掉。
+
+    为什么：`WrapRow.__init__` 用 `bind("<Configure>", self._schedule)` 做按宽度换行；
+    `mw_pages` 后来再 `bind("<Configure>", _fit_hint)` 没带 `add="+"` 的话，Tk 会整条
+    替换掉 —— 拉窗口宽度时这排按钮不再重新换行，英文文案就被裁。Tk 每次 `bind()` 返回
+    的是全部回调拼起来的脚本，一个回调一行 `if {...} break`，数它就知道有没有被顶掉。
+    """
+
+    def setUp(self):
+        self.root, self.gui = _app()
+
+    def test_wraproll_and_hint_fit_both_bound(self):
+        script = str(self.gui.log_toolbar.bind("<Configure>") or "")
+        self.assertGreaterEqual(script.count('" == "break"}'), 2,
+                                "只挂了一个 <Configure> 回调，WrapRow 的换行被顶掉了：%r" % script)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

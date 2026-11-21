@@ -647,16 +647,9 @@ class SmoothScroller:
             self._abort("after(续帧)")
 
 
-def _hwnd_of(win):
-    """取窗口的 HWND（Tk 主窗口 / Toplevel 都行）。"""
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        user32.GetParent.restype = ctypes.c_void_p
-        user32.GetParent.argtypes = [ctypes.c_void_p]
-        return user32.GetParent(ctypes.c_void_p(win.winfo_id())) or win.winfo_id()
-    except Exception:
-        return None
+# 注：这里原来还有一份简版 `_hwnd_of`，被文件后面那份（支持 Tk/Qt/纯 HWND、
+# 取最外层）静默覆盖，等于死代码，已删。两版失败返回值不同（None / 0），
+# 留着容易删错。tools/test_source_hygiene.py 会挡住同类重复定义。
 
 
 def is_dark_theme(theme):

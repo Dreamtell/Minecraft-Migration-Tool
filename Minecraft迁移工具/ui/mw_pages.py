@@ -998,7 +998,9 @@ class PagesMixin:
             except Exception:
                 pass
 
-        log_toolbar.bind("<Configure>", _fit_hint)
+        # add="+"：WrapRow 自己也绑了 <Configure> 做按宽度换行，这里直接 bind 会把它顶掉，
+        # 拉窗口时这排就不再重排（英文按钮被裁）。追加，两个回调都留。
+        log_toolbar.bind("<Configure>", _fit_hint, add="+")
         self.root.after(200, _fit_hint)          # 首帧也判一次（<Configure> 未必触发）
         # 窗口能缩到多窄，由这排按钮决定：主窗口以前**没设过 minsize**，拉到 640 时
         # ⚠ 最小宽度的计算挪到**所有区都建完**之后（见 _apply_button_layout 之前那处）：

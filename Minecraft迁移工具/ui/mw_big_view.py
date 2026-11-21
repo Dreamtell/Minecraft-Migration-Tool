@@ -1392,7 +1392,9 @@ class BigViewMixin:
             card.grid(row=0, column=0, sticky="nsew")
             card.grid_remove()
             # 换主题时由 mw_theme 先调它：config 图标的键带深浅，不重建行就一直拿旧主题的图
-            card._rebuild_rows = (lambda: card.set_rows(card_rows())) if not is_mod else None
+            # keep_view=True：切主题只是换图标深浅，不该把用户弹回顶部
+            card._rebuild_rows = ((lambda: card.set_rows(card_rows(), keep_view=True))
+                                  if not is_mod else None)
             if not hasattr(self, '_big_view_cards'):
                 self._big_view_cards = []
             self._big_view_cards.append(card)

@@ -216,5 +216,44 @@ class CardListVirtualizationTests(unittest.TestCase):
         self.assertIn(("fallback", id(None)), widget._photos)  # 先给兜底
 
 
+
+    def test_keep_view_rebuild_preserves_scroll_and_highlight(self):
+        """换主题重建行不能把用户弹回顶部：行没变，只是图标键换了深浅。
+
+        切主题时 `mw_theme` 会调 `_rebuild_rows()` → `set_rows()`；以前它一律把
+        `_top/_hover/_sel` 清零，放大查看的 config 卡片视图一切主题就跳回顶部。
+        """
+        widget = self.make_list()
+        widget.rows = [{"index": i} for i in range(200)]
+        widget._top = 640.0
+        widget._hover = 3
+        widget._sel = 5
+
+        ModCardList.set_rows(widget, list(widget.rows), keep_view=True)
+        self.assertAlmostEqual(widget._top, 640.0)
+        self.assertEqual((widget._hover, widget._sel), (3, 5))
+
+    def test_plain_set_rows_still_resets_to_top(self):
+        """默认行为不能变：真正换了数据（重新扫描）就该回到顶部。"""
+        widget = self.make_list()
+        widget.rows = [{"index": i} for i in range(200)]
+        widget._top = 640.0
+        widget._hover = 3
+        widget._sel = 5
+
+        ModCardList.set_rows(widget, list(widget.rows))
+        self.assertEqual(widget._top, 0.0)
+        self.assertEqual((widget._hover, widget._sel), (-1, -1))
+
+    def test_keep_view_clamps_when_rows_shrink(self):
+        """行数变少时保留的位置要夹回合法范围，不能停在空白里。"""
+        widget = self.make_list()
+        widget.rows = [{"index": i} for i in range(200)]
+        widget._top = 12000.0
+
+        ModCardList.set_rows(widget, [{"index": i} for i in range(10)], keep_view=True)
+        self.assertLessEqual(widget._top, widget._max_top() + 0.01)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

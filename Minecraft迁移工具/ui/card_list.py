@@ -320,14 +320,26 @@ class ModCardList(tk.Frame):
                                      for x0, y0, x1, y1, a in r]
 
     # ------------------------------------------------------------------ 数据
-    def set_rows(self, rows):
-        """rows: [{title, subtitle, version, desc, icon_key, ...}]"""
+    def set_rows(self, rows, keep_view=False):
+        """rows: [{title, subtitle, version, desc, icon_key, ...}]
+
+        keep_view=True：保留滚动位置和悬停/选中高亮。换主题重建行时用 —— 行数、顺序
+        都没变，只是图标键换了深浅，不该把用户弹回顶部。位置会被夹回合法范围。
+        """
+        top = self._top if keep_view else 0.0
+        hover = self._hover if keep_view else -1
+        sel = self._sel if keep_view else -1
         self.rows = list(rows or [])
-        self._top = 0.0
+        # 行数可能变了（保留视图时一般没变）：夹回合法范围，别停在空白里
+        try:
+            top = max(0.0, min(self._max_top(), top))
+        except Exception:
+            top = 0.0
+        self._top = top
         # _elide_cache 不清：同一个字符串+同一个宽度，截断结果恒定，清掉只会在
         # 后台元数据刷新（set_rows 被反复调用）时白算一遍。上限 800 条自动兜住。
-        self._hover = -1
-        self._sel = -1
+        self._hover = hover
+        self._sel = sel
         self._update_scrollbar()
         self._render(force=True)
 
