@@ -122,7 +122,9 @@ class PresetMenuTests(_WinBase):
         self.assertIn("add_extra_preset", self.w._btn_widgets)
         self.assertIn("add_extra_preset", LABELS)
         order = DEFAULT_ORDER["extra"]
-        self.assertEqual(order[:2], ["add_extra_options", "add_extra_preset"])   # 同 Tk:紧跟 options.txt
+        # 同 Tk 的 _DEFAULT_BUTTON_ORDER:添加文件夹 / 添加文件 / options.txt / 常用目录(紧跟 options.txt)
+        self.assertEqual(order[:4], ["add_extra_dir", "add_extra_file", "add_extra_options",
+                                     "add_extra_preset"])
         self.assertEqual(self.w._btn_widgets["add_extra_preset"].text(), "＋ 常用目录 ▾")
 
     def test_button_is_locked_while_busy(self):

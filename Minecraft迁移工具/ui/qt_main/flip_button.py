@@ -176,6 +176,15 @@ class FlipButton(QtWidgets.QPushButton):
         self._back_t0 = time.perf_counter()
         self._start_flip("back", +1)
 
+    def set_back_text(self, text=None):
+        """Update the reverse-side label without changing the front label."""
+        value = "" if text is None else str(text)
+        self._labels["back"] = value
+        if self._target == "back":
+            super().setText(value)
+        self.updateGeometry()
+        self.update()
+
     def flip_to_front(self, text=None, done=None):
         if text is not None:
             self._labels["front"] = str(text)

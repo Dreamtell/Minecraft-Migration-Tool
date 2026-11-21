@@ -23,6 +23,7 @@ from utils import history_store  # noqa: E402
 from utils import fx  # noqa: E402
 from utils import secrets  # noqa: E402
 from ui.qt_main.star_slider import StarSliderCard  # noqa: E402
+from ui.qt_main.dialog_style import apply_button_styles, set_button_kind, set_muted_label, theme_for  # noqa: E402
 
 # 外部链接:抄自 ui/mw_common.py 的 LINK_* (那个模块顶层 import tkinter,Qt 进程不能导入它;
 # 测试里断言两边一致)。
@@ -95,6 +96,10 @@ def ask_close_action(parent):
     btn_tray.clicked.connect(lambda: pick("tray"))
     btn_exit.clicked.connect(lambda: pick("exit"))
     btn_cancel.clicked.connect(dlg.reject)
+    set_button_kind(btn_tray, "add")
+    set_button_kind(btn_exit, "danger")
+    set_button_kind(btn_cancel, "neutral")
+    apply_button_styles(dlg)
     btn_tray.setDefault(True)
     dlg.exec()
     return result["action"], remember.isChecked()
@@ -114,6 +119,7 @@ class SettingsDialog(QtWidgets.QDialog):
         fit_window(self, 480, 560, 520, 860)
         cfg = dict(config or {})
         self._cfg = cfg                      # 试听结束后据此还原音效开关
+        self._theme = theme_for(self, str(cfg.get("theme", "light") or "light"))
 
         form = QtWidgets.QFormLayout()
         form.setContentsMargins(16, 16, 16, 8)
@@ -138,7 +144,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow(self.fx_card)
         fx_note = QtWidgets.QLabel(tr("※ 关掉后没有启动动画、边缘粒子和消息卡片动画，按钮翻得最干脆"))
         fx_note.setWordWrap(True)
-        fx_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(fx_note, self._theme)
         form.addRow("", fx_note)
 
         # 语言(重启生效)
@@ -148,7 +154,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._select_by_data(self.lang_combo, i18n.language(), 0)
         form.addRow(tr("语言"), self.lang_combo)
         lang_note = QtWidgets.QLabel(tr("※ 语言切换在下次启动后完全生效"))
-        lang_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(lang_note, self._theme)
         form.addRow("", lang_note)
 
         # 其它文件同名冲突策略
@@ -167,11 +173,11 @@ class SettingsDialog(QtWidgets.QDialog):
             "迁移只带「其它文件」清单里列出的东西（还有模组 / config / 存档这三个清单）。\n"
             "清单是唯一依据：不在这里的一律不动。常用目录在「其它文件」页用「＋ 常用目录」加，"
             "加完能看见、能改、能删。"))
-        extra_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(extra_note, self._theme)
         extra_note.setWordWrap(True)
         form.addRow(extra_note)
         self.extra_status_label = QtWidgets.QLabel(self._extra_status_from_parent())
-        self.extra_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(self.extra_status_label, self._theme)
         self.extra_status_label.setWordWrap(True)
         form.addRow(self.extra_status_label)
 
@@ -203,7 +209,7 @@ class SettingsDialog(QtWidgets.QDialog):
         rollback_note = QtWidgets.QLabel(
             tr("注：回滚对话框里勾「记住我的选择」会用那一次的选择覆盖这里。"))
         rollback_note.setWordWrap(True)
-        rollback_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(rollback_note, self._theme)
         form.addRow("", rollback_note)
         if not any(cb.isChecked() for cb in self._rollback_checks.values()):
             self._rollback_checks["mods"].setChecked(True)        # 脏配置(类别名全不认识)至少留 mods
@@ -302,11 +308,11 @@ class SettingsDialog(QtWidgets.QDialog):
             "关闭时按关键词推测（标注“推测”的就是它）。开启后扫描会在后台联网查询，"
             "结果缓存到本地；断网或匹配不到时自动沿用推测结果。"))
         tags_note.setWordWrap(True)
-        tags_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(tags_note, self._theme)
         form.addRow("", tags_note)
         self.tag_cache_label = QtWidgets.QLabel()
         self.tag_cache_label.setWordWrap(True)
-        self.tag_cache_label.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(self.tag_cache_label, self._theme)
         self._update_tag_cache_label()
         form.addRow("", self.tag_cache_label)
 
@@ -320,6 +326,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cf_save_btn = QtWidgets.QPushButton(tr("保存"))
         self.cf_test_btn = QtWidgets.QPushButton(tr("测试"))
         self.cf_clear_btn = QtWidgets.QPushButton(tr("清除"))
+        set_button_kind(self.cf_save_btn, "add")
+        set_button_kind(self.cf_test_btn, "neutral")
+        set_button_kind(self.cf_clear_btn, "danger")
         for b in (self.cf_save_btn, self.cf_test_btn, self.cf_clear_btn):
             b.setAutoDefault(False)          # 在输入框里回车别顺手触发「确定」
             key_row.addWidget(b)
@@ -329,7 +338,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow(key_row)
         self.cf_status_label = QtWidgets.QLabel()
         self.cf_status_label.setWordWrap(True)
-        self.cf_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(self.cf_status_label, self._theme)
         form.addRow(self.cf_status_label)
         self._cf_testing = False
         self._cf_test_done.connect(self._on_cf_test_done)
@@ -340,6 +349,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.sfx_check.setChecked(bool(cfg.get("sfx_on", False)))
         sfx_row.addWidget(self.sfx_check)
         self.sfx_test_btn = QtWidgets.QPushButton(tr("▶ 试听"))
+        set_button_kind(self.sfx_test_btn, "neutral")
         self.sfx_test_btn.clicked.connect(self._test_sfx)
         sfx_row.addWidget(self.sfx_test_btn)
         sfx_row.addStretch()
@@ -364,7 +374,7 @@ class SettingsDialog(QtWidgets.QDialog):
                              str(cfg.get("main_window_backend", "qt") or "qt"), 0)
         form.addRow(tr("主界面实现"), self.backend_combo)
         backend_note = QtWidgets.QLabel(tr("※ 切换主界面实现在下次启动后生效"))
-        backend_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(backend_note, self._theme)
         form.addRow("", backend_note)
 
         # 快捷链接(与 Tk 版设置窗「快捷链接」区同四个入口,点了立即打开,不等「确定」)
@@ -373,6 +383,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.link_buttons = {}
         for key, label, url in _LINKS:
             btn = QtWidgets.QPushButton(tr(label))
+            set_button_kind(btn, "neutral")
             btn.setToolTip(url)
             btn.clicked.connect(lambda _=False, u=url: self.open_link(u))
             link_row.addWidget(btn)
@@ -381,13 +392,15 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow(link_row)
         link_note = QtWidgets.QLabel(LINK_GITHUB + tr(
             "\nMC百科：中文模组资料库　·　PCL：整合包启动器　·　欢迎反馈问题或提交建议。"))
-        link_note.setStyleSheet("color: #888; font-size: 11px;")
+        set_muted_label(link_note, self._theme)
         link_note.setWordWrap(True)
         form.addRow(link_note)
 
         # 按钮
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        set_button_kind(buttons.button(QtWidgets.QDialogButtonBox.Ok), "add")
+        set_button_kind(buttons.button(QtWidgets.QDialogButtonBox.Cancel), "neutral")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
@@ -411,6 +424,7 @@ class SettingsDialog(QtWidgets.QDialog):
         bar_lay.addStretch(1)
         bar_lay.addWidget(buttons)
         root.addWidget(bar)
+        apply_button_styles(self, self._theme)
 
     def _extra_status_from_parent(self):
         """从主窗口取「其它文件」清单和源路径;没有主窗口(测试/独立打开)时当作空清单。"""

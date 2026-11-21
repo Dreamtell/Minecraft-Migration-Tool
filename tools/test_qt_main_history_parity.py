@@ -218,6 +218,14 @@ class _WinBase(unittest.TestCase):
 
 
 class HistoryDialogViewTests(_WinBase):
+    def test_history_actions_have_semantic_button_kinds(self):
+        d = self.dialog()
+        self.assertEqual(d.zoom_btn.property("kind"), "neutral")
+        self.assertEqual(d.rollback_btn.property("kind"), "danger")
+        self.assertEqual(d.apply_btn.property("kind"), "neutral")
+        self.assertEqual(d.delete_btn.property("kind"), "danger")
+        self.assertEqual(d.clear_btn.property("kind"), "danger")
+
     def test_history_dir_is_the_temp_one(self):
         self.assertTrue(str(history_store._root()).startswith(str(Path(_tmp.name))))
 
@@ -488,12 +496,14 @@ class HistoryDialogConfirmTests(_WinBase):
             seen["default"] = box.defaultButton().text()
             seen["text"] = box.text()
             seen["buttons"] = [b.text() for b in box.buttons()]
+            seen["kinds"] = [b.property("kind") for b in box.buttons()]
             return 0
         with mock.patch.object(QtWidgets.QMessageBox, "exec", fake_exec):
             go = d._confirm_rollback(rec(), {"mods", "config"})
         self.assertFalse(go)                                           # 没点「回滚」
         self.assertEqual(seen["default"], "先不滚")                    # 回车不会误回滚
         self.assertEqual(seen["buttons"], ["回滚", "先不滚"])
+        self.assertEqual(seen["kinds"], ["danger", "neutral"])
 
     def test_confirm_rollback_text_is_complete(self):
         d = self.dialog()
