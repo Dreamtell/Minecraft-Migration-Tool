@@ -122,6 +122,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "从变更日志导入（含 Updated）": "Import from changelog (Updated)",
     "每行一个 .jar 文件名（可从更新日志导入，点「添加模组」，或直接拖进来）":
         "One .jar per line (import from a changelog, pick with 'Add mods', or drag jars / a whole mods folder in)",
+    # Tk 主界面用的是这句（没有"可从变更日志导入"），和上面 Qt 版的键不是同一个串
+    "每行一个 .jar 文件名（点「添加模组」选，"
+    "或直接把 jar / mods 文件夹拖进来）。同名匹配不区分大小写，改过名的也能对上。":
+        "One .jar per line (pick with \"Add mods\", or drag jars / a whole mods folder in). "
+        "Name matching ignores case, so renamed files still match.",
     "每行一个相对路径，格式: config/<路径>（可从整合包复制，或点「添加配置」）":
         "One relative path per line (config/<path>): copy from a pack, or pick with 'Add configs'",
     "每行一个相对路径，如 options.txt（可从整合包复制，或点「添加文件」）":
@@ -2165,8 +2170,6 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "⚠️ No .jar found in the folder(s) ({0} folders)",
     "📂 从文件夹里加了 {0} 个模组":
         "📂 Added {0} mods from the folder",
-    "　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。":
-        "  ⚠ Drag & drop unavailable (tkinterdnd2 missing) — use the \"Add mods\" button.",
     "　⚠ 拖放不可用（缺少 tkinterdnd2），请用「添加模组」按钮。":
         "　⚠ Drag-and-drop unavailable (tkinterdnd2 missing) — use the \"Add mods\" button.",
     "⚠️ 模拟中...":
