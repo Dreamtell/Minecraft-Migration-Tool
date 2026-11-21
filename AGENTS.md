@@ -11,6 +11,8 @@
   （含设置/托盘/浮标/历史/翻转按钮/星空滑块），`ui/qt_host.py` 是 Tk 主进程叫起 Qt 窗口的子进程宿主
 - `Minecraft迁移工具/utils/` —— i18n、动画、DPI、音效、国旗等基础设施
 - `docs/HANDOFF.md` —— 架构、约定、踩坑（最权威，先看它）
+- `docs/AGENT_COLLAB.md` —— **多个 agent 协作与接手**：分支归属、交接动作、危险命令、
+  故障速查、检查表（换机器 / 多人并行的纪律，出事前先读它）
 - `docs/HANDOFF-flip-button.md` —— 「开始迁移」3D 翻转按钮的交接
 - `docs/RELEASE_v5.0.0_body.md` —— 发布正文模板
 - `打包_命令行.bat` —— 打包入口（在仓库根，不在产品目录）
