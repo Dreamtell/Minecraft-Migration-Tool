@@ -2,7 +2,7 @@
 """「特效强度」4 档（utils/fx.py）的测试。
 
 覆盖：档位归一化、预设表、派生键、配置读写与老配置兼容、
-毫秒缩放、Qt 设置窗的滑块↔档位映射、Tk 设置窗的落地逻辑、
+毫秒缩放、Qt 设置窗的分段控件↔档位映射（改完即落地）、Tk 设置窗的落地逻辑、
 吐司/浮标在「关闭」档的行为、闪屏在「关闭」档的 0 粒子。
 """
 import os
@@ -101,8 +101,19 @@ class FxPresetTests(unittest.TestCase):
         self.assertEqual(fx.bootstrap(None), fx.DEFAULT)
 
 
+class _RecordingHost(QtWidgets.QWidget):
+    """设置窗的 parent：只记录每一次「改了就落地」的调用。"""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def _apply_settings(self, values, silent=False):
+        self.calls.append((dict(values), silent))
+
+
 class QtSettingsFxTests(unittest.TestCase):
-    """设置窗：星空滑块 4 档 ↔ 派生键。"""
+    """设置窗：特效强度分段控件 4 档 ↔ 派生键；改动立即落地。"""
 
     def setUp(self):
         self._old = fx.current()
@@ -112,23 +123,26 @@ class QtSettingsFxTests(unittest.TestCase):
     def tearDown(self):
         fx.set_level(self._old)
 
-    def _dialog(self, **cfg):
-        dlg = self.Dialog(None, dict({"theme": "dark"}, **cfg))
+    def _dialog(self, parent=None, **cfg):
+        dlg = self.Dialog(parent, dict({"theme": "dark"}, **cfg))
         dlg.show()
         APP.processEvents()
         return dlg
 
     def test_dialog_has_four_stop_slider_starting_at_level(self):
+        """原意：档位控件正好有 len(LEVELS) 个停靠点，且按配置的档位开始。"""
         dlg = self._dialog(fx_level="light")
-        stops = dlg.fx_card.stops()
-        self.assertEqual(len(stops), len(fx.LEVELS))
-        self.assertAlmostEqual(dlg.fx_card.value(), 1.0 / 3.0, places=3)
+        levels = [item[1] for item in dlg.fx_seg.items()]
+        self.assertEqual(len(levels), len(fx.LEVELS))
+        self.assertEqual(levels, list(fx.LEVELS))       # 没有多出来的中间档
+        self.assertEqual(dlg.fx_seg.value(), "light")   # 从配置里那一档开始
         dlg.close()
 
     def test_values_map_each_level_to_derived_keys(self):
+        """原意：拨到每一档，values() 都给该档派生出的三个键。"""
         dlg = self._dialog(fx_level="standard")
-        for idx, lv in enumerate(fx.LEVELS):
-            dlg.fx_card.setValue(idx / 3.0)
+        for lv in fx.LEVELS:
+            dlg.fx_seg.setValue(lv, emit=True)
             APP.processEvents()
             vals = dlg.values()
             p = fx.preset(lv)
@@ -139,20 +153,58 @@ class QtSettingsFxTests(unittest.TestCase):
         dlg.close()
 
     def test_slider_snaps_between_levels(self):
+        """原意：中间位置不会得到「半档」，总会落到某一个确定档位。
+
+        分段控件没有连续值，等价契约是：任意点击位置（包括两段交界处）
+        都解析成恰好四个档位之一，且落在哪一段就选中哪一档。
+        """
+        from PySide6.QtTest import QTest
+
         dlg = self._dialog(fx_level="full")
-        dlg.fx_card.setValue(0.55)
-        APP.processEvents()
-        self.assertEqual(dlg.values()["fx_level"], "standard")
-        dlg.fx_card.setValue(0.05)
-        APP.processEvents()
-        self.assertEqual(dlg.values()["fx_level"], "off")
+        seg = dlg.fx_seg
+        seg_w = seg._seg_w()
+        for idx, lv in enumerate(fx.LEVELS):
+            for frac in (0.04, 0.5, 0.96):              # 段内与交界附近的 x
+                x = int(2 + seg_w * (idx + frac))
+                QTest.mouseClick(seg, QtCore.Qt.LeftButton,
+                                 QtCore.Qt.NoModifier,
+                                 QtCore.QPoint(x, seg.height() // 2))
+                APP.processEvents()
+                got = dlg.values()["fx_level"]
+                self.assertIn(got, fx.LEVELS)            # 永远不是中间值
+                self.assertEqual(got, lv)                # 点在哪段就是哪档
         dlg.close()
 
     def test_dialog_does_not_touch_cache_until_applied(self):
+        """原意：「没点应用之前什么都不变」。
+
+        新契约没有确定/取消：改一下就立即按 silent=True 交给主窗口落地。
+        等价断言：仅打开设置窗不落地、不碰缓存；一次改动恰好落地一次；
+        关掉窗口不会补落一次（不存在「取消」这回事）。
+        """
         fx.set_level("standard")
-        dlg = self._dialog(fx_level="off")
-        self.assertEqual(fx.current(), "standard")
+        host = _RecordingHost()
+        host.show()
+        dlg = self._dialog(host, fx_level="off")
+        self.assertEqual(host.calls, [])                 # 打开窗口本身不改设置
+        self.assertEqual(fx.current(), "standard")       # 缓存也没被动
+
+        dlg.fx_seg.setValue("full", emit=True)
+        APP.processEvents()
+        self.assertEqual(len(host.calls), 1)             # 一次改动 = 一次落地
+        vals, silent = host.calls[0]
+        self.assertTrue(silent)
+        self.assertEqual(vals["fx_level"], "full")
+        self.assertEqual(vals["splash"], fx.preset("full")["splash"])
+        self.assertEqual(vals["start_btn_feel"], fx.preset("full")["feel"])
+
+        texts = {b.text() for b in dlg.findChildren(QtWidgets.QPushButton)}
+        self.assertFalse(texts & {"确定", "取消", "OK", "Cancel"})
+
         dlg.close()
+        APP.processEvents()
+        self.assertEqual(len(host.calls), 1)             # 关闭时不再补落地
+        host.close()
 
 
 class TkSettingsFxTests(unittest.TestCase):

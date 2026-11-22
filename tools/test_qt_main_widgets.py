@@ -57,7 +57,7 @@ class FlipButtonTests(unittest.TestCase):
         self.btn._anim_t0 = time.perf_counter()
         self.btn._f = 0.5
         img = grab(self.btn)
-        mid = QtGui.QColor(img.pixel(80, 19))
+        mid = QtGui.QColor(img.pixel(80, self.btn.height() // 2))
         off = QtGui.QColor(img.pixel(80, 5))
         self.assertGreater(mid.green(), 150)          # 2px accent 亮线
         self.assertLess(off.green(), 60)               # 其余透出底色

@@ -179,8 +179,106 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(v["rename_migrated_mods"])
         self.assertEqual(v["rename_marker"], "✦")
         self.assertTrue(v["silent_background"])
-        d.rename_check.setChecked(False)
-        self.assertFalse(d.marker_combo.isEnabled())             # 没开标记时符号选择灰掉
+        # 新契约：没有「确定/取消」，开关一按就立刻落到主窗口并写进配置
+        self.assertTrue(d.rename_switch.isChecked())
+        d.rename_switch.toggle()
+        self.assertFalse(d.values()["rename_migrated_mods"])
+        self.assertFalse(self.w.config["rename_migrated_mods"])
+        self.assertFalse(_cfg.load_raw_config()["rename_migrated_mods"])
+        # 预览行同 Tk：关着也把符号画出来，方便先挑
+        self.w.config["rename_migrated_mods"] = False
+        d2 = SettingsDialog(self.w, self.w.config)
+        self.assertIn("✦", d2.marker_preview.text())
+        self.assertIn("create-1.20.1-6.0.9.jar", d2.marker_preview.text())
+        # 按开关 / 换符号都要当场刷新预览（Tk 的 _toggle_rename_marker / _set_rename_marker）
+        d2.rename_switch.toggle()
+        self.assertIn("已开启", d2.marker_preview.text())
+        d2.marker_seg.setValue("NEW_", emit=True)
+        self.assertIn("NEW_", d2.marker_preview.text())
+
+    def test_open_link_reports_success_and_failure(self):
+        """Tk 的 open_link 成功给提示、失败弹错误框；Qt 不能默默吞掉。"""
+        from ui.qt_main.settings import SettingsDialog
+        d = SettingsDialog(self.w, self.w.config)
+        toasts = []
+        with mock.patch.object(self.w, "toast", lambda *a, **k: toasts.append(a[0])), \
+                mock.patch("webbrowser.open", return_value=True):
+            d.open_link("https://example.com")
+        self.assertTrue(any("example.com" in t for t in toasts))
+        with mock.patch("webbrowser.open", side_effect=OSError("没默认浏览器")), \
+                mock.patch.object(QtWidgets.QMessageBox, "warning") as warn:
+            d.open_link("https://example.com")
+        self.assertEqual(warn.call_count, 1)
+        self.assertIn("没默认浏览器", warn.call_args[0][2])
+
+    def test_settings_window_is_a_non_modal_singleton(self):
+        """同 Tk 的 open_settings：已经开着就聚焦，不重复开；设置开着也能操作主窗口。"""
+        self.w._open_settings()
+        d1 = self.w._settings_dlg
+        self.assertIsNotNone(d1)
+        self.assertFalse(d1.isModal())
+        self.w._open_settings()
+        self.assertIs(self.w._settings_dlg, d1)              # 没有开第二个
+        d1.close()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        pump(20)
+        self.assertIsNone(self.w._settings_dlg)              # 关掉后引用被清空
+        self.w._open_settings()
+        self.assertIsNot(self.w._settings_dlg, d1)           # 下次能重开
+
+    def test_language_switch_restarts_after_a_short_delay(self):
+        """同 Tk：写目标语言 → 提示「正在重启…」→ 650ms 后才真正重启（界面不当场翻）。"""
+        from ui.qt_main.settings import SettingsDialog
+        calls, toasts = [], []
+        self.w.restart_app = lambda: calls.append(1)
+        # 这个用例真会写 language=en；用完必须还原，否则后面的用例建窗口时
+        # 按配置把 i18n 切成英文，断言里的中文文案全对不上。
+        self.addCleanup(_cfg.save_raw_config, {"language": "zh"})
+        d = SettingsDialog(self.w, self.w.config)
+
+        class _Box:
+            Question = 0
+            AcceptRole = object()
+            RejectRole = object()
+
+            def __init__(self, *a, **k):
+                self._buttons, self._clicked = {}, None
+
+            def setIcon(self, *a):
+                pass
+
+            def setWindowTitle(self, *a):
+                pass
+
+            def setText(self, *a):
+                pass
+
+            def addButton(self, text, role):
+                self._buttons[text] = object()
+                return self._buttons[text]
+
+            def setDefaultButton(self, b):
+                pass
+
+            def exec(self):
+                self._clicked = [v for k, v in self._buttons.items()
+                                 if "重启" in k and "稍后" not in k][0]
+
+            def clickedButton(self):
+                return self._clicked
+
+        with mock.patch.object(self.w, "toast", lambda *a, **k: toasts.append(a[0])), \
+                mock.patch("ui.qt_main.settings.QtWidgets.QMessageBox", _Box):
+            d._change_language("en")
+        self.assertEqual(calls, [])                          # 不是立刻重启
+        self.assertTrue(any("正在重启" in t for t in toasts))
+        self.assertEqual(_cfg.load_raw_config().get("language"), "en")
+        pump(750)
+        self.assertEqual(calls, [1])
+
+    def test_top_bar_matches_tk(self):
+        """Tk 顶栏只有 ⚙ 和主题按钮；「界面按钮」只在设置窗（第 4 页）。"""
+        self.assertFalse(hasattr(self.w, "buttons_btn"))
 
     def test_force_foreground_never_raises_and_is_called_on_show(self):
         with mock.patch.object(self.w, "_force_foreground") as ff:
@@ -352,13 +450,17 @@ class ScrollSpeedSettingsTests(unittest.TestCase):
         from ui.qt_main.settings import SettingsDialog
         self.w.config["scroll_speed"] = 5
         d = SettingsDialog(self.w, self.w.config)
-        self.assertEqual(d.scroll_speed_spin.value(), 5)
+        self.assertEqual(d.scroll_stepper.value(), 5)
         self.assertEqual(d.values()["scroll_speed"], 5)
-        d.scroll_speed_spin.setValue(2)
+        d.scroll_stepper.setValue(2)
         self.assertEqual(d.values()["scroll_speed"], 2)
-        self.assertEqual((d.scroll_speed_spin.minimum(), d.scroll_speed_spin.maximum()), (1, 5))
+        # 范围 1–5：步进器自己夹住越界值
+        d.scroll_stepper.setValue(9)
+        self.assertEqual(d.scroll_stepper.value(), 5)
+        d.scroll_stepper.setValue(0)
+        self.assertEqual(d.scroll_stepper.value(), 1)
         self.w.config["scroll_speed"] = "坏值"                  # 配置里是脏数据 → 回默认 3,不抛
-        self.assertEqual(SettingsDialog(self.w, self.w.config).scroll_speed_spin.value(), 3)
+        self.assertEqual(SettingsDialog(self.w, self.w.config).scroll_stepper.value(), 3)
 
     def test_apply_settings_takes_effect_immediately_and_persists(self):
         from ui.qt_big_view import _SmoothWheel

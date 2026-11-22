@@ -13,6 +13,7 @@
   里那个 GIL 致命错误的根源。app.py 走到这里之前只 import 了 tkinter 模块本身
   (没建 Tk()),不会起 Tcl 解释器,不冲突。
 """
+import os
 import sys
 import time
 from pathlib import Path
@@ -44,6 +45,36 @@ def _send_toast(title, msg):
         return True
     except Exception:
         return False
+
+
+def restart_app():
+    """重启自己（切语言后用，对应 Tk 版的 app.restart_app）。
+
+    Qt 主界面**就是主进程**（app.py 走 _run_qt 分支），所以这里起一个新进程、自己退出。
+    顺序和 Tk 版一致，关键是先放掉单实例锁：不放的话新进程一启动就被 tendo 判成
+    "已经在跑"，会自己退出。锁对象挂在 app.py 的全局 `_LOCK_HOLDER` 上，置 None 并
+    gc 一下，对象析构时才会真正释放文件锁。
+    """
+    try:
+        import gc
+        main = sys.modules.get("__main__")
+        if main is not None and getattr(main, "_LOCK_HOLDER", None) is not None:
+            main._LOCK_HOLDER = None
+            gc.collect()
+    except Exception:
+        pass
+    try:
+        import subprocess
+        参数 = [a for a in sys.argv[1:] if not a.startswith("--qt-host")]
+        if getattr(sys, "frozen", False):
+            # 打包后 sys.executable 就是 exe 本身，别再拼 app.py
+            命令 = [sys.executable] + 参数
+        else:
+            命令 = [sys.executable, os.path.abspath(sys.argv[0])] + 参数
+        subprocess.Popen(命令, close_fds=True)
+    except Exception:
+        pass
+    os._exit(0)
 
 
 def _ask_language_qt(QtWidgets, icon_path):
@@ -119,6 +150,9 @@ def run(icon_path=None):
 
     from ui.qt_main.window import QtMainWindow
     win = QtMainWindow()
+    # 设置页切语言后要能调它（设置窗按名字找 restart_app）；
+    # 测试里直接建 QtMainWindow 不走这里，拿不到就退回"请手动重启"。
+    win.restart_app = restart_app
 
     # 托盘:关窗不再退出,由 close_action 决定;没有系统托盘就退回"关窗即退出"
     tray = None

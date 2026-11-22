@@ -68,7 +68,10 @@ from utils import anim                                              # noqa: E402
 # 页签：设置窗口那套圆角药丸的 Qt 版（两边长得一样，才是同一套控件）
 
 ROLE_ITEM = QtCore.Qt.UserRole + 1     # 让委托直接拿到 Entry 对象
-CARD_H = 104                            # 卡片高度（固定，才能开启 uniformItemSizes）
+# 卡片高度对齐 Tk 版：ModCardList 是 ROW_H=64、GAP=6（卡面 58）。这里上下也各留一点
+# 外边距（见 CardDelegate.paint 的 rect 内缩），卡面 57px，和 Tk 的 58 基本一致。
+# 高度固定才开得齐 uniformItemSizes（不等高的话滚动范围要逐行问 sizeHint）。
+CARD_H = 64
 CARD_MARGIN = 5
 ICON_PX = 44
 RADIUS = 9
@@ -799,6 +802,27 @@ def _header_qss(th: dict) -> str:
             "QHeaderView::section:hover{background:%s;}"
             % (th.get("ttk_bg", "#eaeaea"), th.get("fg"), th.get("muted_fg"),
                th.get("hover_bg")))
+
+
+def _apply_table_fonts(view):
+    """表格字号对齐 Tk 版 VirtualTable：正文 12pt、表头 12pt 粗、表头高 32、行高 26。
+
+    Tk 建表时是 font=("微软雅黑", 12)、row_height=26、header_height=32，表头用同尺寸
+    粗体（mw_big_view.py:361、ui/virtual_table.py:143/305）。Qt 这边不显式设的话
+    吃的是全局 9pt，和 Tk 一比明显小一圈。
+    """
+    view.setFont(QtGui.QFont("Microsoft YaHei UI", 12))
+    hh = view.horizontalHeader()
+    hf = QtGui.QFont("Microsoft YaHei UI", 12)
+    hf.setBold(True)
+    hh.setFont(hf)
+    hh.setFixedHeight(32)
+    vh = view.verticalHeader()
+    # 12pt 的单元格 sizeHint 是 28（文字高 20 + 默认上下各 4 的边距），只设
+    # defaultSectionSize 会被它顶到 28；先封顶 26、再把默认行高压回 26，才和
+    # Tk 的 row_height=26 一致（顺序不能反：封顶前已经排好版的行不会被回头改小）
+    vh.setMaximumSectionSize(26)
+    vh.setDefaultSectionSize(26)                        # 行高保持 Tk 的 26
 
 
 class NetUsageChart(QtWidgets.QWidget):
@@ -1847,10 +1871,11 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         self.hover_row = -1
         self.hover_action = None
         self._pix = {}
-        self._f_title = QtGui.QFont("Microsoft YaHei UI", 10)
+        # 字号对齐 Tk 卡片（ui/card_list.py：标题 11pt 粗，副标题/描述/chip 都是 9pt）
+        self._f_title = QtGui.QFont("Microsoft YaHei UI", 11)
         self._f_title.setBold(True)
-        self._f_small = QtGui.QFont("Microsoft YaHei UI", 8)
-        self._f_tiny = QtGui.QFont("Microsoft YaHei UI", 8)
+        self._f_small = QtGui.QFont("Microsoft YaHei UI", 9)
+        self._f_tiny = QtGui.QFont("Microsoft YaHei UI", 9)
         self._f_icon = QtGui.QFont("Microsoft YaHei UI", 10)
 
     def sizeHint(self, option, index):
@@ -1881,10 +1906,10 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         return pm
 
     def _status_color(self, it):
-        """状态圆点色：调用方可以给 store 挂一个 `status_color(it)` 钩子。
+        """状态色：调用方可以给 store 挂一个 `status_color(it)` 钩子。
 
-        放大窗口的状态是"✅ 存在 / ❌ 缺失"，差异窗口是"新增 / 更新 / 目标独有" ——
-        后者通过钩子给色，没挂钩子就走原来的默认判据。
+        卡片上的状态现在是第二行的文字 chip（存在/缺失），这个颜色就拿来当它的底色；
+        放大窗口默认走"✅ 存在 / ❌ 缺失"那套判据，联网搜索/差异窗口通过钩子自己给色。
         """
         fn = getattr(self.store, "status_color", None)
         if fn is not None:
@@ -1897,6 +1922,30 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         return {"✅ 存在": self.theme.get("ok_fg", "#2e7d32"),
                 "❌ 缺失": _fail_red(self.theme)}.get(
                     it.status, self.theme.get("muted_fg", "#999999"))
+
+    def _status_chip(self, it):
+        """第二行最左边那个状态 chip：文字 + 底色（Tk 卡片的同款）。
+
+        Tk 里状态是"✅ 存在 / ❌ 缺失"（文字 chip，底 #2e7d32 / #c62828、白字、
+        高 17、圆角 8），差异窗口是"新增/更新/目标独有"（配色见 card_list.TAG_COLORS）。
+        这里同样按原文查色、显示时才翻；查不到再退到 store 的状态色钩子。
+        返回 (文字, 底色, 字色)；文字为空表示这张卡不画状态 chip（搜索列表的空状态）。
+        """
+        raw = str(getattr(it, "status", "") or "").strip()
+        if raw in ("", "…"):
+            # 放大查看刚建表时状态是"…"，Tk 把它显示成灰色的"检测中"；
+            # 搜索列表的空状态则根本不画 chip
+            if raw == "…":
+                return tr("检测中"), "#546e7a", "#ffffff"
+            return "", "", ""
+        label = raw.replace("✅", "").replace("❌", "").strip()
+        hit = {"存在": ("#2e7d32", "#ffffff"),
+               "缺失": ("#c62828", "#ffffff")}.get(label)
+        if hit is None:
+            hit = TAG_COLORS.get(raw) or TAG_COLORS.get(label)
+        if hit is None:
+            hit = (self._status_color(it), "#ffffff")
+        return tr(label), hit[0], hit[1]
 
     def _config_icon(self, it):
         """config 清单的卡片图标：文件夹 / 文件（带扩展名角标），区分一眼就看得出。
@@ -2001,14 +2050,8 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
             fg = QtGui.QColor(_fail_red(th))       # 出错条目：卡片标题也标红
         muted = QtGui.QColor(th.get("card_sel_fg" if sel > 0.5 else "muted_fg", "#777777"))
 
-        # ---- 状态圆点 + 图标 ----
-        # 放大窗口认的是 ✅ 存在 / ❌ 缺失；差异窗口的状态是"新增/更新/目标独有"，
-        # 所以让它通过 store.status_color(it) 自己给色（没有这个钩子就走默认那套）
-        dot_c = self._status_color(it)
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor(dot_c))
-        painter.drawEllipse(QtCore.QPointF(rect.left() + 11, rect.top() + 11), 3.5, 3.5)
-
+        # ---- 图标 ----
+        # 状态不再用圆点：Tk 卡片是第二行最左边的文字 chip（见下），这里只画图标
         ix = rect.left() + 14
         iy = rect.center().y() - ICON_PX / 2
         pm = (self._icon(it) if self.store.is_mod else self._config_icon(it)) \
@@ -2021,12 +2064,16 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         right_reserved = 8 + len(self.actions) * self.ACTION_W + 8
         tw = rect.right() - tx - right_reserved
 
-        # ---- 标题 / 副标题 ----
+        # ---- 第一行：标题（副标题紧跟在它右边，和 Tk 一样同一条线） ----
+        # 位置照 Tk 卡片：标题垂直中心在卡面顶部往下 13px（card_list.py 的 y0+16、
+        # 卡面从 y0+3 起），所以这里从 +3 起、按字体高度居中。
         painter.setFont(self._f_title)
         painter.setPen(fg)
+        title_h = max(16, painter.fontMetrics().height())
         title = self._elide(painter, it.title, tw)
-        painter.drawText(QtCore.QRectF(tx, rect.top() + 8, tw, 20),
+        painter.drawText(QtCore.QRectF(tx, rect.top() + 3, tw, title_h),
                          int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), title)
+        title_w = painter.fontMetrics().horizontalAdvance(title)
         painter.setFont(self._f_small)
         painter.setPen(muted)
         # 标题/副标题是**数据**（模组自己的名字），但里面可能夹着我们产的占位词
@@ -2036,38 +2083,53 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         sub = " · ".join(dict.fromkeys(sub_parts))
         if it.version and it.version != "?":
             sub = (sub + "  " if sub else "") + "v" + str(it.version)
-        painter.drawText(QtCore.QRectF(tx, rect.top() + 27, tw, 16),
-                         int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
-                         self._elide(painter, sub, tw))
+        sx = tx + title_w + 8
+        # 和 Tk 一样：右边至少留 60px 才画副标题，否则挤成一条缝不如不画
+        if sub and sx < tx + tw - 60:
+            painter.drawText(QtCore.QRectF(sx, rect.top() + 3, tx + tw - sx, title_h),
+                             int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
+                             self._elide(painter, sub, tx + tw - sx))
 
-        # ---- 标签 chip ----
-        chip_x = tx
-        chip_y = rect.top() + 48
+        # ---- 第二行：状态 chip（文字）+ 分类 chip + 描述，一条线上 ----
+        # Tk：chip 高 17、圆角 8，从卡面顶部往下 29px 起（y0+32）；描述紧跟 chip 后面
+        row2_y = rect.top() + 29
+        chip_h = 17.0
         painter.setFont(self._f_tiny)
         fm = painter.fontMetrics()
-        for tag in list(it.tags or [])[:5]:
+        cx = tx
+        chips = []
+        status_text, status_bg, status_fg = self._status_chip(it)
+        if status_text:
+            chips.append((status_text, status_bg, status_fg))
+        for tag in it.tags or []:
+            # 搜索卡片的状态本身也在 tags 里（"最相似"/"可更新"），别画两遍
+            if not tag or str(tag) == str(it.status or ""):
+                continue
             # 标签是**数据**（"科技" / "Fabric" 之类，查配色表用的就是原文），
             # 只有画到卡片上这一刻才翻 —— 颜色仍按原文查（见 _tag_color）
-            原 = str(tag)
-            label = tr(原)
-            w = fm.horizontalAdvance(label) + 12
-            if chip_x + w > tx + tw:
+            bgc, fgc = _tag_color(str(tag))
+            chips.append((tr(str(tag)), bgc, fgc))
+        for label, bgc, fgc in chips[:4]:      # Tk 也只画前 4 个
+            w = fm.horizontalAdvance(label) + 14
+            if cx + w > tx + tw - 120:         # 右边给描述留一段（Tk 同款）
                 break
-            bgc, fgc = _tag_color(原)
             painter.setPen(QtCore.Qt.NoPen)
             painter.setBrush(QtGui.QColor(bgc))
-            painter.drawRoundedRect(QtCore.QRectF(chip_x, chip_y, w, 15), 7.5, 7.5)
+            painter.drawRoundedRect(QtCore.QRectF(cx, row2_y, w, chip_h), 8, 8)
             painter.setPen(QtGui.QColor(fgc))
-            painter.drawText(QtCore.QRectF(chip_x, chip_y, w, 15),
+            painter.drawText(QtCore.QRectF(cx, row2_y, w, chip_h),
                              int(QtCore.Qt.AlignCenter), label)
-            chip_x += w + 4
+            cx += w + 5
 
-        # ---- 描述 ----
+        # ---- 描述：跟在 chip 后面，同一行（Tk 也是这么排的） ----
         if it.desc:
-            painter.setPen(muted)
-            painter.drawText(QtCore.QRectF(tx, rect.top() + 68, tw, 16),
-                             int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
-                             self._elide(painter, it.desc, tw))
+            gap = 6 if cx > tx else 0
+            dw = tx + tw - cx - gap
+            if dw > 20:
+                painter.setPen(muted)
+                painter.drawText(QtCore.QRectF(cx + gap, row2_y, dw, chip_h),
+                                 int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
+                                 self._elide(painter, it.desc, dw))
 
         # ---- 悬停操作图标 ----
         if hovered:
@@ -2769,9 +2831,9 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                          QtGui.QColor(th.get("card_sel_bar", "#2f7fd1")))
             pal.setColor(_grp, QtGui.QPalette.HighlightedText, QtGui.QColor("#ffffff"))
         self.table.setPalette(pal)
+        _apply_table_fonts(self.table)      # 正文 12pt、表头 12pt 粗、表头高 32（对齐 Tk）
         hh = self.table.horizontalHeader()
         hh.setStyleSheet(_header_qss(th))
-        hh.setFixedHeight(30)
         hh.setHighlightSections(False)
         for i, (_k, _t, w) in enumerate(SearchModel.COLS):
             self.table.setColumnWidth(i, w)
@@ -3675,11 +3737,11 @@ class QtBigView(QtWidgets.QWidget):
         # 固定行高：不固定的话 QTableView 每次都要逐行问 sizeHintForRow 才能算出滚动范围，
         # 上千行时滚动会一卡一卡
         self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
+        _apply_table_fonts(self.table)      # 正文 12pt、表头 12pt 粗、表头高 32（对齐 Tk）
         hh = self.table.horizontalHeader()
         hh.setSectionsClickable(True)
         hh.setSortIndicatorShown(True)
         hh.setHighlightSections(False)
-        hh.setFixedHeight(30)
         for i, (_k, _t, w) in enumerate(self.table_model.cols):
             self.table.setColumnWidth(i, w)
             hh.setSectionResizeMode(i, QtWidgets.QHeaderView.Interactive)

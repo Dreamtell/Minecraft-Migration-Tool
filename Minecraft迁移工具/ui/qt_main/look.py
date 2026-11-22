@@ -145,6 +145,9 @@ def button_rules(theme):
                'padding:0;font-size:8pt;}')
     out.append('QPushButton[iconOnly="true"]{padding:0;min-height:34px;max-height:34px;'
                'min-width:34px;max-width:34px;font-size:15pt;}')
+    # 主操作行的高按钮（同 Tk 的 btn_h = 44）:必须排在 kind 规则之后,
+    # 否则 kind 规则里的 min/max-height:30 会把 setFixedHeight 压回去。
+    out.append('QPushButton[tall="true"]{min-height:44px;max-height:44px;}')
     return "".join(out)
 
 
@@ -313,7 +316,7 @@ def build_qss(theme):
             color: {g("fg", "#000")};
         }}
         QProgressBar::chunk {{
-            background: {g("accent_fg", "#4a90d9")};
+            background: {g("card_sel_bar", "#2f7fd1")};
             border-radius: 3px;
         }}
         QCheckBox {{

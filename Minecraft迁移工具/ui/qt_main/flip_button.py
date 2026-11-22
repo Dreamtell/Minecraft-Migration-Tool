@@ -33,18 +33,18 @@ FACE_DISABLED = {"face_top": "#262626", "face_bot": "#111111",
                  "face_top_hover": "#262626", "face_bot_hover": "#111111",
                  "edge": "#4a4a4a", "edge_hot": "#4a4a4a", "accent": "#6e6e6e",
                  "title": "#9a9a9a"}
-FACE_IDLE_L = {"face_top": "#e9f6ee", "face_bot": "#cde7d8",
-               "face_top_hover": "#f3fbf6", "face_bot_hover": "#d8eee1",
-               "edge": "#9dbfab", "edge_hot": "#1f9d55", "accent": "#1f9d55",
-               "title": "#0d2a19"}
-FACE_SEARCH_L = {"face_top": "#fbebeb", "face_bot": "#f5d3d3",
-                 "face_top_hover": "#fdf5f5", "face_bot_hover": "#f8dede",
-                 "edge": "#d9a3a3", "edge_hot": "#cc2b2b", "accent": "#c62828",
-                 "title": "#4a0f0e"}
-FACE_DRY_L = {"face_top": "#fbf4e2", "face_bot": "#f2e4c3",
-              "face_top_hover": "#fdfaf0", "face_bot_hover": "#f7ecd2",
-              "edge": "#d3c39a", "edge_hot": "#b8791a", "accent": "#b8791a",
-              "title": "#3b2b09"}
+FACE_IDLE_L = {"face_top": "#2fb36a", "face_bot": "#1f8f52",
+               "face_top_hover": "#3cc678", "face_bot_hover": "#27a05d",
+               "edge": "#1a7a45", "edge_hot": "#8ff0b8", "accent": "#c6f7da",
+               "title": "#ffffff"}
+FACE_SEARCH_L = {"face_top": "#e5534b", "face_bot": "#c4302b",
+                 "face_top_hover": "#f0645b", "face_bot_hover": "#d33a34",
+                 "edge": "#a82722", "edge_hot": "#ffb3ae", "accent": "#ffd6d3",
+                 "title": "#ffffff"}
+FACE_DRY_L = {"face_top": "#f6c046", "face_bot": "#e3a21f",
+              "face_top_hover": "#fbcd5c", "face_bot_hover": "#eeb02e",
+              "edge": "#c08413", "edge_hot": "#fff1c2", "accent": "#7a4f05",
+              "title": "#3b2600"}
 FACE_DISABLED_L = {"face_top": "#f2f2f2", "face_bot": "#e4e4e4",
                    "face_top_hover": "#f2f2f2", "face_bot_hover": "#e4e4e4",
                    "edge": "#cfcfcf", "edge_hot": "#cfcfcf", "accent": "#bdbdbd",
@@ -147,10 +147,10 @@ class FlipButton(QtWidgets.QPushButton):
         self._timer.timeout.connect(self._tick)
         self.setAttribute(QtCore.Qt.WA_Hover, True)
         self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setMinimumHeight(38)
+        self.setMinimumHeight(44)
         f = self.font()
         f.setBold(True)
-        f.setPixelSize(15)
+        f.setPixelSize(19)          # Tk：14pt bold（96dpi ≈ 18.7px）
         self.setFont(f)
 
     # ---------------- 对外 ----------------
@@ -219,7 +219,7 @@ class FlipButton(QtWidgets.QPushButton):
         fm = QtGui.QFontMetrics(self.font())
         w = max(fm.horizontalAdvance(self._labels["front"]),
                 fm.horizontalAdvance(self._labels["back"] or "")) + 2 * 18 + 8
-        return QtCore.QSize(max(120, w), 38)
+        return QtCore.QSize(max(120, w), 44)
 
     def minimumSizeHint(self):
         return self.sizeHint()

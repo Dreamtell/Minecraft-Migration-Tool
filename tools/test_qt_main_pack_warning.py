@@ -150,7 +150,7 @@ class BusyLockTests(unittest.TestCase):
     def _locked(self):
         w = self.w
         return ([w._btn_widgets[k] for k in w._BUSY_LOCKED_KEYS]
-                + [w.settings_btn, w.theme_btn, w.buttons_btn, w.src_browse_btn,
+                + [w.settings_btn, w.theme_btn, w.src_browse_btn,
                    w.tgt_browse_btn] + list(w._path_btns.values()))
 
     def _inputs(self):
@@ -255,11 +255,16 @@ class SmallSettingsTests(unittest.TestCase):
         v = d.values()
         self.assertFalse(v["net_float_shadow"])
         self.assertTrue(v["msg_click_outside_close"])
-        d.float_shadow_check.setChecked(True)
-        d.msg_outside_check.setChecked(False)
+        # 新设置窗没有「确定/取消」:拨开关 = 用户操作,当场落到主窗口配置
+        d.float_shadow_switch.toggle()
+        d.msg_outside_switch.toggle()
+        self.assertTrue(self.w.config["net_float_shadow"])
+        self.assertFalse(self.w.config["msg_click_outside_close"])
         v = d.values()
         self.assertTrue(v["net_float_shadow"])
         self.assertFalse(v["msg_click_outside_close"])
+        d.close()
+        pump(30)
 
     def test_apply_settings_persists_both_keys(self):
         self.w._apply_settings({"theme": "dark", "net_float_shadow": False,

@@ -420,13 +420,23 @@ class QtMainWindow(QtWidgets.QMainWindow):
         return "☀" if is_dark else "🌙"          # 图标即可,提示文字在 tooltip 里(同 Tk)
 
     def _toggle_theme(self):
-        """浅/深主题切换:换 theme → 重套样式表 → 刷新手动上色的控件 → 存配置。"""
+        """浅/深主题切换:换 theme → 重套样式表 → 刷新手动上色的控件 → 存配置。
+
+        同 Tk：切换时有一个 600ms 的圆形揭示（从鼠标点扩散，圆内是新界面）。
+        这里先截下旧画面盖一层，再用圆形遮罩逐步露出下面的新界面；任一步失败就直接切。
+        """
+        old_shot = None
+        try:
+            old_shot = self.grab()
+        except Exception:
+            old_shot = None
         is_dark = self.theme is DARK_THEME
         self.theme = LIGHT_THEME if is_dark else DARK_THEME
         new_name = "light" if is_dark else "dark"
         self.config["theme"] = new_name
         self._apply_theme()
         self._after_theme_change()
+        self._play_theme_reveal(old_shot)
         try:
             save_raw_config({"theme": new_name})
         except Exception:
@@ -434,6 +444,45 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.log(trp("主题已切换为: {0}", new_name), "INFO")
         self.toast(tr("🌙 已切换到深色主题") if new_name == "dark" else tr("☀️ 已切换到浅色主题"),
                    "ok", key="theme")
+
+    def _play_theme_reveal(self, shot):
+        """主题切换的圆形揭示（同 Tk 的 circular_reveal：600ms，从鼠标位置扩散）。"""
+        try:
+            scale = float(fx.anim_scale())
+        except Exception:
+            scale = 1.0
+        if shot is None or shot.isNull() or scale <= 0.0:
+            return
+        try:
+            origin = self.mapFromGlobal(QtGui.QCursor.pos())
+            radius_max = ((max(origin.x(), self.width() - origin.x()) ** 2
+                           + max(origin.y(), self.height() - origin.y()) ** 2) ** 0.5) + 8
+            overlay = QtWidgets.QWidget(self)
+            overlay.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            overlay.setGeometry(self.rect())
+            lab = QtWidgets.QLabel(overlay)
+            lab.setPixmap(shot)
+            lab.setGeometry(0, 0, self.width(), self.height())
+            overlay.show()
+            overlay.raise_()
+
+            anim = QtCore.QVariantAnimation(overlay)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setDuration(max(1, round(600 * scale)))
+            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+
+            def step(value):
+                r = max(1.0, radius_max * float(value))
+                path = QtGui.QPainterPath()
+                path.addEllipse(QtCore.QPointF(QtCore.QPointF(origin)), r, r)
+                overlay.setMask(QtGui.QRegion(path.toFillPolygon().toPolygon()))
+
+            anim.valueChanged.connect(step)
+            anim.finished.connect(overlay.deleteLater)
+            anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+        except Exception:
+            pass
 
     def _repaint_list_labels(self):
         """清单页顶上的灰色说明 / 红色警告是手动上的色(不走全局 QSS),切主题要重新上色。"""
@@ -514,7 +563,20 @@ class QtMainWindow(QtWidgets.QMainWindow):
             self._probe_network()
 
     def _open_settings(self):
-        """打开设置对话框,OK 后统一经 _apply_settings 落地。"""
+        """打开设置窗。设置窗是「改完即生效」（同 Tk），这里不再需要取返回值。
+
+        同 Tk 的 open_settings：单例、非模态——已经开着就提到前面，不重复开；
+        设置开着时主窗口照样能操作（Tk 那边是 Toplevel，不是模态对话框）。
+        """
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None:
+            try:
+                if dlg.isVisible():
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    return
+            except RuntimeError:            # 底层 C++ 对象已经销毁
+                self._settings_dlg = None
         try:
             from ui.qt_main.settings import SettingsDialog
         except Exception as e:
@@ -522,11 +584,20 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 self, tr("设置"), trp("无法打开设置: {0}", str(e)))
             return
         dlg = SettingsDialog(self, self.config)
-        if dlg.exec() == QtWidgets.QDialog.Accepted:
-            self._apply_settings(dlg.values())
+        dlg.setModal(False)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.destroyed.connect(lambda *_: setattr(self, "_settings_dlg", None))
+        self._settings_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
-    def _apply_settings(self, vals):
-        """把设置对话框的选择落地:更新内存属性/界面/主题/历史份数,再持久化。"""
+    def _apply_settings(self, vals, silent=False):
+        """把设置选择落地:更新内存属性/界面/主题/历史份数,再持久化。
+
+        silent=True 用于设置窗的「改完即生效」——它每改一项就调一次，不该每次都弹
+        「设置已保存」的吐司。
+        """
         # 1) 主题(仅在变化时重套,避免无谓刷新)
         new_theme_name = vals.get("theme", "light")
         cur_theme_name = "dark" if self.theme is DARK_THEME else "light"
@@ -641,7 +712,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
         # 6) 持久化(save_config 以 self.config 为底重建回写)
         self.save_config()
-        self.toast(tr("⚙️ 设置已保存"), "ok", key="settings")
+        if not silent:
+            self.toast(tr("⚙️ 设置已保存"), "ok", key="settings")
 
     def _build_ui(self):
         """构建整体布局(第一阶段简化版:路径+单个清单+底栏)。"""
@@ -652,16 +724,12 @@ class QtMainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        # === 顶部工具条:「界面按钮」(Qt 独有入口) + 设置⚙ + 主题☀/🌙(右对齐,同 Tk 顶栏) ===
+        # === 顶部工具条:设置⚙ + 主题☀/🌙(右对齐,同 Tk 顶栏) ===
+        # 「界面按钮」不再单独占一颗顶栏按钮：它已经是设置窗的第 4 页（同 Tk）
         topbar = QtWidgets.QHBoxLayout()
         topbar.setContentsMargins(0, 0, 0, 0)
         topbar.setSpacing(6)
         topbar.addStretch()
-        self.buttons_btn = QtWidgets.QPushButton(tr("🔘 界面按钮"))
-        self.buttons_btn.setToolTip(tr("显示/隐藏、调整各区按钮的顺序"))
-        self.buttons_btn.clicked.connect(self._open_button_prefs)
-        look.style_button(self.buttons_btn, "tool")
-        topbar.addWidget(self.buttons_btn)
         self.settings_btn = QtWidgets.QPushButton("⚙")
         self.settings_btn.setToolTip(tr("设置"))
         self.settings_btn.setFixedSize(34, 34)
@@ -929,8 +997,6 @@ class QtMainWindow(QtWidgets.QMainWindow):
         foot.addWidget(self.log_full_btn)
         log_layout.addLayout(foot)
 
-        layout.addWidget(log_group)
-
         # === 底栏(开关+按钮) ===
         bottom = QtWidgets.QHBoxLayout()
 
@@ -949,9 +1015,15 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.overwrite_check.toggled.connect(self._on_overwrite_toggled)
         bottom.addWidget(self.overwrite_check)
 
-        # 查看历史按钮
+        # 查看历史按钮（同 Tk：与「开始迁移」同高 44、11pt 粗体）
         self.history_btn = QtWidgets.QPushButton(tr("📋 查看历史"))
         look.style_button(self.history_btn, "neutral")
+        self.history_btn.setFixedHeight(44)
+        self.history_btn.setProperty("tall", True)
+        _hf = self.history_btn.font()
+        _hf.setPointSizeF(11.0)
+        _hf.setBold(True)
+        self.history_btn.setFont(_hf)
         self.history_btn.clicked.connect(self._view_history)
 
         # 开始迁移按钮:3D 翻转(正面绿/模拟运行黄,迁移中翻到背面红;手感与 Tk 共用 start_btn_feel)
@@ -961,6 +1033,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
                                     dry_run=self.dry_run)
         self.start_btn.setMinimumWidth(120)
         self.start_btn.clicked.connect(self._start_migration)
+        # 主操作行同 Tk 的 btn_h=44：全局 QSS 的 min-height:30 会压掉 setMinimumHeight，
+        # 所以要挂 tall 属性让 QSS 放行（look.build_qss 里那条规则排在 kind 规则之后）。
+        self.start_btn.setProperty("tall", True)
 
         # 两个开关固定在左边;右边这一排可在「界面按钮」里调顺序/隐藏
         action_row = QtWidgets.QHBoxLayout()
@@ -970,6 +1045,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
                                   stretch_start=True)
 
         layout.addLayout(bottom)
+        # 日志在主操作行**下面**（同 Tk：先 opt_frame、后 log_frame）
+        layout.addWidget(log_group)
 
         # === 底栏(同 Tk 的 bottom_frame):网络灯 + 迷你延迟折线 + 📌 + 居中声明 + 🔔 ===
         # 网络连通性复用 ui/mw_net 的纯函数探测,不消耗 API 配额
@@ -1705,7 +1782,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             if w is not None:
                 w.setEnabled(not busy)
         self.tabs.set_locked(busy)                  # 同 Tk:迁移/扫描期间不让切页
-        for name in ("settings_btn", "theme_btn", "buttons_btn", "apply_pill"):
+        for name in ("settings_btn", "theme_btn", "apply_pill"):
             w = getattr(self, name, None)
             if w is not None:
                 w.setEnabled(not busy)
@@ -1825,9 +1902,12 @@ class QtMainWindow(QtWidgets.QMainWindow):
                     pass
             except Exception:
                 res = {}
-            QtCore.QMetaObject.invokeMethod(
-                self, "_on_net_result", QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, _json.dumps(res)))
+            try:
+                QtCore.QMetaObject.invokeMethod(
+                    self, "_on_net_result", QtCore.Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, _json.dumps(res)))
+            except RuntimeError:
+                pass            # 窗口已经销毁（关窗时探测还没回来），结果没地方投递
         threading.Thread(target=task, daemon=True).start()
 
     # ---------------- 网络浮标 + 延迟曲线 ----------------
@@ -3569,6 +3649,20 @@ class QtMainWindow(QtWidgets.QMainWindow):
         }
         color = color_map.get(level, self.theme.get("fg", "#000"))
 
+        # INFO 行再按内容叠一个子类颜色（阶段/统计/提示/操作/通过），与 Tk 共用
+        # ui/log_kinds.py 的同一张表：级别不变，红底、定位错误、总览条照旧只认级别。
+        kind = None
+        kind_bold = False
+        if level == "INFO":
+            try:
+                from ui import log_kinds as _lk
+                kind = _lk.classify(str(message))
+                if kind is not None:
+                    kind_bold = bool(_lk.LINE_KINDS[kind][3])
+                    color = _lk.kind_color(self.theme, kind) or color
+            except Exception:
+                kind = None
+
         bar = self.log_text.verticalScrollBar()
         follow_tail = bar.value() >= bar.maximum() - 4
         old_scroll = bar.value()
@@ -3578,6 +3672,11 @@ class QtMainWindow(QtWidgets.QMainWindow):
         # 插入带颜色的文本;块级别记进 userState,双击定位时据此只认错误/警告行
         fmt = QtGui.QTextCharFormat()
         fmt.setForeground(QtGui.QColor(color))
+        if kind_bold:
+            fmt.setFontWeight(QtGui.QFont.Bold)
+        if level in ("ERROR", "PLAIN"):
+            # 同 Tk：ERROR 整行铺淡红底（theme["danger_bg"]）
+            fmt.setBackground(QtGui.QColor(self.theme.get("danger_bg", "#ffc7c7")))
         cursor.insertText(str(message) + "\n", fmt)
         blk = None
         try:

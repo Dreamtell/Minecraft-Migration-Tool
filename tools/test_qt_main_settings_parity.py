@@ -91,13 +91,14 @@ class RollbackDefaultsTests(_Base):
     def test_saved_subset_is_prechecked_and_roundtrips_in_core_order(self):
         d = self.dialog(rollback_parts=["extras", "mods"])          # 存的顺序乱也无所谓
         self.assertEqual(d.values()["rollback_parts"], ["mods", "extras"])
-        d._rollback_checks["saves"].setChecked(True)
+        d._rollback_switches["saves"].toggle()                      # 用户点一下开关
         self.assertEqual(d.values()["rollback_parts"], ["mods", "saves", "extras"])
+        self.assertEqual(d._cfg["rollback_parts"], ["mods", "saves", "extras"])   # 立即落地
 
     def test_cannot_uncheck_the_last_one(self):
         d = self.dialog(rollback_parts=["config"])
-        d._rollback_checks["config"].setChecked(False)
-        self.assertTrue(d._rollback_checks["config"].isChecked())    # 被勾回去
+        d._rollback_switches["config"].toggle()                     # 用户试图关掉唯一一项
+        self.assertTrue(d._rollback_switches["config"].isChecked())  # 被挡回去
         self.assertEqual(d.values()["rollback_parts"], ["config"])
 
     def test_garbage_config_falls_back_to_something_checked(self):
@@ -109,34 +110,34 @@ class RollbackDefaultsTests(_Base):
 
 class DialogThemeAndButtonsTests(_Base):
     def test_muted_notes_use_the_dialog_theme(self):
-        d = self.dialog(theme="dark")
-        note = next(label for label in d.findChildren(QtWidgets.QLabel)
-                    if label.text().startswith("※ 关掉后没有启动动画"))
-        self.assertIn("color: #aaaaaa", note.styleSheet())
-        d.deleteLater()
-        d = self.dialog(theme="light")
-        note = next(label for label in d.findChildren(QtWidgets.QLabel)
-                    if label.text().startswith("※ 关掉后没有启动动画"))
-        self.assertIn("color: #6b6b6b", note.styleSheet())
-        d.deleteLater()
+        """说明文字（MutedLabel）的灰色跟设置窗主题走：深色 #aaaaaa、浅色 #6b6b6b。"""
+        def note_for(theme):
+            d = self.dialog(theme=theme)
+            note = next(label for label in d.findChildren(QtWidgets.QLabel)
+                        if label.text().startswith("※ 切换主界面实现在下次启动后生效"))
+            d.deleteLater()
+            return note
+        self.assertIn("color: #aaaaaa", note_for("dark").styleSheet())
+        self.assertIn("color: #6b6b6b", note_for("light").styleSheet())
 
     def test_settings_actions_have_semantic_button_kinds(self):
+        """动作按钮带语义色；新契约没有「确定/取消」按钮组，只有一个「✕ 关闭」。"""
         d = self.dialog()
         self.assertEqual(d.cf_save_btn.property("kind"), "add")
         self.assertEqual(d.cf_test_btn.property("kind"), "neutral")
         self.assertEqual(d.cf_clear_btn.property("kind"), "danger")
         self.assertEqual(d.sfx_test_btn.property("kind"), "neutral")
-        buttons = d.findChild(QtWidgets.QDialogButtonBox)
-        self.assertEqual(buttons.button(QtWidgets.QDialogButtonBox.Ok).property("kind"), "add")
-        self.assertEqual(buttons.button(QtWidgets.QDialogButtonBox.Cancel).property("kind"), "neutral")
+        self.assertEqual(d.close_btn.property("kind"), "danger")     # 关闭即完成（改动已落地）
+        self.assertIsNone(d.findChild(QtWidgets.QDialogButtonBox))   # 没有「确定/取消」
 
 
 class OnlineTagsTests(_Base):
     def test_default_off_and_roundtrip(self):
         d = self.dialog()
         self.assertFalse(d.values()["online_tags"])
-        d.tags_check.setChecked(True)
+        d.tags_switch.toggle()
         self.assertTrue(d.values()["online_tags"])
+        self.assertTrue(d._cfg["online_tags"])                       # 改完立刻写进配置
         self.assertTrue(self.dialog(online_tags=True).values()["online_tags"])
 
     def test_cache_label_shows_count_and_path(self):

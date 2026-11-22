@@ -250,11 +250,21 @@ class SettingsAndKeysTests(Base):
         v = d.values()
         self.assertFalse(v["blank_exit_edit"])
         self.assertTrue(v["sfx_on"])
-        d.blank_exit_check.setChecked(True)
-        d.sfx_check.setChecked(False)
+        d.blank_exit_switch.setChecked(True)
+        d.sfx_switch.setChecked(False)
         v = d.values()
         self.assertTrue(v["blank_exit_edit"])
         self.assertFalse(v["sfx_on"])
+
+    def test_no_cancel_switch_changes_land_in_config_immediately(self):
+        # 新设置窗没有「确定/取消」:拨动开关立刻写进主窗口配置(-apply_settings 静默落地)
+        from ui.qt_main.settings import SettingsDialog
+        w = self.make(blank_exit_edit=True)
+        d = SettingsDialog(w, w.config)
+        d.blank_exit_switch.toggle()                    # 用户真的点一下开关
+        self.assertFalse(d.blank_exit_switch.isChecked())
+        self.assertFalse(w.config["blank_exit_edit"])    # 已经生效,不需要按「确定」
+        self.assertFalse(d.values()["blank_exit_edit"])
 
     def test_apply_settings_updates_and_persists_both(self):
         w = self.make()

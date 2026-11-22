@@ -74,26 +74,48 @@ class QuickLinksTests(unittest.TestCase):
         self.assertEqual(list(self.dlg.link_buttons), ["minecraft", "mcmod", "pcl", "github"])
         self.assertEqual(self.dlg.link_buttons["pcl"].text(), "🚀 PCL 启动器")
 
-    def test_click_opens_new_tab_logs_and_toasts(self):
-        from ui.qt_main.settings import LINK_MCMOD
-        with mock.patch("webbrowser.open_new_tab") as opener:
-            self.dlg.link_buttons["mcmod"].click()
-        opener.assert_called_once_with(LINK_MCMOD)
-        self.assertTrue(any(LINK_MCMOD in t for _, t in self.host.logs))
-        self.assertTrue(any(LINK_MCMOD in t for _, t in self.host.toasts))
+    def test_click_opens_the_right_url(self):
+        """原意：点哪个链接就打开哪个地址(不能串台，也不能点了没反应)。
+
+        新设置窗不再往主窗口写日志/弹提示(改动即时生效，没有"操作成功"回执)，
+        所以这里把"给出反馈"那半条断言换成逐个按钮校验它打开的是自己的 URL。
+        """
+        from ui.qt_main import settings as s
+        urls = {"minecraft": s.LINK_MINECRAFT, "mcmod": s.LINK_MCMOD,
+                "pcl": s.LINK_PCL, "github": s.LINK_GITHUB}
+        self.assertEqual(set(urls), set(self.dlg.link_buttons))
+        for key, url in urls.items():
+            with mock.patch("webbrowser.open") as opener:
+                self.dlg.link_buttons[key].click()
+            opener.assert_called_once_with(url)
+            # 按钮 tooltip 写着目标地址，用户点之前看得到要去哪
+            self.assertEqual(self.dlg.link_buttons[key].toolTip(), url)
 
     def test_click_does_not_close_the_dialog(self):
-        with mock.patch("webbrowser.open_new_tab"):
+        with mock.patch("webbrowser.open") as opener:     # 别真的弹出浏览器
             self.dlg.link_buttons["github"].click()
+        opener.assert_called_once()
         self.assertEqual(self.dlg.result(), 0)
 
-    def test_failure_shows_error_and_no_success_toast(self):
-        with mock.patch("webbrowser.open_new_tab", side_effect=OSError("boom")), \
-                mock.patch.object(QtWidgets.QMessageBox, "critical") as crit:
-            self.dlg.link_buttons["minecraft"].click()
-        crit.assert_called_once()
-        self.assertIn("boom", crit.call_args.args[2])
-        self.assertEqual(self.host.toasts, [])
+    def test_failure_is_contained_and_dialog_stays_usable(self):
+        """打不开链接：同 Tk 要弹错误框，但不能把设置窗带崩，也不能装作成功。
+
+        错误框会把测试卡死（无头环境没人点按钮），所以这里 mock 掉它，
+        只验证「弹了、消息里带着原因」。
+        """
+        from ui.qt_main.settings import LINK_GITHUB, LINK_MCMOD
+        with mock.patch("webbrowser.open", side_effect=OSError("boom")), \
+                mock.patch.object(QtWidgets.QMessageBox, "warning") as warn:
+            self.dlg.link_buttons["minecraft"].click()      # 不抛
+        self.assertEqual(warn.call_count, 1)
+        self.assertIn("boom", warn.call_args[0][2])
+        self.assertEqual(self.dlg.result(), 0)              # 没被关掉
+        self.assertEqual(self.host.toasts, [])              # 失败不能报成功
+        self.assertFalse(any("boom" in t for _, t in self.host.logs))
+        with mock.patch("webbrowser.open") as opener:
+            self.dlg.link_buttons["mcmod"].click()
+        opener.assert_called_once_with(LINK_MCMOD)          # 失败没污染后续点击
+        self.assertEqual(self.dlg.link_buttons["github"].toolTip(), LINK_GITHUB)
 
     def test_values_unchanged_by_links(self):
         self.assertFalse(any("link" in k for k in self.dlg.values()))

@@ -17,7 +17,7 @@ _QT_DIR = Path(__file__).resolve().parent.parent.parent / "_qt"
 if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
     sys.path.insert(0, str(_QT_DIR))
 
-from PySide6 import QtWidgets, QtCore  # noqa: E402
+from PySide6 import QtGui, QtWidgets, QtCore  # noqa: E402
 
 from ui.qt_win import fit_window
 from utils.i18n import tr, trp  # noqa: E402
@@ -151,6 +151,223 @@ def pick_rollback_parts(parent, window, backup_dir):
     return parts
 
 
+# ---- 左栏档案卡:尺寸/配色全部对着 Tk 版 ui/mw_migration.py 的 _ArchiveList ----
+# Tk 那边是 CARD_H=92、GAP=8、RADIUS=10,左侧 5px 状态色条;卡片之间的 8px 间距
+# 在这里交给 QListWidget.setSpacing(8)(它加在行与行**之间**,不进 sizeHint)。
+CARD_H = 92
+CARD_GAP = 8
+CARD_RADIUS = 10
+CARD_BAR_W = 5
+# 四行文字的纵向中心(相对卡片顶),与 Tk `_文字DY` 的 16 / 38 / 60 / 78 一致
+CARD_TEXT_DY = (16, 38, 60, 78)
+
+
+def _color(value, default):
+    """'#rrggbb' → QColor;空值/认不出来退回 default(别让坏配置把绘制弄崩)。"""
+    color = QtGui.QColor(value) if value else QtGui.QColor()
+    return color if color.isValid() else QtGui.QColor(default)
+
+
+def _mix(a, b, t):
+    """两色按 t 混(同 Tk `_card_img` 里 `c + (主[k] - c) * 0.10` 的算法)。"""
+    return QtGui.QColor(
+        int(a.red() + (b.red() - a.red()) * t),
+        int(a.green() + (b.green() - a.green()) * t),
+        int(a.blue() + (b.blue() - a.blue()) * t))
+
+
+def _card_palette(theme):
+    """(面板, 边框, 主色, 是否深色),同 Tk `_palette`;键缺了就用 Tk 那套兜底色。"""
+    t = theme or {}
+    bg = _color(t.get("bg"), "#f0f0f0")
+    dark = (0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()) < 128
+    panel = _color(t.get("panel_bg"), "#333333" if dark else "#fafafa")
+    border = _color(t.get("border"), "#3f3f3f" if dark else "#d6d6d6")
+    accent = _color(t.get("accent"), "#64b5f6" if dark else "#1e88e5")
+    return panel, border, accent, dark
+
+
+def _card_status_color(rec, theme):
+    """左侧色条:模拟 → 警示色,成功 → 绿,其余(失败/未完成) → 红。判据同 Tk `_build`。"""
+    t = theme or {}
+    if rec.get("mode") == "dry":
+        return _color(t.get("log_warning_fg"), "#e65100")
+    if rec.get("result") == "成功":
+        return _color(t.get("ok_fg"), "#2e7d32")
+    return _color(t.get("fail_fg"), "#c62828")
+
+
+def _card_count(rec, key):
+    """档案里某一类的成功数;档案坏掉(不是 dict / 不是数字)时按 0 算,同 Tk 的宽松写法。"""
+    stats = rec.get("stats")
+    if not isinstance(stats, dict):
+        return 0
+    sub = stats.get(key)
+    if not isinstance(sub, dict):
+        return 0
+    value = sub.get("success", 0)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _card_name(path):
+    """源/目标的最后一段目录名(同 Tk `_名`:两种斜杠都认,空路径给 ?)。"""
+    parts = [p for p in str(path or "").replace("\\", "/").rstrip("/").split("/") if p]
+    return parts[-1] if parts else "?"
+
+
+class HistoryCardDelegate(QtWidgets.QStyledItemDelegate):
+    """迁移档案卡的绘制:圆角面板 + 左侧状态色条 + 四行文字,对齐 Tk `_ArchiveList`。
+
+    三档状态(普通 / 悬停 / 选中)的底色与描边按 Tk `_card_img` 的混色比例来:
+      选中:面板往主色混 10%,描边主色 2px
+      悬停:面板往主色混 5%,描边 = 边框 60% + 主色 40%,1px
+      普通:面板本色,边框 1px
+    主题经 theme_getter 现取(切主题后重绘就跟着变,不用重建 delegate)。
+    """
+
+    RECORD_ROLE = QtCore.Qt.UserRole + 1
+
+    def __init__(self, theme_getter, parent=None):
+        super().__init__(parent)
+        self._theme = theme_getter
+        self.hover_row = -1
+        # 字体只建一次:每次 paint 都 new QFont 会让滚动时的绘制变慢
+        self._f_time = QtGui.QFont("Microsoft YaHei UI", 10)
+        self._f_time.setBold(True)
+        self._f_body = QtGui.QFont("Microsoft YaHei UI", 9)
+        self._f_mode = QtGui.QFont("Microsoft YaHei UI", 9)
+        self._f_mode.setBold(True)
+        self._f_small = QtGui.QFont("Microsoft YaHei UI", 8)
+
+    def sizeHint(self, option, index):
+        # 行高 92(间距由 list.setSpacing 出,不算在行高里)
+        return QtCore.QSize(240, CARD_H)
+
+    def _draw_line(self, painter, rect, dy, text, font, color, align=QtCore.Qt.AlignLeft):
+        """在卡片内第 dy 像素高处画一行字(纵向居中,同 Tk create_text 的 anchor='w')。"""
+        painter.setFont(font)
+        painter.setPen(color)
+        line = QtCore.QRect(rect.left(), rect.top() + dy - 9, rect.width(), 18)
+        painter.drawText(line, int(align | QtCore.Qt.AlignVCenter), text)
+
+    def paint(self, painter, option, index):
+        rec = index.data(self.RECORD_ROLE)
+        if not isinstance(rec, dict):
+            rec = {}
+        theme = self._theme() or {}
+        panel, border, accent, _dark = _card_palette(theme)
+        muted = _color(theme.get("muted_fg"), "#888888")
+        fg = _color(theme.get("fg"), "#000000")
+        bar = _card_status_color(rec, theme)
+
+        # 卡片略往里收,和 Tk 的 4px 左内边距对齐
+        card = option.rect.adjusted(4, 0, -4, 0)
+        if card.width() < 24 or card.height() < 24:
+            return                      # 放大/展开动画把列表压扁时不画(圆角会算出负数)
+
+        selected = bool(option.state & QtWidgets.QStyle.State_Selected)
+        hovered = (not selected) and index.row() == self.hover_row
+        if selected:
+            fill = _mix(panel, accent, 0.10)
+            outline, width = accent, 2
+        elif hovered:
+            fill = _mix(panel, accent, 0.05)
+            outline, width = _mix(border, accent, 0.40), 1
+        else:
+            fill, outline, width = panel, border, 1
+
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        path = QtGui.QPainterPath()
+        # 内缩半像素/半个描边宽,否则 1px 圆角描边会被切掉一半
+        body = QtCore.QRectF(card).adjusted(0.5 * width, 0.5 * width,
+                                            -0.5 * width, -0.5 * width)
+        path.addRoundedRect(body, CARD_RADIUS, CARD_RADIUS)
+        painter.fillPath(path, fill)
+        # 左侧 5px 色条:裁在圆角里,左边两角才会跟着圆
+        painter.save()
+        painter.setClipPath(path)
+        painter.fillRect(QtCore.QRectF(body.left(), body.top(),
+                                       CARD_BAR_W, body.height()), bar)
+        painter.restore()
+        painter.setPen(QtGui.QPen(outline, width))
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.drawPath(path)
+
+        inner = card.adjusted(16, 0, -14, 0)        # 文字区(卡内左右留白,同 Tk 20/24 的观感)
+        mode_text = tr("模拟") if rec.get("mode") == "dry" else tr("实际")
+        fm_mode = QtGui.QFontMetrics(self._f_mode)
+        mode_w = fm_mode.horizontalAdvance(mode_text) + 2
+        self._draw_line(painter,
+                        QtCore.QRect(inner.right() - mode_w, inner.top(), mode_w, inner.height()),
+                        CARD_TEXT_DY[0], mode_text, self._f_mode, bar,
+                        QtCore.Qt.AlignRight)
+
+        fm_time = QtGui.QFontMetrics(self._f_time)
+        time_text = fm_time.elidedText(str(rec.get("time") or "?"), QtCore.Qt.ElideRight,
+                                       max(24, inner.width() - mode_w - 12))
+        self._draw_line(painter, inner, CARD_TEXT_DY[0], time_text, self._f_time, fg)
+
+        route = "%s → %s" % (_card_name(rec.get("source")), _card_name(rec.get("target")))
+        self._draw_line(painter, inner, CARD_TEXT_DY[1],
+                        QtGui.QFontMetrics(self._f_body).elidedText(
+                            route, QtCore.Qt.ElideRight, inner.width()),
+                        self._f_body, muted)
+
+        stats = trp("模组 {0}　·　config {1}　·　其它 {2}",
+                    _card_count(rec, "mods"), _card_count(rec, "config"),
+                    _card_count(rec, "extra"))
+        self._draw_line(painter, inner, CARD_TEXT_DY[2],
+                        QtGui.QFontMetrics(self._f_body).elidedText(
+                            stats, QtCore.Qt.ElideRight, inner.width()),
+                        self._f_body, muted)
+
+        duration = rec.get("duration")
+        tail = trp("耗时 {0} 秒　·　{1}",
+                   "?" if duration in (None, "") else duration,
+                   rec.get("result") or "—")
+        self._draw_line(painter, inner, CARD_TEXT_DY[3],
+                        QtGui.QFontMetrics(self._f_small).elidedText(
+                            tail, QtCore.Qt.ElideRight, inner.width()),
+                        self._f_small, muted)
+        painter.restore()
+
+
+class ArchiveListWidget(QtWidgets.QListWidget):
+    """档案卡列表:默认的列表行为(selectedRow / 键盘 / 滚轮)之外,只多记一个悬停行。
+
+    悬停不靠 QSS(`::item:hover` 只能换整块底色,画不出圆角卡),改成把行号交给
+    delegate,由它在 paint 里选「悬停」那一档底色与描边。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)          # 不跟踪就只能等按键才收到 mouseMove
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # Tk 版是逐像素平滑滚动;按行跳在 92px 的卡片上看得出"跳格"
+        self.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+
+    def _sync_hover(self, pos):
+        row = self.indexAt(pos).row() if pos.x() >= 0 else -1
+        delegate = self.itemDelegate()
+        if delegate is not None and getattr(delegate, "hover_row", -2) != row:
+            delegate.hover_row = row
+            self.viewport().update()
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        self._sync_hover(event.position().toPoint())
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._sync_hover(QtCore.QPoint(-1, -1))
+
+
 class HistoryDialog(QtWidgets.QDialog):
     """历史记录窗口:左列表 + 右详情 + 底部回滚/删除/清空。
 
@@ -167,7 +384,8 @@ class HistoryDialog(QtWidgets.QDialog):
         window._rollback_busy = lambda: self._rb_thread is not None
         self.finished.connect(lambda *_: setattr(window, "_rollback_busy", None))
         self.setWindowTitle(tr("迁移历史"))
-        fit_window(self, 700, 440, 820, 540)
+        # 同 Tk:最小 880×520、打开时 1040×660(mw_migration.py:428/431)
+        fit_window(self, 880, 520, 1040, 660)
 
         root = QtWidgets.QVBoxLayout(self)
         # 头部:共几份、最多保存几份、存在哪(同 Tk 版)
@@ -177,9 +395,13 @@ class HistoryDialog(QtWidgets.QDialog):
         split = QtWidgets.QHBoxLayout()
         root.addLayout(split, 1)
 
-        # 左:记录列表
-        self.list_widget = QtWidgets.QListWidget()
-        self.list_widget.setMinimumWidth(260)
+        # 左:记录列表 —— 92px 高的圆角档案卡(Tk: 左栏固定 380 宽,mw_migration.py:466)
+        self.card_delegate = HistoryCardDelegate(self._theme, self)
+        self.list_widget = ArchiveListWidget()
+        self.list_widget.setItemDelegate(self.card_delegate)
+        self.list_widget.setFixedWidth(380)
+        self.list_widget.setSpacing(CARD_GAP)      # 卡片间 8px(Tk 的 GAP)
+        self.list_widget.setStyleSheet(self._list_qss())
         self.list_widget.currentRowChanged.connect(self._on_select)
         split.addWidget(self.list_widget)
 
@@ -238,17 +460,40 @@ class HistoryDialog(QtWidgets.QDialog):
 
         self._refresh()
 
+    def _list_qss(self):
+        """列表自己的底色与滚动条。
+
+        卡片之间的缝里露出来的是窗口底色(和 Tk 的 Canvas bg 一样);滚动条按 Tk 那根
+        细灰条来(6px、圆角、无箭头),别用 Qt 默认那条宽的。
+        """
+        t = self._theme()
+        return (
+            "QListWidget{background:%(bg)s;border:none;outline:none;}"
+            "QListWidget::item{background:transparent;border:none;}"
+            "QListWidget QScrollBar:vertical{background:transparent;width:6px;margin:0;}"
+            "QListWidget QScrollBar::handle:vertical{background:%(bar)s;"
+            "border-radius:2px;min-height:18px;}"
+            "QListWidget QScrollBar::add-line,QListWidget QScrollBar::sub-line"
+            "{height:0;border:none;background:transparent;}"
+            "QListWidget QScrollBar::add-page,QListWidget QScrollBar::sub-page"
+            "{background:transparent;}"
+            % {"bg": t.get("bg", "#f0f0f0"), "bar": t.get("muted_fg", "#888888")})
+
     # ---------- 列表 ----------
     def _refresh(self, keep_row=0):
-        """重新从磁盘读档案并填列表。"""
+        """重新从磁盘读档案并填列表(每行是一张 92px 的档案卡,内容由 delegate 画)。"""
         try:
             self.records = history_store.list_records()
         except Exception:
             self.records = []
+        self.card_delegate.hover_row = -1        # 重建后旧行号已经没意义
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
         for rec in self.records:
-            self.list_widget.addItem(self._row_label(rec))
+            # 卡片上的字全在 delegate 里画;这里只放一份时间给无障碍/调试读
+            item = QtWidgets.QListWidgetItem(str(rec.get("time") or "?"))
+            item.setData(self.card_delegate.RECORD_ROLE, rec)
+            self.list_widget.addItem(item)
         self.list_widget.blockSignals(False)
         self._update_header()
         if self.records:
@@ -275,15 +520,6 @@ class HistoryDialog(QtWidgets.QDialog):
             limit, where = "?", ""
         self.header.setText(trp("共 {0} 份档案　·　最多保存 {1} 份（可在设置里调整）　·　{2}",
                                 len(self.records), limit, where))
-
-    @staticmethod
-    def _row_label(rec):
-        icon = "🧪" if rec.get("mode") == "dry" else "📦"
-        if rec.get("rolled_back"):
-            icon = "↩️"
-        when = rec.get("time", "?")
-        world = rec.get("world") or tr("(无世界)")
-        return "%s  %s  %s" % (icon, when, world)
 
     def _current(self):
         row = self.list_widget.currentRow()
