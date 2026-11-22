@@ -811,9 +811,9 @@ def _apply_table_fonts(view):
     粗体（mw_big_view.py:361、ui/virtual_table.py:143/305）。Qt 这边不显式设的话
     吃的是全局 9pt，和 Tk 一比明显小一圈。
     """
-    view.setFont(QtGui.QFont("Microsoft YaHei UI", 12))
+    view.setFont(QtGui.QFont("Microsoft YaHei", 12))
     hh = view.horizontalHeader()
-    hf = QtGui.QFont("Microsoft YaHei UI", 12)
+    hf = QtGui.QFont("Microsoft YaHei", 12)
     hf.setBold(True)
     hh.setFont(hf)
     hh.setFixedHeight(32)
@@ -858,7 +858,7 @@ class NetUsageChart(QtWidgets.QWidget):
             y = 上边 + 图高 * k / 4.0
             p.drawLine(左, int(y), 左 + 图宽, int(y))
         p.setPen(QtGui.QColor(self.theme.get("muted_fg", "#9a9a9a")))
-        p.setFont(QtGui.QFont("微软雅黑", 8))
+        p.setFont(QtGui.QFont("Microsoft YaHei", 8))
         p.drawText(QtCore.QRectF(0, 上边 - 6, 左 - 4, 14),
                    int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter),
                    netmeter.format_bytes(最大))
@@ -882,7 +882,7 @@ class NetUsageChart(QtWidgets.QWidget):
             p.setPen(QtGui.QPen(QtGui.QColor(色), 2))
             p.drawPath(路径)
         # 图例
-        p.setFont(QtGui.QFont("微软雅黑", 8))
+        p.setFont(QtGui.QFont("Microsoft YaHei", 8))
         p.setPen(QtGui.QColor("#66bb6a"))
         p.drawText(QtCore.QRectF(左, 上边 - 2, 60, 14),
                    int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), tr("↓ 下行"))
@@ -988,7 +988,7 @@ class AnimButton(QtWidgets.QPushButton):
         self._soft_disable = False   # 临时禁用时用"压暗的品牌色"而不是系统灰
         self.setFixedHeight(30)
         self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
+        self.setFont(QtGui.QFont("Microsoft YaHei", 9))
         self._a = QtCore.QVariantAnimation(self)
         self._a.setDuration(190)
         self._a.setEasingCurve(QtCore.QEasingCurve.OutBack)
@@ -1872,11 +1872,11 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         self.hover_action = None
         self._pix = {}
         # 字号对齐 Tk 卡片（ui/card_list.py：标题 11pt 粗，副标题/描述/chip 都是 9pt）
-        self._f_title = QtGui.QFont("Microsoft YaHei UI", 11)
+        self._f_title = QtGui.QFont("Microsoft YaHei", 11)
         self._f_title.setBold(True)
-        self._f_small = QtGui.QFont("Microsoft YaHei UI", 9)
-        self._f_tiny = QtGui.QFont("Microsoft YaHei UI", 9)
-        self._f_icon = QtGui.QFont("Microsoft YaHei UI", 10)
+        self._f_small = QtGui.QFont("Microsoft YaHei", 9)
+        self._f_tiny = QtGui.QFont("Microsoft YaHei", 9)
+        self._f_icon = QtGui.QFont("Microsoft YaHei", 10)
 
     def sizeHint(self, option, index):
         return QtCore.QSize(200, CARD_H)
@@ -1995,7 +1995,7 @@ class CardDelegate(QtWidgets.QStyledItemDelegate):
         p.setBrush(QtGui.QColor(self.theme.get("muted_fg", "#7a7a7a")))
         p.drawRoundedRect(0, 0, ICON_PX, ICON_PX, 8, 8)
         p.setPen(QtGui.QColor("#ffffff"))
-        f = QtGui.QFont("Microsoft YaHei UI", 14)
+        f = QtGui.QFont("Microsoft YaHei", 14)
         f.setBold(True)
         p.setFont(f)
         p.drawText(pm.rect(), QtCore.Qt.AlignCenter, letter)
@@ -4987,7 +4987,7 @@ def ensure_app(theme: dict = None):
     if app is None:
         app = QtWidgets.QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(False)      # 关掉 Qt 窗口不能退出进程（Tk 还在跑）
-    app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
+    app.setFont(QtGui.QFont("Microsoft YaHei", 9))
     try:
         # 窗口图标：Qt 不设的话标题栏/任务栏是 Windows 那个通用占位图标
         # （和主窗口的 1.ico 完全不是一个东西）。设成应用级默认图标，Qt 的所有

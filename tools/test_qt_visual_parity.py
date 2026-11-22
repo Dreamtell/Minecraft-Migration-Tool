@@ -91,6 +91,27 @@ class MainActionRowTests(_Win):
         self.assertAlmostEqual(self.w.history_btn.font().pointSizeF(), 11.0, places=1)
         self.assertTrue(self.w.history_btn.font().bold())
 
+    def test_blurring_a_list_keeps_the_scroll_position(self):
+        """点别处（清单失焦）不能把已经滚走的清单拉回光标处。
+
+        setTextCursor 会让 QTextEdit 把光标滚回可见区——光标在末尾、用户滚到顶部时，
+        这就是「点一下别处，清单自己乱滚」。
+        """
+        ed = self.w.mod_text
+        ed.setPlainText("\n".join("mod-%03d.jar" % i for i in range(300)))
+        pump(40)
+        cur = ed.textCursor()
+        cur.movePosition(QtGui.QTextCursor.End)
+        ed.setTextCursor(cur)
+        pump(40)
+        bar = ed.verticalScrollBar()
+        bar.setValue(0)
+        pump(20)
+        self.assertEqual(bar.value(), 0)
+        self.w._blur_list_texts()
+        pump(60)
+        self.assertEqual(bar.value(), 0)
+
 
 class ColorParityTests(unittest.TestCase):
     def test_light_flip_faces_use_the_tk_colors(self):

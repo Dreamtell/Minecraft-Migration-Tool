@@ -237,12 +237,12 @@ class HistoryCardDelegate(QtWidgets.QStyledItemDelegate):
         self._theme = theme_getter
         self.hover_row = -1
         # 字体只建一次:每次 paint 都 new QFont 会让滚动时的绘制变慢
-        self._f_time = QtGui.QFont("Microsoft YaHei UI", 10)
+        self._f_time = QtGui.QFont("Microsoft YaHei", 10)
         self._f_time.setBold(True)
-        self._f_body = QtGui.QFont("Microsoft YaHei UI", 9)
-        self._f_mode = QtGui.QFont("Microsoft YaHei UI", 9)
+        self._f_body = QtGui.QFont("Microsoft YaHei", 9)
+        self._f_mode = QtGui.QFont("Microsoft YaHei", 9)
         self._f_mode.setBold(True)
-        self._f_small = QtGui.QFont("Microsoft YaHei UI", 8)
+        self._f_small = QtGui.QFont("Microsoft YaHei", 8)
 
     def sizeHint(self, option, index):
         # 行高 92(间距由 list.setSpacing 出,不算在行高里)

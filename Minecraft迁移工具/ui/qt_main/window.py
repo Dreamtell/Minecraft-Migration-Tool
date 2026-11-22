@@ -1638,14 +1638,23 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self._save_edit_prefs()
 
     def _blur_list_texts(self):
-        """三个清单失焦:清掉选区、焦点收回主窗口(描边跟着灭)。"""
+        """三个清单失焦:清掉选区、焦点收回主窗口(描边跟着灭)。
+
+        注意别让视图跟着光标跑:setTextCursor 会让 QTextEdit 把光标滚回可见区,
+        用户已经滚到别处时,看起来就是「点一下别处,清单自己乱滚」。
+        """
         for name in ("mod_text", "config_text", "extra_text"):
             w = getattr(self, name, None)
             if w is None:
                 continue
+            vb = w.verticalScrollBar()
+            hb = w.horizontalScrollBar()
+            vy, hx = vb.value(), hb.value()
             cur = w.textCursor()
             cur.clearSelection()
             w.setTextCursor(cur)
+            vb.setValue(vy)          # 还原滚动位置，别让视图跳到光标处
+            hb.setValue(hx)
             w.clearFocus()
         self.setFocus()
 

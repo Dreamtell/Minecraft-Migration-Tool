@@ -323,6 +323,108 @@ def build_qss(theme):
             color: {g("fg", "#000")};
             spacing: 6px;
         }}
+        /* ---- 现代材质：只改 Qt 自有控件的观感，不动版式与尺寸 ---- */
+        QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+            border: 2px solid {bd_focus};
+        }}
+        QToolTip {{
+            background: {g("entry_bg", "#fff")};
+            color: {g("entry_fg", "#000")};
+            border: 1px solid {lighten(bd, 10)};
+            border-radius: 8px;
+            padding: 5px 9px;
+        }}
+        QListWidget, QTreeWidget {{
+            background: {g("entry_bg", "#fff")};
+            color: {g("entry_fg", "#000")};
+            border: 1px solid {tone(g("entry_bg", "#fff"), 0.10)};
+            border-radius: 10px;
+            outline: 0;
+            padding: 4px;
+        }}
+        QListWidget::item, QTreeWidget::item {{
+            border-radius: 6px;
+            padding: 4px 6px;
+        }}
+        QListWidget::item:hover, QTreeWidget::item:hover {{
+            background: {g("hover_bg", "#e9eef5")};
+        }}
+        QListWidget::item:selected, QTreeWidget::item:selected {{
+            background: {g("card_sel_bar", "#2f7fd1")};
+            color: #ffffff;
+        }}
+        QListWidget QScrollBar:vertical, QTreeWidget QScrollBar:vertical,
+        QScrollArea QScrollBar:vertical {{
+            background: transparent;
+            width: 10px;
+            margin: 2px;
+        }}
+        QListWidget QScrollBar::handle:vertical, QTreeWidget QScrollBar::handle:vertical,
+        QScrollArea QScrollBar::handle:vertical {{
+            background: {tone(g("bg", "#f0f0f0"), 0.18)};
+            border-radius: 5px;
+            min-height: 28px;
+        }}
+        QListWidget QScrollBar::handle:vertical:hover, QTreeWidget QScrollBar::handle:vertical:hover,
+        QScrollArea QScrollBar::handle:vertical:hover {{
+            background: {tone(g("bg", "#f0f0f0"), 0.30)};
+        }}
+        QListWidget QScrollBar::add-line, QListWidget QScrollBar::sub-line,
+        QTreeWidget QScrollBar::add-line, QTreeWidget QScrollBar::sub-line,
+        QScrollArea QScrollBar::add-line, QScrollArea QScrollBar::sub-line {{
+            height: 0;
+            border: none;
+            background: transparent;
+        }}
+        QHeaderView::section {{
+            background: {g("ttk_bg", "#f0f0f0")};
+            color: {g("ttk_fg", g("fg", "#000"))};
+            border: none;
+            border-right: 1px solid {tone(g("entry_bg", "#fff"), 0.10)};
+            padding: 4px 6px;
+            font-weight: 600;
+        }}
+        QProgressBar {{
+            border-radius: 8px;
+        }}
+        QProgressBar::chunk {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 {lighten(g("card_sel_bar", "#2f7fd1"), 18)},
+                stop:1 {shade(g("card_sel_bar", "#2f7fd1"), -12)});
+            border-radius: 7px;
+        }}
+        QTabBar::tab {{
+            border: none;
+            border-radius: 10px;
+            margin-right: 4px;
+            padding: 6px 14px;
+        }}
+        QTabBar::tab:hover {{
+            background: {lighten(g("button_bg", "#e0e0e0"), 40)};
+        }}
+        QTabBar::tab:selected {{
+            background: {g("card_sel_bar", "#2f7fd1")};
+            color: #ffffff;
+        }}
+        QComboBox, QSpinBox, QDoubleSpinBox {{
+            background: {g("entry_bg", "#fff")};
+            color: {g("entry_fg", "#000")};
+            border: 1px solid {bd};
+            border-radius: 8px;
+            padding: 2px 8px;
+            min-height: 24px;
+        }}
+        QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
+            border-color: {bd_focus};
+        }}
+        QComboBox QAbstractItemView {{
+            background: {g("entry_bg", "#fff")};
+            color: {g("entry_fg", "#000")};
+            border: 1px solid {bd};
+            border-radius: 8px;
+            selection-background-color: {g("card_sel_bar", "#2f7fd1")};
+            selection-color: #ffffff;
+        }}
     """
 
 

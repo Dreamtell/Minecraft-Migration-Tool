@@ -105,7 +105,7 @@ def run(icon_path=None):
     from utils import i18n
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
-    app.setFont(QtGui.QFont("Microsoft YaHei UI", 9))
+    app.setFont(QtGui.QFont("Microsoft YaHei", 9))
     if icon_path:
         app.setWindowIcon(QtGui.QIcon(icon_path))
 

@@ -336,9 +336,11 @@ class ToastHost(QtCore.QObject):
         """卡片栈的右下角（主窗口坐标，避开状态栏）。"""
         par = self._parent
         bottom = par.height()
-        sb = getattr(par, "statusBar", None)
+        # 不能调 par.statusBar()：QMainWindow 的这个方法是「调用即创建」，
+        # 每弹一次吐司就会凭空长出一条空状态栏（底部那条 22px 灰条 + 尺寸手柄）。
+        # 用 findChild 探测已存在的状态栏。
         try:
-            bar = sb() if callable(sb) else None
+            bar = par.findChild(QtWidgets.QStatusBar) if hasattr(par, "findChild") else None
             if bar is not None and bar.isVisible():
                 bottom -= bar.height()
         except Exception:

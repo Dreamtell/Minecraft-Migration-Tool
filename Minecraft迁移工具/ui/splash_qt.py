@@ -102,9 +102,9 @@ def run_child():                      # pragma: no cover - 在子进程里跑
             self.setWindowOpacity(CARD_ALPHA)
             scr = QtWidgets.QApplication.primaryScreen().availableGeometry()
             self.move(scr.center().x() - _WIN_W // 2, scr.center().y() - _WIN_H // 2)
-            self._f_title = QtGui.QFont("Microsoft YaHei UI", 16)
+            self._f_title = QtGui.QFont("Microsoft YaHei", 16)
             self._f_title.setBold(True)
-            self._f_sub = QtGui.QFont("Microsoft YaHei UI", 10)
+            self._f_sub = QtGui.QFont("Microsoft YaHei", 10)
             self._title = "Minecraft 整合包迁移工具"
             self._subtitle = "增强版 v5"
 

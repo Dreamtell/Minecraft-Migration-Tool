@@ -262,10 +262,22 @@ class SliderRow(QtWidgets.QWidget):
         self._value = max(self._min, min(self._max, int(value)))
         self._theme = dict(theme or {})
         self._dragging = False
+        self._hover = False
         self.setMinimumWidth(int(width_hint))
         self.setFixedHeight(34)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.setMouseTracking(True)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
 
     def value(self):
         return self._value
@@ -334,9 +346,11 @@ class SliderRow(QtWidgets.QWidget):
         p.setBrush(_c(th, "switch_on", "#4da3f0"))
         p.drawRoundedRect(fill, 3, 3)
         cx = t.x() + t.width() * k
-        p.setBrush(_c(th, "entry_bg", "#ffffff"))
-        p.setPen(QtGui.QPen(_c(th, "switch_on", "#4da3f0"), 2))
-        p.drawEllipse(QtCore.QPointF(cx, t.center().y()), 7, 7)
+        # 圆点：实心主色球，悬停/拖动时放大一档（同 Tk 的 14→16px），比白底描边环更像现代滑杆
+        radius = 8.0 if (self._hover or self._dragging) else 7.0
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(_c(th, "switch_on", "#4da3f0"))
+        p.drawEllipse(QtCore.QPointF(cx, t.center().y()), radius, radius)
 
         f = self.font()
         f.setPointSizeF(11.0)
@@ -471,14 +485,22 @@ class OptionCards(QtWidgets.QWidget):
         for i, (v, title, sub) in enumerate(self._cards):
             r = QtCore.QRectF(i * (w + 8), 1, w, self.height() - 2)
             on = v == self._value
-            p.setPen(QtGui.QPen(accent if on else _c(th, "muted_fg", "#888888"), 2 if on else 1))
-            p.setBrush(_c(th, "entry_bg", "#ffffff"))
+            base = _c(th, "entry_bg", "#ffffff")
+            if on:
+                face = _mix(base, accent, 0.14)          # 同 Tk：选中卡混 14% 主色
+            elif i == self._hover:
+                face = _mix(base, QtGui.QColor("#808080"), 0.05)   # 悬停：往灰混 5%
+            else:
+                face = base
+            edge = accent if on else _mix(base, _c(th, "bg", "#f0f0f0"), 0.6)
+            p.setPen(QtGui.QPen(edge, 2 if on else 1))
+            p.setBrush(face)
             p.drawRoundedRect(r, 8, 8)
             f = self.font()
             f.setPointSizeF(9.5)
             f.setBold(on)
             p.setFont(f)
-            p.setPen(_c(th, "fg", "#000000"))
+            p.setPen(accent if on else _c(th, "fg", "#000000"))
             p.drawText(QtCore.QRectF(r.x() + 12, r.y() + 8, r.width() - 20, 20),
                        QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, title)
             f2 = self.font()
