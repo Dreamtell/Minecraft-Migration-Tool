@@ -220,7 +220,8 @@ class _WinBase(unittest.TestCase):
 class HistoryDialogViewTests(_WinBase):
     def test_history_actions_have_semantic_button_kinds(self):
         d = self.dialog()
-        self.assertEqual(d.zoom_btn.property("kind"), "neutral")
+        # 「⤢ 放大」在 Tk 里是细边文字链,不是语义色按钮(见 mw_migration.py:605-608)
+        self.assertIsNone(d.zoom_btn.property("kind"))
         self.assertEqual(d.rollback_btn.property("kind"), "danger")
         self.assertEqual(d.apply_btn.property("kind"), "neutral")
         self.assertEqual(d.delete_btn.property("kind"), "danger")
@@ -395,7 +396,7 @@ class HistoryDialogLogTests(_WinBase):
         history_store.save_record(r)
         d = self.dialog()
         self.assertIn("这份档案没有日志", d.log_view.toPlainText())
-        self.assertEqual(d.log_count.text(), "")
+        self.assertEqual(d.log_count.text(), "1 行")      # 同 Tk:占位那行也算一行
 
     def test_selecting_another_record_swaps_the_log(self):
         history_store.save_record(rec(id="a", epoch=1.0, log_lines=[["INFO", "甲"]]))

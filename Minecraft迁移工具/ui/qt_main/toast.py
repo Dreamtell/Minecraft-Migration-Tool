@@ -123,7 +123,7 @@ class _Card(QtWidgets.QWidget):
         self.ms = 停留时长(self.text, ms)
         self.elapsed = 0.0           # 已走过的毫秒（悬停期间不累加）
         f = self.font()
-        f.setPixelSize(max(12, _u(9) + 2))
+        f.setPixelSize(max(10, _u(9)))
         self.setFont(f)
         fm = QtGui.QFontMetrics(f)
         w = min(_u(_MAX_W), max(_u(_MIN_W), fm.horizontalAdvance(self.text) + _u(78)))

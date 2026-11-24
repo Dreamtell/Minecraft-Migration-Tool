@@ -104,7 +104,7 @@ class QssTests(unittest.TestCase):
         for th in (DARK_THEME, LIGHT_THEME):
             q = look.build_qss(th)
             for kind in look.KIND_COLORS:
-                self.assertIn('QPushButton[kind="%s"]' % kind, q)
+                self.assertIn('QPushButton[tone="%s"]' % kind, q)
             # 写死 Tk 的值(RoundedEntry radius=12、RoundedTextArea radius=8),不引用常量,
             # 否则改常量时断言跟着变,什么也测不到
             self.assertIn("border-radius: 12px", q)
@@ -126,8 +126,8 @@ class QssTests(unittest.TestCase):
         from utils.theme import DARK_THEME
         q = look.button_rules(DARK_THEME)
         for kind in look.KIND_COLORS:
-            self.assertLess(q.index('[kind="%s"]:hover' % kind),
-                            q.index('[kind="%s"]:disabled' % kind))
+            self.assertLess(q.index('[tone="%s"]:hover' % kind),
+                            q.index('[tone="%s"]:disabled' % kind))
 
     def test_disabled_face_is_tone_of_container(self):
         from ui.qt_main import look
@@ -246,8 +246,9 @@ class WindowLookTests(unittest.TestCase):
             self.assertEqual(h, look.BTN_HEIGHT, (key, h))
         self.assertEqual(w.source_edit.geometry().height(), look.ENTRY_HEIGHT)
         self.assertEqual(w.world_edit.geometry().height(), look.ENTRY_HEIGHT)
-        self.assertEqual((w.settings_btn.width(), w.settings_btn.height()), (34, 34))
-        self.assertEqual((w.theme_btn.width(), w.theme_btn.height()), (34, 34))
+        # Tk 实测:15 号 ⚙ 因 max(44, 量宽) 变成 46×34,主题图标按钮 44×34
+        self.assertEqual((w.settings_btn.width(), w.settings_btn.height()), (46, 34))
+        self.assertEqual((w.theme_btn.width(), w.theme_btn.height()), (44, 34))
         self.assertGreaterEqual(d, 1.0)
 
     def test_path_edits_use_data_colors(self):

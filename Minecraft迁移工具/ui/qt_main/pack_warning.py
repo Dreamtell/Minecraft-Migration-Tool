@@ -142,7 +142,7 @@ class PackWarningBar(QtWidgets.QFrame):
         row = QtWidgets.QHBoxLayout(self)
         row.setContentsMargins(10, 6, 10, 6)
         icon = QtWidgets.QLabel("⚠")
-        icon.setStyleSheet("color: %s; font-size: 18px; background: transparent; border: none;"
+        icon.setStyleSheet("color: %s; font-size: 14pt; background: transparent; border: none;"
                            % c["icon"])
         icon.setAlignment(QtCore.Qt.AlignTop)
         row.addWidget(icon)
@@ -206,14 +206,14 @@ class PackWarningBar(QtWidgets.QFrame):
                            % (c["bg"], c["edge"]))
         hrow = QtWidgets.QHBoxLayout(head)
         icon = QtWidgets.QLabel("⚠")
-        icon.setStyleSheet("color: %s; font-size: 22px; border: none;" % c["icon"])
+        icon.setStyleSheet("color: %s; font-size: 18pt; border: none;" % c["icon"])
         hrow.addWidget(icon)
         col = QtWidgets.QVBoxLayout()
         title = QtWidgets.QLabel(tr("整合包更新提醒"))
-        title.setStyleSheet("color: %s; font-weight: bold; font-size: 14px; border: none;"
+        title.setStyleSheet("color: %s; font-weight: bold; font-size: 11pt; border: none;"
                             % c["text"])
         sub = QtWidgets.QLabel(tr("这条提醒不能关闭，只能收起成一个 ⚠ 图标"))
-        sub.setStyleSheet("color: %s; font-size: 11px; border: none;" % c["weak"])
+        sub.setStyleSheet("color: %s; font-size: 8pt; border: none;" % c["weak"])
         col.addWidget(title)
         col.addWidget(sub)
         hrow.addLayout(col, 1)

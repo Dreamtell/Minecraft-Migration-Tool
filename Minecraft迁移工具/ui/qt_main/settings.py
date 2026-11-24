@@ -146,7 +146,7 @@ class _PillTabBar(QtWidgets.QTabBar):
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFixedHeight(_TAB_BAR_H)
         f = self.font()
-        f.setPointSizeF(10.0)              # 同 ui/qt_tabs.PillTabs（Tk 那边是 9 号粗体）
+        f.setPointSizeF(9.0)               # 同 Tk ui/rounded_tabs 的 9 号粗体
         f.setBold(True)
         self.setFont(f)
         self._hover = -1

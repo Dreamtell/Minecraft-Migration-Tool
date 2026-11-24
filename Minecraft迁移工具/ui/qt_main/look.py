@@ -129,17 +129,17 @@ def button_rules(theme):
     out = []
     for kind, (c0, c1) in KIND_COLORS.items():
         out.append(
-            'QPushButton[kind="%(k)s"]{background:%(n)s;color:#ffffff;font-weight:bold;'
+            'QPushButton[tone="%(k)s"]{background:%(n)s;color:#ffffff;font-weight:bold;'
             'border:none;border-radius:%(r)dpx;padding:0 18px;min-height:%(ht)dpx;max-height:%(ht)dpx;}'
-            'QPushButton[kind="%(k)s"]:hover{background:%(h)s;}'
-            'QPushButton[kind="%(k)s"]:pressed{background:%(p)s;}'
+            'QPushButton[tone="%(k)s"]:hover{background:%(h)s;}'
+            'QPushButton[tone="%(k)s"]:pressed{background:%(p)s;}'
             # 禁用:单色面 + 暗字(同 Tk _disabled_face/_disabled_fg),必须排在 hover 之后
-            'QPushButton[kind="%(k)s"]:disabled{background:%(df)s;color:%(dg)s;}'
+            'QPushButton[tone="%(k)s"]:disabled{background:%(df)s;color:%(dg)s;}'
             % {"k": kind, "r": BTN_RADIUS, "ht": BTN_HEIGHT, "n": _grad(c0, c1),
                "h": _grad(lighten(c0), lighten(c1)),
                "p": _grad(shade(c0, -28), shade(c1, -28)),
                "df": dis_face, "dg": dis_fg})
-    # 顶栏的方形图标按钮(⚙ / 主题):34×34,大号字,不留内边距
+    # 只有普通 QPushButton 走这里;自绘按钮见 grad_button.py
     out.append('QPushButton[kind="log"]{min-height:28px;max-height:28px;}')
     out.append('QPushButton[kind="pin"]{min-height:20px;max-height:20px;min-width:30px;max-width:30px;'
                'padding:0;font-size:8pt;}')
@@ -173,6 +173,7 @@ def build_qss(theme):
             border: 1px solid {bd};
             border-radius: {ENTRY_RADIUS}px;
             padding: 0 9px;
+            font-size: 10pt;              /* 同 Tk RoundedEntry 默认 10 号 */
             min-height: {ENTRY_HEIGHT - 2}px;
             max-height: {ENTRY_HEIGHT - 2}px;
             selection-background-color: {sel_bg};
@@ -200,9 +201,13 @@ def build_qss(theme):
         QTextEdit:focus {{
             border: 1px solid {bd_focus};
         }}
+        QTextEdit#modListEdit, QTextEdit#configListEdit, QTextEdit#extraListEdit {{
+            font-family: "Microsoft YaHei Light";   /* Tk: ("微软雅黑 Light", 10) */
+        }}
         QTextEdit#logEdit {{
             background: {g("log_bg", g("text_bg", "#fff"))};
             color: {g("log_fg", g("text_fg", "#000"))};
+            font-family: "Microsoft YaHei UI";      /* Tk log_font(): YaHei UI 10 */
         }}
         QTextEdit#modListEdit QScrollBar:vertical,
         QTextEdit#configListEdit QScrollBar:vertical,
@@ -438,6 +443,8 @@ def style_button(btn, kind, icon_only=False):
     """给按钮挂语义色。样式本身在全局 QSS 里,这里只设属性并重新套样式。"""
     kind = kind_for(kind)
     btn.setProperty("kind", kind or "")
+    # QSS 用 [tone=…] 选:自绘按钮只设 kind、不设 tone,于是不会被这套几何覆盖
+    btn.setProperty("tone", kind or "")
     btn.setProperty("iconOnly", bool(icon_only))
     if kind:
         btn.setCursor(QtCore.Qt.PointingHandCursor)

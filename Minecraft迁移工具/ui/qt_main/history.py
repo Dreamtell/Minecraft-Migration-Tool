@@ -388,10 +388,24 @@ class HistoryDialog(QtWidgets.QDialog):
         fit_window(self, 880, 520, 1040, 660)
 
         root = QtWidgets.QVBoxLayout(self)
-        # 头部:共几份、最多保存几份、存在哪(同 Tk 版)
+        # 头部:🗂️ 图标 + 「迁移历史」大标题 + 副标题(共几份 / 最多保存几份 / 档案目录)
+        # 同 Tk mw_migration.py:449-460:20 号图标、15 号粗标题、9 号弱色副标题
+        head_row = QtWidgets.QHBoxLayout()
+        head_row.setSpacing(8)
+        self.head_icon = QtWidgets.QLabel("🗂️")
+        self.head_icon.setStyleSheet("font-size:20pt;background:transparent;border:none;")
+        head_row.addWidget(self.head_icon, 0, QtCore.Qt.AlignTop)
+        head_text = QtWidgets.QVBoxLayout()
+        head_text.setSpacing(2)
+        self.title_label = QtWidgets.QLabel(tr("迁移历史"))
+        self.title_label.setStyleSheet("font-size:15pt;font-weight:bold;"
+                                       "background:transparent;border:none;")
+        head_text.addWidget(self.title_label)
         self.header = QtWidgets.QLabel("")
         self.header.setWordWrap(True)
-        root.addWidget(self.header)
+        head_text.addWidget(self.header)
+        head_row.addLayout(head_text, 1)
+        root.addLayout(head_row)
         split = QtWidgets.QHBoxLayout()
         root.addLayout(split, 1)
 
@@ -410,22 +424,32 @@ class HistoryDialog(QtWidgets.QDialog):
         split.addLayout(right, 1)
         self.detail = QtWidgets.QTextEdit()          # 概览(只读,富文本)
         self.detail.setReadOnly(True)
-        self.detail.setMaximumHeight(210)
+        self.detail.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.detail.setObjectName("histOverview")
         right.addWidget(self.detail)
+        # 放大时 Tk 仍留着「时间 · 模式 / 结果」这一条,只把概览藏起来;
+        # 所以单独放一个默认隐藏的标题行,放大时显示、还原时收起。
+        self.zoom_head = QtWidgets.QLabel("")
+        self.zoom_head.setWordWrap(True)
+        self.zoom_head.setVisible(False)
+        right.addWidget(self.zoom_head)
         log_bar = QtWidgets.QHBoxLayout()
-        log_bar.addWidget(QtWidgets.QLabel(tr("执行日志")))
+        self.log_title = QtWidgets.QLabel(tr("执行日志"))
+        log_bar.addWidget(self.log_title)
         self.log_count = QtWidgets.QLabel("")
         log_bar.addStretch(1)
         log_bar.addWidget(self.log_count)
         self.zoom_btn = QtWidgets.QPushButton(tr("⤢  放大"))
-        set_button_kind(self.zoom_btn, "neutral")
+        self.zoom_btn.setObjectName("histZoom")
         self.zoom_btn.setCheckable(True)
+        self.zoom_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.zoom_btn.clicked.connect(self._toggle_zoom)
         log_bar.addWidget(self.zoom_btn)
         right.addLayout(log_bar)
         self.log_view = QtWidgets.QTextEdit()        # 日志(只读,逐行上色)
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
+        self.log_view.setObjectName("histLog")
         mono = self.log_view.font()
         mono.setFamily("Consolas")
         self.log_view.setFont(mono)
@@ -457,8 +481,69 @@ class HistoryDialog(QtWidgets.QDialog):
         btn_row.addWidget(close_btn)
         root.addLayout(btn_row)
         apply_button_styles(self, theme_for(self))
+        self._apply_hist_styles()
 
         self._refresh()
+
+    def _apply_hist_styles(self):
+        """历史窗里走 Tk 那套配色的控件(日志框 / 概览 / 标题栏)。
+
+        这几个 QTextEdit 会**继承主窗口的样式表**(HistoryDialog 的父窗口是主窗口,
+        实测 QSS 会级联进子对话框),于是日志框拿到的是主界面「输入框」的纯白底、圆角 8、
+        内缩 13px 与 10 磅字。Tk 的历史日志是「和窗口同色、直角、1px 细边、Consolas 9 磅」,
+        所以这里按 objectName 单独覆盖。
+        """
+        from ui.qt_main.grad_button import tk
+        t = self._theme()
+        muted = t.get("muted_fg", "#6b6b6b")
+        fg = t.get("fg", "#000000")
+        hover = t.get("hover_bg", "#e9eef5")
+        accent = t.get("accent", "#1e88e5")
+        bg = t.get("panel_bg", t.get("bg", "#f0f0f0"))
+        dark = str(t.get("bg", "")).lower() in ("#2e2e2e", "#1e1e1e", "#252525", "#202020")
+        bd = t.get("border") or ("#3a3a3a" if dark else "#d0d0d0")
+        self.setStyleSheet(
+            "QLabel{background:transparent;}"
+            "QLabel#histTitle{font-size:15pt;font-weight:bold;}"
+            "QTextEdit#histOverview{background:%(bg)s;color:%(fg)s;border:none;"
+            "border-radius:0;padding:0;font-size:9pt;font-family:'Microsoft YaHei';}"
+            "QTextEdit#histLog{background:%(bg)s;color:%(fg)s;border:1px solid %(bd)s;"
+            "border-radius:0;padding:6px 8px;font-size:9pt;font-family:Consolas;}"
+            # 只作用于「⤢ 放大」那颗(Tk 是细边文字链);底部那排仍是渐变按钮
+            "QPushButton#histZoom{color:%(accent)s;background:transparent;"
+            "border:1px solid %(bd)s;border-radius:0;padding:1px 9px;"
+            "font-size:9pt;font-weight:normal;}"
+            "QPushButton#histZoom:hover{background:%(hover)s;}"
+            % {"bg": bg, "fg": fg, "bd": bd, "accent": accent, "hover": hover})
+        self.title_label.setObjectName("histTitle")
+        self.title_label.setStyleSheet("font-size:15pt;font-weight:bold;"
+                                       "background:transparent;border:none;")
+        self.log_title.setStyleSheet("font-size:9pt;font-weight:bold;color:%s;" % fg)
+        self.log_count.setStyleSheet("font-size:8pt;color:%s;" % muted)
+        self.header.setStyleSheet("font-size:9pt;color:%s;" % muted)
+        self.head_icon.setStyleSheet("font-size:20pt;color:%s;" % accent)
+        # 日志框:文档边距 0(内容自己留 padding),外面套一圈 Tk 那种细边
+        self.log_view.document().setDocumentMargin(0)
+        self.detail.document().setDocumentMargin(0)
+        of = self.detail.font()
+        of.setFamily("Microsoft YaHei")
+        of.setPointSizeF(9.0)
+        if hasattr(self, "zoom_head"):
+            self.zoom_head.setFont(of)
+        self.zoom_btn.setFixedHeight(int(round(tk(21))))
+        self._fit_overview()
+
+    def _fit_overview(self):
+        """按内容给概览定高:整块一眼看全(同 Tk 的普通 Frame 竖排,不会自己出滚动条)。"""
+        d = self.detail
+        w = d.viewport().width()
+        if w > 0:
+            d.document().setTextWidth(w)
+        try:
+            need = int(d.document().size().height()) + 4
+        except Exception:
+            return
+        d.setFixedHeight(max(110, min(need, 340)))
 
     def _list_qss(self):
         """列表自己的底色与滚动条。
@@ -530,6 +615,7 @@ class HistoryDialog(QtWidgets.QDialog):
     def _on_select(self, row):
         rec = self.records[row] if 0 <= row < len(self.records) else None
         self.detail.setHtml(self._detail_html(rec) if rec else "")
+        self._fit_overview()
         self._show_log(rec)
         self._set_buttons_for(rec)
 
@@ -565,9 +651,8 @@ class HistoryDialog(QtWidgets.QDialog):
             full = None
         lines, count = log_lines(full or rec)
         if not lines:
-            self.log_view.setPlainText(tr("（这份档案没有日志）"))
-            self.log_count.setText("")
-            return
+            # 同 Tk:占位那行也按 INFO 灰插入,计数是「1 行」
+            lines, count = [("INFO", tr("（这份档案没有日志）"))], 1
         colors = self._level_colors()
         cursor = self.log_view.textCursor()
         fmts = {}
@@ -578,6 +663,15 @@ class HistoryDialog(QtWidgets.QDialog):
                 fmt.setForeground(QtGui.QColor(colors.get(level, colors["INFO"])))
                 fmts[level] = fmt
             cursor.insertText(text + "\n", fmt)
+        # 行高:Tk 是 linespace + spacing1 + spacing3(=1+1)。QSS 没有 line-height,
+        # 只能逐块钉成固定高度,否则中英文行高会随字形忽高忽低。
+        from ui.qt_main.grad_button import tk
+        h = QtGui.QFontMetrics(self.log_view.font()).lineSpacing() + int(round(tk(2)))
+        cur = QtGui.QTextCursor(self.log_view.document())
+        cur.select(QtGui.QTextCursor.Document)
+        bf = cur.blockFormat()
+        bf.setLineHeight(float(h), QtGui.QTextBlockFormat.FixedHeight.value)
+        cur.setBlockFormat(bf)
         self.log_view.moveCursor(QtGui.QTextCursor.Start)
         self.log_count.setText(trp("{0} 行", count))
 
@@ -586,6 +680,10 @@ class HistoryDialog(QtWidgets.QDialog):
         on = self.zoom_btn.isChecked()
         self.list_widget.setVisible(not on)
         self.detail.setVisible(not on)
+        if on:
+            rec = self._current()
+            self.zoom_head.setText(self._head_html(rec) if rec else "")
+        self.zoom_head.setVisible(bool(on))
         self.zoom_btn.setText(tr("⤡  还原") if on else tr("⤢  放大"))
     # ---------- 详情 ----------
     def _detail_html(self, rec):
@@ -615,14 +713,15 @@ class HistoryDialog(QtWidgets.QDialog):
         result = rec.get("result") or ""
         kind_color = {"ok": ok, "warn": warn, "fail": bad}[result_kind(rec)]
         title = trp("{0}　·　{1}", rec.get("time", "?"), mode)
-        head = ("<div style='font-size:15px;font-weight:bold'>%s</div>"
-                "<div style='color:%s'>%s</div>"
+        head = ("<div style='font-size:13pt;font-weight:bold'>%s</div>"
+                "<div style='font-size:9pt;color:%s'>%s</div>"
                 % (esc(title), kind_color, esc(tr(result) if result else "—")))
         if rec.get("rolled_back"):
             add(tr("已回滚"), esc(rec.get("rollback_time") or tr("是")))
         add(tr("世界"), esc(rec.get("world") or tr("(无)")))
-        add(tr("源目录"), esc(rec.get("source") or "—"))
-        add(tr("目标目录"), esc(rec.get("target") or "—"))
+        data = t.get("data_fg", "#1565c0")
+        add(tr("源目录"), span(data, rec.get("source") or "—"))
+        add(tr("目标目录"), span(data, rec.get("target") or "—"))
         for name, success, skipped, failed in stat_rows(rec):
             parts = [span(num, success), span(muted, tr(" 个"))]
             if skipped is not None:
@@ -635,7 +734,23 @@ class HistoryDialog(QtWidgets.QDialog):
         add(tr("失败"), span(bad, trp("{0} 条（详见日志）", nfail)) if nfail else span(ok, tr("无")))
 
         table = "<table style='border-collapse:collapse'>%s</table>" % "".join(rows)
-        return "<div style='font-family:sans-serif;font-size:13px'>%s%s</div>" % (head, table)
+        return "<div style='font-size:9pt'>%s%s</div>" % (head, table)
+
+    def _head_html(self, rec):
+        """放大时留在顶上那一条:时间 · 模式 + 结果(同 Tk 的顶条,不随概览一起藏)。"""
+        import html
+        from core.history_view import result_kind
+        t = self._theme()
+        ok = t.get("ok_fg", "#2e7d32")
+        warn = t.get("log_warning_fg", "#e65100")
+        bad = t.get("fail_fg", "#c62828")
+        mode = tr("模拟运行") if rec.get("mode") == "dry" else tr("实际迁移")
+        result = rec.get("result") or ""
+        color = {"ok": ok, "warn": warn, "fail": bad}[result_kind(rec)]
+        return ("<div style='font-size:13pt;font-weight:bold'>%s</div>"
+                "<div style='font-size:9pt;color:%s'>%s</div>"
+                % (html.escape(trp("{0}　·　{1}", rec.get("time", "?"), mode)),
+                   color, html.escape(tr(result) if result else "—")))
 
     def _set_buttons_for(self, rec):
         """回滚钮只有在「这条记录有自己的备份」时才可点(早期记录没有)。"""

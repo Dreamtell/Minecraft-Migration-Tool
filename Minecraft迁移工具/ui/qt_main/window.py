@@ -22,6 +22,7 @@ from utils.config import load_raw_config, save_raw_config, CONFIG_FILE
 from utils.theme import LIGHT_THEME, DARK_THEME
 from ui.qt_main.pack_warning import palette as palette_warn
 from ui.qt_main import look
+from ui.qt_main.grad_button import GradientButton
 from ui.qt_main.switch_row import SwitchRow
 from ui.qt_main.main_tabs import MainTabs, _Bar as _TabBarTypes
 from ui.qt_main.bottom_bar import BottomBar
@@ -730,18 +731,20 @@ class QtMainWindow(QtWidgets.QMainWindow):
         topbar.setContentsMargins(0, 0, 0, 0)
         topbar.setSpacing(6)
         topbar.addStretch()
-        self.settings_btn = QtWidgets.QPushButton("⚙")
+        # ⚙:Tk 实测 46×34 物理像素、15 磅**常规**(不传 weight),自绘(见 grad_button)
+        self.settings_btn = GradientButton("⚙", kind="tool", theme=self.theme,
+                                           height=34, font_pt=15.0, bold=False,
+                                           icon_only=True)
         self.settings_btn.setToolTip(tr("设置"))
-        self.settings_btn.setFixedSize(34, 34)
         self.settings_btn.clicked.connect(self._open_settings)
-        look.style_button(self.settings_btn, "tool", icon_only=True)
         topbar.addWidget(self.settings_btn)
-        # 主题按钮只放图标(同 Tk);悬停提示写「点了会变成什么」
-        self.theme_btn = QtWidgets.QPushButton(self._theme_btn_label())
+        # 主题按钮只放图标(同 Tk 的 make_theme_icon:手绘太阳/月亮,不用 emoji)
+        self.theme_btn = GradientButton(self._theme_btn_label(), kind="theme",
+                                        theme=self.theme, height=34,
+                                        font_pt=15.0, bold=False, icon_only=True,
+                                        icon=("sun" if self.theme is DARK_THEME else "moon"))
         self.theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
-        self.theme_btn.setFixedSize(34, 34)
         self.theme_btn.clicked.connect(self._toggle_theme)
-        look.style_button(self.theme_btn, "theme", icon_only=True)
         topbar.addWidget(self.theme_btn)
         layout.addLayout(topbar)
 
@@ -760,9 +763,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.source_edit.setObjectName("pathEdit")
         self.source_edit.textChanged.connect(self._on_source_changed)
         src_row.addWidget(self.source_edit, 1)
-        self.src_browse_btn = QtWidgets.QPushButton(tr("📂 浏览..."))
+        self.src_browse_btn = GradientButton(tr("📂 浏览..."), kind="neutral",
+                                             theme=self.theme)
         self.src_browse_btn.clicked.connect(self._browse_source)
-        copy_btn = QtWidgets.QPushButton(tr("← 填充路径"))
+        copy_btn = GradientButton(tr("← 填充路径"), kind="neutral", theme=self.theme)
         copy_btn.setToolTip(tr("把目标路径复制到源路径"))
         copy_btn.clicked.connect(self._copy_target_to_source)
         # 两颗按钮单独一个子布局:「界面按钮」重排时只动这一排,不会把输入框和状态图标摘掉
@@ -787,7 +791,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.target_edit.setObjectName("pathEdit")
         self.target_edit.textChanged.connect(self._on_target_changed)
         tgt_row.addWidget(self.target_edit, 1)
-        self.tgt_browse_btn = QtWidgets.QPushButton(tr("📂 浏览..."))
+        self.tgt_browse_btn = GradientButton(tr("📂 浏览..."), kind="neutral",
+                                             theme=self.theme)
         self.tgt_browse_btn.clicked.connect(self._browse_target)
         tgt_btns = QtWidgets.QHBoxLayout()
         tgt_btns.setContentsMargins(0, 0, 0, 0)
@@ -933,19 +938,16 @@ class QtMainWindow(QtWidgets.QMainWindow):
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(5)
 
-        big_log_btn = QtWidgets.QPushButton(tr("📂 放大查看"))
+        big_log_btn = GradientButton(tr("📂 放大查看"), kind="neutral", theme=self.theme)
         big_log_btn.clicked.connect(self._open_big_log_view)
-        open_folder_btn = QtWidgets.QPushButton(tr("📂 打开日志文件夹"))
+        open_folder_btn = GradientButton(tr("📂 打开日志文件夹"), kind="neutral",
+                                         theme=self.theme)
         open_folder_btn.clicked.connect(self._open_log_folder)
-        self.fail_btn = QtWidgets.QPushButton(tr("📍 定位错误"))
+        self.fail_btn = GradientButton(tr("📍 定位错误"), kind="danger", theme=self.theme)
         self.fail_btn.setEnabled(False)          # 没有出错条目时置灰(同 Tk 版)
         self.fail_btn.clicked.connect(self._goto_next_fail)
-        clear_log = QtWidgets.QPushButton(tr("🗑️ 清空日志"))
+        clear_log = GradientButton(tr("🗑️ 清空日志"), kind="danger", theme=self.theme)
         clear_log.clicked.connect(self._clear_log)
-        look.style_button(big_log_btn, "neutral")
-        look.style_button(open_folder_btn, "neutral")
-        look.style_button(self.fail_btn, "danger")          # Tk:定位错误是红色,没有错误时自动置灰
-        look.style_button(clear_log, "danger")
         # 工具栏:左边 放大查看 + 💡提示 + 定位错误,右边 打开日志文件夹 + 清空日志(同 Tk 的 pack 顺序)
         log_tools = QtWidgets.QHBoxLayout()
         log_tools.setContentsMargins(0, 0, 0, 0)
@@ -990,10 +992,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
         self.log_status_label.setVisible(False)
         foot.addWidget(self.log_status_label, 1)
         foot.addStretch(1)
-        self.log_full_btn = QtWidgets.QPushButton(tr("打开完整日志"))
+        self.log_full_btn = GradientButton(tr("打开完整日志"), kind="log",
+                                           theme=self.theme, height=28)
         self.log_full_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.log_full_btn.clicked.connect(self._open_full_log)
-        look.style_button(self.log_full_btn, "log")      # Tk: create_log_button 的灰蓝 #607d8b→#78909c
         foot.addWidget(self.log_full_btn)
         log_layout.addLayout(foot)
 
@@ -1016,14 +1018,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
         bottom.addWidget(self.overwrite_check)
 
         # 查看历史按钮（同 Tk：与「开始迁移」同高 44、11pt 粗体）
-        self.history_btn = QtWidgets.QPushButton(tr("📋 查看历史"))
-        look.style_button(self.history_btn, "neutral")
-        self.history_btn.setFixedHeight(44)
+        self.history_btn = GradientButton(tr("📋 查看历史"), kind="neutral", theme=self.theme,
+                                          height=44, font_pt=11.0)
         self.history_btn.setProperty("tall", True)
-        _hf = self.history_btn.font()
-        _hf.setPointSizeF(11.0)
-        _hf.setBold(True)
-        self.history_btn.setFont(_hf)
         self.history_btn.clicked.connect(self._view_history)
 
         # 开始迁移按钮:3D 翻转(正面绿/模拟运行黄,迁移中翻到背面红;手感与 Tk 共用 start_btn_feel)
@@ -1171,6 +1168,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 "border:2px solid %s;}" % (hi, fg, edge))
 
     def _repaint_conflict_row(self):
+        seg = getattr(self, "_conflict_seg", None)
+        if seg is not None:
+            seg.set_theme(self.theme)
         for b in getattr(self, "_conflict_btns", {}).values():
             b.setStyleSheet(self._conflict_qss())
 
@@ -1183,21 +1183,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
         h = QtWidgets.QHBoxLayout(box)
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(QtWidgets.QLabel(tr("目标已有同名文件时：")))
+        from ui.qt_main.settings_widgets import SegmentedControl
         self._conflict_btns = {}
-        group = QtWidgets.QButtonGroup(box)
-        group.setExclusive(True)
-        for value, label in (("overwrite", tr("覆盖（先备份）")), ("skip", tr("跳过（目标保持不变）"))):
-            b = QtWidgets.QPushButton(label)
-            b.setCheckable(True)
-            b.setChecked(self.extra_conflict == value)
-            b.setCursor(QtCore.Qt.PointingHandCursor)
-            b.clicked.connect(lambda _c=False, v=value: self._set_extra_conflict(v))
-            group.addButton(b)
-            h.addWidget(b)
-            self._conflict_btns[value] = b
+        self._conflict_seg = SegmentedControl(
+            [(tr("覆盖（先备份）"), "overwrite"), (tr("跳过（目标保持不变）"), "skip")],
+            value=self.extra_conflict, theme=self.theme)
+        self._conflict_seg.valueChanged.connect(self._set_extra_conflict)
+        h.addWidget(self._conflict_seg)
         h.addStretch(1)
-        self._conflict_group = group
-        self._repaint_conflict_row()
         return box
 
     def _set_extra_conflict(self, value):
@@ -1215,6 +1208,9 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
     def _sync_conflict_row(self):
         """把页面里的分段选择对到当前值(设置窗改了之后也要调,两处才不会各说各话)。"""
+        seg = getattr(self, "_conflict_seg", None)
+        if seg is not None:
+            seg.setValue(self.extra_conflict)
         for value, b in getattr(self, "_conflict_btns", {}).items():
             b.blockSignals(True)
             b.setChecked(self.extra_conflict == value)
@@ -1230,9 +1226,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         for item in buttons:
             if len(item) == 3:
                 key, label, cb = item
-                b = QtWidgets.QPushButton(label)
+                b = GradientButton(label, kind=_action_kind(key), theme=self.theme)
                 b.clicked.connect(cb)
-                look.style_button(b, _action_kind(key))
             else:                         # (key, 现成控件)
                 key, b = item
                 if isinstance(b, QtWidgets.QPushButton) and not b.property("kind"):
@@ -1807,8 +1802,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 w.setEnabled(not busy)
         for w in getattr(self, "_path_btns", {}).values():
             w.setEnabled(not busy)
+        if getattr(self, "_conflict_seg", None) is not None:
+            self._conflict_seg.setEnabled(not busy)   # 同下:迁移中改策略会和正在跑的那次对不上
         for b in getattr(self, "_conflict_btns", {}).values():
-            b.setEnabled(not busy)          # 迁移中改「同名文件」策略会和正在跑的那次对不上
+            b.setEnabled(not busy)
         # 倒计时期间开始按钮要能点(取消),其余忙态由迁移流程管;空闲时一定是可点的
         if getattr(self, "_countdown_timer", None) is not None:
             self.start_btn.setEnabled(True)
@@ -3015,10 +3012,10 @@ class QtMainWindow(QtWidgets.QMainWindow):
                 f"color: {self.theme.get('muted_fg', '#888')};")
             toolbar.addWidget(self._log_big_count)
             toolbar.addStretch()
-            refresh_btn = QtWidgets.QPushButton(tr("🔄 刷新"))
+            refresh_btn = GradientButton(tr("🔄 刷新"), kind="theme", theme=self.theme)
             refresh_btn.clicked.connect(self._refresh_big_log)
             toolbar.addWidget(refresh_btn)
-            close_btn = QtWidgets.QPushButton(tr("❌ 关闭"))
+            close_btn = GradientButton(tr("❌ 关闭"), kind="danger", theme=self.theme)
             close_btn.clicked.connect(win.close)
             toolbar.addWidget(close_btn)
             v.addLayout(toolbar)
@@ -3691,6 +3688,15 @@ class QtMainWindow(QtWidgets.QMainWindow):
         try:
             blk = cursor.block().previous()      # 刚插完的那一行(光标已到下一空行)
             blk.setUserState(self._LOG_LEVEL_CODES.get(level, 0))
+            # 行距:Tk 的日志框是 spacing1=1 + spacing3=1;QSS 没有 line-height,
+            # 只能逐块钉成「行高 + 2(物理)」,否则中英文行高会随字形忽高忽低。
+            from ui.qt_main.grad_button import tk
+            bf = blk.blockFormat()
+            bf.setLineHeight(float(QtGui.QFontMetrics(self.log_text.font()).lineSpacing()
+                                   + int(round(tk(2)))),
+                             QtGui.QTextBlockFormat.FixedHeight.value)
+            cur2 = QtGui.QTextCursor(blk)
+            cur2.setBlockFormat(bf)
         except Exception:
             pass
         if level == "ERROR":

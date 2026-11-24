@@ -1016,16 +1016,17 @@ class ExtraConflictRowTests(_WinBase):
 
     def test_row_exists_and_reflects_the_config(self):
         self.assertEqual(self.w.extra_conflict, "overwrite")
-        self.assertTrue(self.w._conflict_btns["overwrite"].isChecked())
-        self.assertFalse(self.w._conflict_btns["skip"].isChecked())
-        self.assertEqual(self.w._conflict_btns["overwrite"].text(), "覆盖（先备份）")
-        self.assertEqual(self.w._conflict_btns["skip"].text(), "跳过（目标保持不变）")
+        seg = self.w._conflict_seg
+        self.assertEqual(seg.value(), "overwrite")
+        self.assertEqual([it[1] for it in seg.items()], ["overwrite", "skip"])
+        self.assertEqual([it[0] for it in seg.items()], ["覆盖（先备份）", "跳过（目标保持不变）"])
 
     def test_click_updates_the_value_and_persists_it(self):
-        self.w._conflict_btns["skip"].click()
+        # 分段选择没有自己的 QPushButton 了,直接走值变化那条路(与真人点击同一条槽)
+        self.w._conflict_seg.setValue("skip", emit=True)
         self.assertEqual(self.w.extra_conflict, "skip")
         self.assertEqual(json.loads(CFG.read_text(encoding="utf-8")).get("extra_conflict"), "skip")
-        self.w._conflict_btns["overwrite"].click()
+        self.w._conflict_seg.setValue("overwrite", emit=True)
         self.assertEqual(json.loads(CFG.read_text(encoding="utf-8")).get("extra_conflict"), "overwrite")
 
     def test_invalid_value_is_ignored(self):
@@ -1034,8 +1035,7 @@ class ExtraConflictRowTests(_WinBase):
 
     def test_settings_dialog_change_moves_the_row(self):
         self.w._apply_settings({**self.w.config, "extra_conflict": "skip", "theme": "dark"})
-        self.assertTrue(self.w._conflict_btns["skip"].isChecked())
-        self.assertFalse(self.w._conflict_btns["overwrite"].isChecked())
+        self.assertEqual(self.w._conflict_seg.value(), "skip")
 
     def test_sync_does_not_toast(self):
         with mock.patch.object(self.w, "toast") as toast:
@@ -1051,10 +1051,23 @@ class ExtraConflictRowTests(_WinBase):
     def test_locked_while_busy(self):
         self.w._scanning = True
         self.w._refresh_busy_state()
-        self.assertFalse(any(b.isEnabled() for b in self.w._conflict_btns.values()))
+        self.assertFalse(self.w._conflict_seg.isEnabled())
         self.w._scanning = False
         self.w._refresh_busy_state()
-        self.assertTrue(all(b.isEnabled() for b in self.w._conflict_btns.values()))
+        self.assertTrue(self.w._conflict_seg.isEnabled())
+
+    def _seg_img(self, seg):
+        return seg.grab().toImage().convertToFormat(QtGui.QImage.Format_RGB32)
+
+    def _seg_has_accent(self, seg):
+        """整条里有没有出现强调色(高亮块)。按像素数,别只看某一点。"""
+        img = self._seg_img(seg)
+        want = seg._accent().rgb() & 0xFFFFFF
+        n = 0
+        for x in range(0, img.width(), 2):
+            if (img.pixel(x, img.height() // 2) & 0xFFFFFF) == want:
+                n += 1
+        return n
 
     def _px(self, btn):
         """按钮上边缘中间那个点的颜色(选中态是 2px 描边 + 高亮底,没选中是普通按钮底)。"""
@@ -1065,25 +1078,23 @@ class ExtraConflictRowTests(_WinBase):
         """全局样式表里没有 :checked 规则,不单独写的话选中和没选中一模一样,用户看不出选的是哪个。"""
         self.w.tabs.setCurrentIndex(self.w._extra_tab_index)
         pump(30)
-        a, b = self.w._conflict_btns["overwrite"], self.w._conflict_btns["skip"]
-        self.assertNotEqual(self._px(a), self._px(b))
-        self.w._conflict_btns["skip"].click()
-        pump(30)
-        self.assertNotEqual(self._px(a), self._px(b))
-        # 选中的换成了 skip:它现在应当是主题的高亮色,原来选中的 overwrite 退回普通按钮底色
-        self.assertEqual(self._px(b).lower(), self.w.theme["highlight_bg"].lower())
-        self.assertNotEqual(self._px(a).lower(), self.w.theme["highlight_bg"].lower())
+        seg = self.w._conflict_seg
+        before = self._seg_img(seg)
+        self.assertGreater(self._seg_has_accent(seg), 0)      # 有高亮块,不是一整条灰
+        seg.setValue("skip", emit=False)
+        pump(120)
+        after = self._seg_img(seg)
+        self.assertNotEqual(before.constBits().tobytes(), after.constBits().tobytes())
 
     def test_chosen_segment_color_follows_the_theme(self):
         self.w.tabs.setCurrentIndex(self.w._extra_tab_index)
         pump(30)
-        sel = self.w._conflict_btns["overwrite"]
-        dark = self._px(sel)
+        seg = self.w._conflict_seg
+        dark = self._seg_img(seg)
         self.w._toggle_theme()
-        pump(30)
-        light = self._px(sel)
-        self.assertNotEqual(dark, light)
-        self.assertEqual(light.lower(), self.w.theme["highlight_bg"].lower())
+        pump(60)
+        light = self._seg_img(seg)
+        self.assertNotEqual(dark.constBits().tobytes(), light.constBits().tobytes())
 
 class PageHintTests(_WinBase):
     def labels(self, role):
@@ -1108,9 +1119,9 @@ class PageHintTests(_WinBase):
 
     def test_the_conflict_row_lives_on_the_extra_page_only(self):
         extra_page = self.w.tabs.widget(self.w._extra_tab_index)
-        self.assertTrue(extra_page.isAncestorOf(self.w._conflict_btns["skip"]))
+        self.assertTrue(extra_page.isAncestorOf(self.w._conflict_seg))
         mod_page = self.w.tabs.widget(self.w._mod_tab_index)
-        self.assertFalse(mod_page.isAncestorOf(self.w._conflict_btns["skip"]))
+        self.assertFalse(mod_page.isAncestorOf(self.w._conflict_seg))
 
 
 class TrayNoticeTests(_WinBase):

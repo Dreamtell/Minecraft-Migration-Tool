@@ -24,7 +24,7 @@ if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
 
 def main():
     try:
-        from PySide6 import QtWidgets
+        from PySide6 import QtGui, QtWidgets
     except ImportError:
         print("错误: 找不到 PySide6。")
         print('请运行: pip install "PySide6==6.11.2" --target _qt')
@@ -34,7 +34,7 @@ def main():
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(True)   # 预览模式:关窗即退出
-    app.setFont(QtWidgets.QApplication.font())
+    app.setFont(QtGui.QFont("Microsoft YaHei", 9))
 
     win = QtMainWindow()
     win.show()
