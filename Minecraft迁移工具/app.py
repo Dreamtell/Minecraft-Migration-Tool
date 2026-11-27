@@ -851,7 +851,7 @@ def main():
     try:
         浮 = getattr(app, "_net_float", None)
         if 浮 is not None:
-            浮.close()
+            浮.close(退出=True)      # 退出不是用户关的：别把 net_float_on 落盘成 False
     except Exception:
         pass
     try:

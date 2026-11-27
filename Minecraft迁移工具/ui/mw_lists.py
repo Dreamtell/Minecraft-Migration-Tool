@@ -62,9 +62,30 @@ class ListsMixin:
 
         以前这些是设置页里的一组勾选框（"默认携带的目录"）：勾上之后迁移那一刻自动
         并进清单，而且**不写回**清单 —— 用户看不到、也删不掉。现在统一成"主动加进清单"。
+
+        弹窗是自绘卡片（ui/preset_menu.py）：分组、图标、悬停高亮、「已在清单」徽章；
+        加完一项徽章当场更新、弹窗不关，可以连着加好几样。建不起来时退回原生菜单。
         """
+        menu = getattr(self, "_preset_menu", None)
+        if menu is not None and menu.alive():
+            menu.close()                      # 再点一次 = 收起
+            return
+        existing = self.extra_text.get("1.0", "end-1c").splitlines()
+        try:
+            from ui.preset_menu import PresetMenu
+            self._preset_menu = PresetMenu(
+                self.root, self.theme, existing, self.add_extra_preset_btn,
+                on_pick=self._quick_add_preset,
+                get_existing=lambda: self.extra_text.get("1.0", "end-1c").splitlines())
+            return
+        except Exception as e:
+            trace_exc("mw_lists/常用目录弹窗", e)
+        self._open_extra_preset_menu_native(existing)
+
+    def _open_extra_preset_menu_native(self, existing):
+        """兜底：原生 tk.Menu（弹窗建不起来时至少还能用）。"""
         已有 = {x.strip().replace("\\", "/").rstrip("/").lower()
-                for x in self.extra_text.get("1.0", "end-1c").splitlines() if x.strip()}
+                for x in existing if x.strip()}
         try:
             菜单 = tk.Menu(self.root, tearoff=0, bg=self.theme.get("entry_bg", "#ffffff"),
                            fg=self.theme.get("fg", "#000000"),
@@ -1019,7 +1040,11 @@ class ListsMixin:
                 rel_s = rel_s.rstrip("/") + "/"
             if rel_s.rstrip("/") not in lines:
                 text_widget.configure(state=tk.NORMAL)
-                cur = text_widget.get("1.0", tk.END)
+                # ⚠ 必须用 "end-1c"：Text 的 get("1.0", END) **永远**以换行结尾
+                # （最后那个是控件自带的不可见换行），拿它判"末尾是不是换行"恒为真，
+                # 于是从配置读进来、末尾没有换行的清单会出现 "shaderpacks/schematics/"
+                # 这种两行粘成一行（实测）。
+                cur = text_widget.get("1.0", "end-1c")
                 # 只有"已经有内容且末尾不是换行"时才补分隔换行，否则连续添加会出现空行
                 if cur.strip() and not cur.endswith("\n"):
                     text_widget.insert(tk.END, "\n")

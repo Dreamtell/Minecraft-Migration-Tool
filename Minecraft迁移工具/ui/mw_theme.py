@@ -154,6 +154,15 @@ class ThemeMixin:
                 pass
         self._big_view_cards = alive_cards
 
+        # 桌面浮标的窗口底色：分层窗口下看不见，但拿不到 ULW、退回色键方案的机器上，
+        # 这个颜色就是键色 —— 不跟着换主题会留下一块旧主题颜色的方块。
+        _flt = getattr(self, "_net_float", None)
+        if _flt is not None:
+            try:
+                _flt.set_bg(self.theme.get("bg", "#f0f0f0"))
+            except Exception:
+                pass
+
         # 同步"放大查看"窗口的整体配色（背景/文字/输入框等，渐变按钮不受影响）
         alive_big = []
         for bww in getattr(self, '_big_view_windows', []):

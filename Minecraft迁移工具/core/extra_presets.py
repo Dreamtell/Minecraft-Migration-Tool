@@ -46,3 +46,31 @@ def preset_rows(existing_lines):
 def describe(entry):
     """某个预设条目的说明文字;不是预设就返回空串。"""
     return next((d for _k, rel, d in EXTRA_PRESETS if rel == entry), "")
+
+# 展示分组（只影响「＋ 常用目录」弹窗里的顺序和分组标题）。
+# 没列进来的新预设自动落到最后一组，不会因为忘了加而消失。
+# ⚠ 键要和 EXTRA_PRESETS 里的条目**逐字一致**（文件夹带末尾 /）：按 "shaderpacks"
+# 去匹配 "shaderpacks/" 永远匹配不上，会整组掉进「未分组」。
+_GROUPS = (
+    (trp("画面与资源"), ("shaderpacks/", "resourcepacks/", "optionsof.txt", "iris.properties")),
+    (trp("地图与投影"), ("schematics/", "XaeroWorldMap/", "XaeroWaypoints/", "xaero/", "journeymap/")),
+    (trp("模组与脚本"), ("kubejs/", "defaultconfigs/", "local/")),
+    (trp("其它"), ("screenshots/", "servers.dat")),
+)
+
+
+def preset_groups(existing_lines):
+    """按用途分组后的行：[(组标题, [(条目, 说明, 是否已在清单), ...]), ...]。"""
+    rows = preset_rows(existing_lines)
+    by = {r[0]: r for r in rows}
+    used = set()
+    out = []
+    for title, keys in _GROUPS:
+        items = [by[k] for k in keys if k in by]
+        used.update(k for k in keys if k in by)
+        if items:
+            out.append((title, items))
+    rest = [r for r in rows if r[0] not in used]
+    if rest:
+        out.append((trp("未分组"), rest))
+    return out

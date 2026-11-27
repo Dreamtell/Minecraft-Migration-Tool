@@ -1,12 +1,34 @@
-# Runtime dependencies (Python 3.12, Windows)
-Pillow==11.3.0
-tkinterdnd2==0.6.2
-tendo>=0.3.0,<0.4
-winotify>=1.1.0,<2
-matplotlib>=3.9,<4
+# ---------------------------------------------------------------------------
+# Minecraft 整合包迁移工具 —— Python 依赖
+# Python 3.12（开发与打包都用 3.12）+ Windows 10/11
+#
+#   pip install -r requirements.txt
+#
+# 分三块：必需 / 可选（缺了功能降级，程序照常启动）/ 打包工具。
+# ---------------------------------------------------------------------------
 
-# Packaging
+# ---- 必需：缺了起不来（都是顶层 import）------------------------------------
+Pillow==11.3.0            # 图像处理：窗口图标、渐变按钮、圆角输入框、卡片缩略图
+tendo==0.3.0              # 单实例锁：第二次启动时把已有窗口叫到前台
+winotify==1.1.0           # Windows 系统通知（迁移完成 / 失败 / 后台任务）
+comtypes==1.4.17          # 原生文件对话框（IFileOpenDialog 等 COM 接口）
+
+# ---- 可选：缺了就少一块功能，其余照常 --------------------------------------
+tkinterdnd2==0.6.2        # 拖放 jar / mods 文件夹；缺了只能用「添加模组」按钮
+matplotlib>=3.9,<4        # 网络延迟曲线；缺了那块提示「需要 matplotlib」
+numpy>=2.0,<3             # 浮标粒子 / 边缘光带的向量化绘制；缺了退化成慢速循环
+pywin32>=306              # 系统托盘 + 托盘菜单；缺了托盘图标不出现（二次启动仍能叫回窗口）
+pywinstyles>=1.8,<2       # Win11 标题栏跟随深浅主题；缺了标题栏用系统默认色
+
+# ---- 可选：Qt 版界面（大视图 / 模组详情窗 / Qt 主界面）----------------------
+# 两种放法都行，程序会自动在 sys.path 里找「仓库根/_qt」再找 site-packages：
+#   1) 装进 site-packages（最省事）
+#        pip install "PySide6==6.12.0"
+#   2) 装进仓库根的 _qt/（打包_命令行.bat 靠 --paths _qt 找它，_qt/ 不进 git）
+#        pip install "PySide6==6.12.0" --target _qt
+# 注意：打包脚本里写死了 --paths _qt。走方式 1 打包时，要么先建个空的 _qt/，
+#      要么把 打包_命令行.bat 里那两处 --paths 去掉。
+# PySide6==6.12.0
+
+# ---- 打包工具（只打包时用，运行不需要）-------------------------------------
 pyinstaller==6.22.3
-
-# Optional Qt views: install separately into the repository root.
-# pip install "PySide6==6.11.2" --target _qt

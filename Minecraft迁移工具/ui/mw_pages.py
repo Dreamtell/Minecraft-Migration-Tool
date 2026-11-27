@@ -1752,7 +1752,7 @@ class PagesMixin:
             else:
                 self.open_net_float()
                 if self._net_float is not None and self._net_float.alive():
-                    self.toast(trp("📌 桌面浮标已显示（可拖动，双击看曲线）"), level="ok",
+                    self.toast(trp("📌 桌面浮标已显示（单击看曲线，按住拖动换位置）"), level="ok",
                                key="net_float")
                 else:
                     self.toast(trp("⚠️ 浮标打不开，详见日志"), level="warn")

@@ -1920,6 +1920,12 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "ℹ️ {0} is already in the list",
     "　✅ 已在清单":
         "　✅ Already in the list",
+    "已在清单": "In the list",
+    "点一下即加入「其它文件」清单": "Click an item to add it to the Other files list",
+    "画面与资源": "Visuals & assets",
+    "地图与投影": "Maps & schematics",
+    "模组与脚本": "Mods & scripts",
+    "未分组": "Ungrouped",
     "检查模组是否存在":
         "check whether the mods exist",
     "⚠️ 有 {0} 项未添加（不在源 config 目录下或不安全）：":
@@ -1998,8 +2004,11 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
         "{0}: now {1} · avg {2} · max {3}",
     "📌 桌面浮标已关闭":
         "📌 Desktop overlay closed",
+    "📌 桌面浮标已显示（单击看曲线，按住拖动换位置）":
+        "📌 Desktop overlay shown (click for the chart, hold and drag to move)",
+    # Qt 侧（ui/qt_main/window.py）还是旧文案，这条留着别删，否则它的英文模式会退回中文
     "📌 桌面浮标已显示（可拖动，双击看曲线）":
-        "📌 Desktop overlay shown (drag it; double-click for the chart)",
+        "📌 Desktop overlay shown (click for the chart, hold and drag to move)",
     "❌ 切换浮标失败：{0}":
         "❌ Failed to toggle the overlay: {0}",
     "⚠️ 浮标打不开，详见日志":

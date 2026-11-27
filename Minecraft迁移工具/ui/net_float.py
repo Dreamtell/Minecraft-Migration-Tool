@@ -76,6 +76,42 @@ class _BITMAPINFO(ctypes.Structure):
     _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
 
 
+class _PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260)]
+
+
+def _parent_pid(pid):
+    """某个进程的父进程 PID（拿不到返回 0）。
+
+    只用来判断"前台窗口是不是我们自己叫起来的子进程"：Qt 放大查看/差异窗口跑在
+    ui/qt_host.py 起的子进程里，只比 PID 会把"正在看大窗口"当成"别的程序在前台"。
+    """
+    try:
+        k = ctypes.windll.kernel32
+        snap = k.CreateToolhelp32Snapshot(0x00000002, 0)      # TH32CS_SNAPPROCESS
+        if snap in (0, -1, 0xFFFFFFFFFFFFFFFF):
+            return 0
+        try:
+            e = _PROCESSENTRY32()
+            e.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+            if not k.Process32First(snap, ctypes.byref(e)):
+                return 0
+            while True:
+                if int(e.th32ProcessID) == int(pid):
+                    return int(e.th32ParentProcessID)
+                if not k.Process32Next(snap, ctypes.byref(e)):
+                    return 0
+        finally:
+            k.CloseHandle(snap)
+    except Exception:
+        return 0
+
+
 class _EdgeGlow:
     """紧贴主窗口某条边的发光带 + 向内侧溢出的颗粒（"要被吸进去了"的提示）。
 
@@ -438,15 +474,32 @@ class _EdgeGlow:
         pt_dst = wintypes.POINT(int(x), int(y))
         pt_src = wintypes.POINT(0, 0)
         size = wintypes.SIZE(w, h)
-        常 = int(getattr(self, "_alpha", 255))
-        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, max(0, min(255, 常)), _AC_SRC_ALPHA)
+        # ⚠ 这里必须是 255：像素自身的 alpha 已经在 _draw() 里乘过 _alpha（0~1）了。
+        # 以前写 int(self._alpha)，那是 0 或 1，再被当成 SourceConstantAlpha(0~255)
+        # 一乘 —— 整条光带只剩 1/255 的不透明度，肉眼完全看不见（实测开关提示前后
+        # 屏幕像素差最大只有 1）。淡入淡出靠逐像素 alpha，不靠这个常量。
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
         u.UpdateLayeredWindow(self._hwnd, hdc_screen, ctypes.byref(pt_dst),
                               ctypes.byref(size), hdc_mem, ctypes.byref(pt_src),
                               0, ctypes.byref(blend), _ULW_ALPHA)
         u.ReleaseDC(0, hdc_screen)
 
     def destroy(self):
-        self.hide()
+        # ⚠ hide() 在淡出中只是"请求隐藏"（_target=0，16ms 的链继续跑）；
+        # 紧接着 destroy 窗口后那条链还会画约 160ms —— 在已销毁的窗口上调 ULW。
+        # 这里直接停链。
+        self._target = 0.0
+        self._edge = None
+        self._真正隐藏()
+        old = self._dib
+        self._dib = None
+        if old:
+            try:
+                g = ctypes.windll.gdi32
+                g.DeleteObject(old[0])
+                g.DeleteDC(old[1])
+            except Exception:
+                pass
         try:
             self.win.destroy()
         except Exception:
@@ -492,6 +545,7 @@ class NetFloat:
         self._morph = None         # 交叉溶解状态（见 _redraw_faded）
         self._morph_job = None
         self._shape_cache = {}     # 尺寸 -> 图标图（换形态时两边都要用）
+        self._base_cache = {}      # 不含数字的底图（数字每 5 秒变一次，底图不用重画）
         self._hint = None          # 正在"将要吸附"的那条边（None = 无提示）
         self._hint_job = None
         self._hint_until = 0.0
@@ -499,7 +553,10 @@ class NetFloat:
         self._alpha = 255          # 整体不透明度（淡入淡出用）
         self._fade_job = None
         self._fade_token = 0
-        self._fade_hr = False       # 是否占着 1ms 定时器精度（见 _fade_to）
+        # 1ms 定时器精度按"谁占的"分开记（fade = 淡入淡出，morph = 交叉溶解）。
+        # 以前是一个共用布尔：先结束的那条会把另一条还占着的精度一起还掉，
+        # 剩下的帧掉回 15.6ms 粒度、一顿一顿。
+        self._hr = {"fade": False, "morph": False}
         self._show_job = None
         self._SHOW_DELAY = 150      # 主窗口出现后等这么久再露面（对齐系统显示动画）
         self._peek = False
@@ -562,10 +619,8 @@ class NetFloat:
         # UpdateLayeredWindow 会一直返回 0（窗口只剩自己的底色 = 一块深色方块）。
         # "隐藏"改成把窗口挪到屏幕外 + alpha 0。
         self._parked = False
-        try:
-            root.bind("<Destroy>", self._on_root_destroy, add="+")
-        except Exception:
-            pass
+        # ⚠ 别在这里绑 <Destroy>：_bind() 里已经绑了同一个处理函数，绑两遍
+        # 会让 close() 走两次（两次 on_close、两次写配置）。
         self._bind()
         self._menu()
         self._restore(x, y)
@@ -657,17 +712,27 @@ class NetFloat:
             return self._rel[0], self._rel[1]
 
     def _has_other_window(self):
-        """本程序是不是还有别的窗口开着（设置 / 历史 / 曲线图 / 各种对话框）。"""
+        """本程序是不是还有别的**真正的窗口**开着（设置 / 历史 / 曲线图 / 各种对话框）。
+
+        ⚠ 浮标自己、边缘光带、吐司宿主都是 Toplevel，但它们不是"用户的另一个窗口"：
+        以前把它们都算进来，光带一亮、或者每弹一个吐司，浮标就有整段时间不再抬升，
+        被主窗口盖住（看起来就是"浮标时有时无"）。overrideredirect 的浮层一律跳过。
+        """
+        skip = {id(self.win)}
+        gl = getattr(self, "_glow", None)
+        if gl is not None and getattr(gl, "win", None) is not None:
+            skip.add(id(gl.win))
         try:
             for w in self.root.winfo_children():
-                if w is self.win:
+                if id(w) in skip or not isinstance(w, tk.Toplevel):
                     continue
-                if isinstance(w, tk.Toplevel):
-                    try:
-                        if w.winfo_viewable():
-                            return True
-                    except Exception:
-                        pass
+                try:
+                    if w.overrideredirect():
+                        continue          # 吐司 / 提示 / 光带这类浮层
+                    if w.winfo_viewable():
+                        return True
+                except Exception:
+                    pass
         except Exception:
             pass
         return False
@@ -730,13 +795,20 @@ class NetFloat:
         from PIL import Image
         img = img.convert("RGBA")
         w, h = img.size
-        buf = bytearray(img.tobytes("raw", "BGRA"))
-        for i in range(0, len(buf), 4):          # 预乘 alpha
-            a = buf[i + 3]
-            if a != 255:
-                buf[i] = buf[i] * a // 255
-                buf[i + 1] = buf[i + 1] * a // 255
-                buf[i + 2] = buf[i + 2] * a // 255
+        try:                                     # 预乘 alpha：numpy 一次算完（~0.1ms）
+            import numpy as np
+            arr = np.asarray(img, dtype=np.uint16)
+            a = arr[:, :, 3:4]
+            arr[:, :, :3] = (arr[:, :, :3] * a) // 255
+            buf = np.ascontiguousarray(arr[:, :, [2, 1, 0, 3]].astype(np.uint8)).tobytes()
+        except Exception:
+            buf = bytearray(img.tobytes("raw", "BGRA"))
+            for i in range(0, len(buf), 4):      # 兜底：逐像素
+                a = buf[i + 3]
+                if a != 255:
+                    buf[i] = buf[i] * a // 255
+                    buf[i + 1] = buf[i + 1] * a // 255
+                    buf[i + 2] = buf[i + 2] * a // 255
         u = ctypes.windll.user32
         g = ctypes.windll.gdi32
         hdc_screen = u.GetDC(0)
@@ -764,6 +836,47 @@ class NetFloat:
             except Exception:
                 pass
 
+    def set_bg(self, bg):
+        """窗口底色（ULW 不可用时退回色键方案，这个颜色就是"键色"）。
+
+        分层窗口下看不见它，但不跟着主题换的话，在拿不到 ULW 的机器上，
+        浮标外面会留一块旧主题颜色的方块。
+        """
+        bg = bg or "#f0f0f0"
+        if bg == self.bg:
+            return
+        self.bg = bg
+        try:
+            self.win.configure(bg=bg)
+        except Exception:
+            pass
+        if self.canvas is not None:
+            try:
+                self.canvas.configure(bg=bg)
+            except Exception:
+                pass
+        if not getattr(self, "_layered", False):
+            try:                       # 色键方案：键色不跟着换，切主题会留下一块新底色方块
+                self.win.attributes("-transparentcolor", bg)
+            except Exception:
+                pass
+        self._base_cache.clear()      # 底图缓存键里带 bg
+        self._shape_cache.clear()
+        self._redraw()
+
+    def _free_dib(self):
+        """释放 ULW 用的位图 + 内存 DC（不然反复开/关会一直泄漏 GDI 句柄）。"""
+        dib = getattr(self, "_dib", None)
+        self._dib = None
+        if not dib:
+            return
+        try:
+            g = ctypes.windll.gdi32
+            g.DeleteObject(dib[0])
+            g.DeleteDC(dib[1])
+        except Exception:
+            pass
+
     def position(self):
         return tuple(self._rel)
 
@@ -778,6 +891,11 @@ class NetFloat:
         另外"当前已经亮着的那条边"优先：除非另一条边明显更近（差 10px 以上），
         否则不换边 —— 角落附近左右两条边会互相抢，抢起来也是闪的来源。
         """
+        if not getattr(self, "dock_enabled", True):
+            # 设置里关了"贴边时收纳浮标"：不提示、也不吸附。以前这里不看这个开关，
+            # 拖到边上松手仍会吸附并把 _docked 钉住 —— 之后浮标既不刷新数字，
+            # 也不再响应悬停高亮（用户只会觉得"浮标死掉了"）。
+            return None
         w, h = self._parent_size()
         cw, ch = self._cur_size()
         x, y = self._rel
@@ -849,20 +967,23 @@ class NetFloat:
         c.bind("<Button-3>", self._popup)
         c.bind("<Enter>", self._on_enter)
         c.bind("<Leave>", self._on_leave)
-        try:
-            self.root.bind("<Destroy>", self._on_root_destroy, add="+")
-        except Exception:
-            pass
-        try:
-            self.root.bind("<Configure>", self._on_root_configure, add="+")
-            # 跟着主窗口显示/隐藏：最小化、收进托盘时浮标也必须消失，
-            # 否则它会孤零零留在桌面上（"不同图层"最明显的毛病）。
-            self.root.bind("<Map>", self._on_root_map, add="+")
-            self.root.bind("<Unmap>", self._on_root_unmap, add="+")
-            self.root.bind("<FocusIn>", self._on_root_focus_in, add="+")
-            self.root.bind("<FocusOut>", self._on_root_focus_out, add="+")
-        except Exception:
-            pass
+        # ⚠ 解绑必须用 bind() 返回的 funcid：Tk 的 unbind(seq, funcid) 只认这个 id，
+        # 传绑定方法在 Python 3.12 里直接 TypeError（被 except 吞掉，等于没解绑）。
+        self._root_binds = []
+        for ev, fn in (("<Destroy>", self._on_root_destroy),
+                       # 跟着主窗口显示/隐藏：最小化、收进托盘时浮标也必须消失，
+                       # 否则它会孤零零留在桌面上（"不同图层"最明显的毛病）。
+                       ("<Configure>", self._on_root_configure),
+                       ("<Map>", self._on_root_map),
+                       ("<Unmap>", self._on_root_unmap),
+                       ("<FocusIn>", self._on_root_focus_in),
+                       ("<FocusOut>", self._on_root_focus_out)):
+            try:
+                fid = self.root.bind(ev, fn, add="+")
+                if fid:
+                    self._root_binds.append((ev, fid))
+            except Exception:
+                pass
 
     def _on_root_map(self, ev):
         if getattr(ev, "widget", None) is not self.root:
@@ -875,14 +996,17 @@ class NetFloat:
         self._request_show()
 
     def _on_root_destroy(self, ev):
-        """主窗口被销毁 = 程序正在退出：浮标立刻消失，别留着比窗口还久。"""
+        """主窗口被销毁 = 程序正在退出：浮标立刻消失，别留着比窗口还久。
+
+        ⚠ 这是"程序退出"，不是"用户关掉浮标"：close(退出=True)，别把开关改成关。
+        """
         try:
             if getattr(ev, "widget", None) is not self.root:
                 return
         except Exception:
             pass
         try:
-            self.close()
+            self.close(退出=True)
         except Exception:
             pass
 
@@ -927,6 +1051,30 @@ class NetFloat:
         except Exception:
             pass
 
+    def _hold_hr(self, 谁):
+        """占一份 1ms 定时器精度（谁 = "fade" / "morph"）。重复调用只算一次。"""
+        d = getattr(self, "_hr", None)      # close() 可能在构造失败的对象上调用
+        if d is None:
+            self._hr = d = {"fade": False, "morph": False}
+        if d.get(谁):
+            return
+        d[谁] = True
+        try:
+            anim.hold()
+        except Exception:
+            pass
+
+    def _release_hr(self, 谁):
+        """还掉一份（没占过就什么都不做）。"""
+        d = getattr(self, "_hr", None)
+        if not d or not d.get(谁):
+            return
+        d[谁] = False
+        try:
+            anim.release()
+        except Exception:
+            pass
+
     def _fade_to(self, 目标, 时长=110, 完成=None):
         """用 UpdateLayeredWindow 的常量 alpha 做淡入淡出（不重画位图，只改 alpha）。
 
@@ -950,31 +1098,15 @@ class NetFloat:
         起 = self._alpha
         t0 = time.perf_counter()
         总 = max(1.0, float(时长))
-        # 每条淡入淡出自己一对 hold/release（先还旧的再占新的）。不这么做的话，
-        # 上一条链的收尾会把**新链**占着的定时器精度还掉，新链于是掉回 15.6ms 粒度、
-        # 帧间隔变得忽长忽短 —— 又回到"闪"的老样子。
-        if self._fade_hr:
-            self._fade_hr = False
-            try:
-                anim.release()
-            except Exception:
-                pass
-        self._fade_hr = True
-        try:
-            anim.hold()              # 淡入淡出这几百毫秒要毫秒级定时器，见 anim.py
-        except Exception:
-            pass
+        # 淡入淡出这几百毫秒要毫秒级定时器（见 anim.py）。按 "fade" 这一份占，
+        # 换链时不会误还交叉溶解那一份；重复调用是幂等的。
+        self._hold_hr("fade")
 
         def 结束(谁=None):
             if 谁 is not None and 谁 != self._fade_token:
                 return               # 已经换成新的一条链了，别动它的占用
             self._fade_job = None
-            if self._fade_hr:
-                self._fade_hr = False
-                try:
-                    anim.release()
-                except Exception:
-                    pass
+            self._release_hr("fade")
 
         def 帧():
             if 令 != self._fade_token or self._stop:
@@ -1012,7 +1144,9 @@ class NetFloat:
         # 两种悬停态由 _warm_shapes() 一次性预热。
         # _hint 也不进键：形态图不需要提示环（提示环由 _hint_frame_list 单独上传），
         # 带上它会让"收纳时亮一下边框"顺带把缓存打掉。
-        键 = (size, self._hover, self.shadow, self.bg)
+        # ⚠ 通断也要进键：_GOOD_*/_BAD_* 是烤进图里的，网络一通一断再换形态，
+        # 不带上就会拿旧颜色的缓存图。
+        键 = (size, self._hover, self.shadow, self.bg, self._通色())
         图 = self._shape_cache.get(键)
         if 图 is not None:
             return 图
@@ -1027,6 +1161,9 @@ class NetFloat:
         不预热时这一步就发生在鼠标刚碰上去的那一瞬 —— 实测每次换形态同步耗时
         16~18ms、4~6 次 _image，也就是"反应有点慢"的第一下卡顿。
         """
+        self._warm_job = None
+        if self._stop or getattr(self, "_parked", False):
+            return
         if not self._docked or getattr(self, "_warmed_for", None) == self._docked:
             return
         self._warmed_for = self._docked
@@ -1095,12 +1232,7 @@ class NetFloat:
             except Exception:
                 pass
             self._morph_job = None
-        if not self._fade_hr:
-            self._fade_hr = True
-            try:
-                anim.hold()
-            except Exception:
-                pass
+        self._hold_hr("morph")
         t0 = time.perf_counter()
         总 = float(self._MORPH_MS)
 
@@ -1128,12 +1260,7 @@ class NetFloat:
                 except Exception:
                     pass
                 self._redraw()
-                if self._fade_hr:
-                    self._fade_hr = False
-                    try:
-                        anim.release()
-                    except Exception:
-                        pass
+                self._release_hr("morph")
 
         帧()
 
@@ -1142,9 +1269,11 @@ class NetFloat:
         # 否则 <Map> / <FocusIn> 一来就先淡入，40ms 后看门狗又把它藏掉 —— 看着就是闪一下。
         try:
             if not self._root_should_show():
+                # ⚠ 不能 withdraw：见文件头第 1 条 —— withdraw 之后 deiconify，
+                # UpdateLayeredWindow 会一直返回 0，窗口只剩一块底色。
                 self._shown = False
                 self._alpha = 0
-                self.win.withdraw()
+                self._park()
                 return
         except Exception:
             pass
@@ -1173,6 +1302,15 @@ class NetFloat:
                 self.win.lift()      # 抬到主窗口之上（不置顶，不压住别的程序）
         except Exception:
             pass
+        if self._docked:
+            # ⚠ 藏起来时 _poll_hover 会停在"被挪到屏幕外"那一条就返回、不再排下一拍；
+            # 重新显示后必须重新起一轮，并按真实光标纠正一次 —— 否则贴边浮标会卡在
+            # 展开的 70px 圆上（收不回去），鼠标也再也唤不醒它。
+            try:
+                self._hover_update()
+                self._ensure_hover_poll()
+            except Exception:
+                pass
         if 刚打开:
             self._fade_to(255, 120)
 
@@ -1250,7 +1388,7 @@ class NetFloat:
             pass
 
     def _on_press(self, e):
-        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, ending=False)
+        self._drag.update(dx=e.x, dy=e.y, on=True, moved=False, ending=False, p0=None)
         try:
             ctypes.windll.user32.SetCapture(int(self._hwnd or 0))
         except Exception:
@@ -1278,6 +1416,21 @@ class NetFloat:
         if self._drag["on"]:
             self._drag["moved"] = True
 
+    _DRAG_MIN = 4          # 设计像素：离按下点动超过这么多才算"拖"，之内算"点"
+
+    def _moved_enough(self, pt):
+        """从按下点算起，是否已经动到算拖动了。
+
+        ⚠ 以前按**单帧**位移判（>1px）：8ms 的轮询里手抖 2px 就把一次点击判成拖动，
+        曲线图永远打不开（用户报"点不开"）。现在记下按下点，按累计距离判。
+        """
+        p0 = self._drag.get("p0")
+        if p0 is None:
+            self._drag["p0"] = (pt.x, pt.y)
+            return False
+        限 = px(self._DRAG_MIN)
+        return abs(pt.x - p0[0]) > 限 or abs(pt.y - p0[1]) > 限
+
     def _move_to_cursor(self):
         """把浮标挪到"光标 - 抓取偏移"的位置（不依赖任何事件坐标）。"""
         pt = wintypes.POINT()
@@ -1289,9 +1442,9 @@ class NetFloat:
         nx = pt.x - self._geom["x"] - self._drag["dx"]
         ny = pt.y - self._geom["y"] - self._drag["dy"]
         动 = (abs(nx - self._rel[0]) > 1 or abs(ny - self._rel[1]) > 1)
+        if self._drag["on"] and self._moved_enough(pt):
+            self._drag["moved"] = True
         if 动:
-            if self._drag["on"]:
-                self._drag["moved"] = True
             if self._docked:                 # 真的移动了才取消收纳
                 self._docked = None
                 self._peek = False
@@ -1468,7 +1621,7 @@ class NetFloat:
             self._poll_hover()
         if getattr(self, "_warmed_for", None) != self._docked:
             try:                       # 趁着用户还没碰，先把两张形态图渲染好
-                self.root.after(150, self._warm_shapes)
+                self._warm_job = self.root.after(150, self._warm_shapes)
             except Exception:
                 pass
 
@@ -1527,7 +1680,10 @@ class NetFloat:
         if 缓存 is not None and 缓存[0] == 键:
             return 缓存[1]
         帧 = []
-        for i in range(self._HINT_FRAMES):
+        # 只先渲染 2 帧（约 4~6ms），其余在提示期间每 60ms 补一张（见 _hint_tick）。
+        # 6 张一起同步渲染时实测 56px 要 11ms、96px 要 18ms，正好卡在拖动链
+        # （after(8)）中间 —— 拖着浮标靠近边缘时那一下顿。
+        for i in range(min(2, self._HINT_FRAMES)):
             try:
                 帧.append(self._image(脉冲k=i / float(self._HINT_FRAMES), 超采样=3))
             except Exception:
@@ -1536,16 +1692,33 @@ class NetFloat:
         self._hint_i = 0
         return 帧
 
-    def _通色(self):
-        """当前主题色签名（用于判断预渲染帧是否过期）。"""
+    def _state(self):
+        """(是否正常, 当前毫秒或 None)。
+
+        150ms 内没有新数据就当作"没有数据"：正常色 + 「—」。以前 _image 和
+        _tick_redraw/_通色 各写了一套判定，同一时刻可能一个说通、一个说不通，
+        缓存键和实际画出来的颜色就对不上了。
+        """
         try:
             历史 = list(self.get_history() or [])
-            if 历史:
-                t0, v, 通源, 总源 = 历史[-1][:4]
-                return (t0 > time.time() - 150) and 通源 > 0
         except Exception:
-            pass
-        return True
+            历史 = []
+        if not 历史:
+            return True, None
+        try:
+            t0, v, 通源, 总源 = 历史[-1][:4]
+        except Exception:
+            return True, None
+        # ⚠ 是 0.15 秒，不是 150 秒：time.time() 的单位是秒。以前写 150，等于
+        # "两分半内的旧数据都算新鲜" —— 探针停了、或者拔网线之后，浮标会继续
+        # 显示上一次的绿值和毫秒数。
+        if (time.time() - t0) <= 0.15:
+            return (通源 > 0), (int(v) if 通源 > 0 else None)
+        return True, None
+
+    def _通色(self):
+        """当前是否正常（用于判断预渲染帧是否过期）。"""
+        return self._state()[0]
 
     def _hint_tick(self):
         """提示期间的脉冲：60ms 一帧，让边框亮度呼吸；提示消失就停（不空转）。
@@ -1555,9 +1728,9 @@ class NetFloat:
         self._hint_job = None
         if not self._hint:
             return
-        if self._fade_job is not None:
-            # 正在换形态的淡入淡出：这一拍别上传（尺寸刚变过，重建脉冲帧要几十毫秒，
-            # 会把淡变卡成一次闪），淡完再继续。
+        if self._fade_job is not None or self._morph_job is not None:
+            # 正在换形态的淡入淡出 / 交叉溶解：这一拍别上传。以前只看 _fade_job，
+            # 松手收纳的 70ms 溶解中途脉冲帧会把一张"完整的圆"怼上去，看着就是跳一下。
             try:
                 self._hint_job = self.root.after(60, self._hint_tick)
             except Exception:
@@ -1570,6 +1743,12 @@ class NetFloat:
             self._update_glow()
             return
         帧 = self._hint_frame_list()
+        if 帧 and len(帧) < self._HINT_FRAMES:
+            try:                       # 逐拍补一帧（缓存里的是同一个列表）
+                i = len(帧)
+                帧.append(self._image(脉冲k=i / float(self._HINT_FRAMES), 超采样=3))
+            except Exception:
+                pass
         if 帧:
             self._hint_i = (getattr(self, "_hint_i", 0) + 1) % len(帧)
             try:
@@ -1646,8 +1825,13 @@ class NetFloat:
 
     def _reset_pos(self):
         self._docked = None
+        # 还在展开态 / 提示态时复位，下次贴边的溶解方向会反着播、松手也不收起
+        self._peek = False
+        self._hint = None
+        self._hint_until = 0.0
         self._restore(-1, -1)
         self._redraw()
+        self._update_glow()
         if self.on_close:
             self.on_close(self, False)
 
@@ -1656,9 +1840,15 @@ class NetFloat:
         """前台窗口是不是本程序的（主界面 / 设置 / 曲线图 / 浮标自身都算）。"""
         try:
             fg = ctypes.windll.user32.GetForegroundWindow()
+            if not fg:
+                return True
             pid = wintypes.DWORD()
             ctypes.windll.user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
-            return int(pid.value) == os.getpid()
+            if int(pid.value) == os.getpid():
+                return True
+            # Qt 大视图/差异窗口跑在**子进程**里：只比 PID 会让"正在看大窗口"被判成
+            # "别的程序在前台"，浮标直接藏起来。父进程是本进程的也算我们的窗口。
+            return _parent_pid(int(pid.value)) == os.getpid()
         except Exception:
             return True
 
@@ -1672,7 +1862,9 @@ class NetFloat:
         现在按前台窗口判定：只要前台不是本程序，浮标就跟着藏起来。
         """
         try:
-            if self.root.state() != "normal":
+            # ⚠ Tk 在 Windows 上最大化返回 "zoomed"，不是 "normal"：只认 normal
+            # 会让浮标在主窗口最大化 / Win11 贴靠时**永久消失**（用户一最大化就没了）。
+            if self.root.state() not in ("normal", "zoomed"):
                 return False
             if not self.root.winfo_viewable():
                 return False
@@ -1735,7 +1927,7 @@ class NetFloat:
         except Exception:
             pass
         try:
-            self.close()
+            self.close(退出=True)
         except Exception:
             pass
 
@@ -1747,17 +1939,20 @@ class NetFloat:
         # （用户报"主界面关闭了它还在"）。这里先兜一层，别指望调度顺序。
         try:
             if not self.root.winfo_exists():
-                self.close()
+                self.close(退出=True)
                 return
         except Exception:
-            self.close()
+            self.close(退出=True)
             return
         try:
             self._sync_visibility()
         except Exception:
             pass
         try:
-            if self._shown and not self._drag["on"] and not (self._docked and not self._peek):
+            # ⚠ 不要因为"收纳成小标签"就跳过：胶囊上的绿/红是连通状态，跳过的话
+            # 断网了它还是绿的。数字确实放不下，但颜色必须跟上（底图有缓存，
+            # 状态没变时这里只是比一下键，几乎不花时间）。
+            if self._shown and not self._drag["on"]:
                 self._tick_redraw()
         except Exception:
             pass
@@ -1778,11 +1973,11 @@ class NetFloat:
             return
         try:
             if not self.root.winfo_exists():
-                self.close()
+                self.close(退出=True)
                 return
         except Exception:
             try:
-                self.close()
+                self.close(退出=True)
             except Exception:
                 pass
             return
@@ -1795,32 +1990,19 @@ class NetFloat:
         except Exception:
             self._vis_job = None
 
-    def _image(self, 脉冲k=None, 超采样=None):
-        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    def _render_base(self, S=6, 脉冲k=None):
+        """画不含延迟数字的底图（超采样 S 倍，缩回当前尺寸）。"""
+        from PIL import Image, ImageDraw, ImageFilter
 
         cw, ch = self._cur_size()
-        S = int(超采样 or 6)
         W, H = cw * S, ch * S
-
-        try:
-            历史 = list(self.get_history() or [])
-        except Exception:
-            历史 = []
-        通 = True
-        当前 = None
-        if 历史:
-            t0, v, 通源, 总源 = 历史[-1][:4]
-            if (time.time() - t0) <= 150:
-                通 = 通源 > 0
-                当前 = int(v) if 通 else None      # 不通时显示「—」，别显示 0ms
+        通, _当前 = self._state()
         if 通:
             底 = _GOOD_TILE
             环 = _GOOD_HOVER if self._hover else _GOOD
-            副 = _GOOD_MUTED
         else:
             底 = _BAD_TILE
             环 = _BAD_HOVER if self._hover else _BAD
-            副 = _BAD_MUTED
 
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         pad = int(min(W, H) * 0.06) if self.shadow else 0
@@ -1862,7 +2044,7 @@ class NetFloat:
             d2.ellipse(box2, outline=提示色 + (alpha,),
                        width=max(2 * S, int(min(W, H) * 0.035)))
             img = Image.alpha_composite(img, 外)
-            dr = ImageDraw.Draw(img)      # ⚠ 合成换了对象，draw 目标要重新绑，否则后面的字画在旧图上
+            dr = ImageDraw.Draw(img)      # 合成换了对象，draw 目标要重新绑
             条宽 = max(3 * S, int(min(W, H) * 0.06))
             bx0, by0, bx1, by1 = box
             if 提示 == "right":
@@ -1879,35 +2061,68 @@ class NetFloat:
             except Exception:
                 pass
 
+        return img.resize((cw, ch), Image.LANCZOS)
+
+    def _base_image(self):
+        """当前状态的底图（已缩到显示尺寸），按状态缓存。
+
+        为什么要拆出来：数字每 5 秒变一次，以前每次变化都整张重画 —— 6 倍超采样 +
+        LANCZOS + 阴影高斯模糊，实测 70px 要 10ms、120px 要 26~30ms，正好堵在主线程
+        上。现在底图只在尺寸/悬停/通断/阴影/背景/提示变化时重画，数字叠在副本上。
+        """
+        cw, ch = self._cur_size()
+        键 = (cw, ch, self._hover, self.shadow, self.bg, self._state()[0],
+              getattr(self, "_hint", None))
+        hit = self._base_cache.get(键)
+        if hit is not None:
+            return hit
+        图 = self._render_base()
+        if len(self._base_cache) > 12:
+            self._base_cache.clear()
+        self._base_cache[键] = 图
+        return 图
+
+    def _image(self, 脉冲k=None, 超采样=None):
+        from PIL import ImageDraw, ImageFont
+
+        cw, ch = self._cur_size()
+        通, 当前 = self._state()
+        if 脉冲k is not None or 超采样 is not None:
+            # 提示脉冲帧：整张重画（每形态只预渲染一次，之后循环播放）
+            img = self._render_base(S=int(超采样 or 6), 脉冲k=脉冲k)
+        else:
+            img = self._base_image().copy()
+
         # 收纳成小标签（22px 宽）时放不下数字，只留色条
         if cw >= ch * 0.7:
             def 字体(大小, 粗=False):
-                for path in ((r"C:\Windows\Fonts\msyhbd.ttc" if 粗
-                              else r"C:\Windows\Fonts\msyh.ttc"),
-                             r"C:\Windows\Fonts\simhei.ttf"):
+                for path in (("C:\\Windows\\Fonts\\msyhbd.ttc" if 粗
+                              else "C:\\Windows\\Fonts\\msyh.ttc"),
+                             "C:\\Windows\\Fonts\\simhei.ttf"):
                     try:
                         return ImageFont.truetype(path, 大小)
                     except Exception:
                         continue
                 return ImageFont.load_default()
 
+            dr = ImageDraw.Draw(img)
             数字 = "—" if 当前 is None else str(当前)
-            字号 = int(H * 0.32) if len(数字) <= 3 else int(H * 0.25)
+            字号 = int(ch * 0.32) if len(数字) <= 3 else int(ch * 0.25)
             f1 = 字体(字号, 粗=True)
-            f2 = 字体(max(8 * S, int(H * 0.16)))
+            f2 = 字体(max(8, int(ch * 0.16)))
             try:
                 bb = dr.textbbox((0, 0), 数字, font=f1)
-                tw, ty = bb[2] - bb[0], H * 0.30 - bb[1]
+                tw, ty = bb[2] - bb[0], ch * 0.30 - bb[1]
             except Exception:
-                tw, ty = len(数字) * 字号 // 2, H * 0.22
-            dr.text(((W - tw) / 2, ty), 数字, font=f1, fill=_FG)
+                tw, ty = len(数字) * 字号 // 2, ch * 0.22
+            dr.text(((cw - tw) / 2, ty), 数字, font=f1, fill=_FG)
             try:
                 w2 = dr.textlength("ms", font=f2)
             except Exception:
-                w2 = 12 * S
-            dr.text(((W - w2) / 2, H * 0.63), "ms", font=f2, fill=副)
-
-        return img.resize((cw, ch), Image.LANCZOS)
+                w2 = 12
+            dr.text(((cw - w2) / 2, ch * 0.63), "ms", font=f2,
+                    fill=(_GOOD_MUTED if 通 else _BAD_MUTED))
+        return img
 
     def _tick_redraw(self):
         """每秒的刷新：只有内容真的变了才重画。
@@ -1915,12 +2130,8 @@ class NetFloat:
         图标是 6 倍超采样 + LANCZOS，一次 20~30ms；每秒无脑重画一次，正好卡在
         拖动/滚动时。数字没变（同一个延迟值）就什么都不做。
         """
-        键 = (self._cur_size(), self._hint, self._通色(), self._hover)
-        try:
-            值 = self.get_history()[-1][1] if self.get_history() else None
-        except Exception:
-            值 = None
-        键 = 键 + (值,)
+        通, 值 = self._state()
+        键 = (self._cur_size(), self._hint, 通, self._hover, 值)
         if getattr(self, "_tick_key", None) == 键:
             return
         self._tick_key = 键
@@ -1935,12 +2146,7 @@ class NetFloat:
                 except Exception:
                     pass
                 self._morph_job = None
-            if self._fade_hr:
-                self._fade_hr = False
-                try:
-                    anim.release()
-                except Exception:
-                    pass
+            self._release_hr("morph")
         img = self._image()
         if self._layered:
             self._upload(img)
@@ -1963,14 +2169,24 @@ class NetFloat:
         except Exception:
             return False
 
-    def close(self):
+    def close(self, 退出=False):
+        """关掉浮标。
+
+        `退出=True` 只用在程序退出（主窗口销毁 / app.py 收尾）：这时**不是用户关的**，
+        不能把 `net_float_on` 改成 False —— 否则每次正常退出都会把开关落盘成关，
+        下次启动浮标就不出来了（用户报"开关记不住"）。
+        """
         self._stop = True
         for j in (getattr(self, "_job", None), getattr(self, "_follow_job", None),
                   getattr(self, "_vis_job", None),
                   getattr(self, "_show_job", None),
                   getattr(self, "_fade_job", None),
                   getattr(self, "_collapse_job", None),
-                  getattr(self, "_hint_job", None)):
+                  getattr(self, "_hint_job", None),
+                  getattr(self, "_morph_job", None),      # 交叉溶解
+                  getattr(self, "_hover_job", None),      # 贴边悬停轮询
+                  getattr(self, "_warm_job", None),       # 形态图预热
+                  (self._drag or {}).get("job")):         # 拖动计时器
             try:
                 if j:
                     self.root.after_cancel(j)
@@ -1982,9 +2198,28 @@ class NetFloat:
             except Exception:
                 pass
             self._glow = None
+        # 淡入淡出 / 交叉溶解可能占着 1ms 定时器精度（anim.hold），
+        # 上面取消 job 不会还回去，得显式 release，否则进程退出前一直是高精度定时器。
+        for 谁 in ("fade", "morph"):
+            self._release_hr(谁)
+        # 拖动中退出：timeBeginPeriod(1) 也要还（不还会一直影响整个进程的定时器精度）
+        if getattr(self, "_timer_fine", False):
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
+            self._timer_fine = False
+        # 主窗口上的事件解绑（否则销毁的实例还会继续收 <Configure>/<Map>…）
+        for ev, fid in getattr(self, "_root_binds", ()):
+            try:
+                self.root.unbind(ev, fid)
+            except Exception:
+                pass
+        self._root_binds = []
+        self._free_dib()
         try:
             self.win.destroy()
         except Exception:
             pass
         if self.on_close:
-            self.on_close(self, True)
+            self.on_close(self, not 退出)
