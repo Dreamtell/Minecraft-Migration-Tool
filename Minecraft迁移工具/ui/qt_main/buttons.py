@@ -20,6 +20,7 @@ if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
 from PySide6 import QtWidgets, QtCore  # noqa: E402
 
 from ui.qt_win import fit_window
+from ui.qt_main.smooth import SmoothTree  # noqa: E402
 from utils.i18n import tr  # noqa: E402
 
 # Qt 主界面里实际有的按钮。组名/key 与 Tk 版一致;顺序 = Qt 版默认顺序
@@ -122,7 +123,7 @@ class ButtonPrefsDialog(QtWidgets.QDialog):
         v = QtWidgets.QVBoxLayout(self)
         v.addWidget(QtWidgets.QLabel(tr("勾选 = 显示。选中一项后用右边的按钮调整顺序。")))
         row = QtWidgets.QHBoxLayout()
-        self.tree = QtWidgets.QTreeWidget()
+        self.tree = SmoothTree()
         self.tree.setHeaderHidden(True)
         row.addWidget(self.tree, 1)
         side = QtWidgets.QVBoxLayout()

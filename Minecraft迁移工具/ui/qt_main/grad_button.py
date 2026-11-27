@@ -22,6 +22,7 @@ import math
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ui.qt_main import look
+from ui.qt_frame_anim import FrameAnim
 
 PADX, PADY = 1.5, 2.0        # Tk:面四周留白(物理像素)
 SYM_GAP = 6                  # Tk:图标和文字之间的空隙(物理像素)
@@ -149,8 +150,10 @@ class GradientButton(QtWidgets.QPushButton):
     """自绘渐变按钮。接口仍按 QPushButton 用(text/clicked/setEnabled/setFixedSize)。"""
 
     def __init__(self, text="", kind=None, theme=None, height=30, width=None,
-                 font_pt=9.0, bold=True, icon_only=False, icon=None, parent=None):
+                 font_pt=9.0, bold=True, icon_only=False, icon=None, parent=None,
+                 colors=None):
         super().__init__("", parent)
+        self._colors = tuple(colors) if colors else None   # 不传就按 kind 取
         self._text = str(text or "")
         self._kind = look.kind_for(kind) if kind else ""
         self.setProperty("kind", self._kind)      # 外部的按钮键映射仍按这个属性读
@@ -172,16 +175,16 @@ class GradientButton(QtWidgets.QPushButton):
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.NoFocus)      # Tk 的 Canvas 按钮键盘焦点不可达
         self._apply_width()
-        self._a = QtCore.QVariantAnimation(self)
+        self._a = FrameAnim(self)
         self._a.setDuration(190)
         self._a.setEasingCurve(QtCore.QEasingCurve.OutBack)
         self._a.valueChanged.connect(self._on_hover)
-        self._sw = QtCore.QVariantAnimation(self)
+        self._sw = FrameAnim(self)
         self._sw.setDuration(340)
         self._sw.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._sw.valueChanged.connect(self._on_sweep)
         self._sw.finished.connect(self._sweep_done)
-        self._pa = QtCore.QVariantAnimation(self)
+        self._pa = FrameAnim(self)
         self._pa.setDuration(90)
         self._pa.valueChanged.connect(self._on_press)
 
@@ -204,6 +207,8 @@ class GradientButton(QtWidgets.QPushButton):
         return self._kind
 
     def colors(self):
+        if self._colors:
+            return self._colors
         return look.KIND_COLORS.get(self._kind or "", look.BTN_NEUTRAL)
 
     def set_theme(self, theme):

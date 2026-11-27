@@ -16,6 +16,8 @@ import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ui.qt_frame_anim import FrameAnim
+
 DURATION = 0.13
 
 
@@ -56,7 +58,7 @@ class SwitchRow(QtWidgets.QWidget):
             self._pad_l, self._gap, self._h = 12, 12, 46
         self._on = False
         self._t = 0.0
-        self._anim = QtCore.QVariantAnimation(self)
+        self._anim = FrameAnim(self)
         self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._anim.valueChanged.connect(self._on_anim)
         self.setFixedHeight(self._h)

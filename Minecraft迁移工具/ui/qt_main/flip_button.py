@@ -81,6 +81,11 @@ _PROGRESS_MIN = 0.06
 _TEXT_LO, _TEXT_HI = 0.15, 0.45
 _HOVER_IN_MS, _HOVER_OUT_MS = 90.0, 150.0
 _TICK_MS = 8
+# 正面文字的逐字波浪（和 ui/qt_main/pulse_demo.py 是同一套曲线）
+_WAVE_MS = 1400.0       # 一个完整循环（用户在 demo 里定的 1.4 秒）
+_WAVE_AMP = 1.0         # 0=不动，1=最暗到 30% 亮度（用户定的满格）
+_WAVE_STAGGER = 0.14    # 每字错开相位（用户定的 0.14）
+_WAVE_FRAME = 33        # 30fps 足够，别为一行字把整个按钮按 60fps 重绘
 
 
 def _clamp(v, lo=0.0, hi=1.0):
@@ -141,6 +146,9 @@ class FlipButton(QtWidgets.QPushButton):
         self._sweep_t0 = None
         self._back_t0 = time.perf_counter()
         self._progress = None         # None = 不定进度（脉冲），float = 0~1
+        self._wave = True             # 正面文字逐字波浪
+        self._wave_phase = 0.0
+        self._wave_t = time.perf_counter()
         self._t_last = time.perf_counter()
         self._timer = QtCore.QTimer(self)
         self._timer.setTimerType(QtCore.Qt.PreciseTimer)
@@ -211,6 +219,15 @@ class FlipButton(QtWidgets.QPushButton):
     def get_feel(self):
         return self._feel
 
+    def set_wave(self, flag):
+        """正面文字的逐字波浪开关（默认开）。"""
+        self._wave = bool(flag)
+        self._ensure_tick()
+        self.update()
+
+    def wave(self):
+        return self._wave
+
     def set_dark(self, dark):
         self._dark = bool(dark)
         self.update()
@@ -264,6 +281,17 @@ class FlipButton(QtWidgets.QPushButton):
             except Exception:
                 pass
 
+    def showEvent(self, e):
+        # 计时器是靠"有没有东西在动"自管的（见 _wanted_interval），
+        # 但总得先起一次表；否则正面文字的波浪要等到第一次 hover 才开始
+        self._wave_t = time.perf_counter()
+        self._ensure_tick()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self._timer.stop()          # 藏起来就别烧 CPU 了，显示时会重新起表
+        super().hideEvent(e)
+
     def _ensure_tick(self):
         want = self._wanted_interval()
         if want is None:
@@ -274,22 +302,40 @@ class FlipButton(QtWidgets.QPushButton):
         if self._timer.interval() != want or not self._timer.isActive():
             self._timer.start(want)
 
+    def _frame_ms(self):
+        """这一帧隔多久：跟随刷新率（同 Tk 的 anim.frame_ms），240Hz 下 4ms。"""
+        try:
+            from utils import anim
+            return max(4, min(33, int(anim.frame_ms(self.window()))))
+        except Exception:
+            return _TICK_MS
+
     def _wanted_interval(self):
-        """只在真有东西在动时起表：翻转 / hover 渐变 / 扫光用 8ms，背面斜纹 33ms，否则停表。"""
+        """只在真有东西在动时起表：翻转 / hover 渐变 / 扫光 / 背面斜纹，否则停表。"""
         now = time.perf_counter()
         if self._anim_t0 is not None or abs(self._hv - self._hv_target) > 1e-3:
-            return _TICK_MS
+            return self._frame_ms()
         if self._sweep_t0 is not None and (now - self._sweep_t0) * 1000.0 < _SWEEP_MS \
                 and self._target == "front" and self._hv > 0:
-            return _TICK_MS
+            return self._frame_ms()
+        if self._target == "front" and self._wave and self.isVisible() \
+                and self.isEnabled():
+            return _WAVE_FRAME
         if self._target == "back" and self.isVisible():
-            return 33
+            # 背面斜纹：Qt 每帧都要重绘（不像 Tk 换预烤图），按 Tk 的相位密度
+            # （180 相位 / 2.417s ≈ 13.4ms）压到不低于 13ms，别白烧 CPU
+            return max(self._frame_ms(), 13)
         return None
 
     def _tick(self):
         now = time.perf_counter()
         dt = (now - self._t_last) * 1000.0
         self._t_last = now
+        # 波浪相位：按真实时间推进，暂停/翻面都不会跳一下
+        _wt = now - self._wave_t
+        self._wave_t = now
+        if self._wave:
+            self._wave_phase = (self._wave_phase + _wt * 1000.0 / _WAVE_MS) % 1.0
         # hover 线性渐变：淡入 90ms / 淡出 150ms
         if self._hv < self._hv_target:
             self._hv = min(self._hv_target, self._hv + dt / _HOVER_IN_MS)
@@ -398,13 +444,34 @@ class FlipButton(QtWidgets.QPushButton):
         p.drawPath(path)
 
         if text_alpha > 0.02:
+            label = self._labels.get(side, "")
+            f = self.font()
+            p.setFont(f)
+            rect = QtCore.QRectF(_ACCENT_INSET_X + _ACCENT_W, 0,
+                                 w - _ACCENT_INSET_X - _ACCENT_W, h)
+            if side == "front" and self._wave and label:
+                self._draw_wave_text(p, rect, label, pal, text_alpha)
+            else:
+                c = QtGui.QColor(pal["title"])
+                c.setAlphaF(_clamp(text_alpha))
+                p.setPen(c)
+                p.drawText(rect, QtCore.Qt.AlignCenter, label)
+
+    def _draw_wave_text(self, p, rect, label, pal, text_alpha):
+        """逐字波浪：每个字的亮度按 cos 曲线走，字与字错开相位。"""
+        fm = QtGui.QFontMetricsF(p.font())
+        total = sum(fm.horizontalAdvance(ch) for ch in label)
+        x = rect.left() + (rect.width() - total) / 2.0
+        y = rect.center().y() + (fm.ascent() - fm.descent()) / 2.0
+        lo = 1.0 - 0.70 * _WAVE_AMP
+        for i, ch in enumerate(label):
+            k = 0.5 - 0.5 * math.cos(2.0 * math.pi *
+                                     ((self._wave_phase + i * _WAVE_STAGGER) % 1.0))
             c = QtGui.QColor(pal["title"])
-            c.setAlphaF(_clamp(text_alpha))
+            c.setAlphaF(_clamp(text_alpha) * (lo + (1.0 - lo) * k))
             p.setPen(c)
-            p.setFont(self.font())
-            p.drawText(QtCore.QRectF(_ACCENT_INSET_X + _ACCENT_W, 0,
-                                     w - _ACCENT_INSET_X - _ACCENT_W, h),
-                       QtCore.Qt.AlignCenter, self._labels.get(side, ""))
+            p.drawText(QtCore.QPointF(x, y), ch)
+            x += fm.horizontalAdvance(ch)
 
     def _draw_knife(self, p, w, h, ang, side):
         pal = self._palette(side, True)

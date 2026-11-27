@@ -23,6 +23,8 @@ from ui.qt_win import fit_window
 from utils.i18n import tr, trp  # noqa: E402
 from utils import history_store  # noqa: E402
 from ui.qt_main.dialog_style import apply_button_styles, set_button_kind, theme_for  # noqa: E402
+from ui.qt_main.smooth import SmoothLogText, StaticTextEdit  # noqa: E402
+from ui.qt_main.grad_button import GradientButton, tk  # noqa: E402
 
 # 回滚类别的中文标签(键见 core.migrator._RESTORE_PARTS)
 _PART_LABELS = {
@@ -245,8 +247,8 @@ class HistoryCardDelegate(QtWidgets.QStyledItemDelegate):
         self._f_small = QtGui.QFont("Microsoft YaHei", 8)
 
     def sizeHint(self, option, index):
-        # 行高 92(间距由 list.setSpacing 出,不算在行高里)
-        return QtCore.QSize(240, CARD_H)
+        # 行高 = 卡片 92 + 卡缝 8(list.setSpacing(0),缝隙在行内,同 Tk 的 y 步进 CARD_H+GAP)
+        return QtCore.QSize(240, CARD_H + CARD_GAP)
 
     def _draw_line(self, painter, rect, dy, text, font, color, align=QtCore.Qt.AlignLeft):
         """在卡片内第 dy 像素高处画一行字(纵向居中,同 Tk create_text 的 anchor='w')。"""
@@ -265,8 +267,9 @@ class HistoryCardDelegate(QtWidgets.QStyledItemDelegate):
         fg = _color(theme.get("fg"), "#000000")
         bar = _card_status_color(rec, theme)
 
-        # 卡片略往里收,和 Tk 的 4px 左内边距对齐
-        card = option.rect.adjusted(4, 0, -4, 0)
+        # Tk:卡片画在 x=px(4)、宽 w-px(14)(右留 10);下面 8px 是卡缝
+        card = option.rect.adjusted(4, 0, -10, 0)
+        card.setHeight(min(card.height(), CARD_H))
         if card.width() < 24 or card.height() < 24:
             return                      # 放大/展开动画把列表压扁时不画(圆角会算出负数)
 
@@ -368,6 +371,43 @@ class ArchiveListWidget(QtWidgets.QListWidget):
         self._sync_hover(QtCore.QPoint(-1, -1))
 
 
+class _RoundPanel(QtWidgets.QWidget):
+    """右栏那圈圆角面板(Tk 是 Canvas + PIL 画的圆角矩形:半径 14、1px 描边)。
+
+    Tk 的面板填充色就是主题底色(utils/theme 里没有 panel_bg),真正的视觉是那一圈
+    1px 描边和 14px 的内缩,所以这里只画描边 + 底色,不另起一层颜色。
+    """
+
+    RADIUS = 14
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._theme = {}
+        # 内边距 14/12 由里面那个布局出(这里再设一次会叠成双倍)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, False)
+
+    def set_theme(self, theme):
+        self._theme = dict(theme or {})
+        self.update()
+
+    def _colors(self):
+        t = self._theme
+        bg = t.get("panel_bg", t.get("bg", "#f0f0f0"))
+        dark = str(t.get("bg", "")).lower() in ("#2e2e2e", "#1e1e1e", "#252525", "#202020")
+        bd = t.get("border") or ("#3a3a3a" if dark else "#d0d0d0")
+        return bg, bd
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        bg, bd = self._colors()
+        r = QtCore.QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        p.setBrush(QtGui.QColor(bg))
+        p.setPen(QtGui.QPen(QtGui.QColor(bd), 1))
+        p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
+        p.end()
+
+
 class HistoryDialog(QtWidgets.QDialog):
     """历史记录窗口:左列表 + 右详情 + 底部回滚/删除/清空。
 
@@ -388,15 +428,22 @@ class HistoryDialog(QtWidgets.QDialog):
         fit_window(self, 880, 520, 1040, 660)
 
         root = QtWidgets.QVBoxLayout(self)
+        # 头/主体/底栏三处边距不同(Tk: 头 18/14、主体 16/4、底 18/12),不能用一个 root margin
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        head_box = QtWidgets.QVBoxLayout()
+        head_box.setContentsMargins(18, 14, 18, 6)
         # 头部:🗂️ 图标 + 「迁移历史」大标题 + 副标题(共几份 / 最多保存几份 / 档案目录)
         # 同 Tk mw_migration.py:449-460:20 号图标、15 号粗标题、9 号弱色副标题
         head_row = QtWidgets.QHBoxLayout()
-        head_row.setSpacing(8)
+        head_row.setSpacing(12)
         self.head_icon = QtWidgets.QLabel("🗂️")
         self.head_icon.setStyleSheet("font-size:20pt;background:transparent;border:none;")
+        self.head_icon.setFixedWidth(71)            # Tk: 图标 Label 实测宽 71 逻辑
+        self.head_icon.setAlignment(QtCore.Qt.AlignCenter)
         head_row.addWidget(self.head_icon, 0, QtCore.Qt.AlignTop)
         head_text = QtWidgets.QVBoxLayout()
-        head_text.setSpacing(2)
+        head_text.setSpacing(3)
         self.title_label = QtWidgets.QLabel(tr("迁移历史"))
         self.title_label.setStyleSheet("font-size:15pt;font-weight:bold;"
                                        "background:transparent;border:none;")
@@ -405,8 +452,11 @@ class HistoryDialog(QtWidgets.QDialog):
         self.header.setWordWrap(True)
         head_text.addWidget(self.header)
         head_row.addLayout(head_text, 1)
-        root.addLayout(head_row)
+        head_box.addLayout(head_row)
+        root.addLayout(head_box)
         split = QtWidgets.QHBoxLayout()
+        split.setContentsMargins(16, 4, 16, 12)     # Tk 主体 padx px(16)、pady (4,12)
+        split.setSpacing(12)
         root.addLayout(split, 1)
 
         # 左:记录列表 —— 92px 高的圆角档案卡(Tk: 左栏固定 380 宽,mw_migration.py:466)
@@ -414,15 +464,17 @@ class HistoryDialog(QtWidgets.QDialog):
         self.list_widget = ArchiveListWidget()
         self.list_widget.setItemDelegate(self.card_delegate)
         self.list_widget.setFixedWidth(380)
-        self.list_widget.setSpacing(CARD_GAP)      # 卡片间 8px(Tk 的 GAP)
+        self.list_widget.setSpacing(0)     # 缝隙由 delegate 的 sizeHint 留(Tk 的 GAP)
         self.list_widget.setStyleSheet(self._list_qss())
         self.list_widget.currentRowChanged.connect(self._on_select)
         split.addWidget(self.list_widget)
 
         # 右:上面是概览(标题 / 源 / 目标 / 统计 / 耗时 / 失败),下面是按级别上色的完整日志
-        right = QtWidgets.QVBoxLayout()
-        split.addLayout(right, 1)
-        self.detail = QtWidgets.QTextEdit()          # 概览(只读,富文本)
+        self.right_panel = _RoundPanel()
+        right = QtWidgets.QVBoxLayout(self.right_panel)
+        right.setContentsMargins(14, 12, 14, 12)
+        split.addWidget(self.right_panel, 1)
+        self.detail = StaticTextEdit()               # 概览(只读,富文本;滚轮不动内容)
         self.detail.setReadOnly(True)
         self.detail.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.detail.setObjectName("histOverview")
@@ -436,17 +488,19 @@ class HistoryDialog(QtWidgets.QDialog):
         log_bar = QtWidgets.QHBoxLayout()
         self.log_title = QtWidgets.QLabel(tr("执行日志"))
         log_bar.addWidget(self.log_title)
-        self.log_count = QtWidgets.QLabel("")
         log_bar.addStretch(1)
-        log_bar.addWidget(self.log_count)
+        # Tk 的顺序(从右往左 pack):计数在最右,「⤢ 放大」在它左边
         self.zoom_btn = QtWidgets.QPushButton(tr("⤢  放大"))
         self.zoom_btn.setObjectName("histZoom")
         self.zoom_btn.setCheckable(True)
         self.zoom_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.zoom_btn.clicked.connect(self._toggle_zoom)
         log_bar.addWidget(self.zoom_btn)
+        log_bar.setSpacing(10)                     # Tk: 放大钮与计数之间 px(10)
+        self.log_count = QtWidgets.QLabel("")
+        log_bar.addWidget(self.log_count)
         right.addLayout(log_bar)
-        self.log_view = QtWidgets.QTextEdit()        # 日志(只读,逐行上色)
+        self.log_view = SmoothLogText()               # 日志(只读,逐行上色,滚轮缓动)
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
         self.log_view.setObjectName("histLog")
@@ -457,26 +511,31 @@ class HistoryDialog(QtWidgets.QDialog):
 
         # 底部按钮
         btn_row = QtWidgets.QHBoxLayout()
-        self.rollback_btn = QtWidgets.QPushButton(tr("⏪ 回滚到这一次之前"))
-        set_button_kind(self.rollback_btn, "danger")
+        btn_row.setContentsMargins(18, 0, 18, 12)      # Tk: 底栏 px(18) / 底部 px(12)
+        btn_row.setSpacing(8)                          # Tk: padx=(0,px(8))
+        _t0 = self._theme()
+
+        def _gb(text, kind, colors):
+            # Tk: create_gradient_button(height=32, 微软雅黑 10 bold),颜色各自写死
+            return GradientButton(tr(text), kind, _t0, height=32, font_pt=10,
+                                  bold=True, colors=colors)
+        self.rollback_btn = _gb("↩ 回滚到迁移前", "danger", ("#e53935", "#ff7043"))
         self.rollback_btn.clicked.connect(self._do_rollback)
         btn_row.addWidget(self.rollback_btn)
-        self.apply_btn = QtWidgets.QPushButton(tr("🔁 应用到主界面"))
-        set_button_kind(self.apply_btn, "neutral")
+        self.apply_btn = _gb("🔁 应用到主界面", "neutral", ("#1e88e5", "#42a5f5"))
         self.apply_btn.setToolTip(tr("把这份档案里的路径、存档名和三个清单回填到主界面（不会开始迁移）"))
         self.apply_btn.clicked.connect(self._apply_current)
         btn_row.addWidget(self.apply_btn)
-        self.delete_btn = QtWidgets.QPushButton(tr("🗑 删除这份档案"))
-        set_button_kind(self.delete_btn, "danger")
+        self.delete_btn = _gb("删除这份档案", "danger", ("#e53935", "#b71c1c"))
         self.delete_btn.clicked.connect(self._delete_current)
         btn_row.addWidget(self.delete_btn)
-        self.clear_btn = QtWidgets.QPushButton(tr("清空全部"))
-        set_button_kind(self.clear_btn, "danger")
+        # Qt 独有(Tk 没有这颗);保留功能,配色跟删除钮一致
+        self.clear_btn = _gb("清空全部", "danger", ("#e53935", "#b71c1c"))
         self.clear_btn.clicked.connect(self._clear_all)
         btn_row.addWidget(self.clear_btn)
         btn_row.addStretch()
-        close_btn = QtWidgets.QPushButton(tr("关闭"))
-        set_button_kind(close_btn, "neutral")
+        close_btn = _gb("✕ 关闭", "neutral", ("#00bcd4", "#3f51b5"))
+        self.close_btn = close_btn
         close_btn.clicked.connect(self.reject)
         btn_row.addWidget(close_btn)
         root.addLayout(btn_row)
@@ -493,7 +552,6 @@ class HistoryDialog(QtWidgets.QDialog):
         内缩 13px 与 10 磅字。Tk 的历史日志是「和窗口同色、直角、1px 细边、Consolas 9 磅」,
         所以这里按 objectName 单独覆盖。
         """
-        from ui.qt_main.grad_button import tk
         t = self._theme()
         muted = t.get("muted_fg", "#6b6b6b")
         fg = t.get("fg", "#000000")
@@ -503,6 +561,9 @@ class HistoryDialog(QtWidgets.QDialog):
         dark = str(t.get("bg", "")).lower() in ("#2e2e2e", "#1e1e1e", "#252525", "#202020")
         bd = t.get("border") or ("#3a3a3a" if dark else "#d0d0d0")
         self.setStyleSheet(
+            # QDialog 的底色不吃主窗口的 QMainWindow 规则;不写这一条时取的是进程调色板,
+            # 深色主题下会变成浅灰底 + 白字(标题几乎看不见)
+            "QDialog{background:%(bg)s;color:%(fg)s;}"
             "QLabel{background:transparent;}"
             "QLabel#histTitle{font-size:15pt;font-weight:bold;}"
             "QTextEdit#histOverview{background:%(bg)s;color:%(fg)s;border:none;"
@@ -512,7 +573,7 @@ class HistoryDialog(QtWidgets.QDialog):
             # 只作用于「⤢ 放大」那颗(Tk 是细边文字链);底部那排仍是渐变按钮
             "QPushButton#histZoom{color:%(accent)s;background:transparent;"
             "border:1px solid %(bd)s;border-radius:0;padding:1px 9px;"
-            "font-size:9pt;font-weight:normal;}"
+            "font-size:9pt;font-weight:normal;min-height:0;max-height:15px;}"
             "QPushButton#histZoom:hover{background:%(hover)s;}"
             % {"bg": bg, "fg": fg, "bd": bd, "accent": accent, "hover": hover})
         self.title_label.setObjectName("histTitle")
@@ -531,6 +592,12 @@ class HistoryDialog(QtWidgets.QDialog):
         if hasattr(self, "zoom_head"):
             self.zoom_head.setFont(of)
         self.zoom_btn.setFixedHeight(int(round(tk(21))))
+        if hasattr(self, "right_panel"):
+            self.right_panel.set_theme(t)
+        for _b in (getattr(self, n, None) for n in
+                   ("rollback_btn", "apply_btn", "delete_btn", "clear_btn", "close_btn")):
+            if isinstance(_b, GradientButton):
+                _b.set_theme(t)
         self._fit_overview()
 
     def _fit_overview(self):
@@ -553,9 +620,11 @@ class HistoryDialog(QtWidgets.QDialog):
         """
         t = self._theme()
         return (
-            "QListWidget{background:%(bg)s;border:none;outline:none;}"
+            # look.py 给所有 QListWidget 写了 padding:4px,那会把卡片整体推进去 4px;
+            # Tk 的卡片是贴着列表左缘再 +4 画的,所以这里清掉
+            "QListWidget{background:%(bg)s;border:none;outline:none;padding:0;}"
             "QListWidget::item{background:transparent;border:none;}"
-            "QListWidget QScrollBar:vertical{background:transparent;width:6px;margin:0;}"
+            "QListWidget QScrollBar:vertical{background:transparent;width:3px;margin:0;}"
             "QListWidget QScrollBar::handle:vertical{background:%(bar)s;"
             "border-radius:2px;min-height:18px;}"
             "QListWidget QScrollBar::add-line,QListWidget QScrollBar::sub-line"
@@ -591,7 +660,8 @@ class HistoryDialog(QtWidgets.QDialog):
             self.list_widget.blockSignals(False)
             self._on_select(row)
         else:
-            self.detail.setPlainText(tr("还没有任何迁移记录。"))
+            self.detail.setHtml(self._detail_html(None))
+            self._fit_overview()
             self.log_view.clear()
             self.log_count.setText("")
             self._set_buttons_for(None)
@@ -614,7 +684,7 @@ class HistoryDialog(QtWidgets.QDialog):
 
     def _on_select(self, row):
         rec = self.records[row] if 0 <= row < len(self.records) else None
-        self.detail.setHtml(self._detail_html(rec) if rec else "")
+        self.detail.setHtml(self._detail_html(rec))
         self._fit_overview()
         self._show_log(rec)
         self._set_buttons_for(rec)
@@ -706,19 +776,38 @@ class HistoryDialog(QtWidgets.QDialog):
         rows = []
 
         def add(label, value_html):
-            rows.append("<tr><td style='color:%s;padding-right:12px;vertical-align:top'>%s</td>"
-                        "<td>%s</td></tr>" % (muted, esc(label), value_html))
+            # Tk 每行 Label 自带 2px 边距 + 行间 pady 3 → 行距约 24 逻辑(文字只有 16)
+            rows.append("<tr><td style='color:%s;padding-right:12px;padding-bottom:8px;"
+                        "vertical-align:top'>%s</td><td style='padding-bottom:8px'>%s</td></tr>"
+                        % (muted, esc(label), value_html))
+
+        if not rec:
+            # Tk mw_migration.py:747-756 的「没有档案」骨架:标题 + 源/目标/统计/耗时/失败全是 — 或 0
+            data = t.get("data_fg", "#1565c0")
+            head = ("<div style='font-size:13pt;font-weight:bold;margin-bottom:3px'>%s</div>"
+                    "<div style='font-size:9pt'>&nbsp;</div>" % esc(tr("没有档案")))
+            add(tr("源目录"), span(data, "—"))
+            add(tr("目标目录"), span(data, "—"))
+            for name, success, skipped, failed in stat_rows({}):
+                parts = [span(num, success), span(muted, tr(" 个"))]
+                if skipped is not None:
+                    parts += [span(muted, tr("　跳过 ")), span(muted, skipped)]
+                parts += [span(muted, tr("　失败 ")), span(muted, failed)]
+                add(tr(name), "".join(parts))
+            add(tr("耗时"), span(num, "—"))
+            add(tr("失败"), span(muted, "—"))
+            table = "<table style='border-collapse:collapse'>%s</table>" % "".join(rows)
+            return "<div style='font-size:9pt'>%s%s</div>" % (head, table)
 
         mode = tr("模拟运行") if rec.get("mode") == "dry" else tr("实际迁移")
         result = rec.get("result") or ""
         kind_color = {"ok": ok, "warn": warn, "fail": bad}[result_kind(rec)]
         title = trp("{0}　·　{1}", rec.get("time", "?"), mode)
-        head = ("<div style='font-size:13pt;font-weight:bold'>%s</div>"
+        head = ("<div style='font-size:13pt;font-weight:bold;margin-bottom:3px'>%s</div>"
                 "<div style='font-size:9pt;color:%s'>%s</div>"
                 % (esc(title), kind_color, esc(tr(result) if result else "—")))
         if rec.get("rolled_back"):
             add(tr("已回滚"), esc(rec.get("rollback_time") or tr("是")))
-        add(tr("世界"), esc(rec.get("world") or tr("(无)")))
         data = t.get("data_fg", "#1565c0")
         add(tr("源目录"), span(data, rec.get("source") or "—"))
         add(tr("目标目录"), span(data, rec.get("target") or "—"))
@@ -906,7 +995,7 @@ class HistoryDialog(QtWidgets.QDialog):
             self._rb_thread.wait()
         self._rb_thread = None
         self._rb_worker = None
-        self.rollback_btn.setText(tr("⏪ 回滚到这一次之前"))
+        self.rollback_btn.setText(tr("↩ 回滚到迁移前"))
         self._refresh_main_busy()
 
         if success:

@@ -11,6 +11,8 @@ Qt 版原来用的是 QComboBox / QCheckBox / QSpinBox,观感和 Tk 差得很远
 """
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ui.qt_frame_anim import FrameAnim
+
 from utils.i18n import tr
 
 
@@ -66,7 +68,7 @@ class SegmentedControl(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self._fit_width()
-        self._anim = QtCore.QVariantAnimation(self)
+        self._anim = FrameAnim(self)
         self._anim.setDuration(self._DURATION)
         self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._anim.valueChanged.connect(self._on_anim)
@@ -322,8 +324,10 @@ class SliderRow(QtWidgets.QWidget):
             self.valueChanged.emit(self._value)     # 松手才回调,同 Tk
 
     def wheelEvent(self, e):
-        step = 1 if e.angleDelta().y() > 0 else -1
-        self.setValue(self._value + step, emit=True)
+        # 滚轮**不改数值**(同 Tk ui/slider_row.py:207-210):设置页是滚动浏览的,
+        # 鼠标划过滑条就把参数改了太容易误触(用户反馈过)。ignore 之后事件冒到父级,
+        # 正好被 SmoothScrollArea 的缓动接住 —— 滚的是页面。
+        e.ignore()
 
     def keyPressEvent(self, e):
         if e.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Down):

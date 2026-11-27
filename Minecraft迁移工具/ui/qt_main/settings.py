@@ -26,6 +26,8 @@ from utils import history_store  # noqa: E402
 from utils import fx  # noqa: E402
 from utils import secrets  # noqa: E402
 from ui.qt_main.dialog_style import apply_button_styles, set_button_kind, set_muted_label, theme_for  # noqa: E402
+from ui.qt_main.smooth import SmoothScrollArea, SmoothTree  # noqa: E402
+from ui.qt_frame_anim import FrameAnim  # noqa: E402
 from ui.qt_main.switch_row import SwitchRow  # noqa: E402
 from ui.qt_main.settings_widgets import (  # noqa: E402
     MutedLabel, OptionCards, SegmentedControl, SettingsSection, SliderRow, StepperRow, make_row)
@@ -152,7 +154,7 @@ class _PillTabBar(QtWidgets.QTabBar):
         self._hover = -1
         self._sel_rect = QtCore.QRectF()
         self._theme = {}
-        self._anim = QtCore.QVariantAnimation(self)
+        self._anim = FrameAnim(self)
         self._anim.setDuration(_TAB_SLIDE_MS)
         self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._anim.valueChanged.connect(self._on_anim)
@@ -316,7 +318,7 @@ class SettingsDialog(QtWidgets.QDialog):
     # ================= 公共小工具 =================
     def _page(self):
         """一页 = 滚动区 + 竖排容器。"""
-        scroll = QtWidgets.QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -393,17 +395,29 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         anim = self._page_anim
         if anim is None:
-            anim = QtCore.QPropertyAnimation(self)
+            anim = FrameAnim(self)
             anim.setDuration(_PAGE_SLIDE_MS)
             anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
             self._page_anim = anim
         anim.stop()
         page.move(0, _PAGE_SLIDE_DY)          # 先压到下方 10px，再滑回 0
-        anim.setTargetObject(page)
-        anim.setPropertyName(b"pos")
         anim.setStartValue(QtCore.QPoint(0, _PAGE_SLIDE_DY))
         anim.setEndValue(QtCore.QPoint(0, 0))
+        # 每次切页的目标页面不同:用固定的槽 + 记住当前页,避免反复 connect/disconnect
+        self._slide_page = page
+        if not getattr(self, "_page_anim_hooked", False):
+            anim.valueChanged.connect(self._on_page_pos)
+            self._page_anim_hooked = True
         anim.start()
+
+    def _on_page_pos(self, pos):
+        page = getattr(self, "_slide_page", None)
+        if page is None:
+            return
+        try:
+            page.move(pos.toPoint() if hasattr(pos, "toPoint") else pos)
+        except Exception:
+            pass
 
     # ================= 页 1：外观与启动 =================
     def _build_look_tab(self):
@@ -723,7 +737,7 @@ class SettingsDialog(QtWidgets.QDialog):
             rest = [k for k in (DEFAULT_ORDER.get(gkey) or []) if k not in saved]
             self._btn_order[gkey] = saved + rest
 
-        self.btn_tree = QtWidgets.QTreeWidget()
+        self.btn_tree = SmoothTree()
         self.btn_tree.setColumnCount(2)
         self.btn_tree.setHeaderLabels([tr("按钮"), tr("状态")])
         self.btn_tree.setRootIsDecorated(True)

@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 
 from ui.qt_win import fit_window
+from ui.qt_main.smooth import SmoothTree
 from utils.i18n import tr, trp
 
 _REL_ROLE = QtCore.Qt.UserRole
@@ -54,7 +55,7 @@ class FolderPickerDialog(QtWidgets.QDialog):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        self.tree = QtWidgets.QTreeWidget()
+        self.tree = SmoothTree()
         self.tree.setColumnCount(2)
         self.tree.setHeaderLabels([tr("📁 文件夹"), tr("📄 完整相对路径")])
         self.tree.setUniformRowHeights(True)

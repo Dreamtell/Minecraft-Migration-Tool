@@ -9,6 +9,28 @@ import tkinter,纯 Qt 进程不能碰,所以在这里重写一份。
 没有 Windows / 系统不支持 / 任何异常都静默返回 False,界面退回系统默认外观。
 """
 import sys
+from pathlib import Path
+
+
+def icon_path():
+    """应用图标的路径（打包后 / 产品目录 / 当前目录），找不到返回 None。
+
+    和 utils.helpers.get_icon_path 用同一套规则，但那个模块顶层 import tkinter，
+    Qt 进程不能碰（会把 _tkinter 拉进来，还会多花 0.26s 启动）。ui/splash_qt.py
+    也是为躲这个才就地找了一遍，这里收拢成一份给主窗口 / 托盘 / 预览入口共用。
+    """
+    try:
+        base = getattr(sys, "_MEIPASS", None)
+        cands = ([Path(base) / "1.ico"] if base else []) + [
+            Path(__file__).resolve().parent.parent.parent / "1.ico",
+            Path.cwd() / "1.ico"]
+        for p in cands:
+            if p.exists():
+                return str(p)
+    except Exception:
+        pass
+    return None
+
 
 
 def style_window_hwnd(hwnd, dark=False, round_corners=True):

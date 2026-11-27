@@ -62,6 +62,7 @@ from utils.helpers import SmoothScroller as _TkSmoothScroller      # noqa: E402
 # 中文（默认）时 tr() 原样返回，行为不变；英文时由 ui/qt_host.py 里的 install_qt() 激活。
 from utils.i18n import tr, trf                                      # noqa: E402
 from ui.qt_win import fit_window                          # noqa: E402
+from ui.qt_frame_anim import FrameAnim                     # noqa: E402
 # 滚轮缓动的帧节奏：跟随显示器刷新率（本机 4ms），动画期间把系统定时器精度提到 1ms。
 # 只 import 模块、不 from ... import frame_ms：测试里要 monkeypatch 它做 12ms/4ms 对照。
 from utils import anim                                              # noqa: E402
@@ -970,7 +971,7 @@ class BusyBar(QtWidgets.QWidget):
 class AnimButton(QtWidgets.QPushButton):
     """自绘渐变按钮：悬停会浮起来 + 扫过一道光，按下会沉下去、松手弹回来。
 
-    QSS 的 `:hover` 是瞬变、没有惯性，这里用三个 QVariantAnimation 驱动自绘：
+    QSS 的 `:hover` 是瞬变、没有惯性，这里用三个 FrameAnim（跟随刷新率）驱动自绘：
     - _a  悬停进度：190ms OutBack（末端带过冲，就是"灵动"的来源）
     - _sweep 扫光：进悬停时从左到右扫一次（320ms），只在自绘里画一条渐变亮带
     - _press 按下：80ms 沉下去，松开 200ms OutBack 弹回来
@@ -989,16 +990,16 @@ class AnimButton(QtWidgets.QPushButton):
         self.setFixedHeight(30)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFont(QtGui.QFont("Microsoft YaHei", 9))
-        self._a = QtCore.QVariantAnimation(self)
+        self._a = FrameAnim(self)
         self._a.setDuration(190)
         self._a.setEasingCurve(QtCore.QEasingCurve.OutBack)
         self._a.valueChanged.connect(self._on_val)
-        self._sw = QtCore.QVariantAnimation(self)
+        self._sw = FrameAnim(self)
         self._sw.setDuration(340)
         self._sw.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._sw.valueChanged.connect(self._on_sweep)
         self._sw.finished.connect(self._sweep_done)
-        self._pa = QtCore.QVariantAnimation(self)
+        self._pa = FrameAnim(self)
         self._pa.setDuration(90)
         self._pa.valueChanged.connect(self._on_press)
 
@@ -1328,8 +1329,12 @@ class _SmoothWheel:
         return cls.set_speed(level)
 
     def wheel_px(self) -> float:
-        """一格滚轮滚多少像素（子类覆盖）。"""
-        return 78.0
+        """一格滚轮滚多少像素（子类覆盖）。
+
+        默认取 Tk `SmoothScroller.for_canvas` 的 48px。原来的 78 是个没人用的死值
+        ——现有的派生类全都覆盖了它——但新加控件时忘了覆盖就会一格跳太远。
+        """
+        return 48.0
 
     # ---- 状态（懒初始化，免得跟 Shiboken 的多继承 MRO 打架）----
     def _sw_setup(self):
@@ -1495,6 +1500,17 @@ class SmoothTextEdit(_SmoothWheel, QtWidgets.QTextEdit):
             return max(16.0, float(self.fontMetrics().lineSpacing())) * 3.0
         except Exception:
             return 48.0
+
+
+class _DescEdit(SmoothTextEdit):
+    """模组详情的描述框：一格只走约一行。
+
+    Tk 那边特意降档（ui/dialogs.py:700-701 的注释）：描述面板一般就几行，
+    一格 3 行会"一滑到底"，这里按 px_per_notch=22 来。
+    """
+
+    def wheel_px(self) -> float:
+        return 22.0
 
 
 class CardModel(QtCore.QAbstractListModel):
@@ -1853,7 +1869,7 @@ class TableDelegate(QtWidgets.QStyledItemDelegate):
 
 class CardDelegate(QtWidgets.QStyledItemDelegate):
     """自绘卡片：圆角 + 伪阴影 + 选中蓝底 + 左侧高亮条 + 悬停操作图标。"""
-    ACTIONS = (("info", "ℹ"), ("reveal", "📂"), ("remove", "🗑"))
+    ACTIONS = (("info", "ℹ️"), ("reveal", "📂"), ("remove", "🗑"))
     ACTION_W = 26
 
     def __init__(self, store, theme, parent=None):
@@ -2221,7 +2237,7 @@ class DetailDialog(QtWidgets.QDialog):
                 tag_row.addWidget(lb)
             tag_row.addStretch(1)
             lay.addLayout(tag_row)
-        desc = SmoothTextEdit()           # 滚轮缓动，和别的列表一个手感
+        desc = _DescEdit()                # 滚轮缓动;一格约一行(Tk: px_per_notch=22)
         desc.setReadOnly(True)
         desc.setPlainText(it.desc or tr("（该模组未提供描述）"))
         desc.setStyleSheet("QTextEdit{background:%s;color:%s;border:1px solid %s;"
@@ -3180,7 +3196,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
             self.cards.viewport().update()
 
     def _animate_card_sel(self, it, target):
-        """单张卡片的选中进度动画（QVariantAnimation，只重画这一张）。"""
+        """单张卡片的选中进度动画（FrameAnim，只重画这一张）。"""
         anims = self.__dict__.setdefault("_card_sel_anims", {})
         key = id(it)
         old = anims.pop(key, None)
@@ -3189,7 +3205,7 @@ class OnlineSearchDialog(QtWidgets.QDialog):
                 old.stop()
             except Exception:
                 pass
-        a = QtCore.QVariantAnimation(self)
+        a = FrameAnim(self)
         a.setDuration(160)
         a.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         a.setStartValue(float(it.sel_t or 0.0))
@@ -4131,7 +4147,7 @@ class QtBigView(QtWidgets.QWidget):
         old = self._sel_anims.get(key)
         if old is not None:
             old.stop()
-        anim = QtCore.QVariantAnimation(self)
+        anim = FrameAnim(self)
         anim.setDuration(170)
         anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         anim.setStartValue(float(it.sel_t or 0.0))

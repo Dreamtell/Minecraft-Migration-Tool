@@ -23,6 +23,8 @@ from utils.theme import LIGHT_THEME, DARK_THEME
 from ui.qt_main.pack_warning import palette as palette_warn
 from ui.qt_main import look
 from ui.qt_main.grad_button import GradientButton
+from ui.qt_big_view import SmoothTextEdit
+from ui.qt_frame_anim import FrameAnim
 from ui.qt_main.switch_row import SwitchRow
 from ui.qt_main.main_tabs import MainTabs, _Bar as _TabBarTypes
 from ui.qt_main.bottom_bar import BottomBar
@@ -301,6 +303,14 @@ class QtMainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(tr("Minecraft 整合包迁移工具 - 增强版 v5"))
+        # 自己带图标(子窗口会继承):不再只依赖 app_qt 那一段设过没设过
+        try:
+            from ui.qt_main.winstyle import icon_path as _icon_path
+            _ico = _icon_path()
+            if _ico:
+                self.setWindowIcon(QtGui.QIcon(_ico))
+        except Exception:
+            pass
         # 信号的接收者是 self(主线程的 QObject),所以默认 AutoConnection 会排队到主线程
         self._scan_done.connect(self._show_diff_result)
         self._scan_failed.connect(self._on_scan_failed)
@@ -467,7 +477,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             overlay.show()
             overlay.raise_()
 
-            anim = QtCore.QVariantAnimation(overlay)
+            anim = FrameAnim(overlay)
             anim.setStartValue(0.0)
             anim.setEndValue(1.0)
             anim.setDuration(max(1, round(600 * scale)))
@@ -481,7 +491,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
 
             anim.valueChanged.connect(step)
             anim.finished.connect(overlay.deleteLater)
-            anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+            anim.start()
         except Exception:
             pass
 
@@ -2029,7 +2039,8 @@ class QtMainWindow(QtWidgets.QMainWindow):
         v = QtWidgets.QVBoxLayout(dlg)
         v.addWidget(QtWidgets.QLabel(
             tr("请粘贴完整的变更日志文本(包含 'Added mods:' 和 'Updated mods:' 部分):")))
-        box = QtWidgets.QPlainTextEdit()
+        box = SmoothTextEdit()
+        box.setAcceptRichText(False)   # 只收纯文本;下面用的是 toPlainText()
         v.addWidget(box, 1)
         row = QtWidgets.QHBoxLayout()
         row.addStretch()
@@ -3019,7 +3030,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             close_btn.clicked.connect(win.close)
             toolbar.addWidget(close_btn)
             v.addLayout(toolbar)
-            self._log_big_text = QtWidgets.QTextEdit()
+            self._log_big_text = SmoothTextEdit()
             self._log_big_text.setReadOnly(True)
             # 与主日志同一个上限:长迁移每文件一行,不封顶等于把整轮日志留在内存里
             self._log_big_text.document().setMaximumBlockCount(5001)
@@ -3070,7 +3081,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
             lbl.setText(trp("共 {0} 行", target))
             return
 
-        anim = QtCore.QVariantAnimation(self)
+        anim = FrameAnim(self)
         anim.setStartValue(int(current))
         anim.setEndValue(int(target))
         anim.setDuration(max(1, round(180 * scale)))
@@ -3604,7 +3615,7 @@ class QtMainWindow(QtWidgets.QMainWindow):
         if scale <= 0.0:
             return
         self._set_log_block_alpha(block, color, 0)
-        anim = QtCore.QVariantAnimation(self)
+        anim = FrameAnim(self)
         anim.setStartValue(0)
         anim.setEndValue(255)
         anim.setDuration(max(1, round(180 * scale)))

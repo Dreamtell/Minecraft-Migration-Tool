@@ -86,6 +86,20 @@ class QtTray(QtCore.QObject):
         super().__init__(parent)
         icon = QtGui.QIcon(icon_path) if icon_path else QtGui.QIcon()
         if icon.isNull():
+            # 先从应用图标取(启动时设的就是 1.ico),再不成就自己再找一遍文件;
+            # 都没有才退系统图标 —— 原来直接退 SP_ComputerIcon,托盘里会变成一台"电脑"
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                icon = app.windowIcon()
+        if icon.isNull():
+            try:
+                from ui.qt_main.winstyle import icon_path as _icon_path
+                _p = _icon_path()
+                if _p:
+                    icon = QtGui.QIcon(_p)
+            except Exception:
+                pass
+        if icon.isNull():
             icon = QtWidgets.QApplication.style().standardIcon(
                 QtWidgets.QStyle.SP_ComputerIcon)
         self.tray = QtWidgets.QSystemTrayIcon(icon, self)

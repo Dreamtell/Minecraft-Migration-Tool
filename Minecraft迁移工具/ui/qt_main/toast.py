@@ -375,7 +375,13 @@ class ToastHost(QtCore.QObject):
     def _ensure_tick(self):
         if not self._timer.isActive():
             self._t_last = time.perf_counter()
-            self._timer.start(_TICK_MS)
+            # 跟随刷新率(同 Tk 的 anim.frame_ms):240Hz 下 4ms,160ms 淡入约 40 帧。
+            # 定时器在 _tick 里"没有东西在动"时自己停,所以这里不必再分档。
+            try:
+                from utils import anim
+                self._timer.start(max(4, int(anim.frame_ms(self._parent))))
+            except Exception:
+                self._timer.start(_TICK_MS)
 
     def _tick(self):
         now = time.perf_counter()

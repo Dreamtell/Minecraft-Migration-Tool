@@ -79,7 +79,28 @@ class FlipButtonTests(unittest.TestCase):
         pump(PRESETS_MS("crisp") + 120)
         self.assertEqual(done, [1])
         self.assertEqual(self.btn._f, 0.0)
-        self.assertFalse(self.btn._timer.isActive())   # 正面静止不空转
+        # 正面文字有逐字波浪，所以这一面现在**本来就在动**；
+        # 关掉波浪才该停表（"没有东西在动就不空转"这条约束仍然成立）
+        self.assertTrue(self.btn._timer.isActive())
+        self.btn.set_wave(False)
+        pump(120)
+        self.assertFalse(self.btn._timer.isActive())
+
+    def test_front_text_wave_animates_and_can_be_turned_off(self):
+        self.assertTrue(self.btn.wave())
+        pump(200)
+        def row(img):
+            y = img.height() // 2
+            return [img.pixelColor(x, y).rgb() for x in range(0, img.width(), 3)]
+
+        first = row(grab(self.btn))
+        pump(600)
+        self.assertNotEqual(first, row(grab(self.btn)))    # 逐字亮度在变
+        self.btn.set_wave(False)
+        pump(120)
+        still = row(grab(self.btn))
+        pump(400)
+        self.assertEqual(still, row(grab(self.btn)))       # 关掉后完全静止
 
     def test_dry_run_turns_front_yellow(self):
         self.btn.set_dry_run(True)

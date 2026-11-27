@@ -16,6 +16,7 @@ if _QT_DIR.is_dir() and str(_QT_DIR) not in sys.path:
 from PySide6 import QtWidgets, QtCore, QtGui  # noqa: E402
 
 from utils.i18n import tr, trp  # noqa: E402
+from ui.qt_main.smooth import SmoothList  # noqa: E402
 from utils.message_store import 外观, 级别名  # noqa: E402
 
 
@@ -36,7 +37,7 @@ class MessageDock(QtWidgets.QDockWidget):
         body = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(body)
         v.setContentsMargins(6, 6, 6, 6)
-        self.list = QtWidgets.QListWidget()
+        self.list = SmoothList()
         self.list.setWordWrap(True)
         self.list.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)

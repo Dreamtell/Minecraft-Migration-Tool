@@ -19,6 +19,8 @@ import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ui.qt_frame_anim import FrameAnim
+
 BAR_H = 44
 PILL_H = 34
 PILL_Y = 5
@@ -71,7 +73,7 @@ class _Bar(QtWidgets.QWidget):
         self._press_timer.timeout.connect(self._tick_press)
         self._sel_x = 0.0
         self._sel_w = 0.0
-        self._anim = QtCore.QVariantAnimation(self)
+        self._anim = FrameAnim(self)
         self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._anim.valueChanged.connect(self._on_anim)
         # 结束时按当前几何校准:滑动期间标签文字可能改过(条数变了),不然会停在旧尺寸上
@@ -341,7 +343,7 @@ class _Pages(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pages = []
-        self._anim = QtCore.QVariantAnimation(self)
+        self._anim = FrameAnim(self)
         self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._anim.valueChanged.connect(self._on_anim)
         self._cur_page = None

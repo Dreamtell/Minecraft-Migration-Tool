@@ -250,7 +250,8 @@ class HistoryDialogViewTests(_WinBase):
     def test_empty_state(self):
         d = self.dialog()
         self.assertIn("共 0 份档案", d.header.text())
-        self.assertIn("还没有任何迁移记录", d.detail.toPlainText())
+        self.assertIn("没有档案", d.detail.toPlainText())     # Tk 的空态骨架
+        self.assertIn("源目录", d.detail.toPlainText())
         self.assertEqual(d.log_view.toPlainText(), "")
         self.assertEqual(d.log_count.text(), "")
 
