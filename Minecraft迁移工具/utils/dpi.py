@@ -115,6 +115,47 @@ def work_area():
     return None
 
 
+def work_area_at(x, y):
+    """包含屏幕坐标 (x, y) 的那块显示器的**工作区** (x, y, w, h)；拿不到返回 None。
+
+    和 work_area() 的区别：后者只有主显示器（SPI_GETWORKAREA）。弹窗要贴着按钮展开，
+    主窗口被拖到副屏时按钮坐标落在主屏坐标之外，按主屏夹取会把卡片整个拽回主屏；
+    多显示器还必须按**按钮所在那块**的工作区算，含任务栏的整屏高度会让卡片底边被压住。
+    """
+    try:
+        from ctypes import wintypes
+
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD)]
+
+        u = ctypes.windll.user32
+        # ⚠ HMONITOR 是**句柄**（指针宽度）：不声明的话 ctypes 按 c_int 处理，
+        # 值超过 2^31 就被静默截断 -> GetMonitorInfoW 失败 -> 退回主屏夹取，
+        # 也就是这次要修的"卡片被钉回主屏"原地复活。同文件族在 anim.py 里就是这么写的。
+        u.MonitorFromPoint.restype = ctypes.c_void_p
+        u.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        pt = wintypes.POINT(int(x), int(y))
+        # MONITOR_DEFAULTTONEAREST = 2：坐标在屏幕外时也给最近的那块，不会返回 0
+        hmon = u.MonitorFromPoint(pt, 2)
+        if not hmon:
+            return None
+        mi = _MONITORINFO()
+        mi.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not u.GetMonitorInfoW(ctypes.c_void_p(hmon), ctypes.byref(mi)):
+            return None
+        r = mi.rcWork
+        w, h = r.right - r.left, r.bottom - r.top
+        if w > 0 and h > 0:
+            return r.left, r.top, w, h
+    except Exception:
+        pass
+    return None
+
+
 def ensure_on_screen(win):
     """把窗口拉回工作区内：超出就缩、跑偏就挪。
 

@@ -36,6 +36,7 @@ from ctypes import wintypes
 from utils import anim
 from utils.dpi import px
 from utils.i18n import trp           # 文案模板：trp 按位置填值
+from utils.helpers import mark_overlay
 
 # 联网正常 → 绿色主题；探测不通 → 红色主题（整个浮标跟着变色，不只是环）
 _TILE = (38, 50, 56, 255)          # 无数据时的中性底色（一般用不到）
@@ -53,6 +54,42 @@ _BAD_MUTED = "#ef9a9a"
 _GWL_EXSTYLE = -20
 _WS_EX_LAYERED = 0x00080000
 _WS_EX_TOOLWINDOW = 0x00000080
+
+
+def _top_hwnd(win):
+    """窗口的**最外层**句柄（一路往上找没有 parent 的那个）。取不到返回 0。"""
+    try:
+        h = int(win.wm_frame(), 16)
+    except Exception:
+        return 0
+    u = ctypes.windll.user32
+    for _ in range(8):
+        try:
+            p = u.GetParent(h)
+        except Exception:
+            break
+        if not p:
+            break
+        h = p
+    return h
+
+
+def _ensure_layered(hwnd):
+    """给句柄补上 WS_EX_LAYERED（hide/deiconify 之后 Tk 可能把它弄丢）。"""
+    try:
+        if not hwnd:
+            return False
+        u = ctypes.windll.user32
+        ex = u.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+        u.SetWindowLongW(hwnd, _GWL_EXSTYLE,
+                         ex | _WS_EX_LAYERED | _WS_EX_TOOLWINDOW)
+        # 对**已经显示**的窗口改扩展样式必须 SWP_FRAMECHANGED 才生效，
+        # 否则样式写进去了、ULW 却仍然失败（返回 0），窗口只剩自己的底色。
+        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                       0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+        return True
+    except Exception:
+        return False
 _ULW_ALPHA = 0x00000002
 _AC_SRC_OVER = 0x00
 _AC_SRC_ALPHA = 0x01
@@ -85,12 +122,25 @@ class _PROCESSENTRY32(ctypes.Structure):
                 ("szExeFile", ctypes.c_char * 260)]
 
 
+_PPID_CACHE = {}          # pid -> (ppid, 记录时刻)：进程存活期间父进程不会变
+_PPID_TTL = 60.0
+
+
 def _parent_pid(pid):
     """某个进程的父进程 PID（拿不到返回 0）。
 
     只用来判断"前台窗口是不是我们自己叫起来的子进程"：Qt 放大查看/差异窗口跑在
     ui/qt_host.py 起的子进程里，只比 PID 会把"正在看大窗口"当成"别的程序在前台"。
     """
+    # 必须缓存：枚举全进程实测 6ms（355 个进程），而调用方是 40ms 的可见性看门狗
+    # —— 前台是别的程序时每秒 25 次，约占 15% 单核，全压在 Tk 主线程上。
+    # 同一个进程的父进程在它活着期间不会变，缓存 60 秒足够。
+    try:
+        hit = _PPID_CACHE.get(int(pid))
+        if hit is not None and time.time() - hit[1] < _PPID_TTL:
+            return hit[0]
+    except Exception:
+        pass
     try:
         k = ctypes.windll.kernel32
         snap = k.CreateToolhelp32Snapshot(0x00000002, 0)      # TH32CS_SNAPPROCESS
@@ -103,7 +153,9 @@ def _parent_pid(pid):
                 return 0
             while True:
                 if int(e.th32ProcessID) == int(pid):
-                    return int(e.th32ParentProcessID)
+                    父 = int(e.th32ParentProcessID)
+                    _PPID_CACHE[int(pid)] = (父, time.time())
+                    return 父
                 if not k.Process32Next(snap, ctypes.byref(e)):
                     return 0
         finally:
@@ -133,6 +185,7 @@ class _EdgeGlow:
         self.root = root
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
+        mark_overlay(self.win)                 # 光带是浮层，不算"用户的另一个窗口"
         self.win.withdraw()
         try:
             self.win.attributes("-topmost", True)
@@ -574,6 +627,7 @@ class NetFloat:
 
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
+        mark_overlay(self.win)
         # ⚠ 不置顶：置顶会让它压在**别的程序**上面，很干扰。
         # 代价是主窗口一被抬起它就会被盖住，所以每次本程序回到前台都 lift() 一下
         # （见 _show / _on_root_focus_in）。这样它永远只在"我们自己的窗口之上"。
@@ -716,7 +770,13 @@ class NetFloat:
 
         ⚠ 浮标自己、边缘光带、吐司宿主都是 Toplevel，但它们不是"用户的另一个窗口"：
         以前把它们都算进来，光带一亮、或者每弹一个吐司，浮标就有整段时间不再抬升，
-        被主窗口盖住（看起来就是"浮标时有时无"）。overrideredirect 的浮层一律跳过。
+        被主窗口盖住（看起来就是"浮标时有时无"）。
+
+        但**不能**一律按 overrideredirect 判：消息中心抽屉也是无边框窗、还贴在主界面
+        右下角，正好和浮标默认位置重叠 —— 按 overrideredirect 跳过它，浮标就会抬到
+        抽屉上面并抢走点击（点卡片右下角等于点浮标）。所以改成显式标记：
+        只有 `utils.helpers.mark_overlay()` 标过的才算浮层，其余（抽屉、设置、
+        各种对话框）都算真窗口。
         """
         skip = {id(self.win)}
         gl = getattr(self, "_glow", None)
@@ -727,8 +787,8 @@ class NetFloat:
                 if id(w) in skip or not isinstance(w, tk.Toplevel):
                     continue
                 try:
-                    if w.overrideredirect():
-                        continue          # 吐司 / 提示 / 光带这类浮层
+                    if getattr(w, "_mctool_overlay", False):
+                        continue          # 吐司 / 提示 / 光带 / 自绘弹窗（显式标记）
                     if w.winfo_viewable():
                         return True
                 except Exception:
@@ -995,20 +1055,8 @@ class NetFloat:
             pass
         self._request_show()
 
-    def _on_root_destroy(self, ev):
-        """主窗口被销毁 = 程序正在退出：浮标立刻消失，别留着比窗口还久。
-
-        ⚠ 这是"程序退出"，不是"用户关掉浮标"：close(退出=True)，别把开关改成关。
-        """
-        try:
-            if getattr(ev, "widget", None) is not self.root:
-                return
-        except Exception:
-            pass
-        try:
-            self.close(退出=True)
-        except Exception:
-            pass
+    # （原先这里还有一份 _on_root_destroy，被文件后面那份静默覆盖；已删。
+    #  tools/test_source_hygiene.py 现在会挡住类里的重复方法。）
 
     def _on_root_unmap(self, ev):
         if getattr(ev, "widget", None) is not self.root:
@@ -1146,11 +1194,16 @@ class NetFloat:
         # 带上它会让"收纳时亮一下边框"顺带把缓存打掉。
         # ⚠ 通断也要进键：_GOOD_*/_BAD_* 是烤进图里的，网络一通一断再换形态，
         # 不带上就会拿旧颜色的缓存图。
-        键 = (size, self._hover, self.shadow, self.bg, self._通色())
+        # 延迟数字是**烤进图里**的：键里不带它，贴边预热时的那串数字会被缓存下来，
+        # 之后换形态（交叉溶解）用的就是几秒前的旧值。数字每 5 秒变一次，缓存很小。
+        键 = (size, self._hover, self.shadow, self.bg, self._通色(),
+              self._state()[1])
         图 = self._shape_cache.get(键)
         if 图 is not None:
             return 图
         图 = self._image()
+        if len(self._shape_cache) > 24:       # 数字每次变都进一个新键，别无限涨
+            self._shape_cache.clear()
         self._shape_cache[键] = 图            # 键带悬停态：进出两种都要留住，
         return 图                             # 只按尺寸存会被对方顶掉，等于白预热
 
@@ -1290,10 +1343,16 @@ class NetFloat:
                 self.win.update()
             except Exception:
                 pass
-            # 显示之后才是真正的顶层句柄，样式也可能被 Tk 重置 —— 补一次再画
+            # 显示之后才是真正的顶层句柄，样式也可能被 Tk 重置 —— 补一次再画。
+            # 以前这里调 self._real_hwnd()/self._apply_layered()，而这两个方法只定义
+            # 在 _EdgeGlow 上：NetFloat 没有它们，第一行就 AttributeError 被吞掉，
+            # 于是这段「补一次」从写下那天起就没执行过。现在用模块级函数，各自 try。
             try:
-                self._hwnd = self._real_hwnd() or self._hwnd
-                self._apply_layered()
+                self._hwnd = _top_hwnd(self.win) or self._hwnd
+            except Exception:
+                pass
+            try:
+                _ensure_layered(self._hwnd)
             except Exception:
                 pass
         self._redraw()
@@ -1445,7 +1504,10 @@ class NetFloat:
         if self._drag["on"] and self._moved_enough(pt):
             self._drag["moved"] = True
         if 动:
-            if self._docked:                 # 真的移动了才取消收纳
+            # 真的移动了才取消收纳。门槛要和"算不算拖动"一致（_moved_enough，
+            # px(4)）：以前这里用 1px，按下到手抖 2~3px 就把收纳取消掉，而松手仍判成
+            # 单击（moved=False）→ 收纳态静默丢失、也不再响应悬停。
+            if self._docked and self._drag["on"] and self._moved_enough(pt):
                 self._docked = None
                 self._peek = False
                 self._redraw()
@@ -1514,6 +1576,8 @@ class NetFloat:
                     self._docked = None
                     self._rel = list(self._clamp(*self._rel))
                     self._apply()
+                    # 不在吸附区：绿光带要熄灭，60ms 的脉冲链也要停
+                    self._set_hint(None)
                 if self.on_close:
                     self.on_close(self, False)
             else:
@@ -1658,7 +1722,8 @@ class NetFloat:
             # 已经足够说明问题，图标上的绿环留到松手后再亮。
             # 换形态的淡变还在跑时别重画：_image() 一次 20~50ms，正好卡在淡入中途，
             # 看起来就是"闪一下"。等这轮淡完，提示帧下一拍自然会补上。
-            if not self._drag["on"] and self._fade_job is None:
+            if (not self._drag["on"] and self._fade_job is None
+                    and self._morph_job is None):
                 self._redraw()
             self._update_glow()
         if 持续:
@@ -1675,7 +1740,9 @@ class NetFloat:
         缩小的，一次 20~50ms —— 拖着浮标靠近边缘时，脉冲就把主线程一段段堵死，
         看起来就是"中间几帧丢了"。现在只在上传一张 90x90 位图（~0.3ms）。
         """
-        键 = (self._cur_size(), self._hint, self._通色())
+        # ⚠ 数字也是画进图里的（_image 里 str(当前)），键里不带它，贴边拖动时的脉冲
+        # 帧会一直复用第一次渲染的那串毫秒数，看起来就是数字突然跳回旧值。
+        键 = (self._cur_size(), self._hint, self._通色(), self._state()[1])
         缓存 = getattr(self, "_hint_cache", None)
         if 缓存 is not None and 缓存[0] == 键:
             return 缓存[1]

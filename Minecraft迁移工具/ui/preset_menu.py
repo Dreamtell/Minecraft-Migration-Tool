@@ -15,11 +15,12 @@
 """
 import ctypes
 import os
+import time
 import tkinter as tk
 
 from core.extra_presets import preset_groups
 from utils.dpi import px
-from utils.helpers import is_dark_theme
+from utils.helpers import is_dark_theme, mark_overlay
 from utils.i18n import trp
 
 _W = 620          # 卡片宽（设计像素）
@@ -104,22 +105,40 @@ class PresetMenu:
         self.win = win
         win.withdraw()
         win.overrideredirect(True)
+        mark_overlay(win)                       # 自绘弹窗是浮层
         win.configure(bg=self._line)               # 1px 描边：外层露出来的那一圈
 
         outer = tk.Frame(win, bg=card, bd=0, highlightthickness=0)
         outer.pack(fill="both", expand=True, padx=1, pady=1)
 
         head = tk.Frame(outer, bg=card)
+        self._head = head
         head.pack(fill="x", padx=px(_PAD), pady=(px(10), 0))
-        tk.Label(head, text="＋ 常用目录", bg=card, fg=self._fg,
+        tk.Label(head, text=trp("＋ 常用目录"), bg=card, fg=self._fg,
                  font=_FONT_TITLE, anchor="w").pack(side="left")
         tk.Label(head, text=trp("点一下即加入「其它文件」清单"), bg=card,
                  fg=self._muted, font=_FONT_DESC, anchor="e").pack(side="right")
 
-        self.body = tk.Frame(outer, bg=card)
-        self.body.pack(fill="both", expand=True, padx=px(_PAD), pady=(px(6), px(10)))
+        # body 放进 Canvas：卡片比工作区高时（150% 缩放的 900p 屏等）限高并让内容可滚。
+        # 以前直接把 body pack 进去，`_place()` 只夹 y 不裁 h，底部就被屏幕切掉、也没法滚。
+        self._canvas = tk.Canvas(outer, bg=card, highlightthickness=0, bd=0,
+                                 yscrollincrement=px(24))
+        self._canvas.pack(fill="both", expand=True, padx=px(_PAD), pady=(px(6), px(10)))
+        self.body = tk.Frame(self._canvas, bg=card)
+        # 映射前就把内嵌窗宽定死：否则 body 先按自然宽度排一遍、映射后又撑到卡片宽再排
+        # 一遍，一百多个控件排两次，实测开一次弹窗多花 150ms（update_idletasks 里）。
+        self._cwin = self._canvas.create_window(0, 0, anchor="nw", window=self.body,
+                                                width=max(1, px(_W) - 2 - 2 * px(_PAD)))
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
 
         self._build(existing_lines)
+        win.update_idletasks()
+        # Canvas 默认请求 7cm（约 265px）高：不先钉成内容的真实高度，映射时还要再协商
+        # 一轮，实测多花 40~90ms。
+        try:
+            self._canvas.configure(height=max(1, self.body.winfo_reqheight()))
+        except Exception:
+            pass
         self._place()
         win.deiconify()
         win.update_idletasks()
@@ -150,6 +169,55 @@ class PresetMenu:
                     self._root_bid.append((ev, fid))
             except Exception:
                 pass
+
+    _CHROME_V = 2 + 10 + 6 + 10        # 描边 + 标题上边距 + body 上下边距（设计像素）
+
+    def _内容高(self):
+        """完整内容需要的高度（设计像素换算后的实际像素）。"""
+        try:
+            return (2 + px(10) + self._head.winfo_reqheight()
+                    + px(6) + px(10) + self.body.winfo_reqheight())
+        except Exception:
+            return self.win.winfo_reqheight()
+
+    def _on_canvas_resize(self, e=None):
+        """Canvas 宽度变了：内嵌的 body 跟着撑满，滚动区重算。"""
+        try:
+            w = self._canvas.winfo_width()
+            if w > 1:
+                # ⚠ 画布还没映射时宽度是 1：这时设置内嵌窗宽会把 body 挤成 1px，
+                # 一百多个控件连着重排两次，实测开一次弹窗多花 150ms。
+                self._canvas.itemconfigure(self._cwin, width=w)
+            bw = max(self.body.winfo_reqwidth() if w <= 1 else w, 1)
+            self._canvas.configure(
+                scrollregion=(0, 0, bw, max(self.body.winfo_reqheight(), 1)))
+        except Exception:
+            pass
+
+    def _可滚(self):
+        try:
+            return self.body.winfo_reqheight() > self._canvas.winfo_height() + 1
+        except Exception:
+            return False
+
+    def _on_wheel(self, e):
+        """鼠标滚轮：只在内容超出时滚，滚到头就停（别把整张卡片带偏）。"""
+        if not self._可滚():
+            return
+        try:
+            self._canvas.yview_scroll(int(-e.delta / 120) * 3, "units")
+        except Exception:
+            pass
+
+    def _fit_height(self, h):
+        """把窗口高度定在 h 以内：不够就裁 Canvas，内容靠滚动看。"""
+        try:
+            body_max = max(px(80), h - px(10) - self._head.winfo_reqheight()
+                           - px(6) - px(10) - 2)
+            self._canvas.configure(height=int(body_max))
+            self._on_canvas_resize()
+        except Exception:
+            pass
 
     # ---------------- 内容 ----------------
     def _icon(self, entry):
@@ -222,12 +290,18 @@ class PresetMenu:
                     chip.configure(text="✓ " + trp("已在清单"))
                 kids = [row, ic, nf, name, desc, chip, chip_box]
                 for w in kids:
+                    w.bind("<MouseWheel>", self._on_wheel)
                     w.bind("<Button-1>", lambda e, x=条目: self._pick(x))
                     w.bind("<Enter>", lambda e, ws=kids: self._hover_on(ws))
                     w.bind("<Leave>", lambda e, ws=kids: self._hover_off(ws))
                 self._rows.append((条目, kids, chip))
         if self._rows:
             self._sel = -1
+        try:
+            self._canvas.yview_moveto(0)       # 重建后回到顶部
+            self._on_canvas_resize()
+        except Exception:
+            pass
 
     def _paint(self, kids, color):
         for w in kids:
@@ -242,13 +316,35 @@ class PresetMenu:
     def _hover_off(self, kids):
         self._paint(kids, self._card)
 
+    def _refresh_chips(self, existing_lines):
+        """只改「✓ 已在清单」徽章的文字，**不重建整张卡片**。
+
+        ⚠ 以前点一下走 update() → _build()：销毁并重建 14 行 × 7 个控件 + 14 张
+        PhotoImage，实测单次点击卡主线程 199~232ms。而这个弹窗的设计就是「点一下
+        不关、连着加好几样」，每加一项都要付一次。徽章本来只需要改一个 Label。
+        顺带：重建会把光标底下那个 Label 销毁重建，新 Label 收不到 <Enter>，
+        点完一项那行的高亮会消失。
+        """
+        if existing_lines is None or self._closed:
+            return
+        try:
+            from core.extra_presets import preset_rows
+            在了 = {rel: flag for rel, _desc, flag in preset_rows(existing_lines)}
+        except Exception:
+            return
+        for 条目, _kids, chip in self._rows:
+            try:
+                chip.configure(text=("✓ " + trp("已在清单")) if 在了.get(条目) else "")
+            except Exception:
+                pass
+
     # ---------------- 交互 ----------------
     def _pick(self, entry):
         try:
             if self.on_pick:
                 self.on_pick(entry)
         finally:
-            self.update(self.get_existing() if self.get_existing else None)
+            self._refresh_chips(self.get_existing() if self.get_existing else None)
 
     def _activate_sel(self):
         if 0 <= self._sel < len(self._rows):
@@ -300,11 +396,16 @@ class PresetMenu:
         self.close()
 
     def _place(self):
-        """贴着按钮下方展开；下面放不下就翻到按钮上方，再夹回屏幕内。"""
+        """贴着按钮下方展开；下面放不下就翻到按钮上方，再夹回**按钮所在显示器的工作区**。
+
+        ⚠ 不能用 winfo_screenwidth()/height()：那是**主显示器**、而且含任务栏。
+        主窗口拖到副屏时按钮坐标在主屏坐标之外，按主屏夹取会把卡片整个拽回主屏
+        （实测按钮在 x=2584，卡片被钉在 1932，差 652px）；含任务栏则会让卡片底边
+        压在任务栏下面、又不触发「翻到上方」。
+        """
         win = self.win
-        win.update_idletasks()
         w = max(win.winfo_reqwidth(), px(_W))
-        h = win.winfo_reqheight()
+        h = self._内容高()
         try:
             bx = self.anchor.winfo_rootx()
             by = self.anchor.winfo_rooty()
@@ -314,11 +415,20 @@ class PresetMenu:
         x = bx
         y = by + bh + px(6)
         try:
-            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-            if y + h > sh - px(8):
+            from utils.dpi import work_area_at
+            area = work_area_at(bx, by)
+            if not area:
+                # 极端情况下拿不到显示器信息：退回整屏（至少不出屏）
+                area = (0, 0, win.winfo_screenwidth(), win.winfo_screenheight())
+            ax, ay, aw, ah = area
+            # 卡片比工作区高时先限高（内容改滚动）：只夹 y 的话底部会被屏幕切掉，
+            # 最后一组/最后一行永远看不到，也没有滚动手段。
+            h = min(h, max(px(160), ah - 2 * px(8)))
+            self._fit_height(h)
+            if y + h > ay + ah - px(8):
                 y = by - h - px(6)
-            y = max(px(8), min(y, sh - h - px(8)))
-            x = max(px(8), min(x, sw - w - px(8)))
+            y = max(ay + px(8), min(y, ay + ah - h - px(8)))
+            x = max(ax + px(8), min(x, ax + aw - w - px(8)))
         except Exception:
             pass
         win.geometry("%dx%d+%d+%d" % (w, h, int(x), int(y)))
@@ -329,9 +439,18 @@ class PresetMenu:
         if existing_lines is None or self._closed:
             return
         try:
-            self._build(existing_lines)
+            self._refresh_chips(existing_lines)
         except Exception:
             pass
+
+    def just_closed(self, within=0.35):
+        """刚刚才被关掉？（用于"再点一次取消"：同一次点击里别立刻又开一次）"""
+        if self.alive():
+            return False
+        try:
+            return (time.time() - getattr(self, "_closed_at", 0.0)) < within
+        except Exception:
+            return False
 
     def alive(self):
         try:
@@ -343,23 +462,37 @@ class PresetMenu:
         if self._closed:
             return
         self._closed = True
+        self._closed_at = time.time()
         try:
             self.win.grab_release()
         except Exception:
             pass
-        for ev in ("<Destroy>", "<Unmap>"):
+        # ⚠ _root_bid 是 [(事件, funcid)] 的 list，不是 dict：以前写 .get(ev) 抛
+        # AttributeError 被吞掉，两条绑定一次也没解，每开关一次弹窗就多留一份
+        # （绑定闭包持有整个 PresetMenu，对象树回收不了）。Tk 的 unbind 必须给 funcid，
+        # 传 None 会把该事件在主窗口上的**全部**绑定清掉（会误伤浮标）。
+        for ev, fid in list(getattr(self, "_root_bid", None) or []):
             try:
-                self.root.unbind(ev, self._root_bid.get(ev)) \
-                    if getattr(self, "_root_bid", None) else None
+                self.root.unbind(ev, fid)
             except Exception:
                 pass
+        self._root_bid = []
         try:
             self.win.destroy()
         except Exception:
             pass
         # 焦点还给主窗口：弹窗里 focus_force 过，不还的话输入框那边看起来"点不了"。
-        # 但只在**前台还是本程序**时才抢：用户点了别的程序，不能把焦点抢回来。
+        # 但只在**前台还是本程序**时才抢：用户点了别的程序（点卡片外面收起时正是这种
+        # 情形），不能把焦点抢回来。
         try:
-            self.root.focus_force()
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if not fg:
+                self.root.focus_force()
+            else:
+                from ctypes import wintypes
+                pid = wintypes.DWORD()
+                ctypes.windll.user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+                if int(pid.value) == os.getpid():
+                    self.root.focus_force()
         except Exception:
             pass

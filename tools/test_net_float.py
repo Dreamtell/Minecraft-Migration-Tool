@@ -213,6 +213,36 @@ class CloseReasonTests(unittest.TestCase):
 class ReshowTests(unittest.TestCase):
     """藏起来再出现：贴边浮标必须回到收起态，并且悬停轮询要重新起来。"""
 
+    def test_重新显示会补一次分层样式(self):
+        """_show 的"刚打开"分支要重新取句柄并补 WS_EX_LAYERED。
+
+        以前这里调 `self._real_hwnd()/self._apply_layered()`，而这两个方法只定义在
+        `_EdgeGlow` 上：AttributeError 被 except 吞掉，这段兜底从写下那天起就没执行过。
+        现在走模块级的 `_top_hwnd/_ensure_layered`，这里盯住它真的被调用。
+        """
+        o = object.__new__(NetFloat)
+        o._stop = False
+        o._parked = True
+        o._shown = False
+        o._docked = None
+        o._hover = False
+        o._alpha = 0
+        o.root = mock.Mock()
+        o.win = mock.Mock()
+        o._hwnd = 0
+        o._glow = None
+        o._drag = {"on": False}
+        o._root_should_show = lambda: True
+        o._redraw = mock.Mock()
+        o._has_other_window = lambda: False
+        o._fade_to = mock.Mock()
+        with mock.patch.object(nf, "_top_hwnd", return_value=4321) as 取句柄, \
+                mock.patch.object(nf, "_ensure_layered", return_value=True) as 补样式:
+            o._show()
+        取句柄.assert_called_once()
+        补样式.assert_called_once_with(4321)
+        self.assertEqual(o._hwnd, 4321)
+
     def test_重新显示会纠正到收起态(self):
         o = object.__new__(NetFloat)
         o._stop = False
@@ -336,6 +366,153 @@ class DragThresholdTests(unittest.TestCase):
         o = self._桩()
         o._moved_enough(types.SimpleNamespace(x=100, y=100))
         self.assertTrue(o._moved_enough(types.SimpleNamespace(x=140, y=100)))
+
+
+class DockJitterTests(unittest.TestCase):
+    """贴边时按下手抖几像素不能把收纳取消掉（那一下仍会被判成单击）。"""
+
+    def _桩(self):
+        o = object.__new__(NetFloat)
+        o._geom = {"x": 0, "y": 0, "w": 200, "h": 200}
+        o._rel = [100, 100]
+        o._docked = "right"
+        o._peek = True
+        o._drag = {"on": True, "moved": False, "p0": (500, 500), "dx": 0, "dy": 0}
+        o._hint = None
+        o._morph = None
+        o.d = 56
+        o.tab_w = 22
+        o._hover = False
+        o._apply = mock.Mock()
+        o._redraw = mock.Mock()
+        o._set_hint = mock.Mock()
+        o._update_glow = mock.Mock()
+        o._clamp = lambda x, y: (x, y)
+        return o
+
+    def _移到(self, o, x, y):
+        pt = nf.wintypes.POINT(x, y)
+        with mock.patch.object(nf.ctypes.windll.user32, "GetCursorPos",
+                               side_effect=lambda p: (ctypes.memmove(p, ctypes.byref(pt),
+                                                                     ctypes.sizeof(pt)), 1)[1]):
+            return o._move_to_cursor()
+
+    def test_手抖两像素不取消收纳(self):
+        o = self._桩()
+        self.assertTrue(self._移到(o, 502, 501))
+        self.assertEqual(o._docked, "right", "手抖 2px 不该取消收纳")
+        o._redraw.assert_not_called()
+
+    def test_真的拖开才取消收纳(self):
+        o = self._桩()
+        self.assertTrue(self._移到(o, 540, 500))
+        self.assertIsNone(o._docked)
+        o._redraw.assert_called()
+
+
+class OverlayMarkTests(unittest.TestCase):
+    """浮标的可见性判定：标了 _mctool_overlay 的才算浮层，其余算真窗口。
+
+    消息中心抽屉也是无边框窗、贴在主界面右下角，和浮标默认位置重叠 ——
+    按 overrideredirect 跳过它，浮标就会压到抽屉上面抢点击。
+    """
+
+    def setUp(self):
+        import tkinter as tk
+        self.tk = tk
+        try:
+            self.root = tk.Tk()
+            self.root.withdraw()
+        except Exception as exc:                       # pragma: no cover
+            raise unittest.SkipTest("起不了 Tk: %s" % exc)
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _浮标(self):
+        o = object.__new__(NetFloat)
+        o.win = self.tk.Toplevel(self.root)
+        o._glow = None
+        o.root = self.root
+        return o
+
+    def test_抽屉算别的窗口(self):
+        o = self._浮标()
+        drawer = self.tk.Toplevel(self.root)
+        drawer.overrideredirect(True)
+        drawer.deiconify()
+        self.root.update_idletasks()
+        self.assertTrue(o._has_other_window(), "消息中心那种无边框抽屉要算真窗口")
+
+    def test_标了浮层的不算(self):
+        from utils.helpers import mark_overlay
+        o = self._浮标()
+        toast = self.tk.Toplevel(self.root)
+        toast.overrideredirect(True)
+        mark_overlay(toast)
+        toast.deiconify()
+        self.root.update_idletasks()
+        self.assertFalse(o._has_other_window(), "吐司/光带这类浮层不该让浮标让位")
+
+
+class ParentPidCacheTests(unittest.TestCase):
+    """40ms 看门狗每次枚举全进程要 6ms（约 15% 单核）：父进程必须缓存。"""
+
+    def test_第二次不再枚举(self):
+        nf._PPID_CACHE.pop(os.getpid(), None)
+        第一次 = nf._parent_pid(os.getpid())
+        self.assertIn(os.getpid(), nf._PPID_CACHE)
+        原 = nf.ctypes.windll.kernel32.CreateToolhelp32Snapshot
+        try:
+            def 炸(*_a):
+                raise AssertionError("缓存命中时不该再枚举进程")
+            nf.ctypes.windll.kernel32.CreateToolhelp32Snapshot = 炸
+            self.assertEqual(nf._parent_pid(os.getpid()), 第一次)
+        finally:
+            nf.ctypes.windll.kernel32.CreateToolhelp32Snapshot = 原
+
+
+class HintFrameNumberTests(unittest.TestCase):
+    """提示脉冲帧同样把毫秒数画进图里，缓存键必须带上它。"""
+
+    def test_数字变化不命中旧帧(self):
+        o = _桩浮标(val=45)
+        o._hint = "right"
+        o._hint_cache = None
+        o._HINT_FRAMES = 2
+        次数 = []
+        o._image = lambda *a, **k: (次数.append(1), object())[1]
+        o._hint_frame_list()
+        o.get_history = lambda: [(time.time(), 99, 2, 2)]
+        o._hint_frame_list()
+        self.assertEqual(len(次数), 4, "数字变了就该重新渲染提示帧")
+
+
+class ShapeNumberTests(unittest.TestCase):
+    """形态图的键必须带延迟数字：数字是烤进图里的，否则换形态时用旧值。"""
+
+    def test_数字变化不命中旧图(self):
+        o = _桩浮标(val=45)
+        o._shape_cache = {}
+        次数 = []
+        o._image = lambda *a, **k: (次数.append(1), object())[1]
+        a = o._shape_img(56)
+        o.get_history = lambda: [(time.time(), 99, 2, 2)]
+        b = o._shape_img(56)
+        self.assertIsNot(a, b)
+        self.assertEqual(len(次数), 2)
+
+    def test_同一个数字复用缓存(self):
+        o = _桩浮标(val=45)
+        o._shape_cache = {}
+        次数 = []
+        o._image = lambda *a, **k: (次数.append(1), object())[1]
+        o._shape_img(56)
+        o._shape_img(56)
+        self.assertEqual(len(次数), 1)
 
 
 class CollapsedRefreshTests(unittest.TestCase):

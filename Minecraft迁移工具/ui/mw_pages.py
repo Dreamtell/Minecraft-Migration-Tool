@@ -17,7 +17,7 @@ from utils.dpi import UI_SCALE, px, window_geometry
 from utils.helpers import (
     log_font,
     LiquidProgress, RoundedTextArea, SegmentedControl, SmoothScroller, SwitchRow,
-    bind_text_scroll, create_gradient_button, is_dark_theme, style_window,
+    bind_text_scroll, create_gradient_button, is_dark_theme, mark_overlay, style_window,
     set_window_icon,
 )
 # 「开始迁移」一个按钮换成 3D 翻转组件（视觉取自 特效2.py 原型）；其余按钮不动。
@@ -73,6 +73,7 @@ class PagesMixin:
             self._hide_tooltip()        # 从别的控件直接滑过来时先收掉上一个，别叠窗
             self.tooltip = tk.Toplevel(widget)
             self.tooltip.wm_overrideredirect(True)
+            mark_overlay(self.tooltip)          # 悬停提示是浮层
             # 落在指针右下：贴太近会把被解释的那个图标（就十几个像素大）盖住
             self.tooltip.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
             label = tk.Label(self.tooltip, text=msg,

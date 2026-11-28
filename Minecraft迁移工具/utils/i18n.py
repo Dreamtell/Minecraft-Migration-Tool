@@ -283,6 +283,7 @@ _原件 = []              # [(对象, 属性名, 原函数)]，卸载时还原
     "📄 浏览添加文件": "📄 Add file…",
     "📁 浏览添加文件夹": "📁 Add folder…",
     "＋ 常用目录 ▾": "＋ Common folders ▾",
+    "＋ 常用目录": "＋ Common folders",
     "🗂 卡片视图": "🗂 Card view",
     "📋 列表视图": "📋 List view",
     "📋 表格视图": "📋 Table view",

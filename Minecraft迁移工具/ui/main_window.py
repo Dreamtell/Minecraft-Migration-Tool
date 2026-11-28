@@ -35,6 +35,17 @@ except Exception:
     ToastHost = None
 
 
+def _坐标(v):
+    """配置里的浮标坐标：None / 取不到 -> -1（"没记过"）。
+
+    ⚠ 0 是合法坐标（贴左边/上边收纳后就是 0），不能和"没记过"混为一谈。
+    """
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return -1
+
+
 class MigrationGUI(
     LogMixin,
     ThemeMixin,
@@ -783,8 +794,10 @@ class MigrationGUI(
             "double_click_auto": bool(_dc_now()[1]),
             # 桌面浮标：开关 + 上次位置（-1 表示没记过，用默认右下角）
             "net_float_on": bool(getattr(self, "net_float_on", False)),
-            "net_float_x": int(getattr(self, "net_float_x", -1) or -1),
-            "net_float_y": int(getattr(self, "net_float_y", -1) or -1),
+            # ⚠ 不能写 int(x or -1)：x=0 是合法坐标（贴左/上边收纳后就是 0），
+            # `0 or -1` 会变成 -1，于是贴左边收纳后位置记不住、下次启动跳回右下角。
+            "net_float_x": _坐标(getattr(self, "net_float_x", -1)),
+            "net_float_y": _坐标(getattr(self, "net_float_y", -1)),
             # 浮标直径（设计像素，40~96）；界面里按 DPI 再乘一次
             "net_float_size": int(getattr(self, "net_float_size", 56) or 56),
             "history_limit": int(getattr(self, "history_limit", 10) or 10),

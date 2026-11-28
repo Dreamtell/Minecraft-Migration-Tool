@@ -18,6 +18,16 @@ def _py_files():
             yield p
 
 
+# 建了无边框窗口、但**故意**不标 mark_overlay 的模块：它们是"用户的另一个窗口"
+# 或者跟浮标无关的独立窗口，浮标应该为他们让位。
+_不是浮层 = {
+    "ui/message_center.py": "消息中心抽屉：贴在主界面右下，浮标必须让它、不能被压在它上面",
+    "ui/rollback_pick.py": "回滚选择窗：真正的对话框",
+    "ui/precheck_dialog.py": "自检窗：真正的对话框",
+    "ui/splash.py": "启动画面：那时候还没有浮标",
+}
+
+
 class SourceHygieneTests(unittest.TestCase):
     def test_no_duplicate_top_level_definitions(self):
         重复 = []
@@ -35,7 +45,37 @@ class SourceHygieneTests(unittest.TestCase):
                         重复.append("%s:%d %s" % (p.relative_to(SOURCE),
                                                   node.lineno, node.name))
                     seen.add(node.name)
+                # 类里也要查：`ui/net_float.py` 的 _on_root_destroy 就定义过两次，
+                # 后一个静默覆盖前一个，两份行为还略有差别。
+                if isinstance(node, ast.ClassDef):
+                    类内 = set()
+                    for sub in node.body:
+                        if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if sub.name in 类内:
+                                重复.append("%s:%d %s.%s" % (p.relative_to(SOURCE),
+                                                           sub.lineno, node.name,
+                                                           sub.name))
+                            类内.add(sub.name)
         self.assertEqual(重复, [], "重复的顶层定义会被后一个静默覆盖")
+
+    def test_overlay_windows_are_marked(self):
+        """建了无边框窗口的模块必须调 mark_overlay，否则浮标会把它当成"别的窗口"。
+
+        浮标靠 `_has_other_window()` 判断要不要抬升，而它只认显式标记过的浮层；
+        新加一个无边框浮层又忘了标记，就会复现「浮标时有时无」。
+        """
+        漏标 = []
+        for p in _py_files():
+            rel = p.relative_to(SOURCE).as_posix()
+            src = p.read_text(encoding="utf-8", errors="replace")
+            if "overrideredirect(True)" not in src:
+                continue
+            if "mark_overlay" in src:
+                continue
+            if rel in _不是浮层:
+                continue
+            漏标.append(rel)
+        self.assertEqual(漏标, [], "这些模块建了无边框窗口却没调 mark_overlay")
 
     def test_no_merge_conflict_markers(self):
         # 只看行首的完整标记；单独的 ======= 在注释分隔线里很常见，不算

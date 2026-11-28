@@ -336,6 +336,39 @@ class LightWindowTests(unittest.TestCase):
 
 
 
+class NetFloatCoordSaveTests(unittest.TestCase):
+    """浮标坐标 0 是合法值（贴左/上边收纳后就是 0），不能当成"没记过"。
+
+    以前 save_config 写 int(x or -1)：0 or -1 得 -1，于是贴左边收纳后位置记不住、
+    下次启动跳回右下角。
+    """
+
+    def setUp(self):
+        self.root, self.gui = _app()
+
+    def tearDown(self):
+        for k in ("net_float_x", "net_float_y"):
+            try:
+                delattr(self.gui, k)
+            except AttributeError:
+                pass
+
+    def _存过之后(self):
+        import json
+        import ui.main_window as MW
+        self.gui.save_config()
+        return json.loads(Path(MW.CONFIG_FILE).read_text(encoding="utf-8"))
+
+    def test_zero_coordinates_are_saved_as_zero(self):
+        self.gui.net_float_x, self.gui.net_float_y = 0, 0
+        cfg = self._存过之后()
+        self.assertEqual((cfg["net_float_x"], cfg["net_float_y"]), (0, 0))
+
+    def test_missing_coordinate_stays_minus_one(self):
+        cfg = self._存过之后()
+        self.assertEqual(cfg["net_float_x"], -1)
+
+
 class LogToolbarBindingTests(unittest.TestCase):
     """日志工具栏的 <Configure> 绑定不能把 WrapRow 自己的那一个顶掉。
 

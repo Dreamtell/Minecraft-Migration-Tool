@@ -67,9 +67,15 @@ class ListsMixin:
         加完一项徽章当场更新、弹窗不关，可以连着加好几样。建不起来时退回原生菜单。
         """
         menu = getattr(self, "_preset_menu", None)
-        if menu is not None and menu.alive():
-            menu.close()                      # 再点一次 = 收起
-            return
+        if menu is not None:
+            if menu.alive():
+                menu.close()                  # 再点一次 = 收起
+                return
+            # ⚠ 弹窗开着时点按钮：按下那一下被 grab 送到弹窗（坐标越界）→ 关闭，
+            # 松手才落到按钮上 → 这里又开一次，看起来就是"点了没反应"。
+            # 刚刚才关掉的话，这一次点击算"收起"，别重新打开。
+            if menu.just_closed():
+                return
         existing = self.extra_text.get("1.0", "end-1c").splitlines()
         try:
             from ui.preset_menu import PresetMenu
@@ -1022,7 +1028,10 @@ class ListsMixin:
         base = Path(base_dir)
         if not base.exists():
             return 0, [trp("基准目录不存在：{0}", base)]
-        lines = {l.strip().replace("\\", "/").rstrip("/")
+        # 归一后比较（忽略大小写、反斜杠、末尾 /）：和「＋ 常用目录」的「已在清单」
+        # 徽章用同一个 norm_entry，否则徽章说已在、点一下又添一行。
+        from core.extra_presets import norm_entry
+        lines = {norm_entry(l)
                  for l in text_widget.get("1.0", tk.END).splitlines() if l.strip()}
         added, failed = 0, []
         for p in paths:
@@ -1038,7 +1047,7 @@ class ListsMixin:
                 continue
             if (base / rel_s).is_dir() and not rel_s.endswith("/"):
                 rel_s = rel_s.rstrip("/") + "/"
-            if rel_s.rstrip("/") not in lines:
+            if norm_entry(rel_s) not in lines:
                 text_widget.configure(state=tk.NORMAL)
                 # ⚠ 必须用 "end-1c"：Text 的 get("1.0", END) **永远**以换行结尾
                 # （最后那个是控件自带的不可见换行），拿它判"末尾是不是换行"恒为真，
@@ -1049,7 +1058,7 @@ class ListsMixin:
                 if cur.strip() and not cur.endswith("\n"):
                     text_widget.insert(tk.END, "\n")
                 text_widget.insert(tk.END, rel_s + "\n")
-                lines.add(rel_s.rstrip("/"))
+                lines.add(norm_entry(rel_s))
                 added += 1
         return added, failed
 

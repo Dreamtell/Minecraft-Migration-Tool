@@ -41,6 +41,7 @@ _UI = 1.30
 def _u(v):
     """按界面缩放系数换算设计像素（px 已含 DPI，这里再乘内容比例）。"""
     return px(float(v) * _UI)
+from utils.helpers import mark_overlay
 from utils.layered import LayeredSurface
 from utils import piltext as _piltext
 
@@ -201,6 +202,7 @@ class ToastHost:
         try:
             self.win.withdraw()
             self.win.overrideredirect(True)
+            mark_overlay(self.win)              # 吐司是浮层，浮标不该为它让位
             # ⚠ 不许被主题遍历刷底色（apply_theme_to_widget_tree 会刷 Toplevel）；
             # 虽然内容不靠底色，但别让人误以为是底色在起作用。
             self.win._skip_theme_walk = True

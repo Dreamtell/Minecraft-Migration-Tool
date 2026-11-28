@@ -29,9 +29,16 @@ EXTRA_PRESETS = (
 )
 
 
-def _norm(entry):
-    """比较用的归一形态:正斜杠、去末尾 /、小写(和 Tk 版 _open_extra_preset_menu 一致)。"""
+def norm_entry(entry):
+    """比较用的归一形态:正斜杠、去末尾 /、小写(和 Tk 版 _open_extra_preset_menu 一致)。
+
+    ⚠ 「已在清单」徽章和真正添加必须用**同一个**归一函数：徽章那边归一（忽略大小写），
+    添加那边却按原样比对，就会出现"徽章说已在、点一下又添一行"。
+    """
     return str(entry or "").strip().replace("\\", "/").rstrip("/").lower()
+
+
+_norm = norm_entry            # 老名字，模块内部还用
 
 
 def preset_rows(existing_lines):

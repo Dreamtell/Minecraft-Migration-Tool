@@ -18,7 +18,8 @@ from ui.mw_common import _center_window, _close_popup, _grad_width
 from ui.virtual_table import VirtualTable
 from utils.helpers import (
     DataText, RoundedEntry, RoundedTextArea, begin_bulk_scan, create_gradient_button,
-    end_bulk_scan, focus_window, is_dark_theme, log_font, set_window_icon, text_delta,
+    end_bulk_scan, focus_window, is_dark_theme, log_font, mark_overlay,
+    set_window_icon, text_delta,
 )
 from utils.theme import apply_theme_to_widget_tree
 
@@ -430,6 +431,7 @@ class BigViewMixin:
                 except Exception:
                     pass
                 tip.wm_overrideredirect(True)
+                mark_overlay(tip)               # 悬停提示是浮层
                 try:
                     tip.attributes("-topmost", True)
                 except Exception:

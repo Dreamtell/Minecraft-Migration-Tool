@@ -652,6 +652,22 @@ class SmoothScroller:
 # 留着容易删错。tools/test_source_hygiene.py 会挡住同类重复定义。
 
 
+def mark_overlay(win):
+    """把窗口标记成"浮层"（吐司 / 光带 / 悬停提示 / 自绘弹窗）。
+
+    浮标的可见性判定（`ui/net_float._has_other_window`）要区分"用户的另一个窗口"
+    和"我们自己画的浮层"：以前一律按 overrideredirect 判，于是消息中心抽屉
+    （它也是无边框窗、还贴在主界面右下角）被误当成浮层，浮标就压到抽屉上面抢点击。
+    改成显式标记：只有标过的才算浮层，其余（抽屉、设置、各种对话框）都算真窗口。
+
+    新加无边框浮层时**记得调它**，否则浮标会以为用户开着另一个窗口、不再抬升。
+    """
+    try:
+        win._mctool_overlay = True
+    except Exception:
+        pass
+
+
 def is_dark_theme(theme):
     """判断给进来的主题是不是深色（theme 是 utils.theme 里那两个字典之一）。"""
     try:
@@ -2735,6 +2751,7 @@ def circular_reveal(win, cx, cy, on_switch=None, steps=30, interval=13, on_done=
         # 2) 覆盖层原样显示旧界面，所以下面的切换是「偷偷」发生的
         ov = tk.Toplevel(win)
         ov._is_theme_overlay = True      # 主题刷新时要跳过它（内容是一张截图）
+        mark_overlay(ov)                 # 也是浮层：不标的话浮标在揭示期间停止抬升
         state["ov"] = ov
         ov.overrideredirect(True)
         ov.geometry(f"{w}x{h}+{x0}+{y0}")
