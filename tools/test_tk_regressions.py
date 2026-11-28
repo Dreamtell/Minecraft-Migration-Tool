@@ -159,5 +159,84 @@ class CanvasScrollTests(unittest.TestCase):
             root.destroy()
 
 
+class ScrollFrameRateTests(unittest.TestCase):
+    """用户主动滚轮时不能被「窗口在后台 -> 30fps」限流。
+
+    实测（_dctest/probe_focus_scroll3.py）：同一格滚轮，前台 18 帧 / 6.7ms，
+    窗口在后台时只剩 6 帧 / 33ms —— 用户报的就是「一失去焦点就滑动卡顿」。
+    用户按滚轮说明他看得见窗口（Windows 默认把滚轮送给鼠标下的非前台窗口），
+    所以自己发起的滚动走满帧，程序触发的滚动（日志跟随）仍然降帧。
+    """
+
+    def _桩(self, user_driven):
+        o = object.__new__(SmoothScroller)
+        o.widget = mock.Mock()
+        o.frame_ms = 12
+        o._user_driven = user_driven
+        return o
+
+    def test_程序触发的滚动仍然降帧(self):
+        from utils import anim
+        o = self._桩(False)
+        with mock.patch.object(anim, "delay", return_value=33.0),                 mock.patch.object(anim, "frame_ms", return_value=7.0):
+            self.assertEqual(o._帧间隔(), 33.0)
+
+    def test_用户滚动走满帧(self):
+        from utils import anim
+        o = self._桩(True)
+        with mock.patch.object(anim, "delay", return_value=33.0),                 mock.patch.object(anim, "frame_ms", return_value=7.0):
+            self.assertEqual(o._帧间隔(), 7.0)
+
+    def test_滚轮和scroll_px都标记为用户滚动(self):
+        o = object.__new__(SmoothScroller)
+        o.px_per_notch = 48
+        o._left = 0.0
+        o._vel = 0.0
+        o._user_driven = False
+        o._job = None
+        o._mover = lambda px: (px, False)
+        o._on_user_scroll = None
+        o._kick = lambda: None
+        o._on_wheel(type("E", (), {"delta": -120})())
+        self.assertTrue(o._user_driven)
+        o._user_driven = False
+        o.scroll_px(20)
+        self.assertTrue(o._user_driven)
+
+    def test_停下后复位(self):
+        o = object.__new__(SmoothScroller)
+        o._left = 0.0
+        o._vel = 0.0
+        o._job = None
+        o._user_driven = True
+        o._timer_hr = False
+        o.widget = mock.Mock()
+        o.stop()
+        self.assertFalse(o._user_driven)
+
+    def test_续帧也走同一个档位(self):
+        """_step 续帧那一处以前直接调 anim.delay —— 只改 _kick 的话只有第一帧是满帧。"""
+        o = object.__new__(SmoothScroller)
+        o.widget = mock.Mock()
+        o.frame_ms = 12
+        o._job = None
+        o._left = 100.0
+        o._vel = 1.0
+        o._last_t = time.perf_counter() - 0.007
+        o._timer_hr = False
+        o._settle = lambda: None
+        o._user_driven = True
+        o.ease = 0.22
+        o.accel = 0.30
+        o.max_step_ratio = 0.6
+        o.px_per_notch = 48
+        o._mover = lambda px: (px, False)
+        o._帧间隔 = mock.Mock(return_value=7.0)
+        o.widget.winfo_exists.return_value = True
+        o._step()
+        o._帧间隔.assert_called_once()
+        self.assertLess(o.widget.after.call_args[0][0], 8)
+
+
 if __name__ == "__main__":
     unittest.main()

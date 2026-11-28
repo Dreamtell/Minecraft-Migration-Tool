@@ -288,6 +288,9 @@ class SmoothScroller:
         self._job = None
         self._on_user_scroll = on_user_scroll
         self._on_settle = on_settle
+        # 用户主动发起的滚动（滚轮 / 程序性 scroll_px）：不受"窗口在后台就降到 30fps"
+        # 的限制 —— 他按滚轮就说明他看得见这个窗口。程序自己触发的滚动仍然降帧。
+        self._user_driven = False
         # 必须覆盖而不是 add="+"：类绑定（Tk 自带的一格跳 3 行）排在控件绑定之后，
         # 用 add 的话会先跳一次再动画，等于滚两倍。表头等也要绑，鼠标停在那儿也能滚。
         for w in (bind_widgets or [widget]):
@@ -437,6 +440,7 @@ class SmoothScroller:
             px = float(px)
         except Exception:
             return
+        self._user_driven = True
         self._queue_pixels(px)
 
     def _queue_pixels(self, px):
@@ -459,6 +463,7 @@ class SmoothScroller:
             self._job = None
         self._left = 0.0
         self._vel = 0.0
+        self._user_driven = False
         self._release_hr()
 
     # ------------------------------------------------------------------- 动画
@@ -468,6 +473,7 @@ class SmoothScroller:
         pixels = (-delta / 120.0) * self.px_per_notch
         if not pixels:
             return "break"
+        self._user_driven = True
         self._queue_pixels(pixels)
         if self._on_user_scroll is not None:
             try:
@@ -538,6 +544,24 @@ class SmoothScroller:
         self._vel = 0.0
         self._release_hr()
 
+    def _帧间隔(self):
+        """下一帧隔多久（毫秒）。
+
+        用户主动滚动（滚轮 / scroll_px）时**不降帧**：`anim.delay` 在窗口失焦或在后台
+        时会给 30fps（实测同一格滚轮：前台 17 帧、后台 5 帧，肉眼就是"一失去焦点就卡顿"），
+        而用户按了滚轮就说明他看得见这个窗口（Windows 默认会把滚轮送给鼠标下的非前台窗口）。
+        程序自己触发的滚动（日志跟随等）仍然走 anim.delay 的降帧，看不见时不烧帧。
+        """
+        try:
+            if self._user_driven:
+                return anim.frame_ms(self.widget)
+            return anim.delay(self.widget)
+        except Exception:
+            try:
+                return anim.delay(self.widget)
+            except Exception:
+                return float(self.frame_ms)
+
     def _kick(self):
         """排下一帧（滚轮刚到时也从这里起步）：间隔交给 anim.delay。
 
@@ -549,8 +573,9 @@ class SmoothScroller:
             return
         self._hold_hr()
         self._last_t = time.perf_counter()
+        间隔 = self._帧间隔()
         try:
-            self._job = self.widget.after(anim.delay(self.widget), self._step)
+            self._job = self.widget.after(间隔, self._step)
         except Exception:
             # 起始排帧就排不上（控件正在销毁 / after 被禁用）：同样要还租，不能只清 _job
             self._abort("after(起始排帧)")
@@ -567,6 +592,7 @@ class SmoothScroller:
         if abs(self._left) < 1.0:
             self._left = 0.0
             self._vel = 0.0
+            self._user_driven = False
             self._release_hr()
             self._settle()
             return
@@ -641,7 +667,7 @@ class SmoothScroller:
             # 一帧要 3ms（p95 5ms），周期于是在 4~9ms 之间抖 —— 看着就是卡顿。
             # 扣时之后目标帧率才真能兑现（档案卡列表当初就是这么从 131fps 提到 214fps 的）。
             用了 = (time.perf_counter() - now) * 1000.0
-            间隔 = anim.delay(self.widget)
+            间隔 = self._帧间隔()
             self._job = self.widget.after(max(1, int(间隔 - 用了)), self._step)
         except Exception:
             self._abort("after(续帧)")
